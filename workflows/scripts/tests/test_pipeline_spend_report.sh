@@ -840,6 +840,235 @@ else
   printf '  - skipped: workflows/scripts/report-producers/tokens not present or not executable\n'
 fi
 
+# ===========================================================================
+# 10. --by-agent-type (temperloop#1314) -- the per-seat attribution side
+#     channel over Claude Code's own agent-frontmatter sidecars
+#     (agent-<id>.meta.json). A SEPARATE, opt-in accumulator -- see the
+#     script's own header "by_agent_type" section for the corpus-scoping and
+#     allowlist rules this section proves out.
+# ===========================================================================
+
+# bat_mkext <bat_root> <session> <agent-id> ; feed the transcript jsonl on
+# stdin. Creates a non-workflow ("ext") subagent journal directly under
+# <bat_root>/<session>/subagents/ -- the depth-pinned glob's own shape.
+bat_mkext() {
+  local root="$1" sess="$2" agent="$3"
+  mkdir -p "$root/$sess/subagents"
+  cat >"$root/$sess/subagents/agent-$agent.jsonl"
+}
+
+# bat_mkwf <bat_root> <session> <wf_id> <agent-id> ; feed the transcript
+# jsonl on stdin. Creates a workflow ("wf") subagent journal, one level
+# deeper than bat_mkext's -- under subagents/workflows/<wf_id>/.
+bat_mkwf() {
+  local root="$1" sess="$2" wf="$3" agent="$4"
+  mkdir -p "$root/$sess/subagents/workflows/$wf"
+  cat >"$root/$sess/subagents/workflows/$wf/agent-$agent.jsonl"
+}
+
+# bat_sidecar <jsonl-path> ; feed the sidecar's JSON body on stdin. Writes
+# next to the given journal, same basename, .meta.json suffix -- the real
+# Claude Code layout; no new join mechanism is needed to find it.
+bat_sidecar() {
+  local jsonl="$1"
+  cat >"${jsonl%.jsonl}.meta.json"
+}
+
+bat_run() { # bat_run <root> [extra args...]
+  local root="$1"; shift
+  SPEND_WEIGHT_INPUT=1 SPEND_WEIGHT_CACHE_READ=0.1 SPEND_WEIGHT_CACHE_CREATE=1.25 \
+  SPEND_WEIGHT_OUTPUT=5 SPEND_MACHINERY_MAX_CALLS=6 SPEND_WORKER_PROFILE_MIN_CALLS=1 \
+    bash "$BIN" --root "$root" --by-agent-type --format json "$@"
+}
+
+# ---------------------------------------------------------------------------
+# 10a. ACTIVATION: --help documents the flag -- this item's own non-vacuous
+#      acceptance predicate (it scores 0 occurrences on an untouched tree).
+# ---------------------------------------------------------------------------
+check "BAT ACTIVATION: --help documents --by-agent-type" \
+  bash -c "bash '$BIN' --help | grep 'agent-type' >/dev/null"
+
+# ---------------------------------------------------------------------------
+# 10b. REFUSAL: --by-agent-type requires --root to name a SINGLE project
+#      directory (one whose */subagents/ session dirs hold at least one
+#      agent-*.jsonl). Both an empty --root and a machine-wide-SHAPED root
+#      (one extra path component before subagents/ -- the real
+#      ~/.claude/projects/<project>/<session>/subagents/ layout) must refuse
+#      with exit 2, never a silent machine-wide walk.
+# ---------------------------------------------------------------------------
+R10_EMPTY="$TMP/bat-empty-root"
+mkdir -p "$R10_EMPTY"
+BAT_REFUSAL_ERR_FILE="$TMP/bat-refusal-err.txt"
+# Written to a file, not captured into a shell var re-embedded in a quoted
+# string: the message itself quotes the offending --root path in single
+# quotes (`'$root' matched none`), which breaks re-embedding exactly like
+# the #995 notices this file's own section 9k comment already documents.
+bash "$BIN" --root "$R10_EMPTY" --by-agent-type >"$BAT_REFUSAL_ERR_FILE" 2>&1
+bat_refusal_rc=$?
+check "BAT REFUSAL: an empty --root exits 2" test "$bat_refusal_rc" -eq 2
+check "BAT REFUSAL: ...and names what it needed (a single project directory)" \
+  grep -q "Claude Code project directory" "$BAT_REFUSAL_ERR_FILE"
+
+R10_MACHINEWIDE="$TMP/bat-machinewide"
+mkdir -p "$R10_MACHINEWIDE/someproject/somesession/subagents"
+echo '{}' >"$R10_MACHINEWIDE/someproject/somesession/subagents/agent-x.jsonl"
+check "BAT REFUSAL: a machine-wide-shaped root (project/session/subagents -- one level too deep for the pinned glob) also refuses -- exit 2" \
+  bash -c "bash '$BIN' --root '$R10_MACHINEWIDE' --by-agent-type; test \$? -eq 2"
+
+# ---------------------------------------------------------------------------
+# 10c. CORE: sidecar-present (allowlisted -> a seat), sidecar-present but
+#      agentType missing (-> unattributed), sidecar-absent (-> unattributed),
+#      and general-purpose (-> unattributed, NOT a passthrough, point 5) --
+#      all four in one project directory. None dropped, none fabricated.
+# ---------------------------------------------------------------------------
+R10="$TMP/bat-core"
+# ext, sidecar present, agentType = a REAL deployed agent-definition name.
+{ usage_line reqBC1 2026-07-10T10:00:00.000Z claude-opus-5 100 0 10 2 text; } \
+  | bat_mkext "$R10" sess1 bc0001
+bat_sidecar "$R10/sess1/subagents/agent-bc0001.jsonl" <<'EOF'
+{"agentType":"shell-reviewer"}
+EOF
+# wf, sidecar present but agentType missing entirely.
+{ usage_line reqBC2 2026-07-10T10:01:00.000Z claude-opus-5 200 0 20 4 text; } \
+  | bat_mkwf "$R10" sess1 wf_bc-002 bc0002
+bat_sidecar "$R10/sess1/subagents/workflows/wf_bc-002/agent-bc0002.jsonl" <<'EOF'
+{"toolUseId":"toolu_x","spawnDepth":1}
+EOF
+# ext, NO sidecar at all.
+{ usage_line reqBC3 2026-07-10T10:02:00.000Z claude-opus-5 300 0 30 6 text; } \
+  | bat_mkext "$R10" sess1 bc0003
+# wf, sidecar present, agentType = general-purpose (NOT a seat -- point 5).
+{ usage_line reqBC4 2026-07-10T10:03:00.000Z claude-opus-5 400 0 40 8 text; } \
+  | bat_mkwf "$R10" sess1 wf_bc-004 bc0004
+bat_sidecar "$R10/sess1/subagents/workflows/wf_bc-004/agent-bc0004.jsonl" <<'EOF'
+{"agentType":"general-purpose"}
+EOF
+J10C="$(bat_run "$R10")"
+check_eq "BAT CORE: all four agents are counted -- none dropped" \
+  "4" "$(printf '%s' "$J10C" | jq -r '.by_agent_type.agents')"
+check_eq "BAT CORE: allowlisted sidecar (shell-reviewer) becomes a seat" \
+  "1" "$(printf '%s' "$J10C" | jq -r '.by_agent_type.seats["shell-reviewer"].agents')"
+check_eq "BAT CORE: the seat's units are its own agent's cost-weighted total (100*.1+10*5+2=62)" \
+  "62" "$(printf '%s' "$J10C" | jq -r '.by_agent_type.seats["shell-reviewer"].units')"
+check_eq "BAT CORE: missing-agentType, no-sidecar, and general-purpose all land in unattributed (3 of the 4)" \
+  "3" "$(printf '%s' "$J10C" | jq -r '.by_agent_type.unattributed.agents')"
+check_eq "BAT CORE: unattributed's units are the OTHER three agents' total (124+186+248=558)" \
+  "558" "$(printf '%s' "$J10C" | jq -r '.by_agent_type.unattributed.units')"
+check "BAT CORE: general-purpose is never asserted as a seat name" \
+  bash -c "printf '%s' '$J10C' | jq -e '(.by_agent_type.seats | has(\"general-purpose\")) | not' >/dev/null"
+check "BAT CORE: general-purpose's raw value stays visible under unattributed.by_raw_value (distribution visible, never asserted a seat)" \
+  bash -c "printf '%s' '$J10C' | jq -e '.by_agent_type.unattributed.by_raw_value[\"general-purpose\"] == 1' >/dev/null"
+check "BAT CORE: recognized_agent_definitions is a positive count (this checkout HAS claude/agents/**)" \
+  bash -c "printf '%s' '$J10C' | jq -e '.by_agent_type.recognized_agent_definitions > 0' >/dev/null"
+check "BAT CORE: no degradation notice when definitions were found" \
+  bash -c "printf '%s' '$J10C' | jq -e '.by_agent_type.notice == null' >/dev/null"
+
+# ---------------------------------------------------------------------------
+# 10d. --run COMBINED WITH --by-agent-type restricts to the wf_ half only
+#      (ext journals excluded), per point 4 of the governing verdict.
+# ---------------------------------------------------------------------------
+R10R="$TMP/bat-runscope"
+{ usage_line reqRR1 2026-07-11T10:00:00.000Z claude-opus-5 100 0 10 2 text; } \
+  | bat_mkext "$R10R" sess1 rr0001
+bat_sidecar "$R10R/sess1/subagents/agent-rr0001.jsonl" <<'EOF'
+{"agentType":"docs-reviewer"}
+EOF
+{ usage_line reqRR2 2026-07-11T10:01:00.000Z claude-opus-5 200 0 20 4 text; } \
+  | bat_mkwf "$R10R" sess1 wf_rr-keep bc-rr2
+bat_sidecar "$R10R/sess1/subagents/workflows/wf_rr-keep/agent-bc-rr2.jsonl" <<'EOF'
+{"agentType":"docs-reviewer"}
+EOF
+{ usage_line reqRR3 2026-07-11T10:02:00.000Z claude-opus-5 300 0 30 6 text; } \
+  | bat_mkwf "$R10R" sess1 wf_rr-drop bc-rr3
+bat_sidecar "$R10R/sess1/subagents/workflows/wf_rr-drop/agent-bc-rr3.jsonl" <<'EOF'
+{"agentType":"docs-reviewer"}
+EOF
+J10R="$(bat_run "$R10R" --run wf_rr-keep)"
+check_eq "BAT RUN-SCOPE: --by-agent-type + --run restricts to the named wf_ run only (excludes ext + the other wf_ run)" \
+  "1" "$(printf '%s' "$J10R" | jq -r '.by_agent_type.agents')"
+check_eq "BAT RUN-SCOPE: its units are wf_rr-keep's own agent (200*.1+20*5+4=124)" \
+  "124" "$(printf '%s' "$J10R" | jq -r '.by_agent_type.units')"
+check "BAT RUN-SCOPE: the scope string states ext journals are excluded" \
+  bash -c "printf '%s' '$J10R' | jq -e '.by_agent_type.scope | test(\"ext\")' >/dev/null"
+
+# ---------------------------------------------------------------------------
+# 10e. BYTE-EXACTNESS (governing verdict point 6): with --by-agent-type
+#      ABSENT, a corpus containing BOTH wf_ and ext journals must produce
+#      the SAME output as if the ext journals were not there at all -- the
+#      whole point being that a fixture with no ext journals would pass
+#      vacuously, so this one includes them and checks they never leak in.
+# ---------------------------------------------------------------------------
+R10B="$TMP/bat-byteexact"
+{ usage_line reqBX1 2026-07-12T10:00:00.000Z claude-opus-5 100 0 10 2 text; } \
+  | bat_mkext "$R10B" sess1 bx0001
+bat_sidecar "$R10B/sess1/subagents/agent-bx0001.jsonl" <<'EOF'
+{"agentType":"shell-reviewer"}
+EOF
+{ usage_line reqBX2 2026-07-12T10:01:00.000Z claude-opus-5 200 0 20 4 text; } \
+  | bat_mkwf "$R10B" sess1 wf_bx-002 bx0002
+
+DEFAULT_JSON="$(run "$R10B")"
+DEFAULT_TEXT="$(bash "$BIN" --root "$R10B")"
+check_eq "BAT BYTE-EXACT: with the flag ABSENT, the default walk still counts only the wf_ agent (1), NOT both wf_+ext (2) -- proves the existing walk was never widened" \
+  "1" "$(printf '%s' "$DEFAULT_JSON" | jq -r '.corpus.agents')"
+check "BAT BYTE-EXACT: ...and by_agent_type is entirely absent from the default JSON output" \
+  bash -c "printf '%s' '$DEFAULT_JSON' | jq -e '(has(\"by_agent_type\")) | not' >/dev/null"
+check "BAT BYTE-EXACT: ...and the default TEXT report never mentions a by-agent-type section either" \
+  bash -c "! grep -qi 'by agent type' <<<'$DEFAULT_TEXT'"
+
+# ---------------------------------------------------------------------------
+# 10f. STRUCTURAL PRIVACY GUARANTEE (mirrors workflows/scripts/lib/
+#      token_sum.sh's own guarantee and its regression fixture). The ONLY
+#      jq selector this script ever applies to a sidecar is
+#      `.agentType // empty` -- never `.description`.
+# ---------------------------------------------------------------------------
+check "BAT STATIC: pipeline-spend-report.sh never selects .description anywhere in its source (structural privacy guarantee -- the sidecar's free-text field is categorically out of reach)" \
+  bash -c "! grep -n '\\.description' '$BIN' | grep -vE '^[0-9]+:[[:space:]]*#'"
+check "BAT STATIC: the sidecar read selects .agentType (sanity -- proves the grep window/claim is meaningful)" \
+  bash -c "grep -q 'agentType // empty' '$BIN'"
+
+R10P="$TMP/bat-privacy"
+CANARY="SECRET-CANARY-DO-NOT-LEAK-b3e7f1"
+{ usage_line reqP1 2026-07-13T10:00:00.000Z claude-opus-5 100 0 10 2 text; } \
+  | bat_mkext "$R10P" sess1 p0001
+jq -cn --arg c "$CANARY" \
+  '{agentType:"shell-reviewer", description:("spawn prompt: " + $c + " and more identifying prose " + $c), toolUseId:"toolu_z", spawnDepth:1}' \
+  >"$R10P/sess1/subagents/agent-p0001.meta.json"
+J10P_JSON="$(bat_run "$R10P")"
+J10P_TEXT="$(SPEND_WEIGHT_INPUT=1 SPEND_WEIGHT_CACHE_READ=0.1 SPEND_WEIGHT_CACHE_CREATE=1.25 SPEND_WEIGHT_OUTPUT=5 \
+             SPEND_MACHINERY_MAX_CALLS=6 SPEND_WORKER_PROFILE_MIN_CALLS=1 \
+             bash "$BIN" --root "$R10P" --by-agent-type)"
+check_eq "BAT PRIVACY: the seat is still correctly attributed despite the sidecar's large description field" \
+  "1" "$(printf '%s' "$J10P_JSON" | jq -r '.by_agent_type.seats["shell-reviewer"].agents')"
+check "BAT PRIVACY: the canary string never reaches the JSON output" \
+  bash -c "! grep -q '$CANARY' <<<'$J10P_JSON'"
+check "BAT PRIVACY: ...nor the TEXT output" \
+  bash -c "! grep -q '$CANARY' <<<'$J10P_TEXT'"
+
+# ---------------------------------------------------------------------------
+# 10g. LEGIBLE DEGRADATION (point 5): zero recognized agent definitions ->
+#      a plain notice naming workflows/scripts/install/project-agents.sh,
+#      not a silent "0 units attributed" a reader could misread as "free".
+#      Mirrors the existing "noconfig" technique (check 2c above): copy the
+#      script + build.config.sh into a stripped tree with NO claude/agents/.
+# ---------------------------------------------------------------------------
+NOAGENTS_TREE="$TMP/noagents-1314-style"
+mkdir -p "$NOAGENTS_TREE/workflows/scripts/build"
+cp "$BIN" "$NOAGENTS_TREE/workflows/scripts/pipeline-spend-report.sh"
+cp "$REPO_ROOT/workflows/scripts/build/build.config.sh" "$NOAGENTS_TREE/workflows/scripts/build/build.config.sh"
+R10Z="$TMP/bat-zerodefs"
+{ usage_line reqZ1 2026-07-14T10:00:00.000Z claude-opus-5 100 0 10 2 text; } \
+  | bat_mkext "$R10Z" sess1 z0001
+J10Z="$(SPEND_WEIGHT_INPUT=1 SPEND_WEIGHT_CACHE_READ=0.1 SPEND_WEIGHT_CACHE_CREATE=1.25 SPEND_WEIGHT_OUTPUT=5 \
+        SPEND_MACHINERY_MAX_CALLS=6 SPEND_WORKER_PROFILE_MIN_CALLS=1 \
+        bash "$NOAGENTS_TREE/workflows/scripts/pipeline-spend-report.sh" --root "$R10Z" --by-agent-type --format json)"
+check_eq "BAT DEGRADE: with zero deployed agent definitions found, recognized_agent_definitions is 0" \
+  "0" "$(printf '%s' "$J10Z" | jq -r '.by_agent_type.recognized_agent_definitions')"
+check "BAT DEGRADE: ...and the notice names workflows/scripts/install/project-agents.sh as the reason" \
+  bash -c "printf '%s' '$J10Z' | jq -e '.by_agent_type.notice | test(\"project-agents.sh\")' >/dev/null"
+check "BAT DEGRADE: ...and the sole agent still lands in unattributed rather than being dropped" \
+  bash -c "printf '%s' '$J10Z' | jq -e '.by_agent_type.unattributed.agents == 1' >/dev/null"
+
 echo
 if [ "$fail" -gt 0 ]; then
   printf 'FAILED %d/%d\n' "$fail" "$((pass + fail))"; exit 1

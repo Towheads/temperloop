@@ -28,6 +28,19 @@ from transcripts after the fact — fails because the transcript does not carry
 the seat identity or the outcome ref; only the spawn site knows both at spawn
 time.
 
+**Correction (temperloop#1314).** The claim above — that deriving attribution
+from transcripts "fails because the transcript does not carry the seat
+identity" — is true for every seat class *except one*. Claude Code writes a
+sidecar `agent-<id>.meta.json` beside each subagent journal, and for
+**agent-frontmatter seats** (the `claude/agents/**` definitions: the
+`/workshop` lens panel, the `/assess` and `/triage` review agents, `/build`
+3e's reviewers, the persona agents) that sidecar's `agentType` field *is* the
+seat name. Those seats are also the one class that can never emit a record of
+its own, because the harness reads the agent `.md` at spawn and no kernel
+code runs in that path. So the transcript corpus is the only place their
+identity survives, and the emission-based stream is structurally unable to
+reach them.
+
 ## Decision
 
 Two producers, one owner per number. The transcript-based producer (ADR 0020)
@@ -43,6 +56,19 @@ level (model/provider enums, field shapes), paired with an emit-site validator
 in the existing emit/validate family, and the stream is schema-versioned from
 day one.
 
+**Narrowing: the B2 complement.** The transcript-based producer may derive
+seat attribution for **agent-frontmatter seats only** — the class the
+attribution stream structurally cannot reach — and only through a side
+channel that is inert by default. Concretely: the corpus walk feeding the
+headline is unchanged; a separate, opt-in, depth-pinned walk feeds one
+additional output key whose totals are self-contained and are never a
+decomposition of the headline. The two producers therefore remain disjoint
+in domain as well as in number ownership: the emission stream owns
+attribution for every seat that can emit, the transcript producer owns
+attribution for the one class that cannot, and neither owns any figure the
+other reports. This narrows the scope of "and nothing else" above; it does
+not overturn the headline ownership that clause protects.
+
 ## Consequences
 
 - Whole-job cost per merged outcome becomes computable: attribution records
@@ -55,3 +81,9 @@ day one.
   attribution, which 0020's producer never claimed.
 - The usage-capture path parses the `claude -p` CLI result, so a CLI format
   change breaks emission visibly (validator) rather than as silent zeros.
+- Seat attribution has full coverage without a second stream competing for
+  the spend figure: emitting seats via the attribution stream, non-emitting
+  agent-frontmatter seats via the transcript producer's inert side channel.
+- The disjointness is asserted mechanically, not by convention: a fixture
+  proves the profiler's default `--format json` output is byte-identical
+  with the side channel absent.

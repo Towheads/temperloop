@@ -9,13 +9,41 @@
 #   $SPEND_TRANSCRIPT_ROOT/**/subagents/workflows/wf_*/agent-*.jsonl
 # Each assistant message in those files carries a `.message.usage` block
 # (cache_read / cache_creation / output / input token counts) and a
-# `.requestId`. That is the ONLY data this script consumes — LOCAL FILES,
-# zero network, no API, no `gh` (see workflows/scripts/kernel/
-# check-producer-egress.sh's documented empty egress surface).
+# `.requestId`. That is the corpus behind every field in the default report
+# — LOCAL FILES, zero network, no API, no `gh` (see workflows/scripts/kernel/
+# check-producer-egress.sh's documented empty egress surface, which this
+# zero-network claim holds exactly, unchanged).
+#
+# OPTIONAL WIDER READ — --by-agent-type (temperloop#1314). Claude Code's real
+# on-disk layout is `<project-dir>/<session-uuid>/subagents/...`: a project
+# directory (one per repo checkout, under $SPEND_TRANSCRIPT_ROOT) holding one
+# subdirectory per Claude Code SESSION, each of which has its own
+# `subagents/` folder — `agent-*.jsonl` sitting directly in it for a
+# non-workflow ("ext") subagent, or nested under `subagents/workflows/wf_*/`
+# for a `/build`-style workflow subagent. --by-agent-type ALSO reads, for
+# each such journal it collects, Claude Code's own sidecar file
+# `agent-<id>.meta.json`, written next to `agent-<id>.jsonl` in the SAME
+# directory — no new join mechanism, the profiler already carries
+# `input_filename` per usage line.
+# STRUCTURAL PRIVACY GUARANTEE (engineering-principles.md Principle 5 —
+# counter AI failure modes structurally, not by convention/testing alone):
+# the ONLY selector ever applied to a sidecar, anywhere in this script, is
+# `.agentType // empty` — never `.description` (the sidecar's free-text
+# spawn-prompt field that ADR 0020's allowlist keeps out of reach) or any
+# other field. This mirrors workflows/scripts/lib/token_sum.sh's own
+# STRUCTURAL PRIVACY GUARANTEE; see this script's own test suite for the
+# regression PROOF (a synthetic-recognizable-content sidecar fixture).
+# This read is STILL local files, zero network — only the ON-DISK SCOPE
+# widens, and only when the flag is passed (see § by_agent_type below for
+# the depth-pinned single-project walk and the corpus-scoping refusal that
+# keeps that scope from ever silently going machine-wide).
 #
 # The `.temperloop/report.d/tokens` drop-in producer is this script's one
 # in-repo consumer: it wraps `--format json` into the `{"tokens_spent": <n>}`
 # shape `temperloop report` reads (workflows/scripts/lib/report.contract.md).
+# It does NOT wire up --by-agent-type (temperloop#1314 disposition) — that
+# stays a standalone CLI-only side channel; see report.contract.md's own
+# "Kernel-shipped `tokens` producer's transcript scope" section, unchanged.
 #
 # ── FOUR CORRECTNESS TRAPS, each of which produced a WRONG ANSWER during
 #    temperloop#953. They are encoded here deliberately; do not "simplify"
@@ -102,6 +130,19 @@
 #     --format text|json   output shape (default: text)
 #     --top N              how many runs the text report's "top runs" table
 #                          lists (default: 10; JSON always carries every run)
+#     --by-agent-type      OPT-IN (temperloop#1314): also emit `by_agent_type`,
+#                          an attribution side channel over ONE Claude Code
+#                          project directory's `*/subagents/agent-*.jsonl`
+#                          journals (ext + wf_, sidecar-derived seat name).
+#                          REQUIRES --root to name that single project
+#                          directory (one whose session subdirectories hold
+#                          at least one `subagents/agent-*.jsonl`); refuses
+#                          (exit 2) otherwise, rather than ever walking
+#                          machine-wide. Combined with --run, restricts to
+#                          the wf_ half only. See § by_agent_type below —
+#                          its totals are NEVER a decomposition of
+#                          units_total, and it is absent from the default
+#                          output entirely.
 #     -h, --help           this usage
 #
 #   Exit codes: 0 = report produced (including a legitimately empty corpus,
@@ -131,6 +172,22 @@
 #     "by_run":   [{"run":"<wf_id>", "agents":n, "api_calls":n, "units":n,
 #                   "wall_ms":n|null}, ...]
 #   }
+#   -- and, ONLY when --by-agent-type is passed (absent entirely otherwise):
+#   {
+#     ..., "by_agent_type": {
+#       "scope": "<str>",                 -- which project dir + wf/ext coverage
+#       "agents": n, "api_calls": n, "units": n,   -- SELF-CONTAINED corpus
+#                                                   -- total; NOT a slice of
+#                                                   -- units_total above
+#       "recognized_agent_definitions": n, -- count of claude/agents/**/*.md
+#                                          -- basenames found on THIS checkout
+#       "notice": <str|null>,             -- non-null ONLY when that count is
+#                                          -- 0 (see § by_agent_type below)
+#       "seats": {"<agent-def-name>": {"agents":n,"api_calls":n,"units":n}, ...},
+#       "unattributed": {"agents":n, "api_calls":n, "units":n,
+#                        "by_raw_value": {"<raw-agentType-or-marker>": n, ...}}
+#     }
+#   }
 #
 #   The per-class `api_calls` / `wall_ms` / `raw_tokens` sub-fields on
 #   `machinery` and `item_workers` (temperloop#943) are PURELY ADDITIVE — the
@@ -154,6 +211,51 @@
 #   dollar amount and never a precise unit cost — the same stance
 #   workflows/scripts/lib/report.contract.md's § Non-goals takes. No price
 #   constant lives in this script.
+#
+# ── § by_agent_type (temperloop#1314, --by-agent-type only) ───────────────
+# A SEPARATE, opt-in accumulator — NOT a widened version of the walk above.
+# The corpus feeding units_total/corpus.*/raw_tokens.*/machinery.*/
+# item_workers.*/worker_profile.*/by_model/by_run is completely UNCHANGED by
+# this flag (widening it was measured, during the temperloop#1314 spike, to
+# move units_total 283,230,998 -> 835,875,837 — a 2.95x shift — and invert
+# the machinery/item_workers split 21.8/78.2 -> 9.5/90.5; that is exactly
+# what must never happen). Instead a second walk, pinned to a SINGLE Claude
+# Code project directory named by --root, feeds `by_agent_type` alone.
+#
+# ALLOWLIST, NOT PASSTHROUGH. A sidecar's `agentType` is reported as a SEAT
+# only when it matches a deployed agent-definition basename under
+# `claude/agents/**/*.md` in THIS checkout. Every other value — including
+# `general-purpose`, which `claude/workflows/build-level.mjs`'s
+# `machineryAgent()` pins as every machinery executor's type once one
+# resolution attempt fails, so it is indistinguishable from a genuine
+# general-purpose agent on a checkout that never ran
+# workflows/scripts/install/project-agents.sh — buckets to `unattributed`,
+# with the raw value kept visible under `unattributed.by_raw_value` rather
+# than silently asserted as a seat. When `recognized_agent_definitions` is 0,
+# `notice` names workflows/scripts/install/project-agents.sh as the reason:
+# an unqualified "0 units attributed" would read as "reviewers cost nothing"
+# — an undetectable wrong number — so the degradation is stated plainly
+# rather than left for a reader to misinterpret.
+#
+# CORPUS SCOPING is a REFUSAL, never a silent machine-wide fallback: --root
+# must resolve to a directory with at least one match at
+# `"$root"/*/subagents/agent-*.jsonl` (one wildcard SESSION level, pinned —
+# never a recursive find) or the script exits 2 naming what it needed. Every
+# known contaminant (`/private/tmp` probe dirs, worktree test-fixture pools,
+# cross-repo journals) lives under a DIFFERENT project directory, so pinning
+# --root to one makes them structurally unreachable, not merely filtered.
+# `--by-agent-type` combined with `--run` restricts the corpus to the wf_
+# half only (ext journals excluded) and `scope` states that explicitly.
+#
+# schema_version STAYS 1 for this addition: nothing existing is removed, no
+# type changes, no meaning changes, and by_agent_type appears only under the
+# explicit flag (same precedent as the temperloop#943 per-class sub-fields
+# above). The trigger that WOULD force schema_version: 2 is narrow and
+# explicit: if the widened by_agent_type walk ever became the DEFAULT (no
+# flag needed), that changes the MEANING of units_total with no field
+# renamed or removed — exactly the silent-semantics-change schema_version
+# exists to catch — and would require a `BREAKING` CHANGELOG section with a
+# migration note, not just a version bump.
 #
 # ── PROVENANCE ────────────────────────────────────────────────────────────
 # The arithmetic is the verified arithmetic of #953's throwaway
@@ -209,10 +311,19 @@ usage() {
 usage: pipeline-spend-report.sh [--since YYYY-MM-DD] [--until YYYY-MM-DD]
                                 [--run WF_ID[,WF_ID...]] [--root DIR]
                                 [--format text|json] [--top N]
+                                [--by-agent-type]
 
 Cost-weighted token-spend profile over Claude Code workflow agent
 transcripts. Local files only; no network. See this script's header for the
 four correctness traps it encodes and the JSON schema.
+
+--by-agent-type: OPT-IN per-seat attribution side channel (temperloop#1314).
+Requires --root to name a SINGLE Claude Code project directory (one whose
+session subdirectories hold at least one */subagents/agent-*.jsonl journal);
+refuses (exit 2) otherwise rather than ever walking machine-wide. Emits an
+additional, self-contained `by_agent_type` field -- NEVER a decomposition of
+the default report's units_total. See the script header's own
+"by_agent_type" section for the full corpus-scoping and allowlist rules.
 EOF
 }
 
@@ -225,6 +336,7 @@ run_filter=""
 root="$SPEND_TRANSCRIPT_ROOT"
 format="text"
 top_runs=10
+by_agent_type=""
 
 is_iso_date() { case "$1" in [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) return 0 ;; *) return 1 ;; esac; }
 
@@ -236,6 +348,7 @@ while [ $# -gt 0 ]; do
     --root)  root="${2:-}"; [ -n "$root" ] || { echo "pipeline-spend-report: --root needs a directory" >&2; usage >&2; exit 2; }; shift 2 ;;
     --format) format="${2:-}"; shift 2 ;;
     --top)   top_runs="${2:-}"; shift 2 ;;
+    --by-agent-type) by_agent_type=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "pipeline-spend-report: unknown arg: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -247,6 +360,32 @@ case "$top_runs" in ''|*[!0-9]*) echo "pipeline-spend-report: --top must be a no
 [ -z "$until_" ] || is_iso_date "$until_" || die "--until must be YYYY-MM-DD; got '$until_'"
 
 command -v jq >/dev/null 2>&1 || die "jq is required but not on PATH"
+
+# ---------------------------------------------------------------------------
+# --by-agent-type corpus-scoping REFUSAL (temperloop#1314 governing verdict,
+# point 3). --root must name a SINGLE Claude Code project directory: one
+# whose session subdirectories hold at least one match at the depth-pinned
+# glob "$root"/*/subagents/agent-*.jsonl (one wildcard SESSION level, never a
+# recursive find/-path search). The unscoped default ($SPEND_TRANSCRIPT_ROOT,
+# the parent of EVERY project directory) has an extra path component before
+# any subagents/ folder and so structurally never matches this glob — the
+# same check therefore also catches "the caller never passed --root at all"
+# with no separate flag to track. Refuse (exit 2) rather than ever silently
+# walking machine-wide; name exactly what was needed, per the verdict. (This
+# is a cheap existence probe only — the real collection, into a tmpdir-backed
+# file list, happens later once tmpdir exists; see § by_agent_type below.)
+# ---------------------------------------------------------------------------
+if [ -n "$by_agent_type" ]; then
+  bat_root_ok=""
+  for _bf in "$root"/*/subagents/agent-*.jsonl; do
+    if [ -e "$_bf" ]; then bat_root_ok=1; break; fi
+  done
+  if [ -z "$bat_root_ok" ]; then
+    echo "pipeline-spend-report: --by-agent-type requires --root to name a SINGLE Claude Code project directory (one whose session subdirectories hold at least one journal at */subagents/agent-*.jsonl, e.g. ~/.claude/projects/<encoded-repo-name>); '$root' matched none" >&2
+    usage >&2
+    exit 2
+  fi
+fi
 
 # Normalize the --run filter to a comma-delimited list of bare ids WITH the
 # `wf_` prefix stripped, so both `--run wf_abc-123` and `--run abc-123` work.
@@ -545,6 +684,194 @@ awk -F'\t' '
 END { for (r in a) printf "%s\t%d\t%d\t%d\t%d\n", r, a[r], c[r], u[r], (n[r] + 0 > 0 ? w[r] + 0 : -1) }' "$agents_tsv" \
   | sort -t'	' -k4,4nr >"$runs_tsv"
 
+# ===========================================================================
+# § by_agent_type (temperloop#1314, --by-agent-type only) — a SEPARATE,
+# opt-in accumulator. Nothing above this block is touched: $files_z,
+# $usage_tsv, $agents_tsv, $runs_tsv and everything derived from them are the
+# UNCHANGED existing walk. See this script's own header § by_agent_type for
+# the full rationale; this is the implementation.
+# ===========================================================================
+bat_tot_agents=0; bat_tot_calls=0; bat_tot_units=0
+bat_unattr_agents=0; bat_unattr_calls=0; bat_unattr_units=0
+bat_recognized_defs=0
+bat_scope=""
+bat_seats_tsv="$tmpdir/bat_seats.tsv"; : >"$bat_seats_tsv"
+bat_raw_tsv="$tmpdir/bat_raw.tsv"; : >"$bat_raw_tsv"
+
+if [ -n "$by_agent_type" ]; then
+  # --- 1. Collect the real file list (the cheap probe above only proved
+  #     non-emptiness; this is the actual walk) — the SAME depth-pinned glob,
+  #     one wildcard SESSION level, never a recursive find. ---------------
+  bat_ext_files_z="$tmpdir/bat_ext_files.z"
+  : >"$bat_ext_files_z"
+  for _bf in "$root"/*/subagents/agent-*.jsonl; do
+    [ -e "$_bf" ] || continue
+    printf '%s\0' "$_bf" >>"$bat_ext_files_z"
+  done
+
+  # --- 2. Extract usage lines from the ext-only collection, via the SAME
+  #     shape jq filter the existing (unchanged) walk uses above — a
+  #     deliberate duplicate, not a shared/refactored call, so the existing
+  #     walk's own source is provably untouched by this feature. -----------
+  bat_ext_usage_tsv="$tmpdir/bat_ext_usage.tsv"
+  : >"$bat_ext_usage_tsv"
+  if [ -s "$bat_ext_files_z" ]; then
+    xargs -0 jq -Rr '
+      (fromjson? // empty)
+      | select(.message.usage)
+      | [ input_filename,
+          (.timestamp // ""),
+          (.requestId // .message.id // "none"),
+          (.message.model // "unknown"),
+          (.message.usage.cache_read_input_tokens // 0),
+          (.message.usage.cache_creation_input_tokens // 0),
+          (.message.usage.output_tokens // 0),
+          (.message.usage.input_tokens // 0) ]
+      | @tsv
+    ' <"$bat_ext_files_z" >"$bat_ext_usage_tsv" 2>/dev/null || true
+  fi
+
+  # --- 3. wf_ rows are NOT re-walked — reused directly from $usage_tsv,
+  #     which is ALREADY exactly this project directory's own wf_ corpus
+  #     now that --root is project-scoped (the existing walk's own `-path
+  #     "*/wf_*"` recursion is unchanged; it just naturally sees less when
+  #     $root is narrower). Combine with the ext usage lines collected
+  #     above into one per-file dedupe+cost-weight pass. -------------------
+  bat_all_usage_tsv="$tmpdir/bat_all_usage.tsv"
+  cat "$usage_tsv" "$bat_ext_usage_tsv" >"$bat_all_usage_tsv" 2>/dev/null || true
+
+  # --- 4. Per-FILE (not per-run+agent) dedupe by requestId (trap 1, same
+  #     rule, independently applied here since this is a disjoint
+  #     accumulator) + cost-weighting (same named SPEND_WEIGHT_* settings),
+  #     then classify each file's ORIGIN (wf vs ext) and RUN id from its own
+  #     path — no synthesized run id for an ext row, ever, since there is no
+  #     wf_ directory in its path to read one from. Optionally restricted to
+  #     the wf_ half when --by-agent-type is combined with --run.
+  #
+  #     The emitted "run" column below is "-", never a bare empty string,
+  #     for an ext row. This is not cosmetic: the ONLY downstream reader of
+  #     bat_records_tsv is a `while IFS=<tab> read -r ...` loop, and bash
+  #     read collapses ADJACENT IFS-whitespace delimiters (a bare tab counts
+  #     as whitespace) into ONE — a truly-empty interior field there
+  #     silently shifts every LATER field left by one, which is exactly the
+  #     bug this sentinel was added to fix (caught empirically: an ext row's
+  #     calls/units swapped into the wrong columns and its units vanished).
+  #     ---------------------------------------------------------------------
+  bat_records_tsv="$tmpdir/bat_records.tsv"
+  bat_run_scope=0; [ -n "$run_filter" ] && bat_run_scope=1
+  awk -F'\t' \
+    -v w_in="$SPEND_WEIGHT_INPUT" -v w_cr="$SPEND_WEIGHT_CACHE_READ" \
+    -v w_cc="$SPEND_WEIGHT_CACHE_CREATE" -v w_out="$SPEND_WEIGHT_OUTPUT" \
+    -v since="$since" -v until_="$until_" \
+    -v run_norm="$run_norm" -v run_scope="$bat_run_scope" '
+  {
+    f = $1
+    d = substr($2, 1, 10)
+    if (d != "" && (!(f in mind) || d < mind[f])) mind[f] = d
+    rid = $3
+    if (rid != "none") { if (seen[f SUBSEP rid]++) next }
+    calls[f]++
+    units[f] += $5*w_cr + $6*w_cc + $7*w_out + $8*w_in
+  }
+  END {
+    for (f in calls) {
+      if (since != "" && mind[f] < since) continue
+      if (until_ != "" && mind[f] > until_) continue
+      origin = (index(f, "/subagents/workflows/") > 0) ? "wf" : "ext"
+      # NEVER a real empty string here (see the awk call site comment above
+      # this pass for why): "-" is a deliberate non-empty sentinel.
+      run = "-"
+      if (origin == "wf") {
+        n = split(f, parts, "/")
+        run = parts[n-1]
+      }
+      if (run_scope == 1) {
+        if (origin != "wf") continue
+        bare = run; sub(/^wf_/, "", bare)
+        if (run_norm != "" && index(run_norm, "," bare ",") == 0) continue
+      }
+      printf "%s\t%s\t%s\t%d\t%d\n", f, origin, run, calls[f], int(units[f])
+    }
+  }' "$bat_all_usage_tsv" >"$bat_records_tsv"
+
+  # --- 5. Sidecar resolution — one jq call per collected agent file (single
+  #     project/session scope, so this is a small, bounded loop). THE ONLY
+  #     SELECTOR EVER APPLIED IS `.agentType // empty` (structural privacy
+  #     guarantee, see header + workflows/scripts/lib/token_sum.sh's sibling
+  #     guarantee). A missing sidecar, or a sidecar with no `agentType`,
+  #     resolves to the empty string here — never fabricated, never fatal. --
+  bat_meta_tsv="$tmpdir/bat_meta.tsv"
+  : >"$bat_meta_tsv"
+  while IFS="$(printf '\t')" read -r bf borigin brun bcalls bunits; do
+    [ -n "$bf" ] || continue
+    bsidecar="${bf%.jsonl}.meta.json"
+    if [ -f "$bsidecar" ]; then
+      batype="$(jq -r '.agentType // empty' "$bsidecar" 2>/dev/null)"
+    else
+      batype=""
+    fi
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$bf" "$borigin" "$brun" "$bcalls" "$bunits" "$batype" >>"$bat_meta_tsv"
+  done <"$bat_records_tsv"
+
+  # --- 6. The ALLOWLIST — deployed agent-definition basenames under
+  #     claude/agents/**/*.md in THIS checkout. NOT a passthrough: a sidecar
+  #     value that doesn't match one of these names (general-purpose,
+  #     workflow-subagent, claude, unrecognized, empty) is never a seat. ---
+  bat_allow_tsv="$tmpdir/bat_allow.tsv"
+  : >"$bat_allow_tsv"
+  bat_agent_defs_dir="$REPO_ROOT/claude/agents"
+  if [ -d "$bat_agent_defs_dir" ]; then
+    find "$bat_agent_defs_dir" -name '*.md' -print0 2>/dev/null \
+      | xargs -0 -n1 basename 2>/dev/null \
+      | sed 's/\.md$//' \
+      | sort -u >"$bat_allow_tsv"
+  fi
+  bat_recognized_defs="$(wc -l <"$bat_allow_tsv" | tr -d ' ')"
+
+  # --- 7. Bucket into seats (allowlist match) vs unattributed (everything
+  #     else), with the raw sidecar value retained per K#5's "distribution
+  #     stays visible without being asserted as a seat". --------------------
+  bat_totals_tsv="$tmpdir/bat_totals.tsv"
+  : >"$bat_totals_tsv"
+  awk -F'\t' -v allowfile="$bat_allow_tsv" -v seatsfile="$bat_seats_tsv" \
+    -v rawfile="$bat_raw_tsv" -v totalsfile="$bat_totals_tsv" '
+  BEGIN {
+    while ((getline line < allowfile) > 0) { if (line != "") allow[line] = 1 }
+    close(allowfile)
+  }
+  {
+    calls = $4 + 0; units = $5 + 0; a = $6
+    tot_agents++; tot_calls += calls; tot_units += units
+    if (a != "" && (a in allow)) {
+      seat_agents[a]++; seat_calls[a] += calls; seat_units[a] += units
+    } else {
+      raw = (a == "" ? "(unattributed: no sidecar or no agentType)" : a)
+      rawc[raw]++
+      unattr_agents++; unattr_calls += calls; unattr_units += units
+    }
+  }
+  END {
+    for (s in seat_agents) printf "%s\t%d\t%d\t%d\n", s, seat_agents[s], seat_calls[s], seat_units[s] >>seatsfile
+    for (r in rawc) printf "%s\t%d\n", r, rawc[r] >>rawfile
+    printf "%d\t%d\t%d\t%d\t%d\t%d\n", tot_agents+0, tot_calls+0, tot_units+0, unattr_agents+0, unattr_calls+0, unattr_units+0 >>totalsfile
+  }' "$bat_meta_tsv"
+
+  if [ -s "$bat_totals_tsv" ]; then
+    bat_tot_agents="$(cut -f1 "$bat_totals_tsv")"
+    bat_tot_calls="$(cut -f2 "$bat_totals_tsv")"
+    bat_tot_units="$(cut -f3 "$bat_totals_tsv")"
+    bat_unattr_agents="$(cut -f4 "$bat_totals_tsv")"
+    bat_unattr_calls="$(cut -f5 "$bat_totals_tsv")"
+    bat_unattr_units="$(cut -f6 "$bat_totals_tsv")"
+  fi
+
+  if [ "$bat_run_scope" -eq 1 ]; then
+    bat_scope="single Claude Code project directory ($root), restricted to wf_ run(s) matching --run — ext (non-workflow) journals excluded"
+  else
+    bat_scope="single Claude Code project directory ($root) — every */subagents/ session under it, wf_ and ext journals both included"
+  fi
+fi
+
 # ---------------------------------------------------------------------------
 # Render.
 # ---------------------------------------------------------------------------
@@ -589,7 +916,29 @@ if [ "$format" = "json" ]; then
   printf '},\n'
   printf '  "by_run": [\n'
   awk -F'\t' '{ k=$1; gsub(/\\/, "\\\\", k); gsub(/"/, "\\\"", k); printf "%s    {\"run\": \"%s\", \"agents\": %s, \"api_calls\": %s, \"units\": %s, \"wall_ms\": %s}", (NR>1 ? ",\n" : ""), k, $2, $3, $4, ($5 == "-1" ? "null" : $5) } END { if (NR > 0) printf "\n" }' "$runs_tsv"
-  printf '  ]\n}\n'
+  if [ -n "$by_agent_type" ]; then
+    printf '  ],\n'
+    printf '  "by_agent_type": {\n'
+    printf '    "scope": %s,\n' "$(json_or_null "$bat_scope")"
+    printf '    "agents": %s, "api_calls": %s, "units": %s,\n' "$bat_tot_agents" "$bat_tot_calls" "$bat_tot_units"
+    printf '    "recognized_agent_definitions": %s,\n' "$bat_recognized_defs"
+    if [ "$bat_recognized_defs" -eq 0 ]; then
+      printf '    "notice": %s,\n' \
+        "$(json_or_null "0 recognized agent definitions found under claude/agents/**/*.md — every seat in this corpus reads unattributed; run workflows/scripts/install/project-agents.sh to install the deployed agent set")"
+    else
+      printf '    "notice": null,\n'
+    fi
+    printf '    "seats": {'
+    awk -F'\t' '{ k=$1; gsub(/\\/, "\\\\", k); gsub(/"/, "\\\"", k); printf "%s\"%s\": {\"agents\": %s, \"api_calls\": %s, \"units\": %s}", (NR>1 ? ", " : ""), k, $2, $3, $4 }' "$bat_seats_tsv"
+    printf '},\n'
+    printf '    "unattributed": {"agents": %s, "api_calls": %s, "units": %s, "by_raw_value": {' \
+      "$bat_unattr_agents" "$bat_unattr_calls" "$bat_unattr_units"
+    awk -F'\t' '{ k=$1; gsub(/\\/, "\\\\", k); gsub(/"/, "\\\"", k); printf "%s\"%s\": %s", (NR>1 ? ", " : ""), k, $2 }' "$bat_raw_tsv"
+    printf '}}\n'
+    printf '  }\n}\n'
+  else
+    printf '  ]\n}\n'
+  fi
   exit 0
 fi
 
@@ -601,9 +950,43 @@ printf '  weights         : input=%s cache_read=%s cache_create=%s output=%s   (
   "$SPEND_WEIGHT_INPUT" "$SPEND_WEIGHT_CACHE_READ" "$SPEND_WEIGHT_CACHE_CREATE" "$SPEND_WEIGHT_OUTPUT"
 printf '\n'
 
+# render_by_agent_type_text — the --by-agent-type text section (temperloop#1314).
+# A no-op when the flag is absent, so it is safe to call unconditionally at
+# both the "no transcripts matched" early exit below and the normal end of
+# this report — the empty-corpus arm still owes its own by_agent_type output
+# when the flag is set (that corpus is independent of the default one).
+render_by_agent_type_text() {
+  [ -n "$by_agent_type" ] || return 0
+  printf '\n'
+  printf 'by agent type (attribution side channel — NEVER a decomposition of "cost-weighted spend" above)\n'
+  printf '  scope                   %s\n' "$bat_scope"
+  printf '  recognized agent defs   %s\n' "$bat_recognized_defs"
+  if [ "$bat_recognized_defs" -eq 0 ]; then
+    printf '  NOTE: 0 recognized agent definitions found under claude/agents/**/*.md -- every seat below reads unattributed; run workflows/scripts/install/project-agents.sh\n'
+  fi
+  printf '  total          agents=%-6s api_calls=%-8s units=%s\n' "$bat_tot_agents" "$bat_tot_calls" "$bat_tot_units"
+  printf '  seats:\n'
+  if [ -s "$bat_seats_tsv" ]; then
+    sort -t'	' -k4,4nr "$bat_seats_tsv" | while IFS="$(printf '\t')" read -r s sa sc su; do
+      [ -n "$s" ] || continue
+      printf '    %-30s agents=%-6s api_calls=%-8s units=%s\n' "$s" "$sa" "$sc" "$su"
+    done
+  else
+    printf '    (none)\n'
+  fi
+  printf '  unattributed   agents=%-6s api_calls=%-8s units=%s\n' "$bat_unattr_agents" "$bat_unattr_calls" "$bat_unattr_units"
+  if [ -s "$bat_raw_tsv" ]; then
+    sort -t'	' -k2,2nr "$bat_raw_tsv" | while IFS="$(printf '\t')" read -r rv rc; do
+      [ -n "$rv" ] || continue
+      printf '    raw=%-40s agents=%s\n' "$rv" "$rc"
+    done
+  fi
+}
+
 if [ "$n_agents" -eq 0 ]; then
   printf 'no transcripts matched — nothing to report.\n'
   printf '  (looked under %s for */wf_*/agent-*.jsonl)\n' "$root"
+  render_by_agent_type_text
   exit 0
 fi
 
@@ -653,3 +1036,4 @@ if [ "$top_runs" -gt 0 ]; then
     printf '  %-22s %7s %9s %14s\n' "$r" "$a" "$c" "$u"
   done
 fi
+render_by_agent_type_text
