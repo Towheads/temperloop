@@ -172,3 +172,8 @@ any chance you'?re wrong|i don'?t think this is correct|are you sure about that	
 
 # flagging (user turns)
 consolidate .{0,40} before (writing|mutating)	flagging	regex
+
+# operator-correction / capacity (user turns) — promoted at check-in 2026-08-10
+as if (its|it'?s) a topic we'?ve (talked|spoken) about before|you'?re assuming i have more context than i do	trust-rupture	regex
+why didn'?t you answer my (last|previous) question	trust-rupture	regex
+i'?m (too )?tired\b|cannot process any more|that'?s enough for (now|today)|no more of these	trust-rupture	regex
