@@ -720,6 +720,30 @@ KERNEL_GATES=(
   # Same direct-`bash` form, no Makefile target, as the
   # test_replay_isolation.sh gate immediately above.
   "bash workflows/scripts/model-comparison/tests/test_replay_preflight.sh"
+  # The pre-flight's UNIT correctness (temperloop#1379, epic #1225). A
+  # separate suite from test_replay_preflight.sh immediately above on
+  # purpose: that one pins the plumbing (settings read, ceiling stops, quota
+  # gate consulted, unreadable input fails closed) and stayed fully green
+  # while two unit errors were live — the numbers were wired correctly to the
+  # WRONG quantities. Ground truth, read off the code: one corpus record is
+  # one merged outcome, replayed in BOTH arms, and the comparison report
+  # pairs the arms by outcome ref, so 1 record -> 2 executed replays -> 1
+  # paired outcome. This gate pins that the token budget covers BOTH arms (a
+  # batch under the ceiling on one arm but over it on two is STOPPED, where
+  # the one-arm code let it proceed) and that significance_reachable is
+  # decided in PAIRED OUTCOMES against MODEL_COMPARISON_MIN_SAMPLE_N — the
+  # same unit report-producers/model-comparison feeds stats.sh — so a
+  # batch-capped run that can only produce 10 pairs against a floor of 20 no
+  # longer reports the floor reachable off a 30-record pool it will not
+  # replay. Both carry a MUTATION PROOF that reverting the fixed line
+  # reproduces the old, wrong verdict. Also pins the emitted `units` map (a
+  # reader can tell records from executed replays from pairs) and the
+  # temperloop#1365 fail-closed floor: a non-integer cost setting is
+  # CANNOT_EVALUATE, never a silently-zero estimate that reads as "evaluated,
+  # and under budget". Hermetic: no network, no `gh`, no replay executed.
+  # Same direct-`bash` form, no Makefile target, as the
+  # test_replay_preflight.sh gate immediately above.
+  "bash workflows/scripts/model-comparison/tests/test_replay_preflight_two_arm.sh"
   # Live candidate tagging provenance (temperloop#1257, epic #1225 "model
   # comparison harness"): tagging.sh's three artifacts — the bounded window
   # record, the telemetry tag (a real emit-model-usage.sh raw-lake record,
@@ -1432,6 +1456,21 @@ SERIAL_LANE_PINS=(
   "make shellcheck"
   "bash scripts/tests/test_ensure_shellcheck.sh"
   "bash workflows/scripts/board-consumer-shellcheck.sh"
+  # The three replay suites that take their MUTATION PROOFS against the LIVE
+  # workflows/scripts/model-comparison/replay.sh — each one edits that single
+  # shared file in place (disabling the ceiling check, breaking $STATS_SH,
+  # dropping the quota-gate call), runs the SUT, then restores it. Concurrently
+  # that is a genuine data race, not a flake: one suite reads a file another has
+  # temporarily broken, or its `mutate_file` finds the anchor text already
+  # rewritten. Measured directly (temperloop#1379): six concurrent runs of two
+  # of these suites produced four failures — `expected non-zero exit when the
+  # ceiling is exceeded` and `mutation apply failed`. Same lane = never
+  # concurrent with each other, while still overlapping the rest of the pool.
+  # (test_replay_score.sh mutates a MIRROR copy instead and needs no pin — the
+  # pattern a future replay suite should prefer.)
+  "bash workflows/scripts/model-comparison/tests/test_replay_isolation.sh"
+  "bash workflows/scripts/model-comparison/tests/test_replay_preflight.sh"
+  "bash workflows/scripts/model-comparison/tests/test_replay_preflight_two_arm.sh"
   # `make docs` rmtree's and rebuilds workflows/scripts/docs/_site in the live
   # checkout, while the whole-tree shell lint above walks every *.sh under the
   # repo root with find(1). A whole-tree write racing a whole-tree walk is the

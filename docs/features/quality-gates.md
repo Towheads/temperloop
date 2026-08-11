@@ -176,11 +176,15 @@ independent. What the audit found:
 
 - Every test suite isolates itself — `mktemp` scratch dirs, an overridden
   `$HOME`, stubbed `gh`/`claude`/`uvx` on a private `PATH`. No suite listens on
-  a port (the few that name one point at a deliberately-unreachable address), no
-  suite writes into the repository tree, and no suite mutates the checkout's git
+  a port (the few that name one point at a deliberately-unreachable address),
+  and no suite mutates the checkout's git
   state (the one `git fetch` in the set is the freshness guard, which runs once
-  in the parent before any gate starts).
-- **Three gates are pinned to a dedicated serial lane** (`SERIAL_LANE_PINS` in
+  in the parent before any gate starts). The one exception to "writes nothing
+  into the repository tree" is the replay suites' mutation proofs, which edit
+  `workflows/scripts/model-comparison/replay.sh` in place and restore it —
+  which is exactly why they are pinned to the serial lane below
+  (temperloop#1379).
+- **Six gates are pinned to a dedicated serial lane** (`SERIAL_LANE_PINS` in
   `scripts/quality-gates.sh`). The lane makes them mutually exclusive *with each
   other* while still overlapping the rest of the pool, so pinning costs
   essentially no wall time:
@@ -195,6 +199,15 @@ independent. What the audit found:
     racing a whole-tree walk is the classic transient "No such file or
     directory"; `docs` is the only tree-mutating gate in the set, so sharing a
     lane with the only whole-tree-walking gate closes it entirely.
+  - The three replay suites whose mutation proofs edit the LIVE
+    `workflows/scripts/model-comparison/replay.sh` in place
+    (`test_replay_isolation.sh`, `test_replay_preflight.sh`,
+    `test_replay_preflight_two_arm.sh`) contend over that one shared file:
+    concurrently, one suite executes a copy another has temporarily broken, or
+    its `mutate_file` finds the anchor text already rewritten. Measured, not
+    assumed — six concurrent runs of two of them produced four failures
+    (temperloop#1379). `test_replay_score.sh` mutates a mirror copy instead and
+    needs no pin; that is the pattern a new replay suite should prefer.
 - A second, purely advisory list (`SLOW_DISPATCH_HINTS`) names the measured long
   poles so the pool dispatches them first. Makespan is
   `max(total/width, longest-gate-start + its length)`, so a ~1 min gate sitting
