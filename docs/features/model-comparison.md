@@ -144,6 +144,38 @@ report itself enforces this rather than leaving it to the reader's
 judgment: a run below the configured threshold returns an explicit
 `inconclusive` verdict and never returns a winner.
 
+### Batch driver
+
+The replay runner, the spend gate, the judge and the report producer are
+separate components on purpose — and `workflows/scripts/model-comparison/batch.sh`
+is the operator-invoked thing that connects them. Given a corpus file it runs
+the pre-flight spend gate, replays every gate-authorized record in **both**
+arms, judges each arm, and writes the two arm files the report producer reads.
+It orchestrates only: it derives no statistic and re-implements no scoring,
+judging, corpus selection or isolation.
+
+Four properties are worth knowing before you run one:
+
+- **The gate runs first, and consent is explicit.** Nothing is prepared or
+  executed until pre-flight has returned a non-`stop` verdict *and* you have
+  passed `--confirm`. The batch cap, the planned record/replay/pair counts and
+  the cost basis are read verbatim off that gate rather than re-derived, so the
+  batch you authorize and the batch that runs cannot drift apart — a selection
+  that disagrees with the authorization is refused rather than partly spent.
+  `--preflight-only` prints the gate's verdict and executes nothing.
+- **A single record's failure does not lose the run.** That record is recorded
+  as failed with its reason and the batch continues; the run exits `4`
+  (`BATCH_DEGRADED`) with every failure named, and the **replay completion
+  rate** falls out of the summary rather than needing hand-reconstruction.
+- **It is resumable.** The unit of work is a *leg* — one record in one arm,
+  i.e. one `replay.sh execute`. Re-invoking after an interruption re-spends
+  no leg and no judge call that already completed. A state directory is bound
+  to one corpus and refuses to resume against a different one.
+- **There is no implicit model call.** Each arm needs an explicit recorded
+  runner (`--baseline-runner` / `--candidate-runner`) or the single explicit
+  `--live` flag; with neither, the driver refuses before it even reads the
+  gate. Nothing scheduled invokes it (ADR 0027).
+
 ### Live candidate tagging
 
 Live tagging adds **no new model-selection mechanism**: an operator points
@@ -266,6 +298,33 @@ configuration, never a kernel default.
   0028](../adr/0028-provider-exposure-rides-a-committed-allowlist-and-disclosure-log.md)).
 - A provider allowlist file the report and the disclosure-log validator both
   read — repo-scoped, committed, default Anthropic-only.
+
+**Running a comparison batch.** Select a corpus, look at what it would cost,
+then authorize it:
+
+```sh
+# 1. select the corpus from this repo's own merged history
+workflows/scripts/model-comparison/replay.sh corpus --repo <owner/repo> \
+    --target 20 --out /tmp/corpus.jsonl
+
+# 2. see what a batch over it would cost — executes nothing
+workflows/scripts/model-comparison/batch.sh run \
+    --corpus-file /tmp/corpus.jsonl --repo-root "$PWD" \
+    --live --preflight-only
+
+# 3. run it: both arms, judged, into .temperloop/model-comparison/
+workflows/scripts/model-comparison/batch.sh run \
+    --corpus-file /tmp/corpus.jsonl --repo-root "$PWD" \
+    --live --baseline-model <baseline-id> --candidate-model <candidate-id> \
+    --confirm
+```
+
+The driver prints one JSON object: the gate verdict it passed, the batch it
+executed, every failure by name, the replay completion rate, and the paired
+outcome count. Re-run the identical command to resume an interrupted batch —
+completed legs are not re-spent. Its output lands as `baseline.jsonl` and
+`candidate.jsonl` in `$MODEL_COMPARISON_REPORT_RECORDS_DIR`, which is exactly
+what the report producer below reads.
 
 **Running the comparison report.** The report producer reads two arms —
 `baseline.jsonl` and `candidate.jsonl` — from

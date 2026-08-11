@@ -895,6 +895,37 @@ KERNEL_GATES=(
   # passed, and the suite prepends a canary `claude` to PATH and asserts at
   # the end that nothing ever invoked it.
   "bash workflows/scripts/model-comparison/tests/test_judge_rotation.sh"
+  # The replay BATCH DRIVER (temperloop#1401, epic #1225 "model comparison
+  # harness") — the operator-invoked thing that turns a corpus file into the
+  # two arm files the comparison report reads, and the ONLY component in this
+  # module that calls `replay.sh execute` in a LOOP (so a single mistake here
+  # multiplies by the corpus size). Epic #1225 shipped sixteen components with
+  # nothing connecting them; batch.sh is that connection and orchestrates only
+  # — it derives no statistic and re-implements no scoring, judging or corpus
+  # selection. This gate pins, each with its own MUTATION PROOF: the spend
+  # gate runs FIRST and is load-bearing (a stopped pre-flight, and a batch
+  # with no `--confirm`, prepare no worktree and invoke no runner — neutering
+  # the stop check DOES execute replays); the temperloop#1379 two-arm unit
+  # contract holds in EXECUTION, not just in the estimate (the cap binds
+  # CORPUS RECORDS and is read off the gate, every record is replayed in BOTH
+  # arms, and a selection that disagrees with the authorization is refused
+  # before any spend); one record's failure does not abort the batch and the
+  # replay completion rate falls out of the driver's own output (counting a
+  # failed leg as completed reports a perfect 1.0 — the temperloop#1365
+  # "could not evaluate rendered as evaluated, and fine" class); the driver is
+  # RESUMABLE (a re-invocation re-spends zero replays and zero judge calls,
+  # and a state dir bound to another batch is refused rather than merged);
+  # every prepared worktree is torn down on BOTH the success and the failure
+  # path with verify-clean-parent CLEAN after; and — the one that matters most
+  # — the REAL report producer is run on the driver's own fixture output and
+  # consumes it UNCHANGED. Fully HERMETIC: both arms and the judge are driven
+  # through RECORDED runner seams, `--live` is never passed, and the suite
+  # prepends a canary `claude` to PATH and asserts nothing invoked it — with a
+  # mutation proof that forcing the candidate arm live DOES reach that canary,
+  # so the assertion is a measurement rather than a tautology. Same
+  # direct-`bash` form, no Makefile target, as the test_judge_rotation.sh gate
+  # immediately above.
+  "bash workflows/scripts/model-comparison/tests/test_replay_batch.sh"
   # Prose-plane baseline counter (temperloop#719, item
   # prose-baseline-measurement / #722): count-prose.sh reports the tier-1
   # composed-kernel-authored-render line count (through
