@@ -109,7 +109,22 @@
 #                   figures are in — metered dollars vs token counts vs
 #                   subscription-usage share.
 #
-# ── COST BASIS: TOKEN COUNTS. NOT DOLLARS. NOT A SUBSCRIPTION SHARE. ───────
+# ── COST BASIS: COST-WEIGHTED TOKEN UNITS. NOT RAW. NOT DOLLARS. NOT A
+#    SUBSCRIPTION SHARE. ──────────────────────────────────────────────────
+# The published unit string is `cost-weighted-token-units`, and it is
+# BYTE-IDENTICAL to REPLAY_COST_BASIS_UNIT in
+# workflows/scripts/model-comparison/replay.sh — the unit its `preflight`
+# spend gate authorizes a batch in. That identity is load-bearing, not
+# cosmetic: until temperloop#1380 this producer published "token-counts"
+# (cost-weighted) while the spend gate published "token_count" (a RAW sum),
+# ~5.4x apart at the observed token mix, so an operator could not reconcile
+# the batch cost they authorized against the cost this report handed back.
+# The two files share no sourceable seam (this producer is invoked by the
+# report.d contract with no arguments and sources only build.config.sh), so
+# the shared string is a documented duplicate held honest MECHANICALLY:
+# workflows/scripts/model-comparison/tests/test_replay_preflight_cost_unit.sh
+# runs BOTH surfaces and fails if their emitted strings ever diverge.
+#
 # A replay record carries `candidate.tokens` (the four raw token classes) and
 # no vendor cost field, so this producer's figures are cost-weighted TOKEN
 # COUNTS: the SPEND_WEIGHT_* multiply-add, byte-for-byte the arithmetic
@@ -670,8 +685,11 @@ report_json="$(jq -n \
       records_dir: $records_dir,
 
       cost_basis: {
-        unit: "token-counts",
-        statement: "This report'"'"'s cost figures are TOKEN COUNTS — cost-weighted token units derived from each record'"'"'s raw input/output/cache token classes via the SPEND_WEIGHT_* settings. Token counts are the model-independent unit, comparable across providers that bill per token differently. They are NOT METERED DOLLARS (what a vendor actually billed for a call: a replay record carries no vendor cost field, so this producer has no metered figure to show) and NOT a SUBSCRIPTION-USAGE SHARE (quota consumed against a flat-rate plan such as Claude Max/Pro, which has no per-call dollar figure at all). These three units are not interchangeable, which is why this line names which one is in play on every run.",
+        # THE ONE COST UNIT (temperloop#1380) — byte-identical to replay.sh
+        # REPLAY_COST_BASIS_UNIT; see this file header. Pinned mechanically
+        # by model-comparison/tests/test_replay_preflight_cost_unit.sh.
+        unit: "cost-weighted-token-units",
+        statement: "This report'"'"'s cost figures are TOKEN COUNTS — specifically COST-WEIGHTED token units derived from each record'"'"'s raw input/output/cache token classes via the SPEND_WEIGHT_* settings, never a RAW token sum. Token counts are the model-independent unit, comparable across providers that bill per token differently. They are NOT METERED DOLLARS (what a vendor actually billed for a call: a replay record carries no vendor cost field, so this producer has no metered figure to show) and NOT a SUBSCRIPTION-USAGE SHARE (quota consumed against a flat-rate plan such as Claude Max/Pro, which has no per-call dollar figure at all). These three units are not interchangeable, which is why this line names which one is in play on every run. The unit named above is BYTE-IDENTICAL to the one the replay spend gate (workflows/scripts/model-comparison/replay.sh preflight) authorizes a batch in, so the projected cost an operator approved and the cost reported here are directly reconcilable — before temperloop#1380 they were not, the gate having reported a raw sum under the same word.",
         weights: $d.arms.baseline.cost.weights,
         weights_caveat: "cost-weighted units are comparable only WITHIN one SPEND_WEIGHT_* retune epoch; after a weight retune, figures from before and after are not apples-to-apples and cannot be recomputed from these records alone",
         list_price_overlay: {

@@ -178,12 +178,30 @@
 #       Every emitted field names its own unit (the `units` sub-object), so
 #       no reader has to infer which of the three a bare number is in.
 #
-#       This module
-#       states no dollar figure (docs/features/model-comparison.md's "stated
-#       cost basis" concept, and pipeline-spend-report.sh's own "no dollar
-#       constant exists in this loop" convention): the cost basis reported
-#       here is `token_count`, the model-independent unit, not metered
-#       dollars. A projected batch whose estimated cost exceeds
+#       THE COST UNIT — ONE UNIT, SHARED WITH THE REPORT (temperloop#1380)
+#       This module states no dollar figure (docs/features/model-comparison.md's
+#       "stated cost basis" concept, and pipeline-spend-report.sh's own "no
+#       dollar constant exists in this loop" convention): the cost basis
+#       reported here is REPLAY_COST_BASIS_UNIT — COST-WEIGHTED token units,
+#       the SPEND_WEIGHT_* multiply-add over the raw input/cache_read/
+#       cache_creation/output classes — which is BYTE-IDENTICAL to the string
+#       workflows/scripts/report-producers/model-comparison publishes as its
+#       own `cost_basis.unit`. That identity is the point: before #1380 this
+#       command said "token_count" (a RAW sum) while the report said
+#       cost-weighted, two non-comparable units sharing the word "token", so
+#       an operator could not reconcile the batch they authorized here
+#       against the figure the report handed back — they differed by ~5.4x at
+#       the observed token mix. REPLAY_PREFLIGHT_TOKENS_PER_REPLAY,
+#       REPLAY_PREFLIGHT_CEILING_TOKENS and REPLAY_PREFLIGHT_ASSUMED_STDDEV_
+#       TOKENS are therefore ALL denominated in that one weighted unit, and
+#       the emitted `cost_weights` names the SPEND_WEIGHT_* values the figure
+#       was computed under (weighted units are comparable only within one
+#       weight-retune epoch). The per-replay figure itself is an n=1 ESTIMATE
+#       and says so on every run, in `tokens_per_replay_basis` — it is the
+#       configured literal, never something derived from the operator's own
+#       records, and it is never presented as though it were.
+#
+#       A projected batch whose estimated cost exceeds
 #       REPLAY_PREFLIGHT_CEILING_TOKENS, or that lands while
 #       workflows/scripts/build/quota-gate.sh reports "pause" (THIS is the
 #       explicit-scope quota-gate consult the item requires — never assumed),
@@ -192,7 +210,10 @@
 #       an absent/unreadable/empty/malformed corpus file, on a non-integer
 #       value for any setting the arithmetic below multiplies or compares
 #       (an indeterminate estimate must read as "could not evaluate", never
-#       as "evaluated, and fine" — temperloop#1365), or if the
+#       as "evaluated, and fine" — temperloop#1365), on SPEND_WEIGHT_* being
+#       missing or malformed (the weights DEFINE the unit the estimate and
+#       the ceiling are denominated in — the same refusal the report producer
+#       makes, for the same reason), or if the
 #       stats.sh mde primitive itself cannot be reached — it never reports a
 #       cheap/reachable estimate it did not actually compute. This command
 #       does not execute a replay, spawn a candidate model, or score
@@ -319,11 +340,13 @@ REPLAY_TRUSTED_DEFAULT_PROVIDER="anthropic"
 # preflight (temperloop#1256) — the per-comparison spend gate. All four
 # named symbolically here, never re-valued in prose (§ Named-setting
 # convention); registered in setting-registry.tsv, defaulted in
-# build.config.sh.
+# build.config.sh. The three "TOKENS" ones are denominated in COST-WEIGHTED
+# token units, never raw (temperloop#1380 — see REPLAY_COST_BASIS_UNIT below
+# and build.config.sh's own block comment for the provenance).
 : "${REPLAY_PREFLIGHT_BATCH_CAP:=40}"
-: "${REPLAY_PREFLIGHT_TOKENS_PER_REPLAY:=150000}"
-: "${REPLAY_PREFLIGHT_CEILING_TOKENS:=8000000}"
-: "${REPLAY_PREFLIGHT_ASSUMED_STDDEV_TOKENS:=50000}"
+: "${REPLAY_PREFLIGHT_TOKENS_PER_REPLAY:=470000}"
+: "${REPLAY_PREFLIGHT_CEILING_TOKENS:=50000000}"
+: "${REPLAY_PREFLIGHT_ASSUMED_STDDEV_TOKENS:=155000}"
 # execute (temperloop#1258) — the wall-clock bound on ONE candidate run.
 # Named symbolically here, never re-valued in prose; registered in
 # setting-registry.tsv, defaulted in build.config.sh.
@@ -338,6 +361,32 @@ REPLAY_TRUSTED_DEFAULT_PROVIDER="anthropic"
 # schema_version — a record-format constant, not an operator-tunable setting
 # (same non-registry-row shape as allowlist.sh's PA_DISCLOSURE_SCHEMA_VERSION).
 REPLAY_RECORD_SCHEMA_VERSION="replay-record-v1"
+
+# REPLAY_COST_BASIS_UNIT — THE ONE COST UNIT this module and the comparison
+# report both speak (temperloop#1380). A record-vocabulary constant, not an
+# operator setting: an operator who could re-point it could make the spend
+# gate and the report disagree again by configuration, which is the whole
+# defect this closed.
+#
+# BYTE-IDENTICAL to workflows/scripts/report-producers/model-comparison's own
+# `cost_basis.unit` value — the same "documented duplicate in more than one
+# consuming script" convention REPLAY_TRUSTED_DEFAULT_PROVIDER above already
+# uses, because the two files share no sourceable seam (the producer is
+# invoked by the report.d contract with no arguments and sources only
+# build.config.sh). The duplication is held honest MECHANICALLY, not by
+# review: tests/test_replay_preflight_cost_unit.sh runs BOTH surfaces and
+# fails if their emitted strings ever diverge.
+#
+# WHY THIS UNIT AND NOT RAW TOKENS. Before #1380, preflight emitted
+# `cost_basis: "token_count"` — a RAW sum — while the report emitted
+# cost-weighted token counts under the same word "token", so the figure an
+# operator authorized here was not the figure the report handed back, and
+# the two differed by ~5.4x at the observed token mix. Cost-weighted is the
+# side to converge on because it is the unit that tracks SPEND (the dominant
+# term in a real replay is cache_read, which the SPEND_WEIGHT_* defaults
+# price at a tenth) and because the report is the artifact the operator
+# ultimately reconciles against.
+REPLAY_COST_BASIS_UNIT="cost-weighted-token-units"
 
 # REPLAY_ARMS_N — the comparison is a TWO-ARM design by construction
 # (temperloop#1379): every planned corpus record is replayed once in the
@@ -883,6 +932,37 @@ cmd_preflight() {
     esac
   done
 
+  # FAIL CLOSED on the WEIGHTS that DEFINE the unit (temperloop#1380, same
+  # temperloop#1365 class as the loop above). REPLAY_PREFLIGHT_TOKENS_PER_
+  # REPLAY and REPLAY_PREFLIGHT_CEILING_TOKENS are denominated in
+  # REPLAY_COST_BASIS_UNIT — cost-weighted token units under SPEND_WEIGHT_* —
+  # so if those weights cannot be resolved, the numbers below have no defined
+  # unit and neither the estimate nor the operator's reconciliation against
+  # the report means anything. Refuse rather than emit a figure in an
+  # undefined unit. Byte-identical predicate to
+  # report-producers/model-comparison's own weights check, which refuses for
+  # exactly this reason ("a cost figure computed with weights it could not
+  # resolve") — the two surfaces must fail on the same input, or one of them
+  # would report a unit the other could not.
+  local _w
+  for _w in "${SPEND_WEIGHT_INPUT-}" "${SPEND_WEIGHT_CACHE_READ-}" \
+            "${SPEND_WEIGHT_CACHE_CREATE-}" "${SPEND_WEIGHT_OUTPUT-}"; do
+    case "$_w" in
+      ''|*[!0-9.]*|*.*.*)
+        preflight_cannot_evaluate "the SPEND_WEIGHT_* settings are missing or malformed (\"$_w\") — this estimate is denominated in cost-weighted token units, so a batch cost cannot be evaluated, nor reconciled against the comparison report, in a unit whose weights could not be resolved"
+        return 1 ;;
+    esac
+  done
+  local cost_weights_json
+  cost_weights_json="$(jq -cn \
+    --argjson i "$SPEND_WEIGHT_INPUT" --argjson cr "$SPEND_WEIGHT_CACHE_READ" \
+    --argjson cc "$SPEND_WEIGHT_CACHE_CREATE" --argjson o "$SPEND_WEIGHT_OUTPUT" \
+    '{input:$i, cache_read:$cr, cache_creation:$cc, output:$o}' 2>/dev/null)" || cost_weights_json=""
+  if [ -z "$cost_weights_json" ]; then
+    preflight_cannot_evaluate "the SPEND_WEIGHT_* settings did not resolve to four JSON numbers — refusing to state a cost basis whose weights could not be published"
+    return 1
+  fi
+
   # ── THE THREE UNITS (temperloop#1379) ──────────────────────────────────
   #   planned_records  CORPUS RECORDS this invocation plans to replay.
   #   planned_replays  EXECUTED REPLAYS = planned_records * REPLAY_ARMS_N.
@@ -970,7 +1050,8 @@ cmd_preflight() {
     --argjson planned_pairs_n "$planned_pairs" --argjson eligible_pairs_n "$eligible_pairs" \
     --argjson arms_n "$REPLAY_ARMS_N" \
     --argjson batch_cap "$REPLAY_PREFLIGHT_BATCH_CAP" --argjson batch_cap_applied "$batch_cap_applied" \
-    --arg cost_basis "token_count" \
+    --arg cost_basis "$REPLAY_COST_BASIS_UNIT" \
+    --argjson cost_weights "$cost_weights_json" \
     --argjson tokens_per_replay "$REPLAY_PREFLIGHT_TOKENS_PER_REPLAY" \
     --argjson estimated_total_tokens "$est_tokens" \
     --argjson ceiling_tokens "$REPLAY_PREFLIGHT_CEILING_TOKENS" --argjson ceiling_exceeded "$ceiling_exceeded" \
@@ -980,19 +1061,26 @@ cmd_preflight() {
     --argjson quota "$quota_json" --argjson stop "$stop" --arg stop_reason "$stop_reason" \
     '{outcome:"PREFLIGHT",
       units:{
-        basis: "THREE non-interchangeable units (temperloop#1379). One CORPUS RECORD is one merged outcome; it is replayed in BOTH arms, so 1 planned record = arms_n executed replays = 1 paired outcome. The token estimate is budgeted over EXECUTED REPLAYS (both arms); MODEL_COMPARISON_MIN_SAMPLE_N is a floor on PAIRED OUTCOMES, the same unit the comparison report feeds stats.sh (report-producers/model-comparison, its pairing block)",
+        basis: "THREE non-interchangeable COUNT units (temperloop#1379) plus ONE cost unit (temperloop#1380). One CORPUS RECORD is one merged outcome; it is replayed in BOTH arms, so 1 planned record = arms_n executed replays = 1 paired outcome. The cost estimate is budgeted over EXECUTED REPLAYS (both arms) and is denominated in cost_basis below — the SAME unit report-producers/model-comparison publishes, never a raw token sum; MODEL_COMPARISON_MIN_SAMPLE_N is a floor on PAIRED OUTCOMES, the same unit the comparison report feeds stats.sh (report-producers/model-comparison, its pairing block)",
         eligible_n: "corpus_records", planned_n: "corpus_records",
         planned_records_n: "corpus_records", planned_replays_n: "executed_replays",
         planned_pairs_n: "paired_outcomes", eligible_pairs_n: "paired_outcomes",
-        batch_cap: "corpus_records", estimated_total_tokens: "tokens",
-        tokens_per_replay_estimate: "tokens_per_executed_replay",
+        batch_cap: "corpus_records",
+        estimated_total_tokens: $cost_basis,
+        tokens_per_replay_estimate: ($cost_basis + " per executed_replay"),
+        ceiling_tokens: $cost_basis,
+        assumed_stddev_tokens: $cost_basis,
         min_sample_n: "paired_outcomes", mde_n: "paired_outcomes"},
       arms_n:$arms_n,
       eligible_n:$eligible_n, planned_n:$planned_n,
       planned_records_n:$planned_records_n, planned_replays_n:$planned_replays_n,
       planned_pairs_n:$planned_pairs_n, eligible_pairs_n:$eligible_pairs_n,
       batch_cap:$batch_cap, batch_cap_applied:$batch_cap_applied,
-      cost_basis:$cost_basis, tokens_per_replay_estimate:$tokens_per_replay,
+      cost_basis:$cost_basis,
+      cost_weights:$cost_weights,
+      cost_basis_statement: ("This batch estimate is denominated in " + $cost_basis + " — the SPEND_WEIGHT_* multiply-add over the raw input/cache_read/cache_creation/output classes, NOT a raw token sum, and NOT metered dollars (no vendor cost figure exists at pre-flight) and NOT a subscription-usage share. It is BYTE-IDENTICALLY the unit workflows/scripts/report-producers/model-comparison publishes as its own cost_basis.unit, so the batch an operator authorizes here and the figure that report hands back are the same unit and can be reconciled directly (temperloop#1380 — before it, this side reported a RAW sum under the same word \"token\", ~5.4x apart at the observed mix). Cost-weighted figures are comparable only WITHIN one SPEND_WEIGHT_* retune epoch; cost_weights above names the values in force for this run."),
+      tokens_per_replay_estimate:$tokens_per_replay,
+      tokens_per_replay_basis: ("the configured REPLAY_PREFLIGHT_TOKENS_PER_REPLAY literal, an ESTIMATE grounded in a SINGLE observed live replay (n=1, temperloop#1380: raw 2,506,371 / cost-weighted 466,530 under the default weights, rounded up), NOT derived from this corpus, NOT derived from any record on this machine, and NOT a fitted average — one sample carries no variance, so treat it as order-of-magnitude. If it is re-derived from observed records in future, this field must say so; a derivation that found no observed data must say THAT rather than silently fall back to the literal and present it as measured."),
       estimated_total_tokens:$estimated_total_tokens, estimated_cost:$estimated_total_tokens,
       ceiling_tokens:$ceiling_tokens, ceiling_exceeded:$ceiling_exceeded,
       min_sample_n:$min_sample_n, significance_reachable:$significance_reachable,

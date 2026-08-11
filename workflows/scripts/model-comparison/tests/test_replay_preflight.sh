@@ -146,13 +146,17 @@ out="$(run_pf env REPLAY_PREFLIGHT_BATCH_CAP=100 REPLAY_PREFLIGHT_TOKENS_PER_REP
 ok "2 an all-rejected corpus (real eligible_n=0) is a computed PREFLIGHT result, not CANNOT_EVALUATE"
 
 # ---------------------------------------------------------------------------
-# 3. cost_basis is stated explicitly (token_count) — this module states no
-#    dollar figure (docs/features/model-comparison.md's "stated cost
-#    basis").
+# 3. cost_basis is stated explicitly (cost-weighted-token-units, since
+#    temperloop#1380 — the report producer's own unit string, not a raw
+#    sum) — this module states no dollar figure
+#    (docs/features/model-comparison.md's "stated cost basis"). The
+#    preflight/report AGREEMENT itself is pinned in
+#    test_replay_preflight_cost_unit.sh, which runs both surfaces; this
+#    line only pins that the basis is stated at all.
 # ---------------------------------------------------------------------------
 count
-[ "$(jq -r .cost_basis <<<"$out")" = "token_count" ] || fail "3: expected cost_basis token_count, got: $out"
-ok "3 cost_basis is stated explicitly as token_count (no dollar figure fabricated)"
+[ "$(jq -r .cost_basis <<<"$out")" = "cost-weighted-token-units" ] || fail "3: expected cost_basis cost-weighted-token-units, got: $out"
+ok "3 cost_basis is stated explicitly as cost-weighted-token-units (no dollar figure fabricated)"
 
 # ═══════════════════════════════════════════════════════════════════════════
 # SECTION B — REPLAY_PREFLIGHT_BATCH_CAP wiring
