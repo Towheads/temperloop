@@ -315,13 +315,19 @@ jq -e '
 ok "10 records/replays/pairs are internally consistent (replays = records x arms, pairs = records)"
 
 # ---------------------------------------------------------------------------
-# 11. cost_basis and the per-replay estimate are UNTOUCHED by this change —
-#     they are temperloop#1380's seam, deliberately left alone here.
+# 11. cost_basis is stated, and the per-replay estimate stays a
+#     per-EXECUTED-REPLAY figure this suite's two-arm arithmetic multiplies.
+#     The UNIT that cost_basis names was temperloop#1380's seam and has since
+#     moved from the raw "token_count" to the report producer's own
+#     "cost-weighted-token-units"; the preflight/report AGREEMENT is pinned
+#     in test_replay_preflight_cost_unit.sh, not here. This assertion is
+#     unchanged in substance — it still pins that a basis is stated and that
+#     the per-replay figure is echoed, not hardcoded.
 # ---------------------------------------------------------------------------
 count
-[ "$(jq -r .cost_basis <<<"$out5")" = "token_count" ] || fail "11: cost_basis must remain token_count, got: $out5"
+[ "$(jq -r .cost_basis <<<"$out5")" = "cost-weighted-token-units" ] || fail "11: cost_basis must be the shared cost-weighted-token-units, got: $out5"
 [ "$(jq -r .tokens_per_replay_estimate <<<"$out5")" = "1" ] || fail "11: tokens_per_replay_estimate must echo the configured per-replay figure unchanged, got: $out5"
-ok "11 cost_basis stays token_count and tokens_per_replay_estimate stays a per-EXECUTED-REPLAY figure (temperloop#1380's seam, untouched)"
+ok "11 cost_basis is stated (cost-weighted-token-units) and tokens_per_replay_estimate stays a per-EXECUTED-REPLAY figure"
 
 # ═══════════════════════════════════════════════════════════════════════════
 # SECTION D — FAIL CLOSED on an INDETERMINATE estimate (temperloop#1365)

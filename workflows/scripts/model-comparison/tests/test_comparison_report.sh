@@ -371,9 +371,14 @@ ok "C2 mutation proof: deleting each of the four disclosures in turn turns the a
 count
 # The cost basis must name WHICH unit, and must not claim to be the two units
 # it is not. A report that showed a dollar figure without saying it is a list-
-# price estimate would let a reader compare it to an invoice.
-[ "$(jqf "$FLAT_OUT" '.cost_basis.unit')" = "token-counts" ] \
-  || fail "C3: the cost basis must name token-counts as the unit in play"
+# price estimate would let a reader compare it to an invoice. Since
+# temperloop#1380 the unit string is also the one the replay spend gate
+# authorizes a batch in — "token-counts" named the family but not the unit,
+# and the gate, reading the same word, meant a RAW sum. The AGREEMENT between
+# the two surfaces is pinned in test_replay_preflight_cost_unit.sh; this line
+# pins this producer's half of it.
+[ "$(jqf "$FLAT_OUT" '.cost_basis.unit')" = "cost-weighted-token-units" ] \
+  || fail "C3: the cost basis must name cost-weighted-token-units as the unit in play"
 jq -e '.cost_basis.list_price_overlay.note | test("never metered dollars")' "$FLAT_OUT" >/dev/null 2>&1 \
   || fail "C3: the optional dollar overlay must disclaim being metered dollars"
 ok "C3 the cost basis names its unit and disclaims the two units it is not"

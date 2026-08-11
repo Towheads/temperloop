@@ -744,6 +744,29 @@ KERNEL_GATES=(
   # Same direct-`bash` form, no Makefile target, as the
   # test_replay_preflight.sh gate immediately above.
   "bash workflows/scripts/model-comparison/tests/test_replay_preflight_two_arm.sh"
+  # The replay spend gate's COST unit (temperloop#1380, epic #1225 "model
+  # comparison harness") — the third suite over `preflight`, and the only one
+  # that runs BOTH surfaces. Its two siblings above pin the plumbing and the
+  # COUNT units and both stayed green while the gate was unusable, because the
+  # gate spoke a cost unit nobody else did: `preflight` reported a RAW token
+  # sum as `cost_basis: "token_count"` while
+  # report-producers/model-comparison reported cost-WEIGHTED units as
+  # "token-counts" — 5.4x apart at the observed token mix, so the batch an
+  # operator authorized could not be reconciled against the figure the report
+  # handed back. This gate runs the pre-flight AND the report producer and
+  # fails if their emitted cost_basis strings ever diverge (the two files
+  # share no sourceable seam, so the shared string is a documented duplicate
+  # held honest here rather than by review). Also pins that the shipped
+  # per-replay constant is the MEASURED cost-weighted figure and not the raw
+  # total or the old placeholder, that the ceiling was re-derived in the new
+  # unit (the pre-fix ceiling literal stops a floor-sized batch, so a
+  # half-fix is caught), that the n=1 provenance is published on every run,
+  # and the temperloop#1365 fail-closed floor for the weights that DEFINE the
+  # unit. Two mutation proofs, both against the live replay.sh — hence its
+  # place in the serial replay lane below. Hermetic: no network, no `gh`, no
+  # replay executed. Same direct-`bash` form, no Makefile target, as the two
+  # gates above.
+  "bash workflows/scripts/model-comparison/tests/test_replay_preflight_cost_unit.sh"
   # Live candidate tagging provenance (temperloop#1257, epic #1225 "model
   # comparison harness"): tagging.sh's three artifacts — the bounded window
   # record, the telemetry tag (a real emit-model-usage.sh raw-lake record,
@@ -1456,10 +1479,11 @@ SERIAL_LANE_PINS=(
   "make shellcheck"
   "bash scripts/tests/test_ensure_shellcheck.sh"
   "bash workflows/scripts/board-consumer-shellcheck.sh"
-  # The three replay suites that take their MUTATION PROOFS against the LIVE
+  # The four replay suites that take their MUTATION PROOFS against the LIVE
   # workflows/scripts/model-comparison/replay.sh — each one edits that single
   # shared file in place (disabling the ceiling check, breaking $STATS_SH,
-  # dropping the quota-gate call), runs the SUT, then restores it. Concurrently
+  # dropping the quota-gate call, repointing the cost-unit constant or
+  # disabling the cost-weights guard), runs the SUT, then restores it. Concurrently
   # that is a genuine data race, not a flake: one suite reads a file another has
   # temporarily broken, or its `mutate_file` finds the anchor text already
   # rewritten. Measured directly (temperloop#1379): six concurrent runs of two
@@ -1471,6 +1495,7 @@ SERIAL_LANE_PINS=(
   "bash workflows/scripts/model-comparison/tests/test_replay_isolation.sh"
   "bash workflows/scripts/model-comparison/tests/test_replay_preflight.sh"
   "bash workflows/scripts/model-comparison/tests/test_replay_preflight_two_arm.sh"
+  "bash workflows/scripts/model-comparison/tests/test_replay_preflight_cost_unit.sh"
   # `make docs` rmtree's and rebuilds workflows/scripts/docs/_site in the live
   # checkout, while the whole-tree shell lint above walks every *.sh under the
   # repo root with find(1). A whole-tree write racing a whole-tree walk is the

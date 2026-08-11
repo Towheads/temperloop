@@ -90,9 +90,17 @@ per-repo-derived scratch path, and is torn down on both success and
 failure — a post-run probe backstops that, it isn't the primary control.
 
 Before a batch of replays runs, a pre-flight estimate prints the eligible-N
-for the requested window, the estimated token/dollar cost, and whether that
+for the requested window, the estimated cost of the batch, and whether that
 N can realistically reach the module's significance threshold — so an
-operator sees the tradeoff before spending anything, not after.
+operator sees the tradeoff before spending anything, not after. That estimate
+is stated in **cost-weighted token units** — the same unit, named by the same
+string, that the comparison report publishes as its own cost basis, so the
+batch you authorize and the figure the report hands back are directly
+reconcilable (temperloop#1380; before it the two spoke different units under
+the same word "token"). It is neither raw token counts nor dollars. The
+per-replay figure the estimate scales is an **n=1 estimate** from a single
+observed live replay and says so on every run — treat it as
+order-of-magnitude until more replays have been executed.
 
 **Replay corpus and ground truth.** The L0 replay/ground-truth spike
 (temperloop#1247) measured this end to end against real history rather than
@@ -299,9 +307,10 @@ half pays zero standing resource cost beyond the source files themselves
   dollars, exactly like any other model invocation. This spend is bounded on
   two sides: the pre-flight estimate (see "Replay runner" above) shows the
   expected cost before a batch runs, and every comparison run enforces a
-  config-named **per-comparison token/cost ceiling**, routed through the
-  existing quota gate — a run that would exceed the ceiling stops at
-  pre-flight rather than partway through.
+  config-named **per-comparison cost ceiling**, in the same cost-weighted
+  token units as the estimate, routed through the existing quota gate — a run
+  that would exceed the ceiling stops at pre-flight rather than partway
+  through.
 
 The disclosure log and the provider allowlist are both local, append-only
 files with no network cost of their own; only the model calls they gate

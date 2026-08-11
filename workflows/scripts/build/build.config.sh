@@ -962,30 +962,90 @@ fi
 # operator-facing tunables, named symbolically in replay.sh's own header,
 # never re-valued in prose (§ Named-setting convention).
 #
-# Max number of replays `preflight` will size a single invocation's cost
-# estimate against, regardless of how large the corpus's eligible-N is — a
-# larger corpus is spent across more than one invocation, never one
+# ── THE COST UNIT: COST-WEIGHTED TOKEN UNITS (temperloop#1380) ─────────────
+# Every "TOKENS" setting in this block is denominated in COST-WEIGHTED token
+# units — the SPEND_WEIGHT_* multiply-add over the raw input / cache_read /
+# cache_creation / output classes — and NOT in raw token counts. That is the
+# same unit workflows/scripts/report-producers/model-comparison reports in
+# (`cost_basis.unit: "cost-weighted-token-units"`), which is the whole point:
+# before #1380 pre-flight said `cost_basis: "token_count"` (a RAW sum) while
+# the report said "cost-weighted token counts", two non-comparable units
+# sharing the word "token", so an operator could not reconcile the figure
+# they authorized against the figure the report handed back. One unit now,
+# named identically on both sides.
+#
+# Two consequences worth stating out loud:
+#   * These values are only meaningful WITHIN one SPEND_WEIGHT_* retune
+#     epoch. Retune the weights and this per-replay figure needs re-deriving
+#     from the raw measurement below, because the same tokens then price
+#     differently. (Same caveat the report producer publishes as its
+#     `weights_caveat`.)
+#   * Cost-weighted is the unit that corresponds to SPEND, which is what a
+#     spend gate is for. The dominant term in a real replay is cache_read
+#     (2.38M of 2.51M raw on the measurement below), which the default
+#     weights price at a tenth — so a RAW budget would be dominated by the
+#     cheapest tokens in the batch.
+#
+# Max number of CORPUS RECORDS `preflight` will size a single invocation's
+# cost estimate against, regardless of how large the corpus's eligible-N is —
+# a larger corpus is spent across more than one invocation, never one
 # unbounded batch.
 : "${REPLAY_PREFLIGHT_BATCH_CAP:=40}"
-# Estimated combined (candidate + judge) tokens ONE replay costs. A
-# placeholder pending real historical measurement once replay execution
-# lands (temperloop#1258) — same order of magnitude as a typical worker
-# call, sized deliberately conservative until real data replaces it.
-: "${REPLAY_PREFLIGHT_TOKENS_PER_REPLAY:=150000}"
-# Per-comparison (i.e. per preflight invocation's planned batch) token
-# ceiling. A projected batch whose estimated cost exceeds this STOPS at
-# preflight — never partway through a later execution step. At the default
-# REPLAY_PREFLIGHT_BATCH_CAP (40) * REPLAY_PREFLIGHT_TOKENS_PER_REPLAY
-# (150000) = 6,000,000, comfortably under this default, so an operator
-# raising the batch cap well past default is what would trip it.
-: "${REPLAY_PREFLIGHT_CEILING_TOKENS:=8000000}"
-# Assumed per-replay cost-delta standard deviation (in tokens), fed to
-# stats.sh's `mde` primitive for the pre-spend detectable-effect disclosure.
-# No real replay-cost variance exists yet (execution is #1258's job still to
-# land), so this is a rough same-order-of-magnitude placeholder (1/3 of
-# REPLAY_PREFLIGHT_TOKENS_PER_REPLAY) an operator should tighten once real
-# replay data accumulates.
-: "${REPLAY_PREFLIGHT_ASSUMED_STDDEV_TOKENS:=50000}"
+# Estimated combined (candidate + judge) COST-WEIGHTED TOKEN UNITS that ONE
+# EXECUTED replay (one corpus record in ONE arm) costs.
+#
+# PROVENANCE — READ THIS BEFORE TRUSTING IT. n = 1. This is an ESTIMATE
+# grounded in a SINGLE observed live replay (the temperloop#1262 harness
+# validation run, recorded in temperloop#1380), not a fitted average and not
+# a distribution: one replay measured
+#     input 49 · output 19,890 · cache_read 2,383,486 · cache_creation 102,946
+#     -> raw total 2,506,371 · cost-weighted 466,530 (default SPEND_WEIGHT_*)
+# rounded UP to the nearest 10,000 for the value below. It supersedes the
+# original hand-set placeholder, which was 3.1x low in this unit (and 16.7x
+# low against the same replay's raw total). ONE sample cannot express
+# variance, so treat this as an order-of-magnitude figure that a real
+# distribution should replace once more than one replay has been executed;
+# `preflight` publishes the same provenance on every run in its
+# `tokens_per_replay_basis` field rather than presenting the literal as
+# though it were derived from the operator's own records.
+: "${REPLAY_PREFLIGHT_TOKENS_PER_REPLAY:=470000}"
+# Per-comparison (i.e. per preflight invocation's planned batch) ceiling, in
+# COST-WEIGHTED TOKEN UNITS. A projected batch whose estimated cost exceeds
+# this STOPS at preflight — never partway through a later execution step.
+#
+# RE-DERIVED FOR THE NEW UNIT (temperloop#1380) — this value changed meaning,
+# so do not read it as the old one. It is re-derived under the SAME design
+# rule its predecessor was written to ("a default-cap batch sits comfortably
+# under it; raising REPLAY_PREFLIGHT_BATCH_CAP well past default is what trips
+# it"), now with the corrected two-arm arithmetic and the measured per-replay
+# figure: REPLAY_PREFLIGHT_BATCH_CAP records x 2 arms x
+# REPLAY_PREFLIGHT_TOKENS_PER_REPLAY = 37,600,000 weighted units at defaults,
+# with the same ~1.33x headroom the predecessor carried.
+#
+# STATED PLAINLY: at the observed token mix this is a REAL-TERMS LOOSENING of
+# roughly 5.4x versus the old literal 8,000,000 read as raw tokens. That is
+# deliberate and is not a quota being quietly widened — the old value was
+# never an independent budget or an external quota; it was itself derived
+# from batch cap x per-replay under a per-replay constant now known to be 3.1x
+# low, so carrying its literal into the new unit would have been carrying an
+# arithmetic accident. Holding the old real-terms strictness would put the
+# ceiling near 1.5M weighted units, below even the cost of the SMALLEST
+# statistically meaningful comparison (MODEL_COMPARISON_MIN_SAMPLE_N paired
+# outcomes = 2x that many executed replays ~ 18,800,000 weighted units), i.e.
+# a gate that stops every batch it could ever be asked about. An operator who
+# wants a tighter budget should lower this deliberately, with those two
+# numbers in view.
+: "${REPLAY_PREFLIGHT_CEILING_TOKENS:=50000000}"
+# Assumed per-replay cost-delta standard deviation, in COST-WEIGHTED TOKEN
+# UNITS (same unit as REPLAY_PREFLIGHT_TOKENS_PER_REPLAY — a stddev in a
+# different unit from the mean it varies around is the exact collision
+# temperloop#1380 closed), fed to stats.sh's `mde` primitive for the
+# pre-spend detectable-effect disclosure. A single observed replay cannot
+# express variance at all, so this stays a rough same-order-of-magnitude
+# placeholder — one third of REPLAY_PREFLIGHT_TOKENS_PER_REPLAY, the
+# relationship its predecessor carried — that an operator should tighten
+# once more than one replay has been executed.
+: "${REPLAY_PREFLIGHT_ASSUMED_STDDEV_TOKENS:=155000}"
 
 # ── Replay EXECUTION + SCORING (temperloop#1258) ──────────────────────────
 # Wall-clock bound on ONE candidate run in replay.sh's `execute`. A run that
