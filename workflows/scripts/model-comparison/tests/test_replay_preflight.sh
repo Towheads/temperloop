@@ -18,8 +18,12 @@
 #         a CANNOT_EVALUATE
 #   4-6   REPLAY_PREFLIGHT_BATCH_CAP wiring (two distinct non-default
 #         values), and planned_n never exceeds it
-#   7-9   estimated_total_tokens = planned_n * REPLAY_PREFLIGHT_TOKENS_PER_REPLAY
-#         (REPLAY_PREFLIGHT_TOKENS_PER_REPLAY wiring, non-default value)
+#   7-9   estimated_total_tokens = planned_replays_n *
+#         REPLAY_PREFLIGHT_TOKENS_PER_REPLAY, where planned_replays_n is
+#         planned_n * arms_n (temperloop#1379 — every record is replayed in
+#         BOTH arms). REPLAY_PREFLIGHT_TOKENS_PER_REPLAY wiring, non-default
+#         value. The two-arm factor itself is pinned end-to-end by the
+#         sibling suite test_replay_preflight_two_arm.sh.
 #   10-12 REPLAY_PREFLIGHT_CEILING_TOKENS: stop:true/ceiling_exceeded on an
 #         over-budget batch, non-zero exit; MUTATION PROOF the ceiling check
 #         is load-bearing
@@ -196,25 +200,29 @@ ok "6 a batch cap above eligible_n does not bind (planned_n = eligible_n, batch_
 # ═══════════════════════════════════════════════════════════════════════════
 
 # ---------------------------------------------------------------------------
-# 7-9. estimated_total_tokens = planned_n * REPLAY_PREFLIGHT_TOKENS_PER_REPLAY,
-#      with TWO distinct non-default per-replay estimates producing distinct
-#      totals over the SAME planned_n (proves genuine multiplication by a
-#      config-read value, not a hardcoded constant).
+# 7-9. estimated_total_tokens = planned_replays_n *
+#      REPLAY_PREFLIGHT_TOKENS_PER_REPLAY — and planned_replays_n is
+#      planned_n * arms_n, because every planned corpus record is replayed in
+#      BOTH the baseline and the candidate arm (temperloop#1379). Two
+#      distinct non-default per-replay estimates produce distinct totals over
+#      the SAME planned_n (proves genuine multiplication by a config-read
+#      value, not a hardcoded constant).
 # ---------------------------------------------------------------------------
 count
 out7="$(run_pf env REPLAY_PREFLIGHT_BATCH_CAP=4 REPLAY_PREFLIGHT_TOKENS_PER_REPLAY=777 \
   REPLAY_PREFLIGHT_CEILING_TOKENS=1000000 MODEL_COMPARISON_MIN_SAMPLE_N=1 \
   bash "$SUT" preflight --corpus-file "$CORPUS_B")"
 [ "$(jq -r .planned_n <<<"$out7")" = "4" ] || fail "7: expected planned_n 4, got: $out7"
-[ "$(jq -r .estimated_total_tokens <<<"$out7")" = "3108" ] || fail "7: expected 4*777=3108, got: $out7"
-[ "$(jq -r .estimated_cost <<<"$out7")" = "3108" ] || fail "7: estimated_cost should equal estimated_total_tokens under cost_basis=token_count, got: $out7"
-ok "7 estimated_total_tokens = planned_n * REPLAY_PREFLIGHT_TOKENS_PER_REPLAY (4*777=3108)"
+[ "$(jq -r .planned_replays_n <<<"$out7")" = "8" ] || fail "7: expected planned_replays_n 8 (4 records x 2 arms), got: $out7"
+[ "$(jq -r .estimated_total_tokens <<<"$out7")" = "6216" ] || fail "7: expected 4*2*777=6216, got: $out7"
+[ "$(jq -r .estimated_cost <<<"$out7")" = "6216" ] || fail "7: estimated_cost should equal estimated_total_tokens under cost_basis=token_count, got: $out7"
+ok "7 estimated_total_tokens = planned_replays_n * REPLAY_PREFLIGHT_TOKENS_PER_REPLAY (4 records x 2 arms x 777 = 6216)"
 
 count
 out8="$(run_pf env REPLAY_PREFLIGHT_BATCH_CAP=4 REPLAY_PREFLIGHT_TOKENS_PER_REPLAY=1234 \
   REPLAY_PREFLIGHT_CEILING_TOKENS=1000000 MODEL_COMPARISON_MIN_SAMPLE_N=1 \
   bash "$SUT" preflight --corpus-file "$CORPUS_B")"
-[ "$(jq -r .estimated_total_tokens <<<"$out8")" = "4936" ] || fail "8: expected 4*1234=4936, got: $out8"
+[ "$(jq -r .estimated_total_tokens <<<"$out8")" = "9872" ] || fail "8: expected 4*2*1234=9872, got: $out8"
 [ "$(jq -r .estimated_total_tokens <<<"$out7")" != "$(jq -r .estimated_total_tokens <<<"$out8")" ] \
   || fail "8: two distinct per-replay token estimates produced the SAME total — not wired"
 ok "8 a second, distinct REPLAY_PREFLIGHT_TOKENS_PER_REPLAY value changes the total (not hardcoded)"

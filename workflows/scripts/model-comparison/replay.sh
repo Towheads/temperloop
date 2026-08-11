@@ -145,13 +145,40 @@
 #       JSONL file (never re-invokes `gh` itself — corpus selection and
 #       preflight estimation are separate concerns, and this keeps preflight
 #       network-free and deterministically testable) and, before any token is
-#       spent, prints eligible-N (records with status eligible or
+#       spent, prints eligible-N (CORPUS RECORDS with status eligible or
 #       flagged-eligible), the batch-cap-bounded planned-N for THIS
 #       invocation, the estimated token cost of that batch, and — genuinely
 #       CONSUMING workflows/scripts/model-comparison/stats.sh's `mde`
 #       primitive, never a second hand-rolled computation of it — whether
-#       eligible-N can reach MODEL_COMPARISON_MIN_SAMPLE_N (the inconclusive
-#       floor `verdict`/`bootstrap-ci` already enforce) at all. This module
+#       this batch's PLANNED PAIRED OUTCOMES can reach
+#       MODEL_COMPARISON_MIN_SAMPLE_N (the inconclusive
+#       floor `verdict`/`bootstrap-ci` already enforce) at all.
+#
+#       THE THREE UNITS, AND WHY THEY ARE NOT INTERCHANGEABLE
+#       (temperloop#1379 — before it, two of the three were conflated):
+#         * CORPUS RECORDS   one merged outcome selected by `corpus`;
+#                            eligible_n / planned_records_n count these.
+#         * EXECUTED REPLAYS one per record PER ARM. The design is two-arm
+#                            (REPLAY_ARMS_N — baseline + candidate), so
+#                            planned_replays_n = planned_records_n * 2, and
+#                            THAT is what the token estimate (and therefore
+#                            REPLAY_PREFLIGHT_CEILING_TOKENS) is budgeted
+#                            over. Budgeting one arm under-projects every
+#                            batch by exactly 2x.
+#         * PAIRED OUTCOMES  one per record present in BOTH arms, i.e. one
+#                            delta. planned_pairs_n = planned_records_n.
+#                            MODEL_COMPARISON_MIN_SAMPLE_N is a floor on
+#                            THIS unit and no other: the report producer
+#                            (workflows/scripts/report-producers/
+#                            model-comparison, its `pairing` block) feeds
+#                            stats.sh exactly this array of paired deltas,
+#                            so a reachability verdict computed against any
+#                            other unit is answering a different question
+#                            than the one the report will ask.
+#       Every emitted field names its own unit (the `units` sub-object), so
+#       no reader has to infer which of the three a bare number is in.
+#
+#       This module
 #       states no dollar figure (docs/features/model-comparison.md's "stated
 #       cost basis" concept, and pipeline-spend-report.sh's own "no dollar
 #       constant exists in this loop" convention): the cost basis reported
@@ -162,7 +189,10 @@
 #       explicit-scope quota-gate consult the item requires — never assumed),
 #       STOPS here (`stop:true`, non-zero exit) rather than partway through a
 #       later execution step. FAILS CLOSED (`CANNOT_EVALUATE`, non-zero) on
-#       an absent/unreadable/empty/malformed corpus file, or if the
+#       an absent/unreadable/empty/malformed corpus file, on a non-integer
+#       value for any setting the arithmetic below multiplies or compares
+#       (an indeterminate estimate must read as "could not evaluate", never
+#       as "evaluated, and fine" — temperloop#1365), or if the
 #       stats.sh mde primitive itself cannot be reached — it never reports a
 #       cheap/reachable estimate it did not actually compute. This command
 #       does not execute a replay, spawn a candidate model, or score
@@ -308,6 +338,17 @@ REPLAY_TRUSTED_DEFAULT_PROVIDER="anthropic"
 # schema_version — a record-format constant, not an operator-tunable setting
 # (same non-registry-row shape as allowlist.sh's PA_DISCLOSURE_SCHEMA_VERSION).
 REPLAY_RECORD_SCHEMA_VERSION="replay-record-v1"
+
+# REPLAY_ARMS_N — the comparison is a TWO-ARM design by construction
+# (temperloop#1379): every planned corpus record is replayed once in the
+# BASELINE arm and once in the CANDIDATE arm, and the comparison report
+# (workflows/scripts/report-producers/model-comparison, its `pairing` block)
+# intersects the two arms' records by outcome ref to produce exactly ONE
+# delta per record. That is a structural fact of the design, not an
+# operator-tunable knob — a "one-arm comparison" is not a comparison — so it
+# is a constant here and carries no setting-registry row, the same
+# non-registry-row shape as the schema version immediately above.
+REPLAY_ARMS_N=2
 
 # shellcheck source=../lib/portable-timeout.sh
 [ -f "$HERE/../lib/portable-timeout.sh" ] && . "$HERE/../lib/portable-timeout.sh"
@@ -824,43 +865,86 @@ cmd_preflight() {
     esac
   done <"$corpus_file"
 
-  # Batch cap: bounds replays for THIS invocation only — eligible_n (the
-  # corpus's real pool) stays the basis for the significance-reachability
-  # check below, since a corpus larger than one invocation's cap could still
-  # be spent across more than one invocation.
-  local planned_n="$eligible_n" batch_cap_applied=false
-  if [ "$planned_n" -gt "$REPLAY_PREFLIGHT_BATCH_CAP" ]; then
-    planned_n="$REPLAY_PREFLIGHT_BATCH_CAP"
+  # FAIL CLOSED on a setting this arithmetic cannot evaluate (temperloop#1379,
+  # guarding the temperloop#1365 class). Everything below multiplies and
+  # compares these four; a non-integer value (a typo, a "150k", an
+  # accidentally-exported empty string) would either silently evaluate to 0 —
+  # producing a zero-cost estimate that sails under the ceiling — or make
+  # `[ -gt ]` compare garbage. An estimate that could not be EVALUATED must
+  # never render as "evaluated, and fine".
+  local _s _v
+  for _s in REPLAY_PREFLIGHT_BATCH_CAP REPLAY_PREFLIGHT_TOKENS_PER_REPLAY \
+            REPLAY_PREFLIGHT_CEILING_TOKENS MODEL_COMPARISON_MIN_SAMPLE_N; do
+    _v="${!_s-}"
+    case "$_v" in
+      ''|*[!0-9]*)
+        preflight_cannot_evaluate "$_s is not a non-negative integer (\"$_v\") — the batch estimate and the significance floor cannot be evaluated against it"
+        return 1 ;;
+    esac
+  done
+
+  # ── THE THREE UNITS (temperloop#1379) ──────────────────────────────────
+  #   planned_records  CORPUS RECORDS this invocation plans to replay.
+  #   planned_replays  EXECUTED REPLAYS = planned_records * REPLAY_ARMS_N.
+  #                    Every record is replayed in BOTH arms, so this — not
+  #                    the record count — is what the token budget is over.
+  #   planned_pairs    PAIRED OUTCOMES = planned_records (one delta per
+  #                    record present in both arms). This is the unit
+  #                    MODEL_COMPARISON_MIN_SAMPLE_N is a floor on, matching
+  #                    the report producer's own `pairing.paired_outcomes_n`
+  #                    → stats.sh `verdict --deltas` path exactly.
+  #
+  # Batch cap: bounds this invocation's planned RECORDS. A corpus larger than
+  # the cap is spent across more than one invocation — which is why
+  # eligible_pairs (the whole pool's pairs) is reported alongside
+  # planned_pairs, and why the unreachable reason distinguishes "this batch
+  # can't reach the floor" from "the corpus can't, ever".
+  local planned_records="$eligible_n" batch_cap_applied=false
+  if [ "$planned_records" -gt "$REPLAY_PREFLIGHT_BATCH_CAP" ]; then
+    planned_records="$REPLAY_PREFLIGHT_BATCH_CAP"
     batch_cap_applied=true
   fi
+  local planned_replays=$(( planned_records * REPLAY_ARMS_N ))
+  local planned_pairs="$planned_records"
+  local eligible_pairs="$eligible_n"
 
-  local est_tokens=$(( planned_n * REPLAY_PREFLIGHT_TOKENS_PER_REPLAY ))
+  local est_tokens=$(( planned_replays * REPLAY_PREFLIGHT_TOKENS_PER_REPLAY ))
   local ceiling_exceeded=false
   [ "$est_tokens" -gt "$REPLAY_PREFLIGHT_CEILING_TOKENS" ] && ceiling_exceeded=true
 
+  # Significance reachability is asked in PAIRS — the same unit the report
+  # producer applies MODEL_COMPARISON_MIN_SAMPLE_N to. Asking it in records
+  # or in one arm's replay count answers a different question than the one
+  # the report will ask.
   local reachable=false reachable_reason=""
-  if [ "$eligible_n" -ge "$MODEL_COMPARISON_MIN_SAMPLE_N" ]; then
+  if [ "$eligible_n" -eq 0 ]; then
+    reachable_reason="eligible-N is 0 corpus records — no usable replay candidates in this corpus, so no paired outcome can be produced at all"
+  elif [ "$planned_pairs" -ge "$MODEL_COMPARISON_MIN_SAMPLE_N" ]; then
     reachable=true
+  elif [ "$eligible_pairs" -ge "$MODEL_COMPARISON_MIN_SAMPLE_N" ]; then
+    reachable_reason="this batch plans $planned_pairs paired outcomes ($planned_records corpus records x $REPLAY_ARMS_N arms = $planned_replays executed replays), below MODEL_COMPARISON_MIN_SAMPLE_N ($MODEL_COMPARISON_MIN_SAMPLE_N) — the corpus's $eligible_pairs eligible pairs could reach the floor only across more than one invocation (REPLAY_PREFLIGHT_BATCH_CAP=$REPLAY_PREFLIGHT_BATCH_CAP binds here), never from this batch alone"
   else
-    reachable_reason="eligible-N ($eligible_n) is below MODEL_COMPARISON_MIN_SAMPLE_N ($MODEL_COMPARISON_MIN_SAMPLE_N) — the verdict would always be inconclusive at this N"
+    reachable_reason="this batch plans $planned_pairs paired outcomes ($planned_records corpus records x $REPLAY_ARMS_N arms = $planned_replays executed replays), below MODEL_COMPARISON_MIN_SAMPLE_N ($MODEL_COMPARISON_MIN_SAMPLE_N), and the whole corpus offers only $eligible_pairs eligible pairs — the verdict would always be inconclusive at this N"
   fi
 
   # The MDE disclosure — genuinely CONSUMES stats.sh's own `mde` primitive
-  # (never a second, hand-rolled computation of it). No real per-replay cost
-  # variance exists yet (replay execution is #1258's job), so
+  # (never a second, hand-rolled computation of it). Its n is this batch's
+  # PLANNED PAIRS, the same n stats.sh will see downstream: feeding it the
+  # larger record/pool count would disclose a smaller (more flattering)
+  # detectable effect than the run can actually deliver. No real per-replay
+  # cost variance exists yet (replay execution is #1258's job), so
   # REPLAY_PREFLIGHT_ASSUMED_STDDEV_TOKENS stands in as a config-named,
   # operator-tunable placeholder pending real historical variance.
-  local mde_json="null"
-  if [ "$eligible_n" -ge 1 ]; then
+  local mde_json="null" mde_n_json="null"
+  if [ "$planned_pairs" -ge 1 ]; then
     local mde_out mde_rc=0
-    mde_out="$(bash "$STATS_SH" mde --n "$eligible_n" --stddev "$REPLAY_PREFLIGHT_ASSUMED_STDDEV_TOKENS" 2>&1)" || mde_rc=$?
+    mde_out="$(bash "$STATS_SH" mde --n "$planned_pairs" --stddev "$REPLAY_PREFLIGHT_ASSUMED_STDDEV_TOKENS" 2>&1)" || mde_rc=$?
     if [ "$mde_rc" -ne 0 ] || ! jq -e . >/dev/null 2>&1 <<<"$mde_out"; then
       preflight_cannot_evaluate "could not reach the stats.sh mde primitive: $mde_out"
       return 1
     fi
     mde_json="$mde_out"
-  else
-    reachable_reason="eligible-N is 0 — no usable replay candidates in this corpus"
+    mde_n_json="$planned_pairs"
   fi
 
   # THE QUOTA-GATE CONSULT — explicit scope (temperloop#1256), not assumed.
@@ -881,24 +965,39 @@ cmd_preflight() {
   fi
 
   jq -cn \
-    --argjson eligible_n "$eligible_n" --argjson planned_n "$planned_n" \
+    --argjson eligible_n "$eligible_n" --argjson planned_n "$planned_records" \
+    --argjson planned_records_n "$planned_records" --argjson planned_replays_n "$planned_replays" \
+    --argjson planned_pairs_n "$planned_pairs" --argjson eligible_pairs_n "$eligible_pairs" \
+    --argjson arms_n "$REPLAY_ARMS_N" \
     --argjson batch_cap "$REPLAY_PREFLIGHT_BATCH_CAP" --argjson batch_cap_applied "$batch_cap_applied" \
     --arg cost_basis "token_count" \
     --argjson tokens_per_replay "$REPLAY_PREFLIGHT_TOKENS_PER_REPLAY" \
     --argjson estimated_total_tokens "$est_tokens" \
     --argjson ceiling_tokens "$REPLAY_PREFLIGHT_CEILING_TOKENS" --argjson ceiling_exceeded "$ceiling_exceeded" \
     --argjson min_sample_n "$MODEL_COMPARISON_MIN_SAMPLE_N" --argjson significance_reachable "$reachable" \
-    --arg reachable_reason "$reachable_reason" --argjson mde "$mde_json" \
+    --arg reachable_reason "$reachable_reason" --argjson mde "$mde_json" --argjson mde_n "$mde_n_json" \
     --argjson assumed_stddev_tokens "$REPLAY_PREFLIGHT_ASSUMED_STDDEV_TOKENS" \
     --argjson quota "$quota_json" --argjson stop "$stop" --arg stop_reason "$stop_reason" \
     '{outcome:"PREFLIGHT",
+      units:{
+        basis: "THREE non-interchangeable units (temperloop#1379). One CORPUS RECORD is one merged outcome; it is replayed in BOTH arms, so 1 planned record = arms_n executed replays = 1 paired outcome. The token estimate is budgeted over EXECUTED REPLAYS (both arms); MODEL_COMPARISON_MIN_SAMPLE_N is a floor on PAIRED OUTCOMES, the same unit the comparison report feeds stats.sh (report-producers/model-comparison, its pairing block)",
+        eligible_n: "corpus_records", planned_n: "corpus_records",
+        planned_records_n: "corpus_records", planned_replays_n: "executed_replays",
+        planned_pairs_n: "paired_outcomes", eligible_pairs_n: "paired_outcomes",
+        batch_cap: "corpus_records", estimated_total_tokens: "tokens",
+        tokens_per_replay_estimate: "tokens_per_executed_replay",
+        min_sample_n: "paired_outcomes", mde_n: "paired_outcomes"},
+      arms_n:$arms_n,
       eligible_n:$eligible_n, planned_n:$planned_n,
+      planned_records_n:$planned_records_n, planned_replays_n:$planned_replays_n,
+      planned_pairs_n:$planned_pairs_n, eligible_pairs_n:$eligible_pairs_n,
       batch_cap:$batch_cap, batch_cap_applied:$batch_cap_applied,
       cost_basis:$cost_basis, tokens_per_replay_estimate:$tokens_per_replay,
       estimated_total_tokens:$estimated_total_tokens, estimated_cost:$estimated_total_tokens,
       ceiling_tokens:$ceiling_tokens, ceiling_exceeded:$ceiling_exceeded,
       min_sample_n:$min_sample_n, significance_reachable:$significance_reachable,
-      reachable_reason:$reachable_reason, assumed_stddev_tokens:$assumed_stddev_tokens, mde:$mde,
+      reachable_reason:$reachable_reason, assumed_stddev_tokens:$assumed_stddev_tokens,
+      mde:$mde, mde_n:$mde_n,
       quota:$quota, stop:$stop, stop_reason:$stop_reason,
       confirmation_required:true}'
 
