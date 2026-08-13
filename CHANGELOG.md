@@ -14,7 +14,9 @@ reads that marker; a stranger greps for it before pulling.
 
 ## [Unreleased]
 
-### Changed
+## [0.29.0] - 2026-08-13 — BREAKING
+
+### Changed — BREAKING
 
 - **`/sweep`'s spike-close arm now lands a real board Done write via
   `board_close_done`, and both arms' false close→Done "cascade" claim is
@@ -307,6 +309,131 @@ reads that marker; a stranger greps for it before pulling.
   legitimately names a different thing there. `llms.txt`'s stale `try` ->
   `try --demo` -> `init` quickstart line is corrected to the real path.
   Documentation only; no behavior change.
+
+- **The four command-spec sub-issue *reads* now route through the board
+  adapter's `board_sub_issues` instead of a raw `gh api .../sub_issues`
+  call** (#1140): `assess.md`'s candidate-item enumeration, `build.md`'s
+  epic-close open-children count, `next.md`'s epic-state rollup, and
+  `fix.md`'s epic-size refusal gate. Each site sources `lib/board.sh` plus a
+  guarded `lib/cache.sh` in the same Bash call it reads from (shell state
+  does not persist across calls) and, at the two gate-bearing sites
+  (`build.md`'s epic-close count, `fix.md`'s refusal gate), carries an
+  inline note that the read must stay LIVE — `board_sub_issues` has no
+  cached arm today (removed in #1163), and a future cached arm pointed at
+  either gate without re-litigating that is the #1030 failure mode (a
+  cached read silently reporting 0 children armed a wrongful epic-close).
+  This is the prose half of the routing #1119/PR #1139 already applied on
+  the script side (`build/board-mirror.sh`), which also added the
+  `[all|open|closed]` state filter `build.md`'s open-count now uses. No
+  write site is touched.
+
+- **`/sweep`'s shared-hotspot rule now records that `CHANGELOG.md` is no longer
+  a universal hotspot, and why** (#1218). The rule tells the Phase-2 chunker to
+  sequence singletons that touch the same file into *different* chunks. It could
+  not do that for `CHANGELOG.md`, because every contract-surface kernel item
+  touched it — so a multi-item kernel chunk collided by construction rather than
+  by coincidence.
+
+  That premise is now false. Under `changelog.d/` fragments (#1321) and the gate
+  cutover that requires one (#1322), a contract-surface PR writes its own new
+  file instead of editing `CHANGELOG.md`, so two `/sweep`-driven singletons in
+  one chunk share no changelog line and cannot collide on one.
+
+  The deliverable is therefore a **subtraction**: no CHANGELOG-specific chunker
+  rule was added, and the general shared-hotspot heuristic is unchanged — it is
+  still correct for composition roots and other genuinely shared files. What the
+  spec gains is one paragraph marking the CHANGELOG case as *resolved at the
+  source*, so a future reader sees a closed concern rather than a missing one and
+  does not re-file it.
+
+- **The model-usage attribution stream (#1253, epic #1225 "model comparison
+  harness") is now actually wired into every emit-feasible spawn seat**
+  (#1255). The L0 usage-capture-feasibility spike named three seats that can
+  emit a token-bearing record today — `pipeline-drive.sh`'s level-5b safe
+  driver (A7) and level-5c merge driver (A8), and
+  `pipeline-retro-judge-spawn.sh`'s retro judge (A9) — and all three now
+  call `emit-model-usage.sh` after every spawn, via a new shared extraction
+  helper (`workflows/scripts/lib/model-usage-envelope.sh`) that turns the
+  captured `claude -p --output-format json` envelope into one attribution
+  record: resolved model, provider, token counts, duration, and an
+  `issue:<n>` or board-scoped `issue:board-<n>` outcome ref for a batch
+  spawn covering several issues at once. `validate-model-usage-emit.sh`
+  gains a spawn-site coverage check (`--scan-dir` test seam): it fails CI if
+  a wired seat's emit call is removed, or if a NEW spawn site captures the
+  same `--output-format json` envelope shape without wiring emission — so
+  future spawn sites owe an emission mechanically, not by convention. Every
+  structurally un-emittable seat (the `.mjs` `agent()` class, harness-native
+  `Task`/agent-frontmatter fan-out, interactive command sessions, and the
+  `try.sh`/`configure.sh` text-output seats tracked by #1264) is named in
+  the validator's own exclusion list with the spike's reason, rather than
+  silently absent from the denominator.
+
+- **The changelog completeness gate now requires a `changelog.d/` fragment
+  rather than a line under `## [Unreleased]`** (#1322).
+  `workflows/scripts/check-changelog-entry.sh` fails a PR that changes contract
+  surface without adding a conforming
+  `changelog.d/<slug>.<category>[.breaking].md` present at HEAD; a direct
+  `## [Unreleased]` line no longer satisfies it. That is what removes the merge
+  collision at its source rather than routing around it — a mandatory entry in
+  one file at one anchor meant 25 of the last 25 commits touched `CHANGELOG.md`
+  and any two concurrent PRs conflicted by construction, while two PRs writing
+  two distinct new files share no line and cannot conflict.
+
+  Unchanged: the escape-hatch grammar (`Changelog: none|amend — <reason>`, via
+  a PR label, a PR-body line or a commit trailer, reason still required), and
+  the released-section-scope property with its merge-base discriminator —
+  though the latter's reason to exist now narrows to the release-cut PR, the
+  only PR that still edits `CHANGELOG.md` at all.
+
+  `VERSIONING.md` § Cutting a release is rewritten to the assembler-based flow.
+  Its old merge-walking `^CHANGELOG.md$` backfill loop is replaced by
+  `scripts/assemble-changelog.sh --assert-empty <rev>`, a deterministic
+  assertion that no unassembled fragment survives at the tagged commit. That is
+  both cheaper than the loop and catches what the loop never could: the
+  cut-vs-sibling **omission** race, where a cut PR deleting fragments and a
+  sibling PR adding one touch disjoint files, so git merges them clean and the
+  sibling's entry goes missing — not wrong — from the shipped section.
+
+  **Migration.** A vendoring overlay must create the directory at its **own**
+  repo root, not `kernel/changelog.d/`: `mkdir -p changelog.d && touch
+  changelog.d/.gitkeep && git add changelog.d/.gitkeep`, then author one
+  fragment per contract-surface PR. Until it does, the gate degrades legibly
+  rather than breaking the build: a tree carrying `.kernel-pin` gets an
+  actionable skip of the completeness property — naming its pinned kernel tag
+  and that exact command — while the section-scope property keeps running. A
+  tree with **neither** `changelog.d/` nor `.kernel-pin` is not a vendoring
+  consumer but a kernel checkout that lost the directory, and there the gate
+  fails loudly: a bare skip would let the kernel silently disable its own gate,
+  which is worse than having no gate.
+
+  The **same `.kernel-pin` discriminator now governs the `CHANGELOG.md` probe**,
+  which runs first. A tree with no `CHANGELOG.md` and no `.kernel-pin` fails
+  loudly instead of skipping; one carrying the pin still gets the legible skip.
+  Previously that probe exited 0 unconditionally, which made the fail-loud arm
+  above unreachable whenever a checkout had lost `CHANGELOG.md` as well —
+  probe order was the only thing holding the invariant up. An overlay that
+  genuinely keeps no changelog needs `.kernel-pin` present at its own repo
+  root, exactly as the `changelog.d/` degradation already required.
+
+- **`docs/cost-and-autonomy.md` and `temperloop init`'s handoff now disclose
+  the first-epic cost position instead of leaving it as "no fixed figure /
+  none by default"** (#1130). The temperloop#1348 spike found no source in
+  this repo's own telemetry supports a published spend band for the first
+  epic (every candidate was either too thin or measured the wrong
+  population — an operator's own established checkout, never a fresh
+  testbed); § Cost at a glance now states that finding directly and routes
+  the actual measurement to temperloop#1352, rather than publishing a
+  fabricated number. It also states plainly, and explains why, there is no
+  *tool-enforced* dollar ceiling on `/assess`/`/build`: `--max-budget-usd`
+  only caps a **headless** `claude -p` call, and those commands instead run
+  in your own **interactive** `claude` session. `temperloop testbed` and
+  `temperloop init` are now priced at their verified **$0** (no `claude`
+  invocation in either path) instead of being left unpriced next to the
+  un-figured first-epic row, and the first epic is described accurately as a
+  fixed, kernel-shipped 5-item/3-level epic rather than "scales w/ the
+  work". `temperloop init`'s closing handoff block gains a new `cost:` line
+  — distinct from the stable `next step:` marker `install-tier2.yml` greps —
+  naming this cost position before handing the reader to `/assess`.
 
 ### Added
 
@@ -635,6 +762,251 @@ reads that marker; a stranger greps for it before pulling.
   `gate-paths.tsv` row) plus a fixture suite proving both the real tree's
   current agreement and the gate's red on a deliberately disagreeing
   anchor.
+
+- **The model-comparison replay module gains corpus selection and an
+  isolated replay worktree** (#1254, epic #1225 "model comparison harness").
+  `workflows/scripts/model-comparison/replay.sh` adds `resolve-base`
+  (fork-point base resolution — `git merge-base <merge>^1 <merge>^2`, never
+  `<merge>^1` or the moving `baseRefOid`), `diff-scope` (the N/T/X/R
+  solution-surface/test/policy-churn/residue partition, rejecting unnamed
+  code residue and flagging an md-only residue rather than silently
+  accepting or dropping it), `corpus` (real `gh` reads selecting eligible
+  closed-issue + merged-PR pairs from a repo's own history, applying every
+  contamination-trap disposition from the ground-truth spike and ranking
+  eligible PRs by scored footprint — smaller/single-purpose first), and
+  `worktree-prepare`/`worktree-teardown`/`verify-clean-parent` (an isolated
+  replay worktree built on `workflows/scripts/build/worktree.sh`'s existing,
+  unmodified lifecycle: a worktree-scoped push-remote disable so no
+  `git push` from inside it can reach a real remote, the same per-worktree
+  write-jail guard marker every `/build` worker worktree gets, and a
+  deterministic per-repo scratch path — each asserted structurally and
+  independently, with `verify-clean-parent` as a documented backstop, never
+  the primary control). `schema` prints the versioned scored-record shape
+  (`replay-record-v1`) downstream consumers can build against before replay
+  execution/scoring lands. Four new registered settings
+  (`REPLAY_CORPUS_LIMIT`, `REPLAY_CORPUS_SAMPLE_MULTIPLIER`,
+  `REPLAY_NAMED_PATH_EXTENSIONS`, `REPLAY_PUSH_DISABLE_SENTINEL`) and a new
+  `scripts/quality-gates.sh` entry
+  (`workflows/scripts/model-comparison/tests/test_replay_isolation.sh`).
+
+- **The model-comparison replay module gains a pre-flight spend gate** (#1256,
+  epic #1225 "model comparison harness"). `workflows/scripts/model-comparison/
+  replay.sh` adds a `preflight` subcommand that reads an already-computed
+  `corpus` JSONL file and, before any replay token is spent, prints
+  eligible-N, a batch-cap-bounded token/cost estimate (`cost_basis:
+  "token_count"` — this module states no dollar figure), and whether that
+  eligible-N can reach the module's significance threshold at all — by
+  genuinely consuming `stats.sh`'s own `mde` primitive rather than a second,
+  hand-rolled computation of it. A projected batch whose estimated cost
+  exceeds the new `REPLAY_PREFLIGHT_CEILING_TOKENS`, or that lands while
+  `workflows/scripts/build/quota-gate.sh` reports "pause" (the run now
+  explicitly routes through that gate), **stops at pre-flight** rather than
+  partway through a later execution step. Fails closed
+  (`outcome:"CANNOT_EVALUATE"`, non-zero exit) on an absent, unreadable,
+  empty, or malformed corpus file, or an unreachable `stats.sh` primitive —
+  it never reports a cheap/reachable estimate it did not actually compute.
+  Replay batches remain operator-initiated only: no autonomous or cron arm
+  was added, proven by a fixture that scans every scheduled pipeline entry
+  point for a reference to `replay.sh`. Four new registered settings
+  (`REPLAY_PREFLIGHT_BATCH_CAP`, `REPLAY_PREFLIGHT_TOKENS_PER_REPLAY`,
+  `REPLAY_PREFLIGHT_CEILING_TOKENS`, `REPLAY_PREFLIGHT_ASSUMED_STDDEV_TOKENS`)
+  and a new `scripts/quality-gates.sh` entry
+  (`workflows/scripts/model-comparison/tests/test_replay_preflight.sh`).
+
+- **Live candidate tagging gains its provenance layer** (#1257, epic #1225
+  "model comparison harness"). New
+  `workflows/scripts/model-comparison/tagging.sh` adds no new model-selection
+  mechanism — an operator still points the existing `SWEEP_WORKER_MODEL`
+  setting at the candidate — and instead provides the provenance half: `tag`
+  writes a bounded window record (provider/model/run id, keyed and
+  timestamped per run) to a repo-local, gitignored ledger, emits a matching
+  attribution-only telemetry tag through the existing
+  `workflows/scripts/emit-model-usage.sh` raw lake (`seat sweep-live-tag`,
+  `usage_source unavailable` — a `/sweep` fix-worker seat isn't
+  token-capture-feasible per the L0 spike), and prints a PR provenance stamp
+  naming model and provider only (never a key, never content). `crosscheck`
+  mechanically cross-references a PR body/trailer's stamp against the
+  recorded window and telemetry-lake records by run id and FAILS on any
+  disagreement — a doctored stamp, a stamp with no matching record, or a
+  live-tagged run with no stamp are all caught, fail-closed (a distinct
+  `CANNOT EVALUATE` on any absent/unreadable/malformed/ambiguous input,
+  never a silent pass). Designation is governed by the same committed
+  provider allowlist (`workflows/scripts/model-comparison/allowlist.sh`)
+  every other provider check in this module reads. One new registered
+  setting (`LIVE_TAG_WINDOW_LOG`) and a new `scripts/quality-gates.sh` entry
+  (`workflows/scripts/model-comparison/tests/test_live_tagging.sh`).
+
+- **The model-comparison replay module can now RUN a candidate and SCORE it**
+  (#1258, epic #1225 "model comparison harness"). `replay.sh execute` drives a
+  candidate headlessly inside an already-prepared replay worktree and emits one
+  schema-complete `replay-record-v1` record with its `candidate` and `score`
+  sub-objects — the diff partition's outcome, the gate result, token counts and
+  duration — populated. Those two sub-objects shipped in #1254 as documented
+  placeholders for exactly this item; completing them is not a schema v2.
+
+  Scoring lives in the new `workflows/scripts/model-comparison/score.sh` and
+  takes its rules from the keystone spike (#1247) rather than re-deriving them:
+  the named solution surface is diffed with `--ignore-all-space
+  --ignore-blank-lines`, the test surface is scored on presence and pass rather
+  than bytes, policy churn is neutral, and the mechanical outcome scorer is
+  `scripts/quality-gates.sh` — specifically the copy inside the candidate's own
+  base worktree, never today's tree, so a historical item is gated by the gate
+  suite it actually shipped under. Contamination-suspect items are flagged in
+  the record (template drift, whitespace-only truth churn, residual `.md`
+  propagation, acceptance bullets carrying hard numeric literals).
+
+  A record distinguishes an **integration error** from a scored outcome, and
+  `score.sh aggregate` reports the two as separate metrics: an integration
+  error contributes to a compatibility figure and to no quality figure at all
+  — not the numerator, not the denominator — so a vendor integration failure
+  can never be read as a model quality failure.
+
+- **`validate-provider-disclosure.sh` now enforces send-vs-log coverage**
+  (#1258). A send to a non-default provider — an attribution record in the
+  per-seat model-usage stream whose `provider` is not the trusted default —
+  with no matching disclosure-log entry for the same `(provider, item_ref)`
+  now **fails** the gate. This is the half #1250's own acceptance explicitly
+  deferred, unblocked by the `provider` field #1253 added. `replay.sh execute`
+  discloses *before* it sends and refuses the send if the disclosure fails, so
+  the log may legitimately run ahead of the sends and never behind them.
+
+- **Replay records gain a judge pass** (#1259, epic #1225 "model comparison
+  harness"). New `workflows/scripts/model-comparison/judge.sh` scores an
+  already-executed `replay-record-v1` record (temperloop#1258) with a
+  strong-tier judge model (`MODEL_COMPARISON_JUDGE_MODEL`, default
+  `claude-opus-4-8`), attaching the result as a `judge` sub-object alongside
+  the record's existing mechanical `score`. The rubric
+  (`workflows/scripts/model-comparison/rubric.md`) is plain prompt text
+  drawn from this repo's own reviewer-agent charters as source material — no
+  reviewer agent is dispatched at judge time. A **judge≠candidate guard**
+  compares the judge's provider+model against the record's candidate before
+  any call and REFUSES an exact match structurally (no spend, no call); the
+  guard is documented, at its own site, as preventing self-grading ONLY — it
+  does not address model-family style bias (that is #1260, deliberately
+  separate). `judge-batch` never silently drops a row: a judge that becomes
+  unavailable mid-batch marks only the affected rows with a named
+  `degradation_notice` (`judge.scored:false`, `judge.quality_score:null`),
+  structurally distinct from a genuine `judge.quality_score:0` the judge
+  actually rendered. Same hermetic-by-construction shape as replay-execute:
+  every call routes through an injectable `--judge-runner` seam or the
+  explicit `--live` flag, with no implicit fallback to a `claude` binary on
+  PATH. Two new registered settings (`MODEL_COMPARISON_JUDGE_MODEL`,
+  `MODEL_COMPARISON_JUDGE_TIMEOUT_SECS`) and a new
+  `scripts/quality-gates.sh` entry
+  (`workflows/scripts/model-comparison/tests/test_judge.sh`).
+
+- **Optional cross-family judge rotation** (#1260, epic #1225 "model
+  comparison harness"). New `judge.sh judge-rotate` subcommand scores one
+  replay record with judges from more than one provider family (a
+  comma-separated `--judges provider:model,provider:model,...` panel) and
+  reports the **variance** of their `quality_score` across the panel —
+  consumed from `stats.sh`'s own sample-stddev (squared here in a single line
+  of jq arithmetic), never a second statistics implementation. **OFF by
+  default** (`MODEL_COMPARISON_JUDGE_ROTATION_ENABLED=0`): with it off,
+  `judge-rotate` refuses immediately (`CANNOT_EVALUATE`) and `judge`/
+  `judge-batch`'s own behaviour is byte-identical to the pre-rotation module.
+  Each rotation member is scored via the exact same judge≠candidate guard,
+  non-default-provider allowlist+disclosure gate (the same committed
+  allowlist and same disclosure log a candidate replay uses), and
+  `candidate-session.sh` spawn (containment overlay + provider-key health
+  check) the single-judge path already uses — reused verbatim, never
+  reimplemented for the panel case. Every emitted record carries an explicit
+  disclaimer: rotation **REPORTS** family-bias variance and does **NOT
+  PROVE** the resulting judgment is free of model-family bias. Fail-closed
+  throughout (temperloop#1365 class): too few JUDGED members, JUDGED members
+  from only one provider family, or a genuine `stats.sh` failure all
+  `CANNOT_EVALUATE` the variance rather than reporting a fabricated or
+  zero-standing-in figure. Two new registered settings
+  (`MODEL_COMPARISON_JUDGE_ROTATION_ENABLED`,
+  `MODEL_COMPARISON_JUDGE_ROTATION_MIN_JUDGES`) and a new
+  `scripts/quality-gates.sh` entry
+  (`workflows/scripts/model-comparison/tests/test_judge_rotation.sh`).
+
+- **A comparison report producer for the model-comparison harness** (#1261).
+  `workflows/scripts/report-producers/model-comparison` rolls a baseline arm
+  and a candidate arm of scored replay records into one JSON report: whole-job
+  cost per merged outcome, judge quality scores, gate outcomes,
+  intervention/rework proxies and durations, with a bootstrap confidence
+  interval and a minimum-detectable-effect disclosure ("at this N, only deltas
+  of at least X are detectable") on every run. Every statistic is taken from
+  `model-comparison/stats.sh` and the scored-only quality split from
+  `score.sh aggregate` — neither is recomputed here, so a bound in the report
+  and a bound from the library cannot drift apart.
+
+  The report is built to be honest about what it does not know. It states its
+  emit-coverage percentage against the emit-feasible seat denominator (with
+  the excluded seats named), its corpus window, its quality-gate versions and
+  its cost basis — cost-weighted **token counts**, explicitly neither metered
+  dollars nor a subscription-usage share — on every run, not only when those
+  read well. A run below the sample threshold reports `inconclusive` and emits
+  no `winner` key at all; a run it cannot evaluate renders a single
+  `skipped -- model-comparison: <reason>` line at exit 0 and no report object,
+  so "could not evaluate", "inconclusive" and "the candidate is better" stay
+  three visibly different statements. A stale or absent price table degrades
+  to a dated staleness label or a stated token-counts-only basis rather than a
+  silently missing line, and a row hit by a mid-batch judge outage carries its
+  own named degradation notice instead of being scored as a zero.
+
+  Additive only: new files and new keys, no change to the existing `tokens`
+  producer's slot format or to the headline spend figure ADR 0020 owns. Per
+  ADR 0027 the kernel ships **no** `.temperloop/report.d/` shim for it, so
+  `temperloop report` never runs it until an adopter opts in with the same
+  one-file locator shim `tokens` uses.
+
+- **`pipeline-spend-report.sh` gains an opt-in `--by-agent-type` flag** (#1314), a
+  per-seat attribution side channel over Claude Code's own agent-frontmatter
+  sidecars (`agent-<id>.meta.json`). Requires `--root` to name a single Claude
+  Code project directory (one whose session subdirectories hold at least one
+  `subagents/agent-*.jsonl` journal) and refuses with exit 2 otherwise, rather
+  than ever walking machine-wide. The emitted `by_agent_type` JSON key is
+  self-contained — its `agents`/`api_calls`/`units` totals are NEVER a
+  decomposition of the existing `units_total` headline, which this flag leaves
+  completely untouched (`schema_version` stays `1`). A sidecar's `agentType` is
+  reported as a seat only when it matches a deployed `claude/agents/**/*.md`
+  basename (an allowlist, not a passthrough — `general-purpose` and friends
+  bucket to `unattributed`, with the raw value kept visible for distribution
+  rather than asserted as a seat). See ADR 0026's temperloop#1314 corrections
+  for the rationale.
+
+- **The replay BATCH DRIVER — the thing that connects the model-comparison
+  harness end to end** (#1401): `workflows/scripts/model-comparison/batch.sh`,
+  operator-invoked, turns a `replay.sh corpus` file into the `baseline.jsonl`
+  and `candidate.jsonl` arm files `workflows/scripts/report-producers/model-comparison`
+  reads. Epic #1225 shipped sixteen components and nothing between the corpus
+  at one end and the report at the other; this is that connection, and it
+  ORCHESTRATES only — it derives no statistic and re-implements no scoring,
+  judging, corpus selection or isolation.
+  - **The spend gate runs FIRST, and consent is explicit.** `replay.sh
+    preflight` is consulted before the first worktree is prepared: a `stop`
+    verdict, or a missing `--confirm`, exits 3 having spent nothing. The batch
+    cap, the planned-record/replay/pair counts and the cost basis are read
+    verbatim off that gate rather than re-derived, so the batch executed and
+    the batch authorized cannot drift apart — a selection that disagrees with
+    the authorization is refused before any spend.
+  - **The temperloop#1379 two-arm unit contract holds in EXECUTION, not just
+    in the estimate.** The cap binds CORPUS RECORDS; every selected record is
+    replayed in BOTH arms; the driver refuses outright if pre-flight budgeted a
+    different `arms_n`.
+  - **Fail-soft per record, fail-closed per run.** One record's failure is
+    recorded with its reason and the batch continues (exit 4 `BATCH_DEGRADED`,
+    with every failure named); an unreadable input, a missing sibling script or
+    an unparseable gate verdict is `CANNOT EVALUATE` and non-zero. The replay
+    completion rate falls out of the driver's own output, with its unit named.
+  - **Resumable, by leg.** Re-invoking after an interruption re-spends no
+    replay and no judge call that already completed; a state directory bound to
+    a different corpus is refused rather than silently merged into one arm file.
+  - **Isolation end to end.** Every worktree is torn down on the success path,
+    the failure path, and (via an EXIT trap plus an end-of-batch sweep) the
+    interrupted path; `replay.sh verify-clean-parent` runs after the batch and a
+    dirty parent is a named degradation.
+  - **No implicit model call, ever.** Each arm requires an explicit
+    `--baseline-runner`/`--candidate-runner` seam or the single explicit
+    `--live` flag; with neither, the driver refuses before it even reads the
+    gate. `workflows/scripts/model-comparison/tests/test_replay_batch.sh`
+    (registered in `scripts/quality-gates.sh` and `gate-paths.tsv`) drives every
+    arm through recorded runners, runs the REAL report producer on the driver's
+    own output, and carries eight mutation proofs plus a canary `claude` that
+    the whole suite proves was never invoked.
 
 ### Changed
 
@@ -1134,6 +1506,109 @@ reads that marker; a stranger greps for it before pulling.
   `reason: "not-due"` carrying the tracker count and the computed `due_at`, so
   a steady-state debounce wait reads distinctly from the two broken-judge
   skips (`not-declared`, `headless-unsupported`) instead of going quiet.
+
+- **The board adapter now owns sub-issue linkage writes** (#1188). `board_add_sub_issue` / `board_remove_sub_issue` in `workflows/scripts/board/lib/board.sh` close the last sanctioned raw-`gh api .../sub_issues` bypass — `build.md`, `triage.md`, and `board-mirror.sh` all previously POSTed the sub-issues REST endpoint directly instead of going through the adapter. Both writers resolve the child issue's database id, bust the issue-cache store entry on success (matching `board_set_status`'s shape), and are covered by `test_sub_issue_write.sh`.
+
+- **A live replay now actually runs inside the replay worktree** (#1376). `replay.sh execute`'s `--live` arm spawned the candidate through `candidate-session.sh` without ever changing directory, so the session worked in whatever cwd the caller happened to have and only the *prompt* named the prepared worktree — prose, not a mechanism. Every live replay therefore measured the wrong tree (on a host with the build-worktree guard armed the candidate was denied every write and returned "Blocked"; without that guard armed it would have committed into the operator's own checkout). The spawn is now wrapped in a subshell that `cd`s into the worktree, so a candidate's cwd-relative `git` resolves inside it regardless of whether any PreToolUse hook is armed. The offline `--candidate-runner` arm is unchanged — it was already handed the worktree explicitly, which is why no existing test could see the defect; the new `test_replay_live_cwd.sh` gate pins the live arm's spawn cwd directly.
+
+- **The replay scorer runs its quality-gate subprocess under a constructed environment, not an inherited one** (#1378, #1377). `score.sh` sources `build.config.sh` for its own two settings, and that file reads the operator's machine conf and then `export`s ~83 pipeline settings — so the gate child simply inherited all of them (measured: 129 variables in the child, 13 after). Two symptoms, one seam. **(#1378)** Inside the child, `build.config.sh`'s `: "${VAR:=default}"` idiom makes an already-set *env* value outrank every lower precedence layer, so `bin/subcommands/tests/test_config.sh`'s `machine-conf-set BUILD_MERGE_GATE_WINDOW` case resolved `layer=env` under `score.sh` and `layer=machine-conf` bare — every replay recorded `gate_result.passed=false` regardless of candidate quality, so a model that fixed its issue perfectly and one that changed nothing scored identically and the mechanical outcome scorer contributed zero discriminating signal. **(#1377)** The leaked set included `KNOWLEDGE_STORE_ROOT` pointing at the operator's real knowledge store; an explicit root overrides the sandboxed default-root seam that `test_install_lifecycle.sh` step 4b relies on, so that suite's `ks_sync init` leg `git init`-ed the live store. The gate is now invoked through `env -i` plus a named, reviewable allowlist (`PATH HOME USER LOGNAME SHELL TERM TMPDIR TZ`, locale, and the XDG roots) — the same shape `candidate-session.sh` already uses for its own child — so every `BUILD_*`/`PIPELINE_*`/`REPLAY_*` setting and `KNOWLEDGE_STORE_ROOT` are absent by construction rather than by denylist, and a setting added to `build.config.sh` later cannot re-open the leak. `score.sh` still reads `build.config.sh` for `REPLAY_SCORE_GATE_RELPATH` and `REPLAY_SCORE_GATE_TIMEOUT_SECS`; only what the child inherits changed. The new `test_score_gate_env.sh` gate pins both properties, supplying its own machine conf so the leak is armed identically on a laptop and on CI, and comparing `score.sh`'s verdict against the same gate entry point invoked bare.
+
+- **The replay pre-flight now budgets BOTH comparison arms, and tests
+  significance against planned PAIRS** (#1379, epic #1225 "model comparison
+  harness"). `workflows/scripts/model-comparison/replay.sh preflight` had two
+  unit errors that its existing fixture suite could not see, because every
+  number was wired correctly to the wrong quantity. **(a)** The token estimate
+  multiplied the per-replay figure by the planned *corpus record* count,
+  budgeting a single arm for a comparison that executes every record in
+  **both** the baseline and the candidate arm — so every batch was projected at
+  exactly half its real cost, and a batch between 1x and 2x
+  `REPLAY_PREFLIGHT_CEILING_TOKENS` cleared the spend gate. The estimate is now
+  over `planned_records_n * arms_n` executed replays, and that two-arm figure
+  is what the ceiling is compared against. **(b)** `significance_reachable`
+  compared the whole corpus's eligible-record pool to
+  `MODEL_COMPARISON_MIN_SAMPLE_N`, ignoring the batch cap that bounds what the
+  invocation will actually replay — so a capped run that could only ever
+  produce 10 paired outcomes reported a floor of 20 as reachable. It is now
+  decided in **paired outcomes** (`planned_pairs_n`), the same unit
+  `workflows/scripts/report-producers/model-comparison` feeds `stats.sh
+  verdict --deltas`, and the MDE disclosure is taken at that same n rather than
+  at the flattering larger one. The emitted JSON gains a `units` map plus
+  `arms_n` / `planned_records_n` / `planned_replays_n` / `planned_pairs_n` /
+  `eligible_pairs_n` / `mde_n`, so a reader can tell at a glance whether a
+  number counts corpus records, executed replays, or paired outcomes — the
+  ground truth being `1 corpus record -> 2 executed replays -> 1 paired
+  outcome`. A non-integer value for any setting the estimate multiplies or
+  compares is now `outcome:"CANNOT_EVALUATE"` and non-zero rather than a
+  silently-zero estimate that would read as "evaluated, and under budget".
+  `cost_basis`, `REPLAY_PREFLIGHT_TOKENS_PER_REPLAY` and the `SPEND_WEIGHT_*`
+  weighting are deliberately untouched here — that seam is #1380. New gate
+  `workflows/scripts/model-comparison/tests/test_replay_preflight_two_arm.sh`
+  pins both defects end to end on the emitted JSON and exit code, each with a
+  mutation proof.
+
+- **The replay spend gate and the comparison report now speak ONE cost unit,
+  and the per-replay constant is grounded in measurement** (#1380, epic #1225
+  "model comparison harness"). `workflows/scripts/model-comparison/replay.sh
+  preflight` reported `cost_basis: "token_count"` — a RAW token sum — while
+  `workflows/scripts/report-producers/model-comparison` reported
+  `cost_basis.unit: "token-counts"`, meaning cost-WEIGHTED units (the
+  `SPEND_WEIGHT_*` multiply-add). Two non-comparable units sharing the word
+  "token", so the batch cost an operator authorized at the gate could not be
+  reconciled against the cost the report handed back: on the one observed live
+  replay they differ by 5.4x (raw 2,506,371 vs cost-weighted 466,530). Both
+  surfaces now emit the same string, `cost-weighted-token-units`, and the gate
+  additionally publishes the `SPEND_WEIGHT_*` values that unit is defined by
+  (weighted figures are comparable only within one weight-retune epoch).
+  **Cost-weighted is the side converged on** because it is the unit that
+  tracks spend — the dominant term in a real replay is `cache_read`, 2.38M of
+  2.51M raw, which the default weights price at a tenth — and because the
+  report is the artifact an operator ultimately reconciles against.
+- `REPLAY_PREFLIGHT_TOKENS_PER_REPLAY` moves from a hand-set placeholder to
+  the measured cost-weighted figure, rounded up to the nearest 10,000. Its
+  **provenance is stated wherever it appears** — in `build.config.sh`, in the
+  setting registry, and in a new `tokens_per_replay_basis` field the gate
+  emits on every run: it is an ESTIMATE from a SINGLE observed live replay
+  (n=1, the #1262 harness validation run), not a fitted average and not
+  derived from the operator's own records, so one sample carries no variance
+  and it deserves order-of-magnitude confidence only. The old value was 3.1x
+  low in the weighted unit and 16.7x low against the same replay's raw total.
+  `REPLAY_PREFLIGHT_ASSUMED_STDDEV_TOKENS` follows it into the same unit (a
+  stddev denominated differently from the mean it varies around is the same
+  collision in miniature).
+- **`REPLAY_PREFLIGHT_CEILING_TOKENS` changed MEANING, not just value** — read
+  the setting's comment before reusing an old number. It is now denominated in
+  cost-weighted units and re-derived under the design rule its predecessor was
+  written to ("a default-cap batch sits comfortably under it; raising
+  `REPLAY_PREFLIGHT_BATCH_CAP` well past default is what trips it"), with the
+  corrected two-arm arithmetic and the measured constant. At the observed
+  token mix this is a real-terms LOOSENING of roughly 5.4x versus the old
+  literal read as raw tokens. That is deliberate and stated rather than
+  silent: the old value was never an external quota or an independent budget —
+  it was itself derived from batch cap x a per-replay constant now known to be
+  3.1x low — and holding its real-terms strictness would have put the ceiling
+  below the cost of the smallest statistically meaningful comparison
+  (`MODEL_COMPARISON_MIN_SAMPLE_N` paired outcomes), i.e. a gate that stops
+  every batch it could ever be asked about.
+- Pre-flight now **FAILS CLOSED on the weights that define its unit**
+  (the #1365 class): missing or malformed `SPEND_WEIGHT_*` is
+  `outcome:"CANNOT_EVALUATE"` and non-zero, with no estimate and no stop
+  verdict emitted — the same refusal the report producer already makes on the
+  same input, so the two surfaces fail together rather than one publishing a
+  unit the other could not resolve. A negative weight is refused too, which a
+  JSON-parse check alone would accept and apply silently.
+- New gate `workflows/scripts/model-comparison/tests/test_replay_preflight_cost_unit.sh`
+  is the first suite that runs BOTH surfaces and compares what they printed:
+  it fails if the two emitted `cost_basis` strings ever diverge (the two files
+  share no sourceable seam, so the shared string is a documented duplicate
+  held honest mechanically rather than by review). It also pins that the
+  shipped per-replay default sits at the measured cost-weighted figure and
+  below the raw one — the interval that distinguishes the two units — that the
+  estimate scales over executed replays in the declared unit, that the
+  ceiling re-derivation is load-bearing (the pre-fix ceiling literal stops a
+  floor-sized batch under the new constant, so a half-fix that raised only the
+  constant is caught), and the fail-closed weights floor. Two mutation proofs
+  against the live `replay.sh`. The #1379 two-arm budget and paired-outcome
+  significance check are untouched and still pinned by their own suite.
 
 ### Added
 
