@@ -1,13 +1,12 @@
 # The managed merge queue — running the whole ladder on a free repo
 
-temperloop#13. GitHub's **native merge queue** (the platform feature
-`gate.sh queue`'s `--auto` incantation relies on) is only provisionable on an
+GitHub's **native merge queue** is only provisionable on an
 **organization-owned repo on a paid plan** — a personal account, or a free
 org, can enable branch protection and required checks, but cannot arm a
-merge queue. Until this contract existed, that was a hard wall: the
-merge-gated build/sweep ladder (`/build`, `/sweep`, the pipeline merge tier)
-assumed a native queue was always available, so the whole pipeline simply
-didn't work on a free personal repo.
+merge queue. That used to be a hard wall: the merge-gated build/sweep
+ladder (`/build`, `/sweep`, the pipeline merge tier) assumed a native queue
+was always available, so the pipeline simply didn't work on a free personal
+repo.
 
 `workflows/scripts/build/gate.sh` closes that gap with a **merge-backend
 seam**: two subcommands, `backend` (selection) and `managed-merge`
@@ -118,3 +117,7 @@ gated merge safe to *automate*), but it's what makes "merge around the
 managed queue" actually impossible rather than merely unlikely, closing the
 same gap a native merge queue's underlying branch protection closes for the
 `NATIVE` backend.
+
+---
+
+*Written by claude-fable-5 on 2026-08-13.*

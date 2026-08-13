@@ -4,37 +4,35 @@ title: Guiding principles
 
 # Guiding principles
 
-This page states the thesis TemperLoop is built on and the fifteen principles
-that follow from it — each one pinned to the in-repo mechanism that embodies
-it, so the claim is falsifiable, not aspirational. Every path below exists in
-this repo today; open it and check (temperloop#135).
+This page states the thesis TemperLoop is built on and the fifteen
+principles that follow from it. Each principle is pinned to the in-repo
+mechanism that embodies it, so the claim is falsifiable, not aspirational —
+every path below exists in this repo today; open it and check.
 
-This page is **dual-use**, the same way `docs/who-its-for.md` is for the
-persona agents: it is the stranger-facing thesis README and ADR-0001 point
-to, and it is also the **charter-derivation source** a principle-referencing
-lens — `/workshop`'s premise gate and its red-team lens — cites back to by
-name, so a design ratified against "principle 13" or "principle 14" resolves
-to an actual, checkable section here rather than a lens inventing its own
-parallel list.
+The page is dual-use: it is the stranger-facing thesis the README points
+to, and it is also the source a principle-citing review lens (`/workshop`'s
+premise gate, the red-team lens) resolves against — a design ratified
+against "principle 13" means the numbered section here, not a list a lens
+invented. That's why the principle numbers and names stay stable.
 
 ## The thesis
 
 To scale AI-driven development, manage agent work with the same machinery
 that already scales medium-to-large engineering organizations: issue
 tracking, chunked contract-scoped work, code and architectural review,
-protected branches, merge queues, WIP caps. An agent session is a fast,
-tireless, occasionally-wrong contributor — the organizational structure that
+protected branches, merge queues. An agent session is a fast, tireless,
+occasionally-wrong contributor — and the organizational structure that
 keeps a large human team coherent (a backlog, a review gate, a lock on
-in-flight work) is exactly what keeps a fleet of agent sessions coherent
-too, for the same reason it works for humans: it doesn't depend on any one
+in-flight work) is exactly what keeps a fleet of agent sessions coherent,
+for the same reason it works for humans: it doesn't depend on any one
 contributor being infallible.
 
 **Claimed axes** — what this buys, and how to tell if it's working:
 
-- **Cheaper** — in agent tokens *and* in human cognitive load. A worker that
-  self-verifies against a checklist burns fewer round-trips than one a human
-  babysits line by line; a human reviewing a batched merge-gate summary
-  spends less attention than one reading every commit live.
+- **Cheaper** — in agent tokens *and* in human cognitive load. A worker
+  that self-verifies against a checklist burns fewer round-trips than one a
+  human babysits line by line; a human reviewing a batched merge-gate
+  summary spends less attention than one reading every commit live.
 - **Aligned** — expected outcome matches delivered outcome, because the
   contract (an issue's acceptance criteria, a plan item's `acceptance:`
   block) is written and reviewed *before* the work starts, not inferred
@@ -45,8 +43,8 @@ contributor being infallible.
 - **Parallel throughput** — independent contract-scoped units run
   concurrently instead of serially through one attention stream.
 - **Auditable / recoverable** — every claim, review, and merge leaves a
-  trail (a board card, a PR, an emitted telemetry record) that survives the
-  session that produced it.
+  trail (a tracked issue, a PR, an emitted telemetry record) that survives
+  the session that produced it.
 - **Bounded blast radius** — a failure (a wrong edit, a runaway loop, a bad
   merge) is contained to the smallest scope that could have caused it, not
   free to spread across a shared checkout or an unreviewed `main`.
@@ -55,16 +53,12 @@ contributor being infallible.
 
 ### 1. Manage agents like an org, not like a chat
 
-A GitHub Projects board (or an issues-only tracker, for a repo with no
-Projects provisioning) is a **cross-session lock**, not a status display.
-Claiming an item — marking it In Progress and stamping the owning
-session — is the first action before investigation even starts, because
+The issue tracker is a **cross-session lock**, not a status display.
+Claiming an item — marking it In Progress and stamping the owning session —
+is the first action before investigation even starts, because
 investigation itself is duplicate-able work the lock is meant to prevent.
-On the autonomous lane, the pipeline's drive-concurrency governor
-(`PIPELINE_DRIVE_CONCURRENCY`) bounds how many drives a tick launches; the
-human WIP-cap governance rule was retired (temperloop#162) once it proved to
-double a mechanical governor as a cross-session bound the claim-first lock
-already provides per item.
+On the autonomous lane, a concurrency governor (`PIPELINE_DRIVE_CONCURRENCY`)
+bounds how many drives a tick launches.
 
 - Claim-first mechanics: `workflows/scripts/board/claim.sh`
 - The claim-first rule, in prose: `claude/CLAUDE.kernel.md`
@@ -106,9 +100,9 @@ worker's own reasoning.
 
 Vigilance doesn't scale across sessions — the fix for a recurring agent
 mistake (writing outside the intended checkout, branching off a stale base,
-querying a shared API budget directly) is a mechanical guard that blocks or
-warns on the exact failure shape, not a reminder to be more careful next
-time.
+editing a vendored copy instead of the source) is a mechanical guard that
+blocks or warns on the exact failure shape, not a reminder to be more
+careful next time.
 
 - Write-isolation guard: `claude/hooks/write-lane-guard.sh`
 - Stale-branch guard: `claude/hooks/git-stale-branch-guard.sh`
@@ -183,9 +177,8 @@ is the primary mechanism rather than a removable second write.
 Every piece of this system is a script or a contract file that opens in a
 text editor — no opaque hosted runtime a user has to take on faith.
 
-- Stated verbatim: `README.md` — "It is a toolkit, not an app — everything
-  here is a script, a slash command, or a contract file you read, not a
-  service you depend on."
+- Stated for the stranger: `docs/pitch.md` — "It is a toolkit — scripts, a
+  CLI, slash commands, and contract files you read — not a hosted service."
 - The scripts and contracts themselves: `workflows/scripts/`, `claude/*.md`
 
 ### 10. Telemetry over anecdote
@@ -224,10 +217,10 @@ drain has to be fixed at its source.
 ### 12. Capture at source, drain on schedule
 
 Something learned mid-work — a decision, a config drift, a piece of
-feedback — is captured the moment it's noticed, not held for an end-of-session
-summary that might never happen. Every such live capture rule ships with a
-paired backstop in the nightly drain, and a registry check fails the build
-if either half of a pair ships without the other.
+feedback — is captured the moment it's noticed, not held for an
+end-of-session summary that might never happen. Every such live capture
+rule ships with a paired backstop in the nightly drain, and a registry
+check fails the build if either half of a pair ships without the other.
 
 - The capture/backstop pairing rule and its registry table:
   `claude/commands/tidy.md` (the "Capture/Backstop pairings" table)
@@ -236,13 +229,14 @@ if either half of a pair ships without the other.
 
 ### 13. The stranger test
 
-A kernel rule or mechanism earns its place only if a stranger's fresh
-install — someone who cloned only the kernel repo, with no org history, no
-personal vault, no personal board tied to it — would actually need it for
-the kernel machinery (board adapter, build/sweep pipeline, install/doctor,
-branch/PR policy) to work. A concern that's personal, org-specific, or tied
-to one machine's paths or credentials routes downstream to the overlay
-instead, never patched silently into the kernel.
+A kernel rule or mechanism — "kernel" meaning this repo's shared, versioned
+layer, as opposed to a private per-operator overlay a full install composes
+in — earns its place only if a stranger's fresh install — someone who
+cloned only this repo, with no org history, no personal notes, no personal
+board tied to it — would actually need it for the machinery (board adapter,
+build/sweep pipeline, install/doctor, branch/PR policy) to work. A concern that's personal, org-specific, or tied
+to one machine's paths or credentials routes downstream to a private
+overlay instead, never patched silently into the kernel.
 
 - The rule verbatim, by this name: `claude/CLAUDE.kernel.md` § "Kernel vs
   overlay routing rule" ("The stranger test")
@@ -271,3 +265,7 @@ failure because it hides the missing check instead of surfacing it.
   usage" ("Legible agent-gate degradation")
 - The presentation-plane instance of the same rule: `claude/message-schema.md`
   § "Degradation notice"
+
+---
+
+*Written by claude-fable-5 on 2026-08-13.*

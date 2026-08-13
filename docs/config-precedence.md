@@ -1,8 +1,8 @@
 # Config precedence — the six-layer ladder
 
-temperloop#164/#169. Every tunable setting in this repo's pipeline machinery
-(build/sweep, the pipeline driver, the board adapter) resolves through the
-**same** six-layer precedence ladder, highest to lowest:
+Every tunable setting in this repo's pipeline machinery (build/sweep, the
+pipeline driver, the board adapter) resolves through the **same** six-layer
+precedence ladder, highest to lowest:
 
 | Layer | Source | Scope | Lives at |
 | --- | --- | --- | --- |
@@ -60,7 +60,9 @@ for layers 3–6 in this repo:
    variable, hardcoded directly in the script rather than read from this
    file — that is the **kernel built-in default**, layer 6, the value a
    non-vendoring caller sees if it invokes the script standalone without
-   ever sourcing `build.config.sh` at all.
+   ever sourcing `build.config.sh` at all. ("Kernel" throughout this repo
+   means this shared, versioned layer itself — as opposed to a private
+   per-operator overlay a full install composes in.)
 
 Layers 1 and 2 (CLI flag, env var) aren't implemented by this file at all —
 they're just "whatever was already true before this file got a chance to
@@ -81,8 +83,8 @@ neither change alone would have restored the ladder.
 
 ## `boards.conf` is an instance of this ladder's order — not a new layer
 
-`workflows/scripts/board/lib/board.sh`'s `boards.conf` discovery (foundation
-#770) predates this ladder but already follows the same **order**: it checks
+`workflows/scripts/board/lib/board.sh`'s `boards.conf` discovery predates
+this ladder but already follows the same **order**: it checks
 a machine-level location first, then a repo-local override, then falls back
 to a built-in case map. That is layers 3 → 4 → 6 of this same ladder, applied
 to a different kind of config (board registry rows, not shell-sourced
@@ -96,17 +98,17 @@ even though the two don't share an implementation.
 
 `boards.conf`'s machine-level path is
 **`$XDG_CONFIG_HOME/temperloop/boards.conf`** — the same `temperloop`
-namespace as layer 3 above. `boards.conf` was built (foundation #770) before
-this repo's public rename from `foundation` to `temperloop` and was
-grandfathered under `$XDG_CONFIG_HOME/foundation/` until temperloop#165
-migrated it (v0.15.0, read-old-write-new). That legacy fallback was
+namespace as layer 3 above. `boards.conf` was built before this repo's
+public rename from `foundation` to `temperloop` and was grandfathered under
+`$XDG_CONFIG_HOME/foundation/` until v0.15.0 migrated it
+(read-old-write-new). That legacy fallback was
 **removed in v0.19.0**: an **existing**
 `$XDG_CONFIG_HOME/foundation/boards.conf` is **no longer read** — instead
 `board.sh` and `make doctor` NAME it on stderr, so a machine whose only conf
 sits at the legacy path is told why its boards look unconfigured rather than
 silently falling through to the built-in maps. That NAME-on-stderr posture is
-advisory only — it depends on someone watching stderr, and (temperloop#908)
-the same gap let this exact case go unnoticed on a real host once nothing
+advisory only — it depends on someone watching stderr, and the same gap
+once let this exact case go unnoticed on a real host when nothing
 was there to read the new location either, silently reverting board.{3,4,5,6}
 to the built-in map's defaults — at the time, the since-removed Projects-v2
 backend. `make doctor`'s `check_legacy_host_config()`
@@ -120,12 +122,12 @@ stderr NOTE. Move the file (`mkdir -p
 ladder — including layer 3 above — uses the `temperloop` namespace from the
 start; `foundation` never appears in a new one.
 
-## Operator controls (ADR §2.3a kind 3) — not a layer either
+## Operator controls — not a layer either
 
 A **control** is a third kind of config surface, alongside the six-layer
-ladder above and `boards.conf`'s own row format — governed by ADR §2.3a
-rather than by this ladder's layer order, because it answers a different
-question. The ladder (layers 1–6) picks **which source wins** when several
+ladder above and `boards.conf`'s own row format — governed by its own
+contract (below) rather than by this ladder's layer order, because it
+answers a different question. The ladder (layers 1–6) picks **which source wins** when several
 places could set the same setting; a control is instead the **one** setting whose
 file content an operator flips **live, without a commit or a redeploy**, to
 change autonomous-pipeline behavior at runtime. `PIPELINE_SCHEDULE_FILE`
@@ -185,10 +187,9 @@ path resolves to, by default, is one some script actually reads.
 probe, not a single path: it checks `Controls/foundation - pipeline
 schedule.md` under `ks_root` first, falling back to the legacy `Context/
 foundation - pipeline schedule.md` when `Controls/` doesn't have it. This
-exists because kernel items land before the corresponding vault-side folder
-move (temperloop#226's decomposition: "the overlay vault moves … are
-external to this epic — kernel items must not assume the new folders
-(`Controls/`, …) exist yet"). The fallback keeps the SAME control readable,
+exists because this repo's code can ship before the operator's own notes
+folder has been reorganized to match — a script must not assume the new
+`Controls/` folder exists yet. The fallback keeps the SAME control readable,
 and the gate fail-closed either way, across the whole window between "the
 kernel knows about `Controls/`" and "the operator's note has actually moved
 there" — an explicit `PIPELINE_SCHEDULE_FILE` override (any higher layer) skips
@@ -210,3 +211,7 @@ override in the ladder above.
 - `workflows/scripts/config/setting-registry.tsv` — the registry-reachability
   rule's enforcement point: every `Controls/`-resolving path setting is a row
   here.
+
+---
+
+*Written by claude-fable-5 on 2026-08-13.*

@@ -4,22 +4,14 @@ title: Architecture overview
 
 # Architecture overview
 
-This page is the "how all the pieces work together" map of TemperLoop: one
-issue's trip from a board's Backlog to a merged pull request, who (or what)
-touches it along the way, and where the telemetry that trip leaves behind
-ends up. It ties together the pieces introduced in [`README.md`](../README.md)
-§1 ("What TemperLoop is") and §4 ("Repo layout") without restating either —
-read this page for the shape of the system, and the linked command/contract
-files for the mechanics of one piece.
+This page is the map of how TemperLoop's pieces work together: one issue's
+trip from backlog to a merged pull request, who (or what) touches it along
+the way, and where the telemetry that trip leaves behind ends up. Read this
+page for the shape of the system, and the linked command/contract files for
+the mechanics of any one piece.
 
-All three diagrams below are [Mermaid](https://mermaid.js.org) fenced code
-blocks, rendered natively by GitHub in any Markdown file it displays — that
-rendering is this page's canonical view, with no build step required to see
-them. `make docs` (§6 of the README) does not process this file: like
-[`docs/managed-merge-queue.md`](managed-merge-queue.md) and
-[`docs/config-precedence.md`](config-precedence.md), it's a hand-maintained
-standalone doc, not one of the three generated sources the docs-site
-generator (`workflows/scripts/docs/generate.py`) renders.
+The three diagrams are [Mermaid](https://mermaid.js.org) blocks — GitHub
+renders them natively, no build step needed.
 
 ## 1. Pipeline flow
 
@@ -115,8 +107,8 @@ TemperLoop's process guarantees are enforced mechanically, not by
 convention alone: a small set of PreToolUse hooks sit at every seam where an
 agent's action could otherwise cross a boundary it shouldn't — writing into
 another checkout, branching off a stale base, escaping a worker's worktree,
-bypassing the board's rate-limited API, or editing a vendored copy of this
-kernel directly. Each guard is independently armed and **fails open** on
+or editing a vendored copy of this kernel (this repo's shared, versioned
+layer, which a downstream repo can vendor as a `kernel/` subtree) directly. Each guard is independently armed and **fails open** on
 everything outside the one risk it targets, so a guard's absence-of-firing
 is not itself a safety signal for anything but that one seam.
 
@@ -182,7 +174,7 @@ flowchart TB
   that a kernel contract is fixed upstream first, never patched only in a
   vendored copy.
 
-These five are the write/action seam guards; the full hook inventory
+These four are the write/action seam guards; the full hook inventory
 (including the session-lifecycle and telemetry-emit hooks that don't gate a
 write) is catalogued in [`claude/hooks/README.md`](../claude/hooks/README.md),
 along with the eval-profile contract that governs how each one behaves
@@ -271,3 +263,7 @@ renders after the kernel brief, behind an existence guard — the kernel brief
 stands alone without it. On demand, the same brief is a `telemetry` skill
 invocation mid-session. All of these are pure readers: nothing in this
 pipeline mutates a raw-lake file once written.
+
+---
+
+*Written by claude-fable-5 on 2026-08-13.*

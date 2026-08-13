@@ -300,6 +300,8 @@ kernel docs/token-spend.md
 kernel docs/model-fanout-inventory.md
 kernel docs/cognitive-load.md
 kernel docs/pitch.md
+kernel docs/about.md
+kernel docs/using-the-pipeline.md
 kernel AGENTS.md
 kernel llms.txt
 overlay workflows/scripts/crash-convergence/*
@@ -341,6 +343,7 @@ kernel workflows/scripts/config/contributor-manifest.tsv
 kernel workflows/scripts/config/check-contributor-manifest.sh
 kernel workflows/scripts/config/tests/test_check_contributor_manifest.sh
 kernel workflows/scripts/validate-prose-budget.sh
+kernel workflows/scripts/validate-docs-footer.sh
 kernel workflows/scripts/tests/test_validate_prose_budget.sh
 # Semantic-redundancy chunker + labelled fixture corpus (temperloop#854,
 # half (a) of the P9 semantic-redundancy probe split from #830; epic #810

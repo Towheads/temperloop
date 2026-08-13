@@ -4,9 +4,12 @@ title: Who this is for — the stranger this repo is built around
 
 # Who this is for — the stranger this repo is built around
 
-temperloop#136. **The stranger**: the concrete reader every doc, gate, and
-persona-review agent here is written for and checked against — a checklist
-of checkable traits, not marketing copy.
+**The stranger** is the concrete reader every doc, gate, and persona-review
+agent in this repo is written for and checked against. This page is that
+reader as a checklist of checkable traits, not marketing copy: the first
+list is who the product is designed for, the second is who it deliberately
+isn't, and both are used mechanically as a review lens (see the last
+section).
 
 ## Designed for
 
@@ -29,24 +32,24 @@ org-grade process without an org:
    nobody else (human or agent) can audit after the fact.
 5. **On GitHub, including the free plan.** A personal account or free org,
    no budget for GitHub Enterprise, no native merge queue available —
-   `docs/managed-merge-queue.md` exists specifically to close that gap so
-   the same merge-gated ladder runs end-to-end here too. Tracking itself
-   asks for even less: issues-only is the default board backend (a plain
-   GitHub Issues tracker, `fnd:*`-namespaced labels, no Projects board ever
+   [`docs/managed-merge-queue.md`](managed-merge-queue.md) exists
+   specifically to close that gap so the same merge-gated ladder runs
+   end-to-end here too. Tracking asks for even less: the board is a plain
+   GitHub Issues tracker (namespaced labels, no Projects board ever
    provisioned — `workflows/scripts/board/ISSUES-ONLY-BACKEND.md`), so a
    fresh clone tracks work end-to-end — capture → worklist → claim — with
-   just a repo and `gh auth login`. No org membership and no Projects
-   provisioning step stand between "clone" and "first tracked issue,"
-   whether you're one consultant spinning this up per client repo, one
-   hobbyist with no budget line at all, or one of a handful of teammates
-   who don't want to ask anyone to provision anything on their behalf.
+   just a repo and `gh auth login`. Nothing stands between "clone" and
+   "first tracked issue," whether you're one consultant spinning this up
+   per client repo, one hobbyist with no budget line at all, or one of a
+   handful of teammates who don't want to ask anyone to provision anything
+   on their behalf.
    **If you are that consultant, read one caveat before you start:** the
    knowledge store is single-tenant per `$HOME` — one flat corpus shared by
    every engagement on that account, with only a filename convention
    separating them — so a search run during one client's session can
    surface another client's notes unless you scope it or split the account.
-   `docs/features/knowledge-store.md` § Limitations states the exposure and
-   the two ways to handle it.
+   [`docs/features/knowledge-store.md`](features/knowledge-store.md)
+   § Limitations states the exposure and the two ways to handle it.
 
 ## Explicitly not a fit
 
@@ -63,10 +66,9 @@ that's not a gap to patch.
   managed backend, no dashboard, no account beyond GitHub itself. Looking
   to delegate to a SaaS product instead of scripts you can read and modify.
 - **Non-GitHub tracker.** The board adapter, merge-gate scripts, and
-  issue-linkage conventions are built directly against GitHub Issues and
-  Projects (or Issues alone, on the issues-only backend) — a team on Jira,
-  Linear, GitLab, or any non-GitHub host would need to replace the whole
-  layer, not configure it.
+  issue-linkage conventions are built directly against GitHub Issues — a
+  team on Jira, Linear, GitLab, or any non-GitHub host would need to
+  replace the whole layer, not configure it.
 - **Unwilling to adopt branch/PR discipline.** Protected `main` is
   load-bearing, not optional — the merge-gated ladder and the CI `checks`
   contract assume every change lands as a PR against it. Wanting to push
@@ -81,3 +83,7 @@ designed-for reader above, never quietly catering to a not-a-fit one
 instead (e.g. recommending a direct push to `main`, assuming a hosted
 dashboard, assuming a non-GitHub tracker). A docs-reviewer agent or human
 uses the two lists above as that checklist.
+
+---
+
+*Written by claude-fable-5 on 2026-08-13.*
