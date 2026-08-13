@@ -62,6 +62,8 @@ none docs/cognitive-load.md
 # the other top-level docs-site pages above (it's documentation product, not
 # feature code, and doesn't belong to any single feature slug).
 none docs/pitch.md
+none docs/about.md
+none docs/using-the-pipeline.md
 none AGENTS.md
 none llms.txt
 none CLAUDE.md
@@ -345,6 +347,8 @@ command-declared workflows/scripts/lib/command_declared.sh
 command-declared workflows/scripts/lib/tests/test_command_declared.sh
 
 # ── quality-gates — the static gate set, lints, kernel scrubs, setting registry ─
+quality-gates workflows/scripts/validate-docs-footer.sh
+quality-gates workflows/scripts/tests/test_validate_docs_footer.sh
 quality-gates .github/workflows/ci.yml
 # The nightly macOS leg of the SAME gate script (temperloop#963): ci.yml
 # gates merges on ubuntu, nightly-macos.yml re-runs scripts/quality-gates.sh

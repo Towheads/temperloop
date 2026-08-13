@@ -1,11 +1,12 @@
 # TemperLoop
 
-> A dev-process kernel for Claude Code–driven development: a board adapter
-> that turns a GitHub Projects board (or a plain issues-only tracker) into a
-> cross-session work queue, a build/sweep pipeline of Claude Code slash
-> commands that drives a GitHub issue from triage to a merged, CI-green pull
-> request, and the install/quality-gate tooling that gets both running in a
-> repo you already have.
+> TemperLoop makes Claude Code work the way a good engineering team works:
+> agents pull tracked issues, build in isolated branches, and land every
+> change as a reviewed, CI-gated pull request — safe to run in parallel,
+> even unattended. A board adapter turns plain GitHub Issues into a
+> cross-session work queue, Claude Code slash commands drive an issue from
+> triage to a merged PR, and install/quality-gate tooling gets both running
+> in a repo you already have.
 
 TemperLoop is a toolkit — scripts, slash commands, and contract files you
 read — not a hosted service or an app you depend on. It is Apache-2.0
@@ -13,26 +14,33 @@ licensed; see [`LICENSE`](LICENSE).
 
 ## Docs
 
-- [README](README.md): what TemperLoop is, prerequisites, the CLI
-  quickstart, repo layout, the command map, the docs site, and the
-  merge-backend notes.
+- [README](README.md): what TemperLoop is, prerequisites, the testbed
+  quickstart, the command map, repo layout, and the docs index.
 - [AGENTS.md](AGENTS.md): cross-agent operating instructions for a coding
   agent working in this repo — the CLI vs. `make` split, board-adapter
-  rules and the GraphQL budget, quality gates, and the branch/PR/worktree
-  safety rails.
-- [Principles](docs/principles.md): the design principles behind the
-  kernel.
+  rules and the shared API budget, quality gates, and the branch/PR/
+  worktree safety rails.
+- [Pitch](docs/pitch.md): the whole story on one page.
+- [Who it's for](docs/who-its-for.md): the intended adopter, and who it
+  deliberately isn't for.
+- [Principles](docs/principles.md): the thesis and the fifteen design
+  principles behind the kernel.
 - [Architecture](docs/architecture.md): how the board adapter, the
-  build/sweep pipeline, and the install/quality-gate tooling fit together.
-- [Who it's for](docs/who-its-for.md): the intended adopter and use case.
+  build/sweep pipeline, and the guard hooks fit together.
+- [Using the pipeline](docs/using-the-pipeline.md): the day-to-day
+  operating guide.
+- [Cost & autonomy](docs/cost-and-autonomy.md): what running it costs and
+  what it does on its own.
+- [Token spend](docs/token-spend.md): how it keeps model spend down and
+  how to see where tokens went.
 - [Feature docs](docs/features/): per-feature reference pages.
-- [Managed merge queue](docs/managed-merge-queue.md): running the
-  build/sweep merge ladder end-to-end on a repo with no native GitHub merge
-  queue available.
+- [Managed merge queue](docs/managed-merge-queue.md): running the merge
+  ladder end-to-end on a repo with no native GitHub merge queue.
 - [Config precedence](docs/config-precedence.md): the six-layer config
-  resolution ladder every tunable setting in this repo follows.
-- [Contributing](docs/CONTRIBUTING.md): how to contribute a failure-mode
-  chapter, or a new knowledge-store or issue-tracker adapter.
+  resolution ladder every tunable setting follows.
+- [About](docs/about.md): where TemperLoop came from and who's behind it.
+- [Contributing](docs/CONTRIBUTING.md): how to contribute a feature doc, a
+  failure-mode chapter, or a new adapter.
 
 ## Optional
 

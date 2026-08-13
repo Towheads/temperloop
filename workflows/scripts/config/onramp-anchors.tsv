@@ -71,9 +71,9 @@ bin/temperloop	144	first-subcommand
 bin/temperloop	144	onramp-noun
 
 # ── README.md — § 3 Quickstart ──────────────────────────────────────────────
-README.md	100	adoption-path
-README.md	100	onramp-noun
-README.md	127	installer-command
+README.md	73	adoption-path
+README.md	73	onramp-noun
+README.md	87	installer-command
 
 # ── bin/README.md — § Quickstart ────────────────────────────────────────────
 bin/README.md	72	adoption-path

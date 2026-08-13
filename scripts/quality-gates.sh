@@ -980,6 +980,17 @@ KERNEL_GATES=(
   # as the count-prose gate above.
   "bash workflows/scripts/validate-prose-budget.sh"
   "bash workflows/scripts/tests/test_validate_prose_budget.sh"
+  # AI-authorship footer gate (temperloop#1407, product-docs rewrite):
+  # validate-docs-footer.sh checks that every in-scope product-docs page
+  # (README.md + docs/**/*.md minus its own explicit exemption list) ends
+  # with a well-formed provenance footer — '---', then '*Written by
+  # <model-id> on <YYYY-MM-DD>.*' with a strict model-id/ISO-date pattern,
+  # plus optional '*Last updated by …*' appends. The exemption list is
+  # self-maintaining: an exempt page that gains a footer fails with a
+  # remove-the-exemption message. Same direct-`bash` form as the gates
+  # above.
+  "bash workflows/scripts/validate-docs-footer.sh"
+  "bash workflows/scripts/tests/test_validate_docs_footer.sh"
   # Semantic-redundancy chunker (temperloop#854, half (a) of the P9
   # semantic-redundancy probe split from #830; epic #810 contract amendment
   # P9): chunks the manifest-driven always-loaded surface into rule-sized

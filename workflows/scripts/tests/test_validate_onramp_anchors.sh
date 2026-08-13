@@ -104,10 +104,10 @@ assert_has "$RUN_OUT" "retired value 'try'" "names the retired token it found"
 # ── 3. RED: a registered anchor's canonical value goes missing ─────────────
 echo "3. a registered anchor's canonical value is missing entirely"
 D="$TMP/r3"; new_fixture "$D"
-replace_line "$D/README.md" 100 "## 3. Getting started"
+replace_line "$D/README.md" 73 "## 2. Getting started"
 run_gate "$D"
 assert_status 1 "$RUN_STATUS" "fails — the heading no longer says the canonical phrase"
-assert_has "$RUN_OUT" "README.md:100" "names the failing anchor"
+assert_has "$RUN_OUT" "README.md:73" "names the failing anchor"
 assert_has "$RUN_OUT" "expected value not found" "names the failure reason"
 
 # ── 4. GREEN: arrow-glyph normalization ─────────────────────────────────
@@ -115,7 +115,7 @@ echo "4. Unicode-arrow anchor still matches the ASCII canonical value"
 D="$TMP/r4"; new_fixture "$D"
 run_gate "$D"
 assert_status 0 "$RUN_STATUS" "passes"
-assert_has "$RUN_OUT" "ok    README.md:100 (adoption-path)" "the Unicode-arrow README heading passes the ASCII adoption-path check"
+assert_has "$RUN_OUT" "ok    README.md:73 (adoption-path)" "the Unicode-arrow README heading passes the ASCII adoption-path check"
 assert_has "$RUN_OUT" "ok    docs/features/install-cli.md:41 (adoption-path)" "the ASCII-arrow install-cli.md line passes the same check"
 
 # ── 5. RED: adoption-sense `sandbox` in a registered anchor's window ───────

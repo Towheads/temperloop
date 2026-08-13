@@ -343,3 +343,5 @@ bash scripts/lint-pipe-grep-q.sh	*.sh bin/** .temperloop/** workflows/scripts/re
 bash scripts/tests/test_lint_pipe_grep_q.sh	scripts/lint-pipe-grep-q.sh scripts/tests/test_lint_pipe_grep_q.sh
 make shellcheck	*.sh
 bash scripts/tests/test_ensure_shellcheck.sh	scripts/ensure-shellcheck.sh scripts/tests/test_ensure_shellcheck.sh
+bash workflows/scripts/validate-docs-footer.sh	README.md docs/** workflows/scripts/validate-docs-footer.sh
+bash workflows/scripts/tests/test_validate_docs_footer.sh	workflows/scripts/validate-docs-footer.sh workflows/scripts/tests/test_validate_docs_footer.sh
