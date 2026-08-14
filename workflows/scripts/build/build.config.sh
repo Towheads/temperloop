@@ -827,7 +827,20 @@ fi
 # sub-steps to 5) before raising; `claude/commands/build.md` is again the
 # largest tracked file, at 1111 — same zero-headroom convention as every
 # prior seeding.
-: "${PROSE_BUDGET_TIER2_FILE_CAP:=1111}"
+#
+# RAISED, 1111 → 1130 (2026-08-13, temperloop#1319). Two concurrent items
+# both add real §3c/§3f/Step-6 contract surface to build.md: #1319's
+# discrimination-evidence degraded-case clause (the §3e spec review's [HIGH]
+# finding — a named warning + Step-6 tally when a worker omits
+# `discrimination_evidence`, plus the deferred-bare-gate reconciliation
+# clause) and the sibling item #1430's §3e review-step prose, building
+# concurrently in a separate worktree. #1319 folded bullets together once
+# already (the prior 1100→1111 raise's PR) to stay under the then-cap;
+# folding further here would damage readability rather than trim genuine
+# redundancy, so the ratchet moves up instead — raised past #1319's own
+# immediate need to leave #1430 headroom too, rather than raising twice in
+# one day for two items landing the same week.
+: "${PROSE_BUDGET_TIER2_FILE_CAP:=1130}"
 
 # ── Pipeline spend profiler (temperloop#958) ───────────────────────────────
 # Settings for `workflows/scripts/pipeline-spend-report.sh` and its

@@ -419,10 +419,20 @@ assemble_body() {
   local summary recap body n
   summary="$(jq -er '.summary' <<<"$verdict" 2>/dev/null)" \
     || die "verdict JSON missing .summary"
+  # temperloop#1319: `.discrimination_evidence` (worker-reported proof that an
+  # acceptance check can actually FAIL — which mechanism it removed, that the
+  # suite went red without it, that restoring it went green) is a FOURTH field
+  # the worker may return alongside `.criterion`/`.passed`/`.evidence`. This jq
+  # is the load-bearing consumer: reading only the original three would
+  # silently DROP that evidence from the PR body a human actually reviews —
+  # exactly the failure this item exists to close (see presentation-plane.md's
+  # WORKER_VERDICT_SCHEMA row). Rendered on its own line under the bullet so a
+  # long discrimination narrative doesn't crowd the pointer-shaped `evidence`.
   recap="$(jq -r '(.acceptance_results // [])[]
             | "- [" + (if .passed then "x" else " " end) + "] "
               + .criterion
-              + ((.evidence // "") | if . == "" then "" else " — " + . end)' \
+              + ((.evidence // "") | if . == "" then "" else " — " + . end)
+              + ((.discrimination_evidence // "") | if . == "" then "" else "\n      discrimination: " + . end)' \
           <<<"$verdict")" || die "verdict JSON has malformed .acceptance_results"
   # surface is resolved by the caller (cmd_open → resolve_surface) so a missing
   # surface file dies at the top level, not inside this nested command sub.

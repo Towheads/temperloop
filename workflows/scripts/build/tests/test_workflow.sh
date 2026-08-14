@@ -3932,5 +3932,208 @@ grep -q 'Step 1.8' "$K1432_BUILD_MD" \
   || fail "#1432: build.md must define Step 1.8 — the once-per-run orchestrator resolution §3c/§3e both reuse"
 echo "PASS: #1432 principles guard — workerPrompt embeds the resolved (or legibly degraded) effective principle set; build.md Step 1.8/§3c/§3e in lockstep"
 
+# ============================================================================
+# TEST (K1319): test-discrimination evidence — a worker must report, per
+#   acceptance criterion, proof its own check can actually FAIL (which
+#   mechanism it removed, that the suite went RED without it, that restoring
+#   it went GREEN) — and that evidence must reach a human via the PR body,
+#   not stop at the schema. Gated on input.requireDiscriminationEvidence so
+#   it reaches /build's real per-criterion bullets but does NOT leak to
+#   /sweep's / /fix's bare-string acceptance placeholder (mirrors K1432's
+#   shape: an armed pass, a leak-check pass, then static lockstep guards).
+# ============================================================================
+run_node_case "K1319: requireDiscriminationEvidence arms the Discrimination-evidence section; omitted/false leaves it OFF (no leak to /sweep, /fix)" "
+$PREAMBLE
+
+// Pass 1: armed (/build's own hand-off) — section present, names the
+// mechanism/RED/GREEN requirement, and bounds the field from the SAME named
+// setting as .evidence (WORKER_EVIDENCE_MAX_WORDS), not a hardcoded literal.
+happyMachinery('discrim-on', 920, 'shaDiscrimOn');
+happyWorker('discrim-on');
+globalThis.args = { ...baseArgs, requireDiscriminationEvidence: true, workerEvidenceMaxWords: 23, items: [
+  { slug: 'discrim-on', branch: 'build/discrim-on', title: 'Discrim on', kind: 'impl', acceptance: ['c'] },
+]};
+let mod = await loadLevel();
+await mod.default();
+let w = callLog.find(c => (c.opts.label||'') === 'worker:discrim-on');
+let reason = null;
+if (!w) reason = 'no worker call logged (armed pass)';
+else if (!w.promptFull.includes('## Discrimination evidence')) reason = 'armed run missing the Discrimination evidence section';
+else if (!w.promptFull.includes('discrimination_evidence')) reason = 'armed run does not name the discrimination_evidence field';
+else if (!/went RED without it/.test(w.promptFull)) reason = 'armed run missing the RED-without-it requirement';
+else if (!/went GREEN/.test(w.promptFull)) reason = 'armed run missing the restored-GREEN requirement';
+else if (!/[Ww]hich mechanism you removed/.test(w.promptFull)) reason = 'armed run missing the removed-mechanism requirement';
+else if (!w.promptFull.includes('at most 23 words')) reason = 'discrimination_evidence bound did not come from input.workerEvidenceMaxWords (same seam as .evidence)';
+if (reason) { console.log(JSON.stringify({ ok: false, reason })); process.exit(0); }
+
+// Pass 2: omitted entirely — the /sweep, /fix inheritance path. Section must
+// be ABSENT, not degraded-and-present — an unrequired discipline must stay
+// silent, unlike principlesSummaries' always-present-with-notice shape.
+callLog.length = 0;
+happyMachinery('discrim-off', 921, 'shaDiscrimOff');
+happyWorker('discrim-off');
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'discrim-off', branch: 'build/discrim-off', title: 'Discrim off', kind: 'impl', acceptance: ['(self-verify the issue is resolved)'] },
+]};
+mod = await loadLevel();
+await mod.default();
+w = callLog.find(c => (c.opts.label||'') === 'worker:discrim-off');
+if (!w) reason = 'no worker call logged (omitted pass)';
+else if (w.promptFull.includes('## Discrimination evidence')) reason = 'omitted requireDiscriminationEvidence must NOT arm the Discrimination evidence section (the /sweep, /fix leak this item forbids)';
+if (reason) { console.log(JSON.stringify({ ok: false, reason })); process.exit(0); }
+
+// Pass 3: explicitly false — same OFF outcome as omitted (=== true, not a
+// truthy check), proving the gate is strict equality.
+callLog.length = 0;
+happyMachinery('discrim-false', 922, 'shaDiscrimFalse');
+happyWorker('discrim-false');
+globalThis.args = { ...baseArgs, requireDiscriminationEvidence: false, items: [
+  { slug: 'discrim-false', branch: 'build/discrim-false', title: 'Discrim false', kind: 'impl', acceptance: ['c'] },
+]};
+mod = await loadLevel();
+await mod.default();
+w = callLog.find(c => (c.opts.label||'') === 'worker:discrim-false');
+if (!w) reason = 'no worker call logged (false pass)';
+else if (w.promptFull.includes('## Discrimination evidence')) reason = 'requireDiscriminationEvidence: false must leave the section OFF (=== true gate, not truthy)';
+if (reason) { console.log(JSON.stringify({ ok: false, reason })); process.exit(0); }
+
+// Pass 4 (the [HIGH] gap): armed run, a done verdict with ONE criterion that
+// reported discrimination_evidence and ONE that claimed passed:true with the
+// field empty. The gap must NOT block the item (advisory, kernel principle
+// 7 — the item still parks, no escalation) but MUST be named on the parked
+// record so the orchestrator can surface + tally it — never silently
+// dropped, which is exactly the failure criterion 2 exists to close.
+callLog.length = 0;
+happyMachinery('discrim-gap', 923, 'shaDiscrimGap');
+setWorker('discrim-gap', { status: 'done', summary: 'gap item done', commits: [], acceptance_results: [
+  { criterion: 'proven criterion', passed: true, evidence: 'e1', discrimination_evidence: 'removed X -> RED; restored -> GREEN' },
+  { criterion: 'unproven criterion', passed: true, evidence: 'e2' },
+  { criterion: 'blank-string criterion', passed: true, evidence: 'e3', discrimination_evidence: '   ' },
+]});
+globalThis.args = { ...baseArgs, requireDiscriminationEvidence: true, items: [
+  { slug: 'discrim-gap', branch: 'build/discrim-gap', title: 'Discrim gap', kind: 'impl', acceptance: ['proven criterion', 'unproven criterion', 'blank-string criterion'] },
+]};
+mod = await loadLevel();
+let result = await mod.default();
+let p = (result.parked ?? []).find(x => x.slug === 'discrim-gap');
+if (!p) reason = 'gap item did not park (a degraded discrimination_evidence must be advisory, never a hard failure)';
+else if ((result.escalations ?? []).length !== 0) reason = 'gap item must not escalate — advisory only (kernel principle 7)';
+else if (!Array.isArray(p.discrimination_gaps)) reason = 'parked record missing discrimination_gaps array for an armed run with a real gap';
+else if (p.discrimination_gaps.length !== 2) reason = 'expected exactly 2 gap criteria (empty + whitespace-only), got ' + JSON.stringify(p.discrimination_gaps);
+else if (!p.discrimination_gaps.includes('unproven criterion')) reason = 'discrimination_gaps missing the criterion with an absent discrimination_evidence';
+else if (!p.discrimination_gaps.includes('blank-string criterion')) reason = 'discrimination_gaps must treat a whitespace-only discrimination_evidence as empty';
+else if (p.discrimination_gaps.includes('proven criterion')) reason = 'discrimination_gaps wrongly included a criterion that DID report discrimination_evidence';
+if (reason) { console.log(JSON.stringify({ ok: false, reason })); process.exit(0); }
+
+// Pass 5: armed run, EVERY criterion carries discrimination_evidence — no
+// spurious tally when nothing is actually missing.
+callLog.length = 0;
+happyMachinery('discrim-clean', 924, 'shaDiscrimClean');
+setWorker('discrim-clean', { status: 'done', summary: 'clean item done', commits: [], acceptance_results: [
+  { criterion: 'c', passed: true, evidence: 'e', discrimination_evidence: 'removed X -> RED; restored -> GREEN' },
+]});
+globalThis.args = { ...baseArgs, requireDiscriminationEvidence: true, items: [
+  { slug: 'discrim-clean', branch: 'build/discrim-clean', title: 'Discrim clean', kind: 'impl', acceptance: ['c'] },
+]};
+mod = await loadLevel();
+result = await mod.default();
+p = (result.parked ?? []).find(x => x.slug === 'discrim-clean');
+if (!p) reason = 'clean item did not park';
+else if ('discrimination_gaps' in p) reason = 'clean item (no gaps) must not carry a discrimination_gaps field at all — expected 0, got ' + JSON.stringify(p.discrimination_gaps);
+
+// Pass 6: UNARMED run (requireDiscriminationEvidence omitted) with a
+// passed:true criterion carrying no discrimination_evidence — must NOT tally
+// a gap, since the requirement was never in force for this run (mirrors
+// Pass 2's 'no leak' shape, at the park-record layer instead of the prompt).
+if (!reason) {
+  callLog.length = 0;
+  happyMachinery('discrim-unarmed', 925, 'shaDiscrimUnarmed');
+  setWorker('discrim-unarmed', { status: 'done', summary: 'unarmed item done', commits: [], acceptance_results: [
+    { criterion: '(self-verify the issue is resolved)', passed: true, evidence: 'e' },
+  ]});
+  globalThis.args = { ...baseArgs, items: [
+    { slug: 'discrim-unarmed', branch: 'build/discrim-unarmed', title: 'Discrim unarmed', kind: 'impl', acceptance: ['(self-verify the issue is resolved)'] },
+  ]};
+  mod = await loadLevel();
+  result = await mod.default();
+  p = (result.parked ?? []).find(x => x.slug === 'discrim-unarmed');
+  if (!p) reason = 'unarmed item did not park';
+  else if ('discrimination_gaps' in p) reason = 'unarmed run (requireDiscriminationEvidence omitted) must never tally discrimination_gaps — the requirement was never in force';
+}
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+# --- K1319 static lockstep guards: test-discrimination evidence --------------
+# Three surfaces must move together: the .mjs schema + prompt section, build.md's
+# §3c prose + Step 3 args hand-off, and pr.sh's recap consumer (the load-bearing
+# half — this is the item whose whole point is that the evidence reaches a human
+# instead of being silently dropped by a jq filter that reads only the three
+# original fields). Every check below HARD FAILS on an absent file — no
+# `if [ -f ... ]` skip-and-PASS (the K1080 anti-pattern, temperloop#1438).
+grep -q 'function discriminationEvidenceSection' "$MJS" \
+  || fail "#1319: discriminationEvidenceSection() missing — workerPrompt must embed the discrimination-evidence requirement as its own self-contained, gated section"
+grep -q '## Discrimination evidence — prove each check can actually FAIL' "$MJS" \
+  || fail "#1319: workerPrompt() must embed the '## Discrimination evidence' section when armed"
+grep -q 'input.requireDiscriminationEvidence' "$MJS" \
+  || fail "#1319: REQUIRE_DISCRIMINATION_EVIDENCE must read the orchestrator-supplied input.requireDiscriminationEvidence (Step-0/Step-3 hand-off seam)"
+grep -q 'REQUIRE_DISCRIMINATION_EVIDENCE = input.requireDiscriminationEvidence === true' "$MJS" \
+  || fail "#1319: the gate must be strict === true, never a truthy/|| check — a non-boolean must not accidentally arm it"
+grep -q 'discrimination_evidence' "$MJS" \
+  || fail "#1319: WORKER_VERDICT_SCHEMA's acceptance_results items must declare a discrimination_evidence property"
+K1319_BUILD_MD="$REPO_ROOT/claude/commands/build.md"
+[ -f "$K1319_BUILD_MD" ] \
+  || fail "#1319: claude/commands/build.md is missing — the prose half of this contract pair cannot be verified"
+grep -q 'discrimination_evidence' "$K1319_BUILD_MD" \
+  || fail "#1319: build.md §3c must name discrimination_evidence in its return-contract prose (lockstep with build-level.mjs)"
+grep -q 'requireDiscriminationEvidence' "$K1319_BUILD_MD" \
+  || fail "#1319: build.md must name requireDiscriminationEvidence in its Step 3 args hand-off (lockstep with build-level.mjs)"
+grep -q 'does NOT widen to' "$K1319_BUILD_MD" \
+  || fail "#1319: build.md must state the /sweep, /fix scoping explicitly — this is the leak this item forbids"
+K1319_PR_SH="$REPO_ROOT/workflows/scripts/build/pr.sh"
+[ -f "$K1319_PR_SH" ] \
+  || fail "#1319: workflows/scripts/build/pr.sh is missing — the PR-body consumer half of this contract cannot be verified"
+grep -q 'discrimination_evidence' "$K1319_PR_SH" \
+  || fail "#1319: pr.sh's assemble_body recap must read .discrimination_evidence — the whole point of this item is that it reaches the PR body a human reviews, not just the schema"
+
+# --- K1319b: the [HIGH] §3e finding — a missing field must be a NAMED,
+# VISIBLE degradation (a warning + a Step-6 tally), never silent, since
+# neither WORKER_VERDICT_SCHEMA nor §3d/§3e.5 enforce the field's presence
+# (advisory, kernel principle 7 — never a new blocking gate). Covers the
+# implementation (discriminationGaps()/park()'s discrimination_gaps field,
+# runtime-proven above by the K1319 case's passes 4-6) AND the prose (the
+# 3f-step-2 degraded-case clause + the Step 6 summary tally line).
+grep -q 'function discriminationGaps' "$MJS" \
+  || fail "#1319b: discriminationGaps() missing — the degraded-case detector (a passed:true entry with an empty/absent discrimination_evidence)"
+grep -q 'discrimination_gaps' "$MJS" \
+  || fail "#1319b: park()'s returned record must carry discrimination_gaps — the durable marker the orchestrator tallies (mirrors the no_ci pattern)"
+grep -q 'discrimination_gaps' "$K1319_BUILD_MD" \
+  || fail "#1319b: build.md must name discrimination_gaps (Step 6 summary tally / the 3f-step-2 degraded-case clause) — lockstep with build-level.mjs"
+grep -q 'Surface the degraded case here too' "$K1319_BUILD_MD" \
+  || fail "#1319b: build.md §3f step 2 must carry the discrimination-evidence degraded-case clause, mirroring the sibling verification_surface clause"
+grep -q 'Discrimination-evidence gaps (temperloop#1319' "$K1319_BUILD_MD" \
+  || fail "#1319b: build.md Step 6 summary template must carry a discrimination-evidence-gaps tally line"
+
+# --- K1319c: the [MEDIUM] rationale-correctness finding — the /sweep, /fix
+# exclusion must be stated as an OPERATIONAL SCOPE decision, never as a
+# structural impossibility (sweep.md/fix.md's acceptance: CAN be a real
+# per-criterion array — acceptanceList() already handles it). Guard against
+# the corrected claim regressing back to the false one.
+grep -q 'operational scope decision' "$K1319_BUILD_MD" \
+  || fail "#1319c: build.md must state the /sweep, /fix exclusion is an operational scope decision, not a structural one (the corrected rationale)"
+grep -qi 'OPERATIONAL SCOPE DECISION' "$MJS" \
+  || fail "#1319c: build-level.mjs's REQUIRE_DISCRIMINATION_EVIDENCE comment must state the /sweep, /fix exclusion is an operational scope decision, not a structural one"
+
+# --- K1319d: the [MEDIUM] deferred-bare-gate ambiguity finding — a criterion
+# naming the bare repo-wide suite (deferred to §3e.5 per #997) never ran
+# red/green at all, which is a DIFFERENT exemption than "too coarse to
+# discriminate" and must say so in exactly this wording, both in the prose
+# contract and in the actual worker prompt.
+grep -q 'deferred to §3e.5; discrimination not established worker-side' "$K1319_BUILD_MD" \
+  || fail "#1319d: build.md must reconcile the deferred-bare-gate carve-out with discrimination_evidence — state the exact exempt-field wording"
+grep -q 'deferred to §3e.5; discrimination not established worker-side' "$MJS" \
+  || fail "#1319d: workerPrompt()'s Discrimination evidence section must tell the worker the exact wording for a deferred-bare-gate criterion (lockstep with build.md)"
+
+echo "PASS: #1319 discrimination-evidence guard — workerPrompt gates the requirement on requireDiscriminationEvidence (no /sweep, /fix leak); build.md §3c/Step-3 args and pr.sh's recap consumer in lockstep; the degraded-case warning+tally, the corrected /sweep,/fix rationale, and the deferred-bare-gate reconciliation are all in lockstep too (§3e spec-review follow-up)"
+
 echo ""
 echo "All test_workflow.sh cases passed."

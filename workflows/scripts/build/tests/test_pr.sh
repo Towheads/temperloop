@@ -239,6 +239,9 @@ grep -qF -- '- [x] widget renders — test_widget.py::test_render green' <<<"$bo
   || fail "missing passed recap line"
 grep -qF -- '- [ ] legacy path unchanged — one diff remains' <<<"$body" \
   || fail "missing failed recap line"
+# No .discrimination_evidence on either entry above → no stray "discrimination:" line.
+grep -q 'discrimination:' <<<"$body" \
+  && fail "recap emitted a stray discrimination: line for entries with no .discrimination_evidence (body: $body)"
 # Verification section = the worker's verification_surface.
 grep -qF '## Verification' <<<"$body" || fail "missing ## Verification"
 grep -qF 'After: 3 widgets rendered.' <<<"$body" || fail "verification_surface not in body"
@@ -250,6 +253,28 @@ grep -qxF 'Derived from: epic #253, spike #245 verdict' <<<"$body" \
 grep -qxF '🤖 Generated with [Claude Code](https://claude.com/claude-code)' <<<"$body" \
   || fail "missing Claude Code footer"
 echo "PASS: open --body-only emits per-entry bare Closes + recap + Verification + backlinks + footer"
+
+# --- open --body-only: .discrimination_evidence reaches the recap (temperloop#1319) ---
+# The whole point of #1319: a jq filter that reads only .passed/.criterion/.evidence
+# would silently DROP a worker-reported .discrimination_evidence field instead of
+# surfacing it to the PR's human reviewer. This proves it survives end to end.
+cat > "$TMP/verdict-discrim.json" <<'EOF'
+{
+  "status": "done",
+  "summary": "Adds a guard that rejects an out-of-worktree write.",
+  "acceptance_results": [
+    {"criterion": "guard rejects out-of-worktree writes", "passed": true, "evidence": "test_guard.sh::test_reject green", "discrimination_evidence": "Removed the path-prefix check at build-worktree-guard.sh:42 -> test_guard.sh RED (1 failed); restored -> GREEN (12 passed)."}
+  ],
+  "verification_surface": "Before: guard allowed any path.\nAfter: guard rejects paths outside the worktree."
+}
+EOF
+body="$(bash "$SCRIPT" open --verdict "$TMP/verdict-discrim.json" --gh-issue 1319 --body-only)"
+grep -qF '## Acceptance' <<<"$body" || fail "discrimination-evidence fixture missing ## Acceptance heading"
+grep -qF -- '- [x] guard rejects out-of-worktree writes — test_guard.sh::test_reject green' <<<"$body" \
+  || fail "discrimination-evidence fixture missing the base recap line (body: $body)"
+grep -qF 'discrimination: Removed the path-prefix check at build-worktree-guard.sh:42 -> test_guard.sh RED (1 failed); restored -> GREEN (12 passed).' <<<"$body" \
+  || fail "recap dropped .discrimination_evidence — a jq filter reading only .passed/.criterion/.evidence silently drops this field (body: $body)"
+echo "PASS: open --body-only surfaces .discrimination_evidence in the acceptance recap (temperloop#1319)"
 
 # --- open --body-only: multiple also_closes, comma-separated ---------------------
 body="$(bash "$SCRIPT" open --verdict "$TMP/verdict.json" \
