@@ -802,6 +802,233 @@ QG2="$REPO/scripts/quality-gates.sh"
 check "quality-gates.sh still registers exactly the validator + this test suite for model-usage (no drift)" \
   bash -c "grep -Fq 'workflows/scripts/validate-model-usage-emit.sh' '$QG2' && grep -Fq 'workflows/scripts/tests/test_model_usage_emit.sh' '$QG2'"
 
+echo "── 44. MUTATION (temperloop#1370): the exec-redirect fix is SCOPED — stderr written after the successful open survives; a bare exec swallows it ──"
+# The defect: `exec 3<... 2>/dev/null` with NO command word applies its
+# redirects PERMANENTLY to the current shell once the open succeeds — so
+# every stderr write for the REST OF THE SCRIPT silently vanishes. Asserting
+# only "still exits 0" would pass identically whether the bug is present or
+# not (BLOCKING per the acceptance criteria) — this section instead asserts
+# the property the bare form actually destroys: a diagnostic written AFTER
+# the successful open must still reach stderr.
+cp "$LINT" "$FIXR/workflows/scripts/validate-model-usage-emit.sh"
+# Inject a marker stderr write immediately after the successful-open block
+# (right where the issue says "any stderr write added after that line, by
+# anyone, at any time, would disappear" under the bare form) — anchored on
+# the unique `exit 1\n  fi\n  lineno=0` text so this only matches the exact
+# post-open site, not some other `fi`.
+python3 - "$FIXR/workflows/scripts/validate-model-usage-emit.sh" <<'PYEOF'
+import sys
+p = sys.argv[1]
+c = open(p).read()
+needle = "    exit 1\n  fi\n  lineno=0\n"
+assert c.count(needle) == 1, "post-open anchor not found exactly once — production text drifted"
+marker = "    exit 1\n  fi\n  echo \"MARKER-STDERR-AFTER-OPEN\" >&2\n  lineno=0\n"
+open(p, "w").write(c.replace(needle, marker))
+PYEOF
+chmod +x "$FIXR/workflows/scripts/validate-model-usage-emit.sh"
+FIXED_ERR="$(bash "$FIXR/workflows/scripts/validate-model-usage-emit.sh" --file "$TMP/good.jsonl" 2>&1 1>/dev/null)"
+check "WITH the scoped fix ({ exec 3<...; } 2>/dev/null): a stderr write after the successful open IS visible" \
+  bash -c "grep -Fq 'MARKER-STDERR-AFTER-OPEN' <<<\"\$1\"" _ "$FIXED_ERR"
+# Tamper: revert ONLY the exec line to the original bare (buggy) form, on top
+# of the marker-carrying fixture above — reproducing temperloop#1370 exactly.
+# Done via python3 (not sed) to avoid fragile shell/sed escaping around the
+# literal `{`/`}`/`$` characters in the pattern — matches this suite's own
+# established convention for exact-text source mutations.
+python3 - "$FIXR/workflows/scripts/validate-model-usage-emit.sh" <<'PYEOF'
+import sys
+p = sys.argv[1]
+c = open(p).read()
+scoped = 'if ! { exec 3< "$src"; } 2>/dev/null; then'
+bare = 'if ! exec 3< "$src" 2>/dev/null; then'
+assert c.count(scoped) == 1, "scoped exec line not found exactly once — production text drifted"
+open(p, "w").write(c.replace(scoped, bare))
+PYEOF
+chmod +x "$FIXR/workflows/scripts/validate-model-usage-emit.sh"
+check "sanity: the tamper actually reproduced the bare form (no scoping braces left)" \
+  bash -c "! grep -Fq '{ exec 3< \"\$src\"; }' '$FIXR/workflows/scripts/validate-model-usage-emit.sh'"
+BARE_ERR="$(bash "$FIXR/workflows/scripts/validate-model-usage-emit.sh" --file "$TMP/good.jsonl" 2>&1 1>/dev/null)"
+BARE_RC=$?
+check_eq "AFTER tamper (bare exec reintroduced): the script still exits 0 — this is exactly why an exit-code-only check cannot discriminate the bug" \
+  "0" "$BARE_RC"
+check_not "AFTER tamper (bare exec reintroduced): the SAME marker write is now SWALLOWED — proves the check is genuinely load-bearing" \
+  bash -c "grep -Fq 'MARKER-STDERR-AFTER-OPEN' <<<\"\$1\"" _ "$BARE_ERR"
+cp "$LINT" "$FIXR/workflows/scripts/validate-model-usage-emit.sh"
+chmod +x "$FIXR/workflows/scripts/validate-model-usage-emit.sh"
+check "RESTORED: fixture copy (pristine, no marker) passes cleanly again" \
+  bash "$FIXR/workflows/scripts/validate-model-usage-emit.sh" --file "$TMP/good.jsonl"
+
+echo "── 45. sweep (temperloop#1370): no BARE permanent-redirect exec sites remain repo-wide, and the scoped forms are correctly recognized ──"
+# BASE — widened per temperloop#1370 review (LOW): the original
+# `exec [0-9]<` pattern could only ever see an INPUT redirect on a plain
+# numeric fd. Two siblings carry the identical permanent-redirect hazard and
+# were invisible to it: `exec 3> "$log" 2>/dev/null` (an OUTPUT redirect) and
+# bash-4 `exec {fd}< "$f" 2>/dev/null` (a named descriptor). The tree is
+# clean of both today (verified via this very sweep) — this widening is
+# prophylactic on a guard already being edited.
+EXEC_SWEEP_BASE_RE='exec ([0-9]+|\{[A-Za-z_][A-Za-z_0-9]*\})[<>][^;]*2>/dev/null'
+# SCOPED (the exclusion) — MUST match ONLY the genuinely-correct shape:
+# `{ exec <fd><op> ...; } 2>/dev/null`, where the group's OWN `;` closes
+# BEFORE `}` and `2>/dev/null` sits OUTSIDE the group. This is deliberately
+# narrower than "any line containing '{ exec '" (temperloop#1370 review,
+# MEDIUM): that blanket filter was ALSO matching the single most likely way
+# this bug returns — `{ exec 3< "$f" 2>/dev/null; }`, a half-remembered
+# "wrap it in braces" that puts the redirect on the WRONG side of the closing
+# brace. A `{ }` group only saves/restores fds for redirections applied TO
+# THE GROUP; with none there, the bare exec's own `2>/dev/null` still lands
+# on the current shell exactly as before scoping was ever added — proven by
+# section 45b below (and empirically, live bash, in the review that found
+# this). Requiring the `;` immediately before `}` is exactly what excludes
+# that variant while still recognizing the real fix.
+EXEC_SWEEP_SCOPED_RE='\{[[:space:]]*exec ([0-9]+|\{[A-Za-z_][A-Za-z_0-9]*\})[<>][^;]*;[[:space:]]*\}[[:space:]]*2>/dev/null'
+# Also noted in the review: the OLD base pattern `exec [0-9]<[^;]*2>/dev/null`
+# could never match a CORRECTLY scoped line anyway, because the correct form
+# always carries a `;` before the redirect and `[^;]*` excludes it — so the
+# old `grep -v '{ exec '` filter was doing no useful work on the real fix; its
+# only live effect was creating the 45b hole. The widened base above has the
+# same property (a genuinely-scoped line's `;` still stops `[^;]*` before
+# `2>/dev/null` is reached), so EXEC_SWEEP_SCOPED_RE is retained as defense in
+# depth, not because the base regex needs it to skip a real scoped line.
+sweep_exec_hits() { # <dir> -- zero-echo dir-scoped sweep, shared by 45/45b/45c
+  grep -rnE "$EXEC_SWEEP_BASE_RE" --include='*.sh' "$1" 2>/dev/null \
+    | grep -v '/workflows/scripts/tests/' \
+    | grep -v -E "$EXEC_SWEEP_SCOPED_RE" \
+    | grep -v -E ':[0-9]+:[[:space:]]*#' || true
+}
+BARE_EXEC_HITS="$(sweep_exec_hits "$REPO")"
+check_eq "zero remaining BARE permanent-redirect exec sites repo-wide (this file's own is now scoped)" "" "$BARE_EXEC_HITS"
+check "the fixed line in validate-model-usage-emit.sh uses the scoped { exec 3< ...; } 2>/dev/null form" \
+  grep -Fq '{ exec 3< "$src"; } 2>/dev/null' "$LINT"
+check "model-comparison/tagging.sh already used the scoped form before this fix (the in-tree idiom this fix copies)" \
+  grep -Fq '{ exec 3<"$src"; } 2>/dev/null' "$REPO/workflows/scripts/model-comparison/tagging.sh"
+
+echo "── 45b. MUTATION (temperloop#1370 review, MEDIUM): the sweep is no longer blind to the inner-redirect variant '{ exec N< ... 2>/dev/null; }' ──"
+SWEEP_FIX="$TMP/sweep-fixtures"
+mkdir -p "$SWEEP_FIX"
+cat > "$SWEEP_FIX/inner-redirect-bug.sh" <<'EOF'
+#!/usr/bin/env bash
+set -uo pipefail
+f="/nope-does-not-exist"
+if ! { exec 3< "$f" 2>/dev/null; }; then
+  echo "could not open" >&2
+fi
+EOF
+# BEFORE: the PRIOR filter (blanket `grep -v '{ exec '`, hardcoded here
+# exactly as it shipped, not re-derived) is blind to this file.
+OLD_FILTER_HITS="$(grep -rn 'exec [0-9]<[^;]*2>/dev/null' --include='*.sh' "$SWEEP_FIX" 2>/dev/null \
+  | grep -v '{ exec ' || true)"
+check_eq "BEFORE (prior blanket '{ exec ' filter): the inner-redirect bug variant is INVISIBLE to the sweep — this was the hole" \
+  "" "$OLD_FILTER_HITS"
+# AFTER: the fixed filter (this section's own sweep_exec_hits) catches it.
+NEW_FILTER_HITS="$(sweep_exec_hits "$SWEEP_FIX")"
+check "AFTER (fixed filter, excludes only the genuinely-correct scoped shape): the same inner-redirect bug variant now TRIPS the sweep" \
+  bash -c "grep -Fq 'inner-redirect-bug.sh' <<<\"\$1\"" _ "$NEW_FILTER_HITS"
+# Regression guard: the fixed filter must NOT flag a genuinely-correct scoped
+# form as a false positive (a sweep that cries wolf gets ignored).
+cat > "$SWEEP_FIX/correctly-scoped.sh" <<'EOF'
+#!/usr/bin/env bash
+set -uo pipefail
+f="/nope-does-not-exist"
+if ! { exec 3< "$f"; } 2>/dev/null; then
+  echo "could not open" >&2
+fi
+EOF
+CORRECT_HITS="$(sweep_exec_hits "$SWEEP_FIX" | grep 'correctly-scoped.sh' || true)"
+check_eq "the fixed filter does NOT flag a genuinely-correct scoped form as a false positive" "" "$CORRECT_HITS"
+rm -f "$SWEEP_FIX/inner-redirect-bug.sh" "$SWEEP_FIX/correctly-scoped.sh"
+
+echo "── 45c. widened sweep coverage (temperloop#1370 review, LOW): output-fd and bash-4 named-descriptor exec variants are also caught ──"
+cat > "$SWEEP_FIX/output-fd-bug.sh" <<'EOF'
+#!/usr/bin/env bash
+exec 3> "/tmp/does-not-matter-$$" 2>/dev/null
+EOF
+cat > "$SWEEP_FIX/named-fd-bug.sh" <<'EOF'
+#!/usr/bin/env bash
+exec {fd}< "/nope-does-not-exist" 2>/dev/null
+EOF
+WIDENED_HITS="$(sweep_exec_hits "$SWEEP_FIX")"
+check "a bare OUTPUT-redirect exec (exec N> ... 2>/dev/null) is caught by the widened sweep" \
+  bash -c "grep -Fq 'output-fd-bug.sh' <<<\"\$1\"" _ "$WIDENED_HITS"
+check "a bare bash-4 NAMED-DESCRIPTOR exec (exec {fd}< ... 2>/dev/null) is caught by the widened sweep" \
+  bash -c "grep -Fq 'named-fd-bug.sh' <<<\"\$1\"" _ "$WIDENED_HITS"
+rm -f "$SWEEP_FIX/output-fd-bug.sh" "$SWEEP_FIX/named-fd-bug.sh"
+
+echo "── 46. failure-branch coverage (temperloop#1370 review, LOW): a failed exec-open genuinely reaches stderr as CANNOT EVALUATE, rc=1 ──"
+# Lines ~441-448 (the CANNOT EVALUATE arm) had zero fixture coverage, and
+# this fix's own change altered that branch's observable output (BLOCKING per
+# the review). Mutates ONLY the exec line's "$src" to a hardcoded nonexistent
+# path — bypassing the earlier -f/-r existence checks entirely (which still
+# see the real, valid $TMP/good.jsonl) so the failure is isolated to the open
+# itself, exactly the seam this fix touches.
+cp "$LINT" "$FIXR/workflows/scripts/validate-model-usage-emit.sh"
+python3 - "$FIXR/workflows/scripts/validate-model-usage-emit.sh" <<'PYEOF'
+import sys
+p = sys.argv[1]
+c = open(p).read()
+needle = 'if ! { exec 3< "$src"; } 2>/dev/null; then'
+assert c.count(needle) == 1, "scoped exec line not found exactly once — production text drifted"
+broken = 'if ! { exec 3< "/tmp/temperloop-1370-does-not-exist-$$"; } 2>/dev/null; then'
+open(p, "w").write(c.replace(needle, broken))
+PYEOF
+chmod +x "$FIXR/workflows/scripts/validate-model-usage-emit.sh"
+FAILOPEN_ERR="$(bash "$FIXR/workflows/scripts/validate-model-usage-emit.sh" --file "$TMP/good.jsonl" 2>&1 1>/dev/null)"
+FAILOPEN_RC=$?
+check_eq "a failed open exits 1 (fail-closed), never 0" "1" "$FAILOPEN_RC"
+check "a failed open reaches stderr with the CANNOT EVALUATE — could not open message (the fail-closed contract this file's header advertises)" \
+  bash -c "grep -Fq 'could not open' <<<\"\$1\"" _ "$FAILOPEN_ERR"
+cp "$LINT" "$FIXR/workflows/scripts/validate-model-usage-emit.sh"
+chmod +x "$FIXR/workflows/scripts/validate-model-usage-emit.sh"
+check "RESTORED: fixture passes cleanly again" \
+  bash "$FIXR/workflows/scripts/validate-model-usage-emit.sh" --file "$TMP/good.jsonl"
+
+echo "── 47. MUTATION (temperloop#1370 review, LOW): 'set +o posix' keeps the failed-open diagnostic visible under POSIXLY_CORRECT ──"
+# exec is a POSIX special builtin: in posix mode a redirection error on it
+# exits a NON-INTERACTIVE shell immediately, so the `if !` arm guarding the
+# CANNOT EVALUATE message never runs. Narrow trigger (only when
+# POSIXLY_CORRECT is set), fail-closed (rc stays 1 either way — this is a
+# lost DIAGNOSTIC, never a lost failure), but INVISIBLE when it happens. Same
+# "$src"-mutation technique as section 46, so this isolates the posix guard's
+# own effect rather than any difference in how the failure is provoked.
+cp "$LINT" "$FIXR/workflows/scripts/validate-model-usage-emit.sh"
+python3 - "$FIXR/workflows/scripts/validate-model-usage-emit.sh" <<'PYEOF'
+import sys
+p = sys.argv[1]
+c = open(p).read()
+needle = 'if ! { exec 3< "$src"; } 2>/dev/null; then'
+assert c.count(needle) == 1, "scoped exec line not found exactly once — production text drifted"
+broken = 'if ! { exec 3< "/tmp/temperloop-1370-does-not-exist-$$"; } 2>/dev/null; then'
+open(p, "w").write(c.replace(needle, broken))
+PYEOF
+chmod +x "$FIXR/workflows/scripts/validate-model-usage-emit.sh"
+POSIX_FIXED_ERR="$(POSIXLY_CORRECT=1 bash "$FIXR/workflows/scripts/validate-model-usage-emit.sh" --file "$TMP/good.jsonl" 2>&1 1>/dev/null)"
+POSIX_FIXED_RC=$?
+check_eq "WITH 'set +o posix' present: a failed open under POSIXLY_CORRECT=1 still exits 1" "1" "$POSIX_FIXED_RC"
+check "WITH 'set +o posix' present: the CANNOT EVALUATE diagnostic still reaches stderr under POSIXLY_CORRECT=1 (not silently swallowed)" \
+  bash -c "grep -Fq 'CANNOT EVALUATE' <<<\"\$1\"" _ "$POSIX_FIXED_ERR"
+# Tamper: remove the 'set +o posix' line (on top of the same broken-open
+# fixture above) and confirm the diagnostic goes silent under
+# POSIXLY_CORRECT=1 while rc is unchanged — fail-closed but invisible,
+# exactly the review finding.
+python3 - "$FIXR/workflows/scripts/validate-model-usage-emit.sh" <<'PYEOF'
+import sys
+p = sys.argv[1]
+c = open(p).read()
+needle = "set -uo pipefail\n"
+assert needle in c, "set -uo pipefail line not found — production text drifted"
+posix_line = [l for l in c.splitlines(True) if l.strip() == "set +o posix"]
+assert len(posix_line) == 1, "set +o posix line not found exactly once — production text drifted"
+open(p, "w").write(c.replace(posix_line[0], ""))
+PYEOF
+chmod +x "$FIXR/workflows/scripts/validate-model-usage-emit.sh"
+POSIX_TAMPER_ERR="$(POSIXLY_CORRECT=1 bash "$FIXR/workflows/scripts/validate-model-usage-emit.sh" --file "$TMP/good.jsonl" 2>&1 1>/dev/null)"
+POSIX_TAMPER_RC=$?
+check_eq "AFTER tamper (posix guard removed): rc is STILL 1 (fail-closed is unaffected)" "1" "$POSIX_TAMPER_RC"
+check_not "AFTER tamper (posix guard removed): the CANNOT EVALUATE diagnostic is now SILENTLY LOST under POSIXLY_CORRECT=1 — proves the guard is genuinely load-bearing" \
+  bash -c "grep -Fq 'CANNOT EVALUATE' <<<\"\$1\"" _ "$POSIX_TAMPER_ERR"
+cp "$LINT" "$FIXR/workflows/scripts/validate-model-usage-emit.sh"
+chmod +x "$FIXR/workflows/scripts/validate-model-usage-emit.sh"
+check "RESTORED: fixture passes cleanly again" \
+  bash "$FIXR/workflows/scripts/validate-model-usage-emit.sh" --file "$TMP/good.jsonl"
+
 echo
 if [ "$fail" -gt 0 ]; then
   printf 'test_model_usage_emit: FAILED %d of %d\n' "$fail" "$((pass + fail))"
