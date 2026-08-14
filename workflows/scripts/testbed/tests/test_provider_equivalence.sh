@@ -190,7 +190,10 @@ _testbed_provider_double_a_dir_arg() {
 }
 _testbed_provider_double_a_describe() {
   printf 'describe\n' >> "$CALL_LOG"
-  jq -cn '{kind:"double-a", base_name:"double-fixture-a", provenance_capable:true, promotable:true}'
+  # source_repo matches what the FIXTURE repo's real 'origin' names — the
+  # seam-contract field the driver now reads source identity FROM
+  # (temperloop#1357), rather than re-deriving it itself from its own cwd.
+  jq -cn '{kind:"double-a", base_name:"double-fixture-a", source_repo:"test-owner/test-repo", provenance_capable:true, promotable:true}'
 }
 _testbed_provider_double_a_preflight_checks() {
   printf 'preflight_checks\n' >> "$CALL_LOG"
@@ -208,7 +211,11 @@ _testbed_provider_double_b_dir_arg() {
 }
 _testbed_provider_double_b_describe() {
   printf 'describe\n' >> "$CALL_LOG"
-  jq -cn '{kind:"double-b", base_name:"double-fixture-b", provenance_capable:false, promotable:false}'
+  # Same source_repo as double-a (see its own comment) — both doubles run
+  # against the same fixture repo, so this is not part of the deliberate
+  # source-identity divergence Part B's sanity check asserts (that is
+  # kind/provenance_capable/promotable, per the header's "TWO ASSERTIONS").
+  jq -cn '{kind:"double-b", base_name:"double-fixture-b", source_repo:"test-owner/test-repo", provenance_capable:false, promotable:false}'
 }
 _testbed_provider_double_b_preflight_checks() {
   printf 'preflight_checks\n' >> "$CALL_LOG"

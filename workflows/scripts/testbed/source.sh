@@ -25,14 +25,19 @@
 #                              ZERO reads of any kind: it is a pure string
 #                              selection, never a filesystem or network
 #                              call.
-#   describe([dir])         -> {kind, base_name, provenance_capable,
-#                              promotable} — resolvable with ZERO network
-#                              writes and ZERO content fetching, so
-#                              pre-flight can run before anything is
-#                              produced. `dir` is this provider's OWN
-#                              resolved directory argument (dir_arg()'s
-#                              return value), never a driver-level CLI flag
-#                              directly.
+#   describe([dir])         -> {kind, base_name, source_repo,
+#                              provenance_capable, promotable} —
+#                              resolvable with ZERO network writes and ZERO
+#                              content fetching, so pre-flight can run
+#                              before anything is produced. `dir` is this
+#                              provider's OWN resolved directory argument
+#                              (dir_arg()'s return value), never a
+#                              driver-level CLI flag directly. `source_repo`
+#                              is `"<owner>/<name>"` when THIS PROVIDER'S
+#                              OWN resolved `dir` names a github.com
+#                              `origin` remote, else JSON `null` — see
+#                              "SOURCE IDENTITY IS SEAM DATA, NOT
+#                              DRIVER-COMPUTED" below (temperloop#1357).
 #   preflight_checks([dir]) -> the provider's own all-reads checks, as a
 #                              list of zero-arg shell function NAMES the
 #                              driver invokes in order. This is the ONE seam
@@ -82,6 +87,37 @@
 # argument means" cashes out mechanically to: each provider states, in its
 # own `dir_arg()`, which of the driver's CLI-level directory concepts is
 # its own — never the driver inspecting `kind` to decide.
+#
+# SOURCE IDENTITY IS SEAM DATA, NOT DRIVER-COMPUTED (temperloop#1357, epic
+# #1411). Before this, the driver (bin/subcommands/testbed.sh) computed a
+# `source_slug` itself — a bare `git remote get-url origin` read in the
+# DRIVER's cwd — identically for both providers, and fed that one value into
+# the handoff banner, the consent block, and the persisted record. That is
+# wrong for materialize-from-seed in exactly the same shape #1356 fixed for
+# directory arguments: the driver's cwd is not this provider's source at
+# all, so running a seed testbed from inside ANY git checkout that happens
+# to have an `origin` (the likely case for someone trying the demo from a
+# clone) silently captured an UNRELATED repository's slug — a schema
+# violation record.sh's own docs rule out (`.source_repo` is "null for
+# materialize-from-seed"). `dir_arg()` alone did not fix this: it resolves
+# WHICH directory a provider's functions receive, but the driver never
+# threaded that resolved directory through to a slug computation at all —
+# it kept reading its own cwd regardless of kind.
+#
+# The fix folds source identity into `describe()`, the seam member the
+# driver already calls exactly once, already dispatched by kind, already
+# given each provider's own resolved directory argument
+# (`provider_dir_arg`, mirror-from-repo's `dir_arg()` implementation
+# returns its OWN checkout path, never a stray cwd). `describe()`'s JSON
+# payload carries a `source_repo` field: mirror-from-repo's own
+# implementation resolves it from ITS OWN `source_dir` argument (the exact
+# same read `base_name` already derives its slug from, just also
+# returned); materialize-from-seed's implementation returns `null`
+# unconditionally — there is no upstream repository to name, ever,
+# regardless of what git checkout the command happened to be run from. The
+# driver reads `.source_repo` off the ALREADY-RESOLVED `describe()` payload
+# instead of re-deriving anything itself — no `case` on kind, no second
+# slug parser, no dependence on the driver's own cwd.
 #
 # PROVENANCE STAMPING (Produces 5): `mirror-from-repo`'s `produce_issues`
 # stamps a machine-readable `copied from <owner>/<repo>#<N>` line into every
@@ -229,12 +265,15 @@ _testbed_provider_mirror_from_repo_dir_arg() {
   printf '%s' "${1:-}"
 }
 
-# [source-dir] -> JSON {kind, base_name, provenance_capable, promotable} on
-# stdout. ZERO network calls: `git remote get-url` is a local config read,
-# never a network round-trip, so this is safe to call before pre-flight has
-# run or anything has been created. base_name falls back to the checkout's
-# directory basename when no `origin` remote is configured (or it isn't a
-# recognized github.com form) — still zero-network either way.
+# [source-dir] -> JSON {kind, base_name, source_repo, provenance_capable,
+# promotable} on stdout. ZERO network calls: `git remote get-url` is a local
+# config read, never a network round-trip, so this is safe to call before
+# pre-flight has run or anything has been created. base_name falls back to
+# the checkout's directory basename when no `origin` remote is configured
+# (or it isn't a recognized github.com form) — still zero-network either
+# way. `source_repo` is the SAME slug read, from THIS provider's OWN
+# `source_dir` argument — never the driver's cwd (temperloop#1357) — and is
+# JSON null exactly when base_name had to fall back (no resolvable slug).
 _testbed_provider_mirror_from_repo_describe() {
   local source_dir="${1:-.}" url slug base_name
   url="$(git -C "$source_dir" remote get-url origin 2>/dev/null || true)"
@@ -244,8 +283,8 @@ _testbed_provider_mirror_from_repo_describe() {
   else
     base_name="$(basename "$(git -C "$source_dir" rev-parse --show-toplevel 2>/dev/null || printf '%s' "$source_dir")")"
   fi
-  jq -cn --arg kind "mirror-from-repo" --arg base_name "$base_name" \
-    '{kind: $kind, base_name: $base_name, provenance_capable: true, promotable: true}'
+  jq -cn --arg kind "mirror-from-repo" --arg base_name "$base_name" --arg source_repo "$slug" \
+    '{kind: $kind, base_name: $base_name, source_repo: (if $source_repo == "" then null else $source_repo end), provenance_capable: true, promotable: true}'
 }
 
 # [source-dir] -> newline-separated preflight check function NAMES (zero
@@ -404,13 +443,19 @@ _testbed_provider_materialize_from_seed_dir_arg() {
   printf '%s' "${2:-}"
 }
 
-# [seed-dir] -> JSON {kind, base_name, provenance_capable, promotable} on
-# stdout. ZERO network calls and zero content fetching: `seed.json` is a
-# tracked local file, so this is safe to call before pre-flight has run or
-# anything has been created. base_name comes from the seed's own `name`,
-# falling back to the seed directory's basename so a malformed or absent
-# seed.json still yields a usable name rather than failing describe() (the
-# preflight check is where a broken seed is reported, not here).
+# [seed-dir] -> JSON {kind, base_name, source_repo, provenance_capable,
+# promotable} on stdout. ZERO network calls and zero content fetching:
+# `seed.json` is a tracked local file, so this is safe to call before
+# pre-flight has run or anything has been created. base_name comes from the
+# seed's own `name`, falling back to the seed directory's basename so a
+# malformed or absent seed.json still yields a usable name rather than
+# failing describe() (the preflight check is where a broken seed is
+# reported, not here). `source_repo` is UNCONDITIONALLY JSON null — there is
+# no upstream repository here to name, ever, no matter what git checkout (if
+# any) the command happens to be run from (temperloop#1357: this is exactly
+# what keeps a materialize-from-seed run from ever reporting some OTHER
+# repository — e.g. whatever the caller's cwd's `origin` happens to be — as
+# its source).
 _testbed_provider_materialize_from_seed_describe() {
   local seed_dir base_name=""
   seed_dir="$(_testbed_seed_dir "${1:-}")"
@@ -421,7 +466,7 @@ _testbed_provider_materialize_from_seed_describe() {
     base_name="$(basename "${seed_dir:-seed}")"
   fi
   jq -cn --arg kind "materialize-from-seed" --arg base_name "$base_name" \
-    '{kind: $kind, base_name: $base_name, provenance_capable: false, promotable: false}'
+    '{kind: $kind, base_name: $base_name, source_repo: null, provenance_capable: false, promotable: false}'
 }
 
 # [seed-dir] -> newline-separated preflight check function NAMES (zero args
