@@ -533,6 +533,8 @@ setMachinery('item-cifix',
   { outcome: 'PR_OPENED', pr_number: 401 },
   // First CI poll: CI_FAILED
   { outcome: 'CI_FAILED', failed_run_ids: [9001] },
+  // temperloop#1450: §3e re-review of the CI-fix commit, before the retry push
+  { outcome: 'REVIEW_DIFF' },
   // Retry push after fix worker (plain push — ff descendant, no --force)
   { outcome: 'PUSHED', sha: 'sha-v2', branch: 'build/item-cifix' },
   // Re-poll pinned to sha-v2: CI_GREEN
@@ -593,6 +595,7 @@ setMachinery('item-cibust',
   { outcome: 'PUSHED', sha: 'sha-v1', branch: 'build/item-cibust' },
   { outcome: 'PR_OPENED', pr_number: 501 },
   { outcome: 'CI_FAILED', failed_run_ids: [9002] },
+  { outcome: 'REVIEW_DIFF' },
   { outcome: 'PUSHED', sha: 'sha-v2', branch: 'build/item-cibust' },
   // Retry budget=1 used up; second CI_FAILED → escalate
   { outcome: 'CI_FAILED', failed_run_ids: [9003] },
@@ -4354,6 +4357,111 @@ if (!reason && (!reviewCall || reviewCall.opts.agentType !== 'python-reviewer'))
   reason = 'a .py-only diff must route via the tsv to python-reviewer, got: ' + JSON.stringify(reviewCall && reviewCall.opts.agentType);
 console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
 "
+
+# ============================================================================
+# TEST (K1450): the CI-fix re-spawn does NOT bypass §3e. A CI-fix commit can
+#   touch anything — including the very command doc whose edit tripped the
+#   original lint failure — and ciPollLoop's CI_FAILED arm plain-pushes it
+#   straight to the open PR. Neither of these live cases is exercised by the
+#   four K1430 tests (all pre-CI) nor by the pre-existing CI-fail tests (which
+#   predate §3e's existence and never touch review at all).
+# ============================================================================
+run_node_case "K1450 ci-fix clean: a CLEAN CI-fix commit still gets re-reviewed (two review rounds), and both land in the Step 6 tally" "
+$PREAMBLE
+
+setMachinery('cifix-clean',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/cifix-clean' },
+  { outcome: 'REVIEW_DIFF', files: ['claude/commands/build.md'] },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-v1' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'sha-v1', branch: 'build/cifix-clean' },
+  { outcome: 'PR_OPENED', pr_number: 700 },
+  { outcome: 'CI_FAILED', failed_run_ids: [1] },
+  // The re-review's OWN diff fetch — a SEPARATE machinery call from the first.
+  { outcome: 'REVIEW_DIFF', files: ['claude/commands/build.md'] },
+  { outcome: 'PUSHED', sha: 'sha-v2', branch: 'build/cifix-clean' },
+  { outcome: 'CI_GREEN' },
+);
+setWorker('cifix-clean',
+  { status: 'done', summary: 'initial', acceptance_results: [{ criterion: 'c', passed: true, evidence: 'e' }], commits: [] },
+  { status: 'done', summary: 'ci fixed', acceptance_results: [], commits: [] },
+);
+setReview('cifix-clean',
+  '## Summary\\nclean on the original push.\\n\\n## Findings\\n(none)\\n',
+  '## Summary\\nclean on the CI-fix commit too.\\n\\n## Findings\\n(none)\\n',
+);
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'cifix-clean', branch: 'build/cifix-clean', title: 'CI-fix clean', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+let reason = null;
+if ((result.parked ?? []).length !== 1) reason = 'expected 1 parked: ' + JSON.stringify(result);
+else if ((result.escalations ?? []).length !== 0) reason = 'expected 0 escalations: ' + JSON.stringify(result.escalations);
+const reviewCalls = callLog.filter(c => isReviewCall(c.opts));
+if (!reason && reviewCalls.length !== 2)
+  reason = 'expected TWO review agent() calls (original push + CI-fix commit), got ' + reviewCalls.length + ': ' + JSON.stringify(reviewCalls.map(c => c.opts.label));
+const rec = (result.parked ?? [])[0];
+if (!reason && (!rec || !rec.review || rec.review.ran.length !== 2))
+  reason = 'park() must carry BOTH review rounds in its review.ran tally (temperloop#1450): ' + JSON.stringify(rec && rec.review);
+if (!reason && rec.review.mandatory_ok !== true)
+  reason = 'a fully-run mandatory review must report mandatory_ok:true: ' + JSON.stringify(rec.review);
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+run_node_case "K1450 ci-fix blocking: a HIGH finding on the CI-fix commit escalates review-blocking, never force-pushes the fix" "
+$PREAMBLE
+
+setMachinery('cifix-block',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/cifix-block' },
+  { outcome: 'REVIEW_DIFF', files: ['claude/commands/build.md'] },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-v1' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'sha-v1', branch: 'build/cifix-block' },
+  { outcome: 'PR_OPENED', pr_number: 701 },
+  { outcome: 'CI_FAILED', failed_run_ids: [1] },
+  { outcome: 'REVIEW_DIFF', files: ['claude/commands/build.md'] },
+  // Deliberately NO 'PUSHED' entry after this: if the code wrongly proceeds
+  // past a blocking CI-fix review to push, the mock's queue is exhausted and
+  // throws 'No mock entry' — a LOUD failure, never a silent pass-through.
+);
+setWorker('cifix-block',
+  { status: 'done', summary: 'initial', acceptance_results: [{ criterion: 'c', passed: true, evidence: 'e' }], commits: [] },
+  { status: 'done', summary: 'ci fixed', acceptance_results: [], commits: [] },
+);
+setReview('cifix-block',
+  '## Summary\\nclean on the original push.\\n\\n## Findings\\n(none)\\n',
+  '## Summary\\n1 finding.\\n\\n## Findings\\n### [HIGH] Silent failure mode introduced by the fix in claude/commands/build.md\\n',
+);
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'cifix-block', branch: 'build/cifix-block', title: 'CI-fix blocking', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+let reason = null;
+if ((result.parked ?? []).length !== 0) reason = 'a BLOCKING CI-fix review must never park the item: ' + JSON.stringify(result);
+else if ((result.escalations ?? []).length !== 1) reason = 'expected exactly 1 escalation: ' + JSON.stringify(result.escalations);
+else if (result.escalations[0].kind !== 'review-blocking') reason = 'wrong escalation kind: ' + result.escalations[0].kind;
+else if (result.escalations[0].payload.stage !== 'ci-fix') reason = 'the escalation must name its stage as ci-fix: ' + JSON.stringify(result.escalations[0].payload);
+if (!reason) {
+  const retryPush = callLog.find(c => (c.opts.label||'').startsWith('push-retry:cifix-block'));
+  if (retryPush) reason = 'a blocking CI-fix review must stop BEFORE the retry push — push-retry must never spawn: ' + JSON.stringify(retryPush.opts.label);
+}
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+# --- K1450 static lockstep guard: the CI-fix path re-runs §3e ---------------
+grep -q 'const fixReview = await runReviewers(item, wt);' "$MJS" \
+  || fail "#1450: ciPollLoop's CI_FAILED arm must re-run runReviewers() against the CI-fix diff before the retry push"
+grep -q "escalation: 'review-blocking', payload: { findings: fixReview.blocking" "$MJS" \
+  || fail "#1450: a blocking CI-fix review must escalate review-blocking before the retry push, exactly like the original 3e pass"
+echo "PASS: #1450 ci-fix re-review guard — the CI_FAILED arm re-runs §3e against the fix commit before pushing it"
 
 # --- K1430 static lockstep guards: §3e mandatory/routed pre-push review ------
 # build.md §3e is the SPEC; build-level.mjs's driveItem is the as-built

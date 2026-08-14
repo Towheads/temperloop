@@ -188,6 +188,12 @@
 //   orchestrator rolls the list into the Step 6 summary tally (build.md §3f
 //   step 2's sibling verification_surface degraded-case pattern).
 //
+//   A parked record also carries `review: { ran, skipped, mandatory_ok }`
+//   (temperloop#1450) — the §3e reviewer tally across every round this item's
+//   build ran (the original 3e pass plus any CI-fix re-review), the source
+//   for the Step 6 "reviewer outcome" summary build.md §3e promises. Absent
+//   only for a spike (kind:spike skips 3b-3h and never reviews).
+//
 //   The workflow NEVER writes the plan note (race-safety: the orchestrator
 //   serializes all plan-note writeback at the level boundary). It only RETURNS
 //   what to write. Escalations leave the worktree INTACT (the orchestrator
@@ -1953,7 +1959,12 @@ function discriminationGaps(verdict) {
     .map((r) => (r.criterion ? String(r.criterion) : '(unlabeled criterion)'));
 }
 
-function park(slug, pr, pushedSha, acceptanceResults, noCi, recovery, discriminationGapList) {
+// park()'s trailing two arguments are two INDEPENDENT degraded-case tallies
+// (temperloop#1319's discriminationGapList, temperloop#1450's review) that
+// happened to land on the same function in the same window — neither
+// supersedes the other; both are optional and independently omitted when
+// empty/absent, exactly like `no_ci` above.
+function park(slug, pr, pushedSha, acceptanceResults, noCi, recovery, discriminationGapList, review) {
   const parked = { slug, pr, pushed_sha: pushedSha, acceptance_results: acceptanceResults ?? [] };
   // temperloop#939: a record reconstructed from observable side-effects after a
   // lost worker return carries its provenance EXPLICITLY. `acceptance_unverified`
@@ -1979,6 +1990,14 @@ function park(slug, pr, pushedSha, acceptanceResults, noCi, recovery, discrimina
   if (discriminationGapList && discriminationGapList.length > 0) {
     parked.discrimination_gaps = discriminationGapList;
   }
+  // temperloop#1450 — the §3e Step 6 tally build.md §3e promises needs
+  // SOMEWHERE to read from. `review` is reviewTally()'d { ran, skipped,
+  // mandatory_ok } across every review round this item's build actually ran
+  // (the 3e pass plus any CI-fix re-review) — absent for a spike (skips
+  // 3b-3h, never reviews) or omitted by an older call site. `mandatory_ok`
+  // is false iff a mandatory (foundation#1007) route was ever genuinely
+  // skipped, not merely "an optional reviewer wasn't available".
+  if (review) parked.review = review;
   return {
     _kind: 'parked',
     slug,
@@ -2142,10 +2161,16 @@ function reviewHasBlockingFinding(text) {
 // runReviewers — the §3e driver. Fetches the routing inputs (one machinery
 // call), resolves the matching reviewer set, and spawns EACH directly via
 // `agent({agentType})` — never delegated to the 3c worker. Returns:
-//   { escalation }                          — the diff fetch itself failed
-//   { summary, blocking: [], ran, skipped } — normal return (blocking may be non-empty)
-// `summary` is a short line for the PR body (criterion: the PR must carry
-// real evidence of a real pass, never a guaranteed-skip default).
+//   { escalation }                                   — the diff fetch itself failed
+//   { summary, notes, blocking: [], ran, skipped }   — normal return (blocking may be non-empty)
+// `summary` is a short tally line for the PR body (criterion: the PR must
+// carry real evidence of a real pass, never a guaranteed-skip default).
+// `notes` (temperloop#1450) is the FULL findings text for every reviewer that
+// ran, one `### <reviewer>` block each — a non-blocking (MEDIUM/LOW-only)
+// review is still advisory OUTPUT, not silently discarded after the HIGH
+// check. Empty string when nothing ran. Callers splice `notes` into a durable
+// surface (the PR body, at the 3f call site) rather than letting it evaporate
+// once the blocking check has read it.
 async function runReviewers(item, wt) {
   const diffOut = await runMachinery(reviewDiffCmd(wt), {
     label: `review-diff:${item.slug}`,
@@ -2162,12 +2187,13 @@ async function runReviewers(item, wt) {
   const tsvText = typeof diffOut.tsv === 'string' ? diffOut.tsv : '';
   const routes = determineReviewers(item, files, tsvText);
   if (routes.length === 0) {
-    return { summary: '', blocking: [], ran: [], skipped: [] };
+    return { summary: '', notes: '', blocking: [], ran: [], skipped: [] };
   }
 
   const ran = [];
   const skipped = [];
   const blocking = [];
+  const notesParts = [];
   for (const route of routes) {
     let text;
     try {
@@ -2221,6 +2247,10 @@ async function runReviewers(item, wt) {
     const textStr = String(text);
     ran.push({ reviewer: route.reviewer, mandatory: route.mandatory });
     log(`[${item.slug}] §3e review — ${route.reviewer} ran (${route.reasons.join('; ')})`);
+    // temperloop#1450 — keep the FULL text, not just the name: a MEDIUM/LOW-only
+    // review is still real advisory output and must not evaporate once the HIGH
+    // check below has read it.
+    notesParts.push(`### ${route.reviewer}\n${textStr}`);
     if (reviewHasBlockingFinding(textStr)) {
       blocking.push({ reviewer: route.reviewer, findings: textStr });
     }
@@ -2229,7 +2259,24 @@ async function runReviewers(item, wt) {
   const parts = [];
   if (ran.length) parts.push(`§3e review — ran: ${ran.map((r) => r.reviewer).join(', ')}`);
   if (skipped.length) parts.push(skipped.map((s) => s.note).join('; '));
-  return { summary: parts.join(' · '), blocking, ran, skipped };
+  return { summary: parts.join(' · '), notes: notesParts.join('\n\n'), blocking, ran, skipped };
+}
+
+// reviewTally — merge one or more runReviewers() rounds (the original 3e pass
+// plus any CI-fix re-review, temperloop#1450) into the ONE summary object
+// park() threads through to the orchestrator's Step 6 tally. `mandatory_ok`
+// is false iff any SKIPPED entry across every round carried `mandatory: true`
+// — i.e. the foundation#1007 command-doc rule was genuinely degraded at least
+// once, never merely "some optional reviewer wasn't available".
+function reviewTally(...rounds) {
+  const ran = [];
+  const skipped = [];
+  for (const r of rounds) {
+    if (!r) continue;
+    ran.push(...(r.ran ?? []));
+    skipped.push(...(r.skipped ?? []));
+  }
+  return { ran, skipped, mandatory_ok: !skipped.some((s) => s.mandatory) };
 }
 
 async function driveItem(item) {
@@ -2532,7 +2579,13 @@ async function driveItem(item) {
   // Carried into the PR body at 3f below (verdictJson.summary) — the PR must
   // carry REAL evidence a review ran (or a legible, non-guaranteed skip
   // notice), never silently read as if the gate had passed by default.
-  const reviewSummarySuffix = review.summary ? `\n\n${review.summary}` : '';
+  // `notes` (temperloop#1450) is the reviewer's FULL findings text, rendered
+  // as its own `## Review notes` section so a non-blocking (MEDIUM/LOW-only)
+  // pass is still visible to the human reviewer — not computed, checked for
+  // HIGH, and thrown away.
+  const reviewSummarySuffix =
+    (review.summary ? `\n\n${review.summary}` : '') +
+    (review.notes ? `\n\n## Review notes\n${review.notes}` : '');
 
   // --- 3e.5. Parent-side acceptance gate (quality-gates.sh) ----------------
   // Run the project's static gate SSOT against the worker's work. ABSENT (the
@@ -2921,7 +2974,14 @@ async function driveItem(item) {
       `the worker never proved these checks can fail (temperloop#1319): ${discGaps.map((c) => `"${c}"`).join(', ')}`,
     );
   }
-  return park(item.slug, pr, ciResult.finalSha ?? pushedSha, verdict.acceptance_results, ciResult.noCi === true, recovery, discGaps);
+  // temperloop#1450 — merge the ORIGINAL 3e pass with any CI-fix re-review
+  // round(s) (ciResult.fixReviewRounds) into the ONE tally park() carries, so
+  // the Step 6 summary can render whether §3e actually discharged, across
+  // every review this item's build ran, not just the first. Two INDEPENDENT
+  // degraded-case tallies ride this one park() call now (discGaps from
+  // #1319, reviewSummary from #1450) — see park()'s own signature comment.
+  const reviewSummary = reviewTally(review, ...(ciResult.fixReviewRounds ?? []));
+  return park(item.slug, pr, ciResult.finalSha ?? pushedSha, verdict.acceptance_results, ciResult.noCi === true, recovery, discGaps, reviewSummary);
 }
 
 // -----------------------------------------------------------------------------
@@ -2994,6 +3054,14 @@ async function ciPollLoop(item, ownerRepo, pr, initialSha, wt) {
   // `sha` changes (buffered results are pinned to the previous head — #254).
   let buffer = [];
   let batchIdx = 0;
+  // temperloop#1450 — one runReviewers() result per CI-fix commit re-reviewed
+  // below (the CI_FAILED arm), so a green resolution can hand them back to
+  // driveItem for the Step 6 tally (park()'s `review` argument via
+  // reviewTally()). A CI-fix commit can touch anything — including the very
+  // command doc whose edit tripped the ORIGINAL lint failure — and without
+  // this it would ship unreviewed under a PR body that only describes the
+  // FIRST push.
+  const fixReviewRounds = [];
 
   for (let slice = 0; slice < maxSlices; slice++) {
     if (buffer.length === 0) {
@@ -3081,7 +3149,7 @@ async function ciPollLoop(item, ownerRepo, pr, initialSha, wt) {
       { outcome: 'ERROR', error: 'ci-poll step produced no result in its batch' };
 
     if (out.outcome === 'CI_GREEN') {
-      return { ok: true, finalSha: sha };
+      return { ok: true, finalSha: sha, fixReviewRounds };
     }
 
     if (out.outcome === 'NO_CI') {
@@ -3092,7 +3160,7 @@ async function ciPollLoop(item, ownerRepo, pr, initialSha, wt) {
       // `no_ci: true` sentinel, instead of falling through to the catch-all
       // below and escalating `ci-failed` (the exact mis-escalation this fixes).
       log(`[${item.slug}] PR #${pr}: no CI configured on this SHA — skipping the CI gate (slice ${slice + 1})`);
-      return { ok: true, finalSha: sha, noCi: true };
+      return { ok: true, finalSha: sha, noCi: true, fixReviewRounds };
     }
 
     if (out.outcome === 'TIMEOUT') {
@@ -3137,6 +3205,26 @@ async function ciPollLoop(item, ownerRepo, pr, initialSha, wt) {
       if (fixVerdict.status !== 'done') {
         return { escalation: 'ci-failed', payload: { fixVerdict, sha } };
       }
+      // temperloop#1450 — re-run §3e against the CI-fix DIFF before pushing it.
+      // The fix worker can touch anything (including the very command doc
+      // whose edit tripped the original lint failure): without this, a
+      // CI-fix commit ships to the open PR with NO second pass through the
+      // mandatory claude/commands/*.md -> workflow-reviewer rule
+      // (foundation#1007) — the exact structurally-guaranteed-skip class this
+      // item exists to close, just relocated one stage later than 3f. Reuses
+      // the SAME runReviewers() the original 3e pass used; its own diff fetch
+      // re-reads the worktree, whose HEAD now includes the fix commit, so the
+      // diff naturally covers the fix on top of the original push.
+      const fixReview = await runReviewers(item, wt);
+      if (fixReview.escalation) {
+        const esc = fixReview.escalation.escalation;
+        return { escalation: esc.kind, payload: { ...esc.payload, sha } };
+      }
+      if (fixReview.blocking.length > 0) {
+        log(`[${item.slug}] §3e review on the CI-fix commit found a BLOCKING finding — escalating before push`);
+        return { escalation: 'review-blocking', payload: { findings: fixReview.blocking, stage: 'ci-fix', sha } };
+      }
+      fixReviewRounds.push(fixReview);
       // Push the fixed SHA and pin the re-poll to it. This is a plain push — no
       // --force — because the CI-fix worker's head is a fast-forward descendant
       // by construction: it resets to the remote tip (`git reset --hard
