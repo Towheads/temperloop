@@ -20,7 +20,7 @@ TESTBED_SRC := $(FOUNDATION)/workflows/scripts/testbed
 	test-hooks test-install test-install-links test-install-worktree-guard test-testbed-record \
 	test-prune-branches validate-capture-backstop validate-activation-registry validate-onramp-anchors validate-command-run-emit validate-issue-touch-emit \
 	validate-knowledge-search-emit validate-diagnose-queue-emit \
-	validate-lexicon validate-template-refs test-scan-stub test-vault-hygiene test-tally-findings test-env-hygiene-report lint-pr-body-test test-stranger-config \
+	validate-lexicon validate-template-refs test-scan-stub test-vault-hygiene test-tally-findings test-findings-integrity test-env-hygiene-report lint-pr-body-test test-stranger-config \
 	test-kernel-manifest test-kernel-denylist test-kernel-gitleaks test-kernel-prerename test-kernel-terminology test-pr-leak-guard test-producer-egress docs \
 	test-docs-generator test-conventions-probe test-demo test-proposal-pr guard-install-worktree test-cli-subcommands test-testbed-source \
 	test-testbed-command test-promote-push test-testbed-equivalence test-candidate-session
@@ -291,6 +291,10 @@ test-vault-hygiene:
 test-tally-findings:
 	@echo "==> Running recent-findings tally tests..."
 	@bash $(FOUNDATION)/workflows/scripts/drain/tests/test_tally_recent_findings.sh
+
+test-findings-integrity:
+	@echo "==> Running findings-integrity checker tests..."
+	@bash $(FOUNDATION)/workflows/scripts/drain/tests/test_findings_integrity.sh
 
 test-model-comparison-stats:
 	@echo "==> Running comparison-statistics library tests..."
