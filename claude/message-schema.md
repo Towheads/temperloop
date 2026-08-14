@@ -340,7 +340,15 @@ specific degradation has a known, in-the-moment fix the operator needs
 *while the panel is running*, not merely in a later durable record.
 Conciseness stays structurally enforced — one clause, this case only; every
 other mode-2 skip (a genuinely not-shipped agent, or a non-agent capability
-like `/verify` that has no `project-agents.sh` install path) stays bare. The
+with no `project-agents.sh` install path) stays bare. **This clause fixes the
+SHAPE of such a line; it never licenses a kernel surface to keep routing to a
+capability that does not exist.** The example that used to sit here —
+`/verify`, which never shipped — was that failure: `build.md` §3e.6 routed
+its no-predicate class-A activation arm to `/verify`, so a mandatory gate
+degraded to a skip notice on every run that reached it. temperloop#1451
+deleted the route rather than keeping the notice; no kernel surface routes to
+`/verify` today. A degradation line reports a *real* capability's
+absence; it is never a standing stand-in for a gate that can never run. The
 fuller mode-6 form still adds the calibrated-trust and (unconditional) remedy
 slots because a cold or stranger reader of a durable artifact lacks the live
 session's surrounding context; this live-vs-recorded distinction is an

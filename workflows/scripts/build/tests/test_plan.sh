@@ -310,6 +310,50 @@ out="$(bash "$SCRIPT" validate "$TMP/act-b.md")"
 [ "$(jq -r .outcome <<<"$out")" = "VALID" ] || fail "class-B activation without proof should be VALID (ledger-discharged) (got: $out)"
 echo "PASS: validate → VALID on a class-B activation block with no proof: (ledger-discharged) (rule 13)"
 
+# --- K1451 static lockstep guards: rule 13 is what makes 3e.6's no-predicate --
+# arm UNREACHABLE, so the prose that depends on it must stay in lockstep with
+# the behavior cases above.
+#
+# The defect (temperloop#1451, the temperloop#1387 shape): build.md §3e.6
+# routed a class-A block with no `proof:` to a `/verify` skill that has never
+# existed in this repo, under a pre-authorized legible-degradation clause — so
+# that arm of a MANDATORY gate could only ever resolve to its own skip notice.
+# The fix keeps `proof:` mandatory (rule 13, asserted behaviorally above) and
+# deletes the dead route + its degradation arm. These greps are the mechanical
+# half: they go RED if either surface is reverted independently of the other.
+K1451_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
+K1451_BUILD_MD="$K1451_REPO/claude/commands/build.md"
+K1451_PLAN_SCHEMA="$K1451_REPO/claude/plan-schema.md"
+# An absent prose half is a HARD FAIL, never a skip — a check that cannot run
+# must not report PASS (temperloop#1409's own failure class).
+[ -f "$K1451_BUILD_MD" ] \
+  || fail "#1451: claude/commands/build.md is missing — the prose half of this contract pair cannot be verified"
+[ -f "$K1451_PLAN_SCHEMA" ] \
+  || fail "#1451: claude/plan-schema.md is missing — the prose half of this contract pair cannot be verified"
+
+# (a) 3e.6 must carry a HARD-FAIL arm for the no-predicate case, not a skip.
+grep -qF 'activation-proof-missing' "$K1451_BUILD_MD" \
+  || fail "#1451: build.md §3e.6 must escalate 'activation-proof-missing' for a class-A block with no proof: (no silent pass, no skip arm)"
+# (b) The dead degradation arm must stay gone: no /verify skip notice anywhere
+#     in build.md. (The historical note in §3e.6 deliberately does not quote it.)
+! grep -qF 'skipped — /verify' "$K1451_BUILD_MD" \
+  || fail "#1451: build.md still carries a 'skipped — /verify ...' degradation line — a pre-authorized skip for a capability that does not exist"
+# (c) No live route to /verify while no /verify command ships. Conditional on
+#     the command's actual presence, so this guard stops objecting the day a
+#     real /verify lands rather than blocking it.
+if [ ! -f "$K1451_REPO/claude/commands/verify.md" ]; then
+  ! grep -qiE 'invoke[^.]*/verify|driving `?/verify|drive `?/verify' "$K1451_BUILD_MD" \
+    || fail "#1451: build.md routes to /verify, but claude/commands/verify.md does not exist (dead route)"
+  ! grep -qF '/verify' "$K1451_PLAN_SCHEMA" \
+    || fail "#1451: plan-schema.md names /verify as a class-A fallback, but claude/commands/verify.md does not exist (dead route)"
+fi
+# (d) /build's Step 1 must name rule 13 — the front-door check that makes the
+#     3e.6 arm unreachable in the first place. Without it the orchestrator's
+#     own checklist never enforces the invariant 3e.6 now relies on.
+grep -qF 'rule 13' "$K1451_BUILD_MD" \
+  || fail "#1451: build.md Step 1 must name rule 13 (class-A activation requires proof:) — the validation that makes 3e.6's no-predicate arm unreachable"
+echo "PASS: #1451 dead-/verify-arm guard — rule 13 mandatory-proof enforced in plan.sh; build.md/plan-schema.md carry no route or skip arm to a non-existent /verify"
+
 # --- validate: rule 14 — activation required for product-source items --------
 # A plan dated ON-OR-AFTER the RULE_14_CUTOVER_DATE (2026-07-17) so the
 # grandfather gate does NOT apply — rule 14 is live for all cases below unless
