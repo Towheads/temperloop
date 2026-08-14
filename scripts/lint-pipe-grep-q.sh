@@ -66,10 +66,50 @@ set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-# Files that necessarily CONTAIN the shape as data. Self-exemption is by resolved
-# path, not basename, so a fixture that happens to share a name is still linted.
+# _resolve_symlinks <path> — canonicalize a path by following every symlink,
+# both a symlinked LEAF file and any symlinked directory COMPONENT, without
+# relying on GNU `readlink -f` or `realpath` (neither is guaranteed on the
+# macOS/BSD userland this repo also runs on — see CLAUDE.md's dialect-check
+# rule). Portable: `dirname`/`basename`/`readlink`/`cd -P`/`pwd -P` only.
+_resolve_symlinks() {
+  local p="$1" dir target hops=0
+  while [ -L "$p" ]; do
+    hops=$((hops + 1))
+    [ "$hops" -gt 40 ] && break  # symlink-loop guard; give up and use what we have
+    dir="$(dirname "$p")"
+    target="$(readlink "$p")"
+    case "$target" in
+      /*) p="$target" ;;
+      *) p="$dir/$target" ;;
+    esac
+  done
+  dir="$(dirname "$p")"
+  if dir="$(cd "$dir" 2>/dev/null && pwd -P)"; then
+    printf '%s/%s\n' "$dir" "$(basename "$p")"
+  else
+    printf '%s\n' "$p"
+  fi
+}
+
+# Files that necessarily CONTAIN the shape as data. Self-exemption is by
+# RESOLVED path (symlinks followed on both sides of the comparison — see
+# _resolve_symlinks above), not basename and not a literal string match, so
+# (a) a fixture that happens to share a name is still linted, and (b) in a
+# vendoring overlay that reaches this script through a compat symlink
+# (foundation: scripts/lint-pipe-grep-q.sh -> ../kernel/scripts/lint-pipe-
+# grep-q.sh) REPO_ROOT above resolves to the OVERLAY root, so a literal
+# `$REPO_ROOT/scripts/...` comparison would never match the vendored copies
+# at kernel/scripts/lint-pipe-grep-q.sh / kernel/scripts/tests/test_lint_
+# pipe_grep_q.sh that git ls-files also lists — those are the SAME physical
+# files the entry-point symlink points at, so resolving both sides to their
+# real path makes the comparison recognize them as self regardless of which
+# path (compat-symlink or vendored-original) reached them. Only these two
+# files are exempt this way — every OTHER file under a vendored kernel/
+# tree is still linted normally (temperloop#1490).
 SELF="$REPO_ROOT/scripts/lint-pipe-grep-q.sh"
 SELF_TEST="$REPO_ROOT/scripts/tests/test_lint_pipe_grep_q.sh"
+SELF_RESOLVED="$(_resolve_symlinks "$SELF")"
+SELF_TEST_RESOLVED="$(_resolve_symlinks "$SELF_TEST")"
 
 LIST_ONLY=0
 if [ "${1:-}" = "--list" ]; then
@@ -112,14 +152,15 @@ else
   done < <(git -C "$REPO_ROOT" ls-files 2>/dev/null)
 fi
 
-# Drop the two self-exempt files (by resolved path).
+# Drop the two self-exempt files (by resolved path — see _resolve_symlinks above).
 kept=()
 if [ "${#files[@]}" -gt 0 ]; then
   for f in "${files[@]}"; do
     abs="$f"
     case "$abs" in /*) ;; *) abs="$PWD/$abs" ;; esac
-    [ "$abs" = "$SELF" ] && continue
-    [ "$abs" = "$SELF_TEST" ] && continue
+    resolved="$(_resolve_symlinks "$abs")"
+    [ "$resolved" = "$SELF_RESOLVED" ] && continue
+    [ "$resolved" = "$SELF_TEST_RESOLVED" ] && continue
     kept+=("$f")
   done
 fi
