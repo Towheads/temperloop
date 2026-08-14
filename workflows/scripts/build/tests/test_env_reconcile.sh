@@ -13,6 +13,10 @@
 #     MERGED
 #   - AGENT_UNLOADED: a declared launchd plist not present in the stubbed
 #     `launchctl list`
+#   - AGENT_CHECKOUT_BEHIND (#1624): a plist's WorkingDirectory resolves to a
+#     git checkout behind origin/<default> — behind-by-N, current, absent
+#     WorkingDirectory, non-git WorkingDirectory, and an unreadable/malformed
+#     plist all covered, each fail-open (never a crash, never a false claim)
 #   - --format entry emits a `### … Status: open` block when drift is present
 #   - malformed input (a Label-less plist, an absent checkout path) → exit 0,
 #     never aborts
@@ -784,5 +788,194 @@ grep -qE "OK +$KCHECKOUT\$" <<<"$after" \
   || fail "kernel checkout itself should classify OK (clean, on its default branch, no drift); output:
 $after"
 echo "PASS: adding a kernel-shaped checkout to OPERATOR_CHECKOUTS leaves every other checkout's report row byte-identical (contract #3)"
+
+# --- AGENT_CHECKOUT_BEHIND (#1624): a LaunchAgent's WorkingDirectory checkout
+# lagging origin/<default> is invisible to every other signal (closed issue,
+# Done board item, green CI) — the incident this class exists to catch.
+# Reuses the same default_branch_of -> merge-base --is-ancestor mechanism
+# BEHIND_MAIN uses (now factored into _behind_origin_default), never a fetch.
+
+# "behind" checkout: clone upstream (HEAD == origin/main), then advance
+# upstream by 2 commits and fetch (never merge) in the clone, so its local
+# HEAD (still on branch main, the default) stays a strict ancestor of the
+# now-advanced origin/main -- genuinely behind-by-N, exactly like a real
+# checkout nobody pulled after a merge.
+git clone -q "$TMP/upstream" "$TMP/agent-checkout-behind"
+ACB="$(cd "$TMP/agent-checkout-behind" && pwd -P)"
+git -C "$TMP/upstream" commit -q --allow-empty -m "upstream: advance #1"
+git -C "$TMP/upstream" commit -q --allow-empty -m "upstream: advance #2"
+git -C "$ACB" fetch -q origin
+ACB_HEAD_BEFORE="$(git -C "$ACB" rev-parse HEAD)"
+ACB_ORIGIN_BEFORE="$(git -C "$ACB" rev-parse origin/main)"
+[ "$ACB_HEAD_BEFORE" != "$ACB_ORIGIN_BEFORE" ] \
+  || fail "fixture bug: agent-checkout-behind's HEAD already equals origin/main -- not actually behind"
+
+# "current" checkout: a fresh clone, never advanced -- HEAD == origin/main.
+git clone -q "$TMP/upstream" "$TMP/agent-checkout-current"
+ACC="$(cd "$TMP/agent-checkout-current" && pwd -P)"
+
+# A plain, non-git directory for the "non-git WorkingDirectory" case.
+mkdir -p "$TMP/agent-checkout-nongit/plain"
+ANONGIT="$(cd "$TMP/agent-checkout-nongit/plain" && pwd -P)"
+
+mkdir -p "$TMP/launchd-checkout"
+BEHIND_PLIST="$TMP/launchd-checkout/com.test.agentbehind.plist"
+CURRENT_PLIST="$TMP/launchd-checkout/com.test.agentcurrent.plist"
+ABSENTWD_PLIST="$TMP/launchd-checkout/com.test.agentabsentwd.plist"
+NONGITWD_PLIST="$TMP/launchd-checkout/com.test.agentnongitwd.plist"
+
+cat > "$BEHIND_PLIST" <<PL
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.test.agentbehind</string>
+  <key>WorkingDirectory</key>
+  <string>$ACB</string>
+</dict>
+</plist>
+PL
+
+cat > "$CURRENT_PLIST" <<PL
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.test.agentcurrent</string>
+  <key>WorkingDirectory</key>
+  <string>$ACC</string>
+</dict>
+</plist>
+PL
+
+# No WorkingDirectory key at all.
+cat > "$ABSENTWD_PLIST" <<PL
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.test.agentabsentwd</string>
+</dict>
+</plist>
+PL
+
+cat > "$NONGITWD_PLIST" <<PL
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.test.agentnongitwd</string>
+  <key>WorkingDirectory</key>
+  <string>$ANONGIT</string>
+</dict>
+</plist>
+PL
+
+rc=0
+cout="$(
+  PATH="$TMP/bin:$PATH" \
+  LAUNCHCTL_MOCK_LOADED="com.test.agentbehind com.test.agentcurrent com.test.agentabsentwd com.test.agentnongitwd" \
+  ENV_RECONCILE_CRON_CHECKOUTS="$TMP/no-such-cron-checkout" \
+  ENV_RECONCILE_OPERATOR_CHECKOUTS="$TMP/no-such-operator-checkout" \
+  ENV_RECONCILE_LAUNCHD_DIRS="$TMP/launchd-checkout" \
+  ENV_RECONCILE_AGENT_INSTALL_DIR="$TMP/launchd-checkout" \
+  bash "$SCRIPT" --format report
+)" || rc=$?
+[ "$rc" -eq 0 ] || fail "AGENT_CHECKOUT_BEHIND run: expected exit 0 (got $rc); output:
+$cout"
+
+grep -q "DRIFT.*AGENT_CHECKOUT_BEHIND:$ACB" <<<"$cout" \
+  || fail "behind-by-N WorkingDirectory checkout NOT flagged AGENT_CHECKOUT_BEHIND; output:
+$cout"
+echo "PASS: WorkingDirectory checkout behind-by-N origin/main -> AGENT_CHECKOUT_BEHIND"
+
+grep -qE "OK +$CURRENT_PLIST\$" <<<"$cout" \
+  || fail "WorkingDirectory checkout current with origin/main should report OK (no AGENT_CHECKOUT_BEHIND); output:
+$cout"
+echo "PASS: WorkingDirectory checkout current with origin/main -> no drift"
+
+grep -qE "OK +$ABSENTWD_PLIST\$" <<<"$cout" \
+  || fail "absent WorkingDirectory key should fail open to OK (can't verify), not crash or flag drift; output:
+$cout"
+echo "PASS: absent WorkingDirectory key -> fails open (OK, can't verify), never a crash or a false BEHIND claim"
+
+grep -qE "OK +$NONGITWD_PLIST\$" <<<"$cout" \
+  || fail "non-git WorkingDirectory should fail open to OK (can't verify), not crash or flag drift; output:
+$cout"
+echo "PASS: non-git WorkingDirectory -> fails open (OK, can't verify), never a crash or a false BEHIND claim"
+
+grep -q "^DRIFT: 1$" <<<"$cout" \
+  || fail "expected exactly 1 alarm (the behind checkout only); output:
+$cout"
+echo "PASS: only the genuinely-behind checkout counts as drift; current/absent/non-git all fail open silently"
+
+# --- the class must reach --format entry too (the /tidy routing path) --------
+rc=0
+centry="$(
+  PATH="$TMP/bin:$PATH" \
+  LAUNCHCTL_MOCK_LOADED="com.test.agentbehind com.test.agentcurrent com.test.agentabsentwd com.test.agentnongitwd" \
+  ENV_RECONCILE_CRON_CHECKOUTS="$TMP/no-such-cron-checkout" \
+  ENV_RECONCILE_OPERATOR_CHECKOUTS="$TMP/no-such-operator-checkout" \
+  ENV_RECONCILE_LAUNCHD_DIRS="$TMP/launchd-checkout" \
+  ENV_RECONCILE_AGENT_INSTALL_DIR="$TMP/launchd-checkout" \
+  bash "$SCRIPT" --format entry
+)" || rc=$?
+[ "$rc" -eq 0 ] || fail "AGENT_CHECKOUT_BEHIND --format entry: expected exit 0 (got $rc)"
+grep -q "AGENT_CHECKOUT_BEHIND:$ACB" <<<"$centry" \
+  || fail "--format entry omitted AGENT_CHECKOUT_BEHIND -- /tidy would never route it to the hygiene report; got:
+$centry"
+grep -q 'Status:\*\* open' <<<"$centry" \
+  || fail "--format entry missing Status: open; got:
+$centry"
+echo "PASS: AGENT_CHECKOUT_BEHIND is emitted in BOTH probe formats"
+
+# --- unreadable plist: fail-open, never a crash (isolated run) ---------------
+mkdir -p "$TMP/launchd-checkout-unreadable"
+UNREADABLE_PLIST="$TMP/launchd-checkout-unreadable/com.test.agentunreadable.plist"
+cat > "$UNREADABLE_PLIST" <<PL
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.test.agentunreadable</string>
+  <key>WorkingDirectory</key>
+  <string>$ACB</string>
+</dict>
+</plist>
+PL
+if [ "$(id -u)" -ne 0 ]; then
+  chmod 000 "$UNREADABLE_PLIST"
+fi
+rc=0
+uout="$(
+  PATH="$TMP/bin:$PATH" \
+  LAUNCHCTL_MOCK_LOADED="com.test.agentunreadable" \
+  ENV_RECONCILE_CRON_CHECKOUTS="$TMP/no-such-cron-checkout" \
+  ENV_RECONCILE_OPERATOR_CHECKOUTS="$TMP/no-such-operator-checkout" \
+  ENV_RECONCILE_LAUNCHD_DIRS="$TMP/launchd-checkout-unreadable" \
+  ENV_RECONCILE_AGENT_INSTALL_DIR="$TMP/launchd-checkout-unreadable" \
+  bash "$SCRIPT" --format report
+)" || rc=$?
+[ "$rc" -eq 0 ] || fail "unreadable plist: expected exit 0 (got $rc); output:
+$uout"
+if [ "$(id -u)" -ne 0 ]; then
+  grep -q "MALFORMED_PLIST:com.test.agentunreadable.plist" <<<"$uout" \
+    || fail "unreadable plist (no Label extractable) should report MALFORMED_PLIST, not a crash or a false BEHIND claim; output:
+$uout"
+  echo "PASS: unreadable plist -> MALFORMED_PLIST (fail-open), never a crash"
+else
+  echo "SKIP (running as root -- permission bits never block root reads): the unreadable-plist path degrades to an ordinary readable plist under root, so this sub-case can't be exercised here"
+fi
+chmod 644 "$UNREADABLE_PLIST" 2>/dev/null || true
+echo "PASS: unreadable plist -> exit 0, never a crash"
+
+# --- read-only + never-fetches: none of the above mutated or fetched -----------
+[ -z "$(git -C "$ACB" status --porcelain)" ] || fail "agent-checkout-behind was mutated"
+[ -z "$(git -C "$ACC" status --porcelain)" ] || fail "agent-checkout-current was mutated"
+[ "$(git -C "$ACB" rev-parse HEAD)" = "$ACB_HEAD_BEFORE" ] \
+  || fail "agent-checkout-behind's HEAD moved -- env-reconcile.sh must never mutate a checkout"
+[ "$(git -C "$ACB" rev-parse origin/main)" = "$ACB_ORIGIN_BEFORE" ] \
+  || fail "agent-checkout-behind's origin/main ref moved -- env-reconcile.sh must NEVER fetch"
+echo "PASS: AGENT_CHECKOUT_BEHIND detection stays read-only and never fetches"
 
 echo "ALL PASS: test_env_reconcile.sh"
