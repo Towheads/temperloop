@@ -129,6 +129,19 @@ cat > "$BIN/gh" <<'FAKE_GH_EOF'
 printf '%s\n' "$*" >> "$CALL_LOG"
 case "$1" in
   api)
+    # FAKE_SEARCH_422 (temperloop#1444) — reproduce the REAL failure shape
+    # observed in install-tier2 run 31772670963: gh prints its error BODY
+    # to STDOUT and exits non-zero. A consumer that fails open without
+    # validating the captured value gets that JSON blob as its "issue
+    # number".
+    if [ -n "${FAKE_SEARCH_422:-}" ]; then
+      case "$*" in
+        *search/issues*)
+          printf '%s' "{\"message\":\"Query must include 'is:issue' or 'is:pull-request'\",\"documentation_url\":\"https://docs.github.com/rest/search/search#search-issues-and-pull-requests\",\"status\":\"422\"}"
+          exit 1
+          ;;
+      esac
+    fi
     case "$*" in
       *branches/*/protection*required_status_checks*)
         exit "${FAKE_REQUIRED_CHECK_RC:-0}"
@@ -222,6 +235,7 @@ run() {
     FAKE_PROJECT_NUM="${FAKE_PROJECT_NUM:-42}" \
     FAKE_ISSUE_NUM="${FAKE_ISSUE_NUM:-77}" \
     FAKE_EXISTING_EPIC_NUM="${FAKE_EXISTING_EPIC_NUM:-}" \
+    FAKE_SEARCH_422="${FAKE_SEARCH_422:-}" \
     HOME="${FAKE_HOME:-$HOME}" \
     CALL_LOG="$CALL_LOG" \
     bash "$INIT" "$@" </dev/null 2>&1)" && rc=0 || rc=$?
@@ -246,6 +260,27 @@ assert_no_mutating_gh() {
     && fail "$label: wrote a required status check (init applies no API state since temperloop#796)"
   grep -q "^project create" "$CALL_LOG" \
     && fail "$label: provisioned a Projects-v2 board (dropped outright, temperloop#793)"
+  return 0
+}
+
+# assert_probe_query_qualified LABEL — the temperloop#1444 API-contract
+# guard. GitHub's search/issues endpoint REQUIRES an `is:issue` or
+# `is:pull-request` qualifier and 422s without one. A fake `gh` cannot
+# reproduce that (it answers whatever q= it is handed), so the only way a
+# hermetic suite can pin the live query's validity is to assert the wire
+# text of the q= this script actually sends. At least one probe must have
+# fired, and EVERY probe that fired must carry the qualifier — an absent
+# assertion here is exactly how the drift returned unseen.
+assert_probe_query_qualified() {
+  local label="$1" probes line
+  probes="$(grep -F 'search/issues' "$CALL_LOG" || true)"
+  [ -n "$probes" ] \
+    || fail "$label: no search/issues idempotency probe was logged at all"
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    grep -qF 'is:issue' <<<"$line" \
+      || fail "$label: a search/issues probe omits the mandatory is:issue qualifier — GitHub 422s on this query:\n  $line"
+  done <<<"$probes"
   return 0
 }
 
@@ -653,6 +688,12 @@ FAKE_EXISTING_EPIC_NUM=77 FAKE_PR_NUM=29 \
   || fail "idempotent already-filed path re-filed the epic: $(call_count 'issue create') 'issue create' call(s)"
 grep -q "first-epic: already filed as #77" <<<"$out" \
   || fail "the already-filed idempotency notice did not fire (got: $out)"
+# API-CONTRACT GUARD (temperloop#1444). This case validated the MESSAGE
+# SHAPE against a fake gh and nothing else, which is precisely why the
+# broken query shipped: the fake answers any q= at all. Assert the wire
+# query itself — GitHub's search/issues 422s without an `is:issue` /
+# `is:pull-request` qualifier, so a probe missing it can never hit.
+assert_probe_query_qualified "already-filed probe"
 grep -q "^next step: /assess --epic 77" <<<"$out" \
   || fail "idempotent re-run's handoff marker missing or does not name the existing epic (got: $out)"
 grep -qF "Epic: https://github.com/acme/widget/issues/77" <<<"$out" \
@@ -1197,6 +1238,99 @@ FAKE_PR_NUM=40 run 0 --dir "$REPO24B" --gh-repo acme/widget
 grep -qF '"outcome": "PR_OPENED"' <<<"$out" \
   || fail "dropping --no-network no longer opens the proposal PR (got: $out)"
 echo "PASS: --no-network skips the Step 3 proposal PR with a degradation notice instead of failing on a raw git push — no branch switch, no commit, no PR, and the summary + handoff still print"
+
+# =============================================================================
+# 25. A FAILED IDEMPOTENCY PROBE IS "UNKNOWN", NEVER "ALREADY FILED"
+#     (temperloop#1444). Observed live in install-tier2 run 31772670963:
+#
+#       first-epic: already filed as #{"message":"Query must include
+#       'is:issue' or 'is:pull-request'",...,"status":"422"} — skipping
+#       offer (idempotent)
+#
+#     Two compounding bugs. GitHub's search/issues endpoint now REQUIRES an
+#     `is:issue`/`is:pull-request` qualifier (external drift — no commit
+#     here caused it), and `gh` writes its error BODY to STDOUT, so the old
+#     `2>/dev/null || true` fail-open let that raw JSON blob become the
+#     issue number: non-empty, therefore reported as already-filed AND
+#     passed into `_init_set_handoff`, corrupting the handoff too. ANY
+#     probe error — rate limit, network blip, auth scope, outage — silently
+#     disabled the first-epic offer while claiming the epic existed.
+#
+#     Test 13 above could not catch this: it asserts the already-filed
+#     MESSAGE SHAPE against a fake gh that answers whatever q= it is
+#     handed. So this case attacks the two halves the message shape cannot
+#     see — the wire query's validity (assert_probe_query_qualified, now
+#     also asserted in test 13) and the ERROR path's disposition.
+# =============================================================================
+REPO25="$(new_fixture_repo repo25)"
+FAKE_SEARCH_422=1 FAKE_PR_NUM=41 \
+  run 0 --dir "$REPO25" --gh-repo acme/widget
+
+# (a) the false positive is gone — an error is never read as a hit.
+grep -q "first-epic: already filed" <<<"$out" \
+  && fail "a 422 probe error was reported as 'already filed' (got: $out)"
+
+# (b) no non-numeric value escaped the probe ANYWHERE — not into the
+#     notice, not into the handoff. The blob is unmistakable if it leaks.
+grep -qF '{"message"' <<<"$out" \
+  && fail "gh's error body leaked out of the probe into init's output (got: $out)"
+grep -qF 'Query must include' <<<"$out" \
+  && fail "gh's error body leaked out of the probe into init's output (got: $out)"
+
+# (c) the handoff is the un-offered one, not a fabricated /assess pointer
+#     at a garbage epic number.
+grep -qF 'next step: run `temperloop init` interactively' <<<"$out" \
+  || fail "a failed probe did not fall back to the un-offered handoff (got: $out)"
+grep -q '^next step: /assess --epic ' <<<"$out" \
+  && fail "a failed probe still produced an /assess handoff naming an epic it never confirmed (got: $out)"
+
+# (d) LEGIBLE DEGRADATION, never a silent skip (kernel § legible
+#     agent-gate degradation): the notice names what could not be
+#     determined and why.
+grep -q "first-epic: idempotency probe unavailable" <<<"$out" \
+  || fail "a failed probe skipped silently — no degradation notice (got: $out)"
+
+# (e) the API-contract half: the query this script actually sent carries
+#     `is:issue`.
+assert_probe_query_qualified "422 probe run"
+
+# (f) nothing was filed on the error path.
+[ "$(call_count 'issue create')" -eq 0 ] \
+  || fail "a failed probe filed an issue: $(call_count 'issue create') 'issue create' call(s)"
+
+# (g) UNATTENDED ORDERING PIN. The unknown-state arm is ranked AFTER the
+#     ambient-CI arm on purpose, so an unattended run still skips for its
+#     truer, more specific reason — .github/workflows/install-tier2.yml
+#     asserts that exact line, and pinning a release gate to probe health
+#     would make it hostage to a transient search outage. (run() closes
+#     stdin, which is the unattended signal here.)
+grep -q "first-epic: skipped — no interactive operator detected" <<<"$out" \
+  || fail "a failed probe pre-empted the ambient-CI skip line install-tier2.yml asserts (got: $out)"
+
+# CONTROL: with consent given there IS an operator, so the unknown-state
+# arm is the one that fires — and it WITHHOLDS. Filing a duplicate epic is
+# the single outcome this probe exists to prevent, so an unanswerable probe
+# must not be treated as "no epic exists, go ahead".
+REPO25B="$(new_fixture_repo repo25b)"
+FAKE_SEARCH_422=1 FAKE_PR_NUM=42 FAKE_ISSUE_NUM=99 \
+  run 0 --dir "$REPO25B" --gh-repo acme/widget --yes-first-epic
+[ "$(call_count 'issue create')" -eq 0 ] \
+  || fail "--yes-first-epic filed an epic while the idempotency probe was unanswerable — this is the duplicate-epic case: $(call_count 'issue create') 'issue create' call(s)"
+grep -q "first-epic: skipped — idempotency state unknown" <<<"$out" \
+  || fail "the unknown-state withhold notice did not fire under --yes-first-epic (got: $out)"
+grep -q "first-epic: already filed" <<<"$out" \
+  && fail "a 422 probe error was reported as 'already filed' under --yes-first-epic (got: $out)"
+
+# CONTROL 2: the gate is the ERROR, not the qualifier — a healthy probe on
+# the same fixture still reports a real hit and still hands off.
+REPO25C="$(new_fixture_repo repo25c)"
+FAKE_EXISTING_EPIC_NUM=77 FAKE_PR_NUM=43 \
+  run 0 --dir "$REPO25C" --gh-repo acme/widget
+grep -q "first-epic: already filed as #77" <<<"$out" \
+  || fail "the hardened probe stopped recognising a genuine already-filed hit (got: $out)"
+grep -q "first-epic: idempotency probe unavailable" <<<"$out" \
+  && fail "a HEALTHY probe emitted the degradation notice (got: $out)"
+echo "PASS: a failed search/issues probe reads as UNKNOWN — never 'already filed' — leaks no error body into the notice or the handoff, withholds the offer legibly, and the probe query carries the mandatory is:issue qualifier"
 
 echo
 echo "ALL PASS: test_init.sh"

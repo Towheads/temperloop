@@ -322,7 +322,21 @@ jobs:
             echo "::error::install-tier2: 'temperloop init' never printed its handoff ('next step: …') — the run did not reach the end of its contract. See the init.log artifact."
             exit 1
           fi
-          echo "init: OK — config bootstrapped, proposal PR opened, handoff printed (first-epic offer deliberately un-requested, see file header):"
+          # The first-epic offer must skip for the RIGHT REASON — the file
+          # header's "REUSABLE BASELINE" contract, which is what keeps this
+          # demo repo baseline-stable across runs (nothing filed, nothing to
+          # clean up). Until temperloop#1444 this line had NEVER actually
+          # printed: the idempotency probe short-circuited ahead of it with a
+          # false "already filed as #{…422 body…}", so the run skipped for a
+          # reason that was a bug. A bare "did it skip?" check cannot tell the
+          # two apart, which is exactly why the specific line is asserted.
+          if ! grep -qF 'first-epic: skipped — no interactive operator detected' "$RUNNER_TEMP/init.log"; then
+            echo "::error::install-tier2: 'temperloop init' did not reach its ambient-CI first-epic skip ('first-epic: skipped — no interactive operator detected …'). Either the offer was decided some other way, or an earlier arm (e.g. the search/issues idempotency probe) short-circuited it — see the init.log artifact and the first-epic lines below:"
+            grep '^first-epic: ' "$RUNNER_TEMP/init.log" || true
+            exit 1
+          fi
+          echo "init: OK — config bootstrapped, proposal PR opened, first-epic offer skipped on the ambient-CI arm, handoff printed:"
+          grep '^first-epic: ' "$RUNNER_TEMP/init.log" || true
           grep '^next step: ' "$RUNNER_TEMP/init.log"
 
       # The manifest `eject` reverts holds exactly one entry on a healthy run:
