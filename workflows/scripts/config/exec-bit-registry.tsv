@@ -1,0 +1,67 @@
+# exec-bit-registry.tsv — the REGISTRY of scripts required to carry the
+# executable bit (temperloop#1326, epic #1415). Enforced by
+# workflows/scripts/validate-exec-bit-registry.sh.
+#
+# WHY A REGISTRY, NOT A SHEBANG GLOB. The item's own originating issue
+# proposed "a lint that flags a tracked .sh/.py carrying a shebang whose mode
+# is not 755, with an opt-out list for sourced libraries." Measured against
+# this tree at adoption time, that rule fired on 96 files: ~35 sourced
+# libraries (workflows/scripts/lib/, board/lib/, etc.), 58 `test_*` harnesses
+# invoked as `bash test_x.sh`, 2 config/allowlist files sourced by other
+# scripts, and 15 further scripts invoked exclusively via an explicit
+# `bash`/`python3`/`source` — of which exactly ONE was a genuine defect. A
+# one-in-96 signal is not a gate: every gate invokes its target scripts as
+# `bash <path>` or via a `make` target, so the executable bit is IRRELEVANT
+# to CI and matters only for direct `./script` invocation and for a script
+# reading as intentionally-executable to a human — the shebang alone cannot
+# distinguish those two populations.
+#
+# THE SEED SET (deliberately not exhaustive — mirrors check-surface-
+# registry.tsv's own "opt-in, grows as surfaces are added" convention,
+# temperloop#1476): this repo's own `workflows/scripts/validate-*.sh` family —
+# the top-level, human-invocable validator entrypoints named throughout this
+# repo's docs as runnable directly (e.g. "Usage: bash <clone>/workflows/
+# scripts/install/doctor.sh …" and this file's own siblings' header
+# comments). The item's own motivating instance is exactly this family: on
+# adoption day, workflows/scripts/validate-check-surface-degenerate-
+# coverage.sh had lost its executable bit (an incidental `mode change 100755
+# => 100644` in a rebase, invisible to CI because scripts/quality-gates.sh
+# invokes it as `bash workflows/scripts/validate-check-surface-degenerate-
+# coverage.sh`) while all 15 of its siblings still carried 755. Registering
+# the whole family closes exactly that gap and gives the ratchet something
+# real to enforce. Widening this registry to other genuinely-intended-
+# executable scripts (bin/subcommands/*, hooks, etc. — none of which
+# qualify today; see this item's own investigation) is legal future work,
+# never required by this gate.
+#
+# FORMAT — TAB-separated, two columns:
+#   1. PATH     repo-relative path to a tracked script
+#   2. REASON   mandatory, non-empty justification for why this script is
+#               intentionally directly-executable (never a bare restatement
+#               of the path)
+#
+# A registered PATH that currently lacks the executable bit FAILS the gate
+# (EXEC-BIT-MISSING, naming the file and its actual mode) UNLESS it is also
+# named, with a REASON, on the shrink-only workflows/scripts/config/
+# exec-bit-grandfather-allowlist.tsv ratchet (temperloop#1326 acceptance
+# criterion 2) — so newly-discovered debt can be registered and made VISIBLE
+# without having to be fixed in the same PR that discovers it, while an
+# already-grandfathered path becoming compliant (or ceasing to be) is
+# enforced to keep the allowlist honest (see that file's own header).
+
+workflows/scripts/validate-activation-registry.sh	top-level validator entrypoint (workflows/scripts/validate-*.sh family) — human-runnable directly, matches its 15 siblings at mode 755
+workflows/scripts/validate-capture-backstop.sh	top-level validator entrypoint (workflows/scripts/validate-*.sh family) — human-runnable directly, matches its 15 siblings at mode 755
+workflows/scripts/validate-check-surface-degenerate-coverage.sh	top-level validator entrypoint (workflows/scripts/validate-*.sh family) — this item's own motivating instance: lost its bit in an incidental rebase mode-change, invisible to CI since scripts/quality-gates.sh invokes it via `bash` (temperloop#1326)
+workflows/scripts/validate-command-run-emit.sh	top-level validator entrypoint (workflows/scripts/validate-*.sh family) — human-runnable directly, matches its 15 siblings at mode 755
+workflows/scripts/validate-design-brief.sh	top-level validator entrypoint (workflows/scripts/validate-*.sh family) — human-runnable directly, matches its 15 siblings at mode 755
+workflows/scripts/validate-diagnose-queue-emit.sh	top-level validator entrypoint (workflows/scripts/validate-*.sh family) — human-runnable directly, matches its 15 siblings at mode 755
+workflows/scripts/validate-docs-footer.sh	top-level validator entrypoint (workflows/scripts/validate-*.sh family) — human-runnable directly, matches its 15 siblings at mode 755
+workflows/scripts/validate-exec-bit-registry.sh	top-level validator entrypoint (workflows/scripts/validate-*.sh family) — THIS GATE ITSELF, self-registered for the same reason validate-check-surface-degenerate-coverage.sh self-registered against its own registry (temperloop#1476 review round 2): the gate must not be exempt from the property it enforces
+workflows/scripts/validate-feature-docs.sh	top-level validator entrypoint (workflows/scripts/validate-*.sh family) — human-runnable directly, matches its 15 siblings at mode 755
+workflows/scripts/validate-issue-touch-emit.sh	top-level validator entrypoint (workflows/scripts/validate-*.sh family) — human-runnable directly, matches its 15 siblings at mode 755
+workflows/scripts/validate-knowledge-search-emit.sh	top-level validator entrypoint (workflows/scripts/validate-*.sh family) — human-runnable directly, matches its 15 siblings at mode 755
+workflows/scripts/validate-model-usage-emit.sh	top-level validator entrypoint (workflows/scripts/validate-*.sh family) — human-runnable directly, matches its 15 siblings at mode 755
+workflows/scripts/validate-onramp-anchors.sh	top-level validator entrypoint (workflows/scripts/validate-*.sh family) — human-runnable directly, matches its 15 siblings at mode 755
+workflows/scripts/validate-prose-budget.sh	top-level validator entrypoint (workflows/scripts/validate-*.sh family) — human-runnable directly, matches its 15 siblings at mode 755
+workflows/scripts/validate-provider-disclosure.sh	top-level validator entrypoint (workflows/scripts/validate-*.sh family) — human-runnable directly, matches its 15 siblings at mode 755
+workflows/scripts/validate-template-refs.sh	top-level validator entrypoint (workflows/scripts/validate-*.sh family) — human-runnable directly, matches its 15 siblings at mode 755
