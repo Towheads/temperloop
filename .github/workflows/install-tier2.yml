@@ -338,14 +338,20 @@ jobs:
           # it would make this release gate hostage to demo-repo issue state —
           # one `temperloop init --yes-first-epic` run against that repo (a
           # legitimate manual test) would turn a release red for a reason
-          # unrelated to the release. The demo repo does NOT currently meet
-          # that precondition: Towheads/temperloop-demo#25 and #26 both carry
-          # the design-brief marker, so today init legitimately reports
-          # "already filed as #26". Restoring that baseline — and the finding
-          # that mangling a marker prefix does NOT defeat GitHub's phrase
-          # search (tried in temperloop#797 on #25, which still matches) — is
-          # tracked separately; the ambient-CI arm stays unexercised here
-          # until then, which is a known gap, not a silent one.
+          # unrelated to the release. That precondition now HOLDS —
+          # temperloop#1473 removed the stranded first-epic markers from
+          # Towheads/temperloop-demo#25 and #26, so the marker probe returns
+          # 0 and init reaches the ambient-CI arm — but the assertion stays
+          # form-based on purpose: the precondition is external state this
+          # repo does not own, and it can be re-broken at any time by a
+          # single manual run against the demo repo.
+          #
+          # Recorded from that cleanup, because it will bite whoever tries
+          # this next: MANGLING a marker's prefix does NOT defeat GitHub's
+          # phrase search. temperloop#797 rewrote #25's marker to
+          # `design-brief-NEUTERED-TEST-FIXTURE` and it kept matching for
+          # two more weeks — the tokenizer drops exactly the punctuation the
+          # mangling relied on. Remove the line; do not mangle it.
           # The LAST '^first-epic: ' line is the disposition. It can be preceded
           # by the probe-unavailable NOTICE line (init.sh prints the fact, then
           # the disposition), so this deliberately does not require exactly one
