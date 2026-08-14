@@ -111,6 +111,15 @@ if ! command -v run_with_timeout >/dev/null 2>&1; then
   run_with_timeout() { shift; "$@"; }
 fi
 
+# shellcheck source=../lib/cannot-evaluate.sh
+[ -f "$HERE/../lib/cannot-evaluate.sh" ] && . "$HERE/../lib/cannot-evaluate.sh"
+if ! command -v cannot_evaluate_emit >/dev/null 2>&1; then
+  # Defensive only — cannot-evaluate.sh ships alongside this file in every
+  # kernel install; this degrades to a bare fail-closed emission (JSON only,
+  # no distinct stderr line) rather than making the idiom itself unavailable.
+  cannot_evaluate_emit() { jq -cn --arg e "$2" '{outcome:"CANNOT_EVALUATE",error:$e}'; return 2; }
+fi
+
 usage() {
   cat <<'EOF' >&2
 usage: score.sh score --repo-root <path> --candidate-worktree <path> --record <file> [--gate-relpath <rel>]
@@ -119,14 +128,15 @@ usage: score.sh score --repo-root <path> --candidate-worktree <path> --record <f
 EOF
 }
 
-# ── fail-closed emission ──────────────────────────────────────────────────
-# ONE emission path. Prints the machine verdict on stdout and the distinct
-# human `CANNOT EVALUATE` line on stderr. Every caller MUST follow it with a
-# non-zero return — this helper only prints (same contract, and same
-# rationale, as replay.sh's preflight_cannot_evaluate).
+# ── fail-closed emission — delegates to the shared idiom in
+#    workflows/scripts/lib/cannot-evaluate.sh (temperloop#1475): the machine
+#    verdict on stdout, the distinct human line on stderr, and now
+#    RC_CANNOT_EVALUATE (2) as ITS OWN return status — a caller that forgets
+#    to branch on it fails closed rather than falling through. Every
+#    existing caller already follows it with an explicit `return 1`, so this
+#    changes no observed behavior.
 cannot_evaluate() {
-  jq -cn --arg e "$1" '{outcome:"CANNOT_EVALUATE",error:$e}'
-  printf 'score.sh: CANNOT EVALUATE — %s\n' "$1" >&2
+  cannot_evaluate_emit "score.sh" "$1"
 }
 
 need_operand() {

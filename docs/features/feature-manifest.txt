@@ -578,3 +578,12 @@ model-comparison workflows/scripts/lib/model-usage-envelope.sh
 model-comparison workflows/scripts/tests/test_model_usage_emit.sh
 model-comparison workflows/scripts/config/default-pricing.json
 model-comparison workflows/scripts/report-producers/model-comparison
+# cannot-evaluate.sh (temperloop#1475) lives at workflows/scripts/lib/ (a
+# shared "cannot evaluate" idiom, sourced by batch.sh/judge.sh/score.sh/
+# replay.sh under workflows/scripts/model-comparison/) rather than under
+# workflows/scripts/model-comparison/, so — like model-usage-envelope.sh
+# above — it needs its own exact-path claim; the directory-level glob does
+# not reach it. Its test file lives at workflows/scripts/lib/tests/, same
+# reasoning.
+model-comparison workflows/scripts/lib/cannot-evaluate.sh
+model-comparison workflows/scripts/lib/tests/test_cannot_evaluate.sh

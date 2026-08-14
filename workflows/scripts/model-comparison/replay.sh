@@ -408,6 +408,15 @@ if ! command -v run_with_timeout >/dev/null 2>&1; then
   run_with_timeout() { shift; "$@"; }
 fi
 
+# shellcheck source=../lib/cannot-evaluate.sh
+[ -f "$HERE/../lib/cannot-evaluate.sh" ] && . "$HERE/../lib/cannot-evaluate.sh"
+if ! command -v cannot_evaluate_emit >/dev/null 2>&1; then
+  # Defensive only — cannot-evaluate.sh ships alongside this file in every
+  # kernel install; this degrades to a bare fail-closed emission (JSON only,
+  # no distinct stderr line) rather than making the idiom itself unavailable.
+  cannot_evaluate_emit() { jq -cn --arg e "$2" '{outcome:"CANNOT_EVALUATE",error:$e}'; return 2; }
+fi
+
 usage() {
   cat <<'EOF' >&2
 usage: replay.sh resolve-base <repo-root> <merge-commit-sha>
@@ -858,13 +867,18 @@ cmd_corpus() {
 
 # preflight_cannot_evaluate <error-message> — the ONE emission path for every
 # fail-closed case (absent/unreadable/empty/malformed corpus file, or the
-# stats.sh mde primitive unreachable). Every caller MUST follow this with
-# `return 1` — this helper only prints, it never returns non-zero itself,
-# so a caller that forgets the `return 1` would silently fall through to a
-# false "eligible" verdict for input it never actually read (the exact
-# fail-open shape diff-scope's own header warns about).
+# stats.sh mde primitive unreachable), delegating to the shared idiom in
+# workflows/scripts/lib/cannot-evaluate.sh (temperloop#1475). Restores the
+# distinct human `CANNOT EVALUATE` stderr line this function alone among its
+# five siblings had never printed (finding 3: `preflight` emitted the JSON
+# verdict but no visible diagnostic) and now returns RC_CANNOT_EVALUATE (2)
+# as ITS OWN status — a caller that forgets to branch fails closed rather
+# than silently falling through to a false "eligible" verdict for input it
+# never actually read (the exact fail-open shape diff-scope's own header
+# warns about). Every existing caller already follows it with an explicit
+# `return 1`, so this changes no observed behavior.
 preflight_cannot_evaluate() {
-  jq -cn --arg e "$1" '{outcome:"CANNOT_EVALUATE",error:$e}'
+  cannot_evaluate_emit "replay.sh preflight" "$1"
 }
 
 cmd_preflight() {
@@ -1186,13 +1200,15 @@ cmd_worktree_teardown() {
 # ── execute (temperloop#1258) — the replay run itself ────────────────────
 
 # execute_cannot_evaluate <msg> — the ONE fail-closed emission path for
-# `execute`. Prints the machine verdict on stdout AND the distinct human
-# `CANNOT EVALUATE` line on stderr. Every caller MUST follow it with
-# `return 1` — this helper only prints (same contract, same rationale, as
-# preflight_cannot_evaluate above).
+# `execute`, delegating to the shared idiom in
+# workflows/scripts/lib/cannot-evaluate.sh (temperloop#1475): the machine
+# verdict on stdout, the distinct human `CANNOT EVALUATE` line on stderr,
+# and now RC_CANNOT_EVALUATE (2) as ITS OWN return status — a caller that
+# forgets to branch on it fails closed rather than falling through. Every
+# existing caller already follows it with an explicit `return 1`, so this
+# changes no observed behavior.
 execute_cannot_evaluate() {
-  jq -cn --arg e "$1" '{outcome:"CANNOT_EVALUATE",error:$e}'
-  printf 'replay.sh execute: CANNOT EVALUATE — %s\n' "$1" >&2
+  cannot_evaluate_emit "replay.sh execute" "$1"
 }
 
 # _exec_epoch_ms — millisecond wall clock (perl when present, else whole

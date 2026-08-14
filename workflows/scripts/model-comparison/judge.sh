@@ -244,6 +244,15 @@ if ! command -v run_with_timeout >/dev/null 2>&1; then
   run_with_timeout() { shift; "$@"; }
 fi
 
+# shellcheck source=../lib/cannot-evaluate.sh
+[ -f "$HERE/../lib/cannot-evaluate.sh" ] && . "$HERE/../lib/cannot-evaluate.sh"
+if ! command -v cannot_evaluate_emit >/dev/null 2>&1; then
+  # Defensive only — cannot-evaluate.sh ships alongside this file in every
+  # kernel install; this degrades to a bare fail-closed emission (JSON only,
+  # no distinct stderr line) rather than making the idiom itself unavailable.
+  cannot_evaluate_emit() { jq -cn --arg e "$2" '{outcome:"CANNOT_EVALUATE",error:$e}'; return 2; }
+fi
+
 usage() {
   cat <<'EOF' >&2
 usage: judge.sh judge --record <file> [--rubric <path>] (--judge-runner <cmd> | --live)
@@ -265,12 +274,15 @@ need_operand() {  # <flag> <remaining-arg-count> [<next-arg>]
   esac
 }
 
-# ── fail-closed emission — ONE path per shape, same contract as score.sh's
-#    cannot_evaluate: prints the machine verdict on stdout, the distinct
-#    human line on stderr. Callers MUST follow with the matching return.
+# ── fail-closed emission — delegates to the shared idiom in
+#    workflows/scripts/lib/cannot-evaluate.sh (temperloop#1475): the machine
+#    verdict on stdout, the distinct human line on stderr, and now
+#    RC_CANNOT_EVALUATE (2) as ITS OWN return status — a caller that forgets
+#    to branch on it fails closed rather than falling through. Every
+#    existing caller already follows it with an explicit `return 1`, so this
+#    changes no observed behavior.
 _je_cannot_evaluate() {
-  jq -cn --arg e "$1" '{outcome:"CANNOT_EVALUATE",error:$e}'
-  printf 'judge.sh: CANNOT EVALUATE — %s\n' "$1" >&2
+  cannot_evaluate_emit "judge.sh" "$1"
 }
 
 _je_epoch_ms() {
