@@ -95,6 +95,18 @@
 #     reports a PR already exists for this branch; adopted, not an error.
 #   {"outcome":"ERROR","error":"..."} + non-zero exit
 #
+# GIT IDENTITY (temperloop#1443): this script COMMITS, so whatever runs it
+# needs an author/committer identity. A fresh CI runner — and a brand-new
+# laptop — has none, and git then dies mid-run with "Author identity unknown
+# / fatal: empty ident name" AFTER the proposal branch was cut and the
+# manifest written. cmd_open therefore PREFLIGHTS the identity before it
+# touches the checkout (git_identity_preflight below) and refuses with a
+# remedy naming the exact two `git config --global` commands to run — the
+# ERROR outcome above, plus the same remedy in full on stderr so it is
+# readable without decoding JSON. It never invents one (no `git -c
+# user.name=…`): authoring an adopter's first commit as an identity they
+# never chose is worse than a clear refusal.
+#
 # Dependencies: bash (3.2+), git, jq, gh (only for the non-dry-run push+open
 # path — never invoked in --dry-run mode).
 #
@@ -191,6 +203,43 @@ validate_manifest_path() {
   esac
 }
 
+# git_identity_preflight <repo> — refuse, with a remedy, when no git identity
+# resolves. Same validate-before-act ordering as validate_remote/
+# validate_branch: this runs BEFORE the `checkout -B` that cuts the proposal
+# branch, so a repo with no identity is left untouched rather than sitting on
+# a fresh branch with a written-but-uncommittable tree.
+#
+# The probe is the pair `git config user.name`/`user.email` FIRST — the two
+# settings the remedy tells you to set, so a run that passes is a run whose
+# identity the operator actually chose. When either is unset it falls through
+# to `git var GIT_{AUTHOR,COMMITTER}_IDENT`, which is precisely the
+# resolution `git commit` itself performs: config PLUS the
+# GIT_AUTHOR_NAME/GIT_COMMITTER_EMAIL environment overrides a caller may
+# legitimately supply instead (this script's own test fixtures do). A
+# config-only read would refuse runs git would have committed fine.
+#
+# NEVER invents an identity (no `git -c user.name=…`) — see the header.
+git_identity_preflight() {
+  local repo="$1" name email
+  name="$(git -C "$repo" config user.name 2>/dev/null || true)"
+  email="$(git -C "$repo" config user.email 2>/dev/null || true)"
+  [ -n "$name" ] && [ -n "$email" ] && return 0
+  if git -C "$repo" var GIT_AUTHOR_IDENT >/dev/null 2>&1 \
+     && git -C "$repo" var GIT_COMMITTER_IDENT >/dev/null 2>&1; then
+    return 0
+  fi
+  # The remedy in full, on stderr — a caller that only pretty-prints the JSON
+  # (init.sh does) still shows this verbatim in its log.
+  {
+    echo "proposal-pr.sh: no git identity is configured, so the proposal commit cannot be authored."
+    echo "Run these two commands, then re-run:"
+    echo "    git config --global user.name 'Your Name'"
+    echo "    git config --global user.email 'you@example.com'"
+    echo "(This script will not invent an identity for you — a commit authored as someone you never chose is worse than this refusal.)"
+  } >&2
+  die "no git identity configured in '$repo' — run: git config --global user.name 'Your Name' && git config --global user.email 'you@example.com', then re-run (proposal-pr.sh will not invent one)"
+}
+
 # ---------------------------------------------------------------------------
 # cmd_open — the only subcommand.
 # ---------------------------------------------------------------------------
@@ -256,6 +305,10 @@ cmd_open() {
   local repo
   repo="$(resolve_repo_dir "$repo_dir")" || exit 1
   validate_branch "$branch" "--branch"
+
+  # Before the first mutation (and before the network fetch below) — see
+  # git_identity_preflight's own comment.
+  git_identity_preflight "$repo"
 
   if [ -z "$base" ]; then
     base="$(default_branch "$repo" "$remote")" \

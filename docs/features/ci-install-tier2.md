@@ -85,7 +85,14 @@ rather than reading silence as health.
    `git clone`. There is no separate "reset the repo" step: `init`'s own
    idempotency probes and `eject`'s manifest-driven revert (next point) are
    what keep the repo at a reusable baseline run over run, so nothing here
-   pre-mutates its content.
+   pre-mutates its content. A following step then configures a **git
+   identity** (`git config --global` to `github-actions[bot]`), because a
+   runner has none and the `init` leg below commits — its proposal-PR
+   generator commits the proposed tree before pushing it, so without an
+   identity the round trip dies with "Author identity unknown"
+   (temperloop#1443). That generator now refuses up front, with the two
+   `git config --global` commands as its remedy, rather than failing at the
+   commit — the same message a newcomer on a fresh laptop would need.
 4. **The round trip** — `temperloop init` (with neither `--yes-first-epic`
    nor `--no-first-epic`, so its optional first-epic offer legibly skips
    under CI's ambient `GITHUB_ACTIONS` ; see the workflow file's own header
