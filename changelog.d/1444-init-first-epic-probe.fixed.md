@@ -16,7 +16,10 @@
   three-valued: already-filed, not-filed, or **UNKNOWN**. An unanswerable probe
   withholds the offer rather than risk a duplicate epic, and says so on its own
   `first-epic:` line instead of skipping silently. `install-tier2`'s `init` leg
-  additionally asserts that the ambient-CI skip (`first-epic: skipped — no
-  interactive operator detected …`) is the reason the offer skipped — the line
-  the workflow's own "reusable baseline" contract depends on, which the broken
-  probe had short-circuited on every run since it was written.
+  additionally asserts the offer was disposed through a **legitimate arm** — a
+  final `first-epic:` line of a known-good form, and, on the already-filed form,
+  an issue number that is actually digits — so this exact corruption now fails
+  the release gate instead of reading as a clean skip. That assertion
+  deliberately does not pin the *ambient-CI* arm specifically: that arm is only
+  reachable while the demo repo has no first epic filed, so pinning it would
+  make a release gate hostage to demo-repo issue state.

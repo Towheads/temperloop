@@ -881,12 +881,18 @@ else
     elif [ -n "$first_epic_probe_unknown" ]; then
       # UNKNOWN state, ranked AFTER the ambient-CI arm on purpose: an
       # unattended run has a truer, more specific reason to skip (there is
-      # nobody to ask), and .github/workflows/install-tier2.yml asserts
-      # that line — pinning the CI skip to probe health would make a
-      # release gate hostage to a transient search outage. Reached only
-      # when an operator IS present (or consented) and we still cannot
-      # tell whether the epic exists: withhold, because filing a duplicate
-      # epic is the one outcome the probe exists to prevent.
+      # nobody to ask), so it should not be reported as a probe outage.
+      # Reached only when an operator IS present (or consented) and we
+      # still cannot tell whether the epic exists: withhold, because
+      # filing a duplicate epic is the one outcome the probe exists to
+      # prevent.
+      #
+      # This arm prints a SECOND '^first-epic: ' line (the notice above
+      # states the fact, this one the disposition).
+      # .github/workflows/install-tier2.yml's init leg accounts for that:
+      # it reads the LAST such line as the disposition rather than
+      # requiring exactly one, so a transient search outage degrades
+      # legibly instead of failing a release gate.
       echo "first-epic: skipped — idempotency state unknown (see the probe notice above), so the offer is withheld rather than risk filing a duplicate epic; re-run \`temperloop init\` once \`gh\` is healthy, or open the epic by hand from claude/templates/first-epic-setup.md"
       handoff_next="$handoff_unoffered"
     else
