@@ -114,10 +114,26 @@ fi
 # shellcheck source=../lib/cannot-evaluate.sh
 [ -f "$HERE/../lib/cannot-evaluate.sh" ] && . "$HERE/../lib/cannot-evaluate.sh"
 if ! command -v cannot_evaluate_emit >/dev/null 2>&1; then
-  # Defensive only — cannot-evaluate.sh ships alongside this file in every
-  # kernel install; this degrades to a bare fail-closed emission (JSON only,
-  # no distinct stderr line) rather than making the idiom itself unavailable.
-  cannot_evaluate_emit() { jq -cn --arg e "$2" '{outcome:"CANNOT_EVALUATE",error:$e}'; return 2; }
+  # DEGRADED, never silently duplicated (temperloop#1475 review MEDIUM-3):
+  # cannot-evaluate.sh ships alongside this file in every kernel install, so
+  # reaching this branch means the checkout is structurally off — e.g. this
+  # file reached via a symlink ($HERE resolves the DIRECTORY via `cd -P`,
+  # which does not resolve a symlinked *file*, so a symlinked entry point
+  # can land here even with a normal lib/ present) — or the lib is genuinely
+  # missing. Re-typing the frozen contract's human-line shape here a second
+  # time would be exactly the silent duplication this hoist exists to
+  # eliminate, so this fallback does NOT pretend to be the real thing: it
+  # defines RC_CANNOT_EVALUATE itself (so a caller using the lib's own
+  # advertised idiom never hits an unbound-variable abort under `set -u`),
+  # still emits the machine JSON so a downstream `.outcome` reader sees
+  # CANNOT_EVALUATE, still fails CLOSED on that reserved code, but replaces
+  # the human line with an explicit degradation notice naming what's wrong.
+  RC_CANNOT_EVALUATE=2
+  cannot_evaluate_emit() {
+    jq -cn --arg e "$2" '{outcome:"CANNOT_EVALUATE",error:$e}'
+    printf '%s: CANNOT-EVALUATE-DEGRADED — workflows/scripts/lib/cannot-evaluate.sh could not be sourced (checkout is structurally off); original message: %s\n' "$1" "$2" >&2
+    return "$RC_CANNOT_EVALUATE"
+  }
 fi
 
 usage() {
