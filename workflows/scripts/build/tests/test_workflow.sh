@@ -156,12 +156,27 @@ const callLog = [];
 // and an agent spawned with NO label matches neither, which is exactly what the
 // "no third agent kind" assertion wants to catch.
 globalThis.isWorkerCall = (o) => /^(worker|worker-cifix):/.test(String((o && o.label) || ''));
-globalThis.isMachineryCall = (o) => !!(o && o.label) && !globalThis.isWorkerCall(o);
+// temperloop#1430: a THIRD agent kind — the §3e reviewer(s), spawned directly
+// by driveItem (never via the worker). Label grammar: `review:<slug>#<reviewer>`
+// (the `#`-delimited extra form every other multi-part label already uses —
+// see slugFromLabel below). Excluded from isMachineryCall so a review spawn
+// never falls into the machinery batch/solo dispatcher (it returns free
+// advisory TEXT, not a closed-outcome JSON object).
+globalThis.isReviewCall = (o) => /^review:/.test(String((o && o.label) || ''));
+globalThis.isMachineryCall = (o) => !!(o && o.label) && !globalThis.isWorkerCall(o) && !globalThis.isReviewCall(o);
 
 // machineryMap: slug → [outcome, ...] — consumed in order per slug
 const machineryMap = new Map();
 // workerMap: slug → [verdict, ...] — consumed in order per slug
 const workerMap = new Map();
+// reviewMap: slug → [response, ...] — consumed in order per slug, one entry
+// PER MATCHED REVIEWER (routes run in Map-insertion order — see
+// determineReviewers()). A response is a review-text STRING, `null` (models
+// agent() returning null — skip/transient), or `{__throw: msg}` (models
+// agent() THROWING — a resolution failure when msg matches
+// MACHINERY_RESOLUTION_ERR's shape, any other error otherwise). Default
+// (map miss): null — "reviewer ran but returned nothing", never a crash.
+const reviewMap = new Map();
 // mergeCheckMap: slug → [mergeState, ...] — consumed in order per slug.
 // Default (map miss): { mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN' }
 // so existing tests need no changes — only CONFLICTING tests override this.
@@ -226,6 +241,7 @@ globalThis.callLog = callLog;
 globalThis.machineryMap = machineryMap;
 globalThis.workerMap = workerMap;
 globalThis.mergeCheckMap = mergeCheckMap;
+globalThis.reviewMap = reviewMap;
 
 globalThis.agent = async function agent(prompt, opts = {}) {
   callLog.push({ prompt: String(prompt).slice(0, 120), promptFull: String(prompt), opts: { label: opts.label, phase: opts.phase, model: opts.model, agentType: opts.agentType } });
@@ -281,6 +297,18 @@ globalThis.agent = async function agent(prompt, opts = {}) {
     if (v && v.__throw) throw new Error(v.__throw);
     return v;
   }
+  if (isReviewCall(opts)) {
+    // §3e reviewer call (temperloop#1430) — routed by slug, ONE queued entry
+    // consumed per matched reviewer (in the order determineReviewers() found
+    // them). Default (map miss): null — a reviewer that ran but returned
+    // nothing, never a crash. A string models a normal advisory-text return;
+    // { __throw: msg } models agent() THROWING (msg matching
+    // MACHINERY_RESOLUTION_ERR's shape models a genuine resolution failure —
+    // the same precedent machineryAgent() uses).
+    const v = nextFromMap(reviewMap, slug, null);
+    if (v && v.__throw) throw new Error(v.__throw);
+    return v;
+  }
   // Fallback (should not happen in well-formed test cases)
   return nextFromMap(workerMap, slug, { status: 'done', summary: 'fallback', acceptance_results: [], commits: [] });
 };
@@ -293,6 +321,11 @@ globalThis.parallel = async (fns) => Promise.all(fns.map(f => f()));
 globalThis.setMachinery = (slug, ...outcomes) => { machineryMap.set(slug, outcomes); };
 globalThis.setWorker = (slug, ...verdicts) => { workerMap.set(slug, verdicts); };
 globalThis.setMergeCheck = (slug, ...states) => { mergeCheckMap.set(slug, states); };
+globalThis.setReview = (slug, ...responses) => { reviewMap.set(slug, responses); };
+// reviewResolutionFailure — the SAME two-marker shape machineryAgent()'s own
+// MACHINERY_RESOLUTION_ERR regex matches (temperloop#1014/#1430): agent()
+// rejecting an unresolvable/denied agentType BEFORE any subagent spawns.
+globalThis.reviewUnavailable = (agentType) => ({ __throw: `agent type '${agentType}' not found. Available agents: general-purpose` });
 // temperloop#939 mock shorthands.
 // throwingWorker(msg) — the #939 return-channel failure (agent() throws).
 globalThis.throwingWorker = (msg) => ({ __throw: msg || 'agent({schema}): subagent completed without calling StructuredOutput (after in-conversation nudge)' });
@@ -310,6 +343,7 @@ globalThis.lostReturn = () => ({ __lostReturn: true });
 // Canonical happy-path machinery sequence for a green item
 globalThis.happyMachinery = (slug, prNum, sha) => setMachinery(slug,
   { outcome: 'CREATED', path: '/tmp/repo.wt/' + slug },
+  { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
   { outcome: 'REBASED', base: 'b', tip: 't', sha },
   { outcome: 'SCAN_CLEAN' },
@@ -491,6 +525,7 @@ $PREAMBLE
 
 setMachinery('item-cifix',
   { outcome: 'CREATED', path: '/tmp/repo.wt/item-cifix' },
+  { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
   { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-v1' },
   { outcome: 'SCAN_CLEAN' },
@@ -551,6 +586,7 @@ $PREAMBLE
 
 setMachinery('item-cibust',
   { outcome: 'CREATED', path: '/tmp/repo.wt/item-cibust' },
+  { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
   { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-v1' },
   { outcome: 'SCAN_CLEAN' },
@@ -592,6 +628,7 @@ $PREAMBLE
 
 setMachinery('item-timeout',
   { outcome: 'CREATED', path: '/tmp/repo.wt/item-timeout' },
+  { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
   { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-t' },
   { outcome: 'SCAN_CLEAN' },
@@ -632,6 +669,7 @@ $PREAMBLE
 
 setMachinery('item-noci',
   { outcome: 'CREATED', path: '/tmp/repo.wt/item-noci' },
+  { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
   { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-n' },
   { outcome: 'SCAN_CLEAN' },
@@ -699,6 +737,7 @@ $PREAMBLE
 
 setMachinery('item-rejected',
   { outcome: 'CREATED', path: '/tmp/repo.wt/item-rejected' },
+  { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
   { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-r' },
   { outcome: 'SCAN_CLEAN' },
@@ -731,6 +770,7 @@ $PREAMBLE
 
 setMachinery('item-scan',
   { outcome: 'CREATED', path: '/tmp/repo.wt/item-scan' },
+  { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
   { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-scan' },
   { outcome: 'SCAN_BLOCKED', matches: ['Closes #42'] },
@@ -765,6 +805,7 @@ $PREAMBLE
 
 setMachinery('item-rb',
   { outcome: 'CREATED', path: '/tmp/repo.wt/item-rb' },
+  { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
   { outcome: 'REBASE_CONFLICT', base: 'b', tip: 't', error: 'CONFLICT (content): shared.txt' },
   // No SCAN/PUSH entries: if the machinery advanced past the conflict it would
@@ -885,6 +926,7 @@ $PREAMBLE
 
 setMachinery('item-gate',
   { outcome: 'CREATED', path: '/tmp/repo.wt/item-gate' },
+  { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_FAIL', detail: 'mypy found type errors' },
 );
 happyWorker('item-gate');
@@ -1041,6 +1083,7 @@ $PREAMBLE
 
 setMachinery('item-gt1021',
   { outcome: 'CREATED', path: '/tmp/repo.wt/item-gt1021' },
+  { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_TIMEOUT' },
 );
 happyWorker('item-gt1021');
@@ -1079,6 +1122,7 @@ $PREAMBLE
 
 setMachinery('item-gs1021',
   { outcome: 'CREATED', path: '/tmp/repo.wt/item-gs1021' },
+  { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_SLICE', resumeAt: 47, failed: 0, elapsedSecs: 301 },
   { outcome: 'GATE_PASS', failed: 0, elapsedSecs: 120 },
   { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-gs' },
@@ -1139,6 +1183,7 @@ $PREAMBLE
 
 setMachinery('item-gsf1021',
   { outcome: 'CREATED', path: '/tmp/repo.wt/item-gsf1021' },
+  { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_SLICE', resumeAt: 12, failed: 1, elapsedSecs: 300 },
   { outcome: 'GATE_PASS', failed: 0, elapsedSecs: 60 },
 );
@@ -1173,6 +1218,7 @@ const slices = [];
 for (let i = 0; i < 30; i++) slices.push({ outcome: 'GATE_SLICE', resumeAt: i + 1, failed: 0, elapsedSecs: 300 });
 setMachinery('item-gsc1021',
   { outcome: 'CREATED', path: '/tmp/repo.wt/item-gsc1021' },
+  { outcome: 'REVIEW_DIFF' },
   ...slices,
 );
 happyWorker('item-gsc1021');
@@ -1349,6 +1395,7 @@ $PREAMBLE
 setMachinery('l2ok',
   { outcome: 'DEPS_MERGED' },
   { outcome: 'CREATED', path: '/tmp/repo.wt/l2ok' },
+  { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
   { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-l2ok' },
   { outcome: 'SCAN_CLEAN' },
@@ -1455,6 +1502,7 @@ $PREAMBLE
 // gate (3e.5). If driveItem wrongly ran worktree.sh create or claim.sh, it
 // would consume an extra machinery entry here and the outcome would desync.
 setMachinery('item-cont',
+  { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
   { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-cont' },
   { outcome: 'SCAN_CLEAN' },
@@ -1585,6 +1633,7 @@ $PREAMBLE
 setMachinery('retryitem',
   { outcome: 'CREATED', path: '/tmp/repo.wt/retryitem' },
   noSideEffects(),
+  { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
   { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-retry' },
   { outcome: 'SCAN_CLEAN' },
@@ -1673,6 +1722,7 @@ happyMachinery('cifixnull', 20, 'sha-cifix');
 // Override ci-poll in machineryMap to return CI_FAILED
 machineryMap.set('cifixnull', [
   { outcome: 'CREATED', path: '/tmp/repo.wt/cifixnull' },
+  { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
   { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-cifix' },
   { outcome: 'SCAN_CLEAN' },
@@ -1714,6 +1764,7 @@ $PREAMBLE
 // Machinery through push + PR open; NO ci-poll entry (merge-check fires first, escalates)
 setMachinery('item-conflict543',
   { outcome: 'CREATED', path: '/tmp/repo.wt/item-conflict543' },
+  { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
   { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-cf' },
   { outcome: 'SCAN_CLEAN' },
@@ -1773,6 +1824,7 @@ $PREAMBLE
 // Item that is DIRTY (mergeStateStatus only, mergeable field missing/UNKNOWN)
 setMachinery('item-dirty',
   { outcome: 'CREATED', path: '/tmp/repo.wt/item-dirty' },
+  { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
   { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-dirty' },
   { outcome: 'SCAN_CLEAN' },
@@ -1824,6 +1876,7 @@ $PREAMBLE
 
 setMachinery('item-exists',
   { outcome: 'CREATED', path: '/tmp/repo.wt/item-exists' },
+  { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
   { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-exists' },
   { outcome: 'SCAN_CLEAN' },
@@ -1867,6 +1920,7 @@ $PREAMBLE
 
 setMachinery('item-prfail',
   { outcome: 'CREATED', path: '/tmp/repo.wt/item-prfail' },
+  { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
   { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-prfail' },
   { outcome: 'SCAN_CLEAN' },
@@ -1938,6 +1992,7 @@ run_node_case "null-machinery-push: push machinery returns null → machinery-de
 $PREAMBLE
 setMachinery('pushdenied',
   { outcome: 'CREATED', path: '/tmp/repo.wt/pushdenied' },
+  { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
   { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-pd' },
   { outcome: 'SCAN_CLEAN' },
@@ -2131,6 +2186,7 @@ $PREAMBLE
 setMachinery('cure-item',
   { outcome: 'CREATED', path: '/tmp/repo.wt/cure-item' },
   noSideEffects(),
+  { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
   { outcome: 'REBASED', base: 'b', tip: 't', sha: 'shaCure' },
   { outcome: 'SCAN_CLEAN' },
@@ -2189,6 +2245,7 @@ $PREAMBLE
 setMachinery('stall-item',
   { outcome: 'CREATED', path: '/tmp/repo.wt/stall-item' },
   dirtyStall(8),                       // the #982 shape: 8 modified files, 0 commits
+  { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
   { outcome: 'REBASED', base: 'b', tip: 't', sha: 'shaStall' },
   { outcome: 'SCAN_CLEAN' },
@@ -2223,6 +2280,7 @@ $PREAMBLE
 setMachinery('clean-item',
   { outcome: 'CREATED', path: '/tmp/repo.wt/clean-item' },
   noSideEffects(),
+  { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
   { outcome: 'REBASED', base: 'b', tip: 't', sha: 'shaClean' },
   { outcome: 'SCAN_CLEAN' },
@@ -2423,6 +2481,7 @@ $PREAMBLE
 setMachinery('prose-budget-headroom',
   { outcome: 'CREATED', path: '/tmp/repo.wt/prose-budget-headroom' },
   { outcome: 'RECOVER_PR_OPEN', sha: 'bca3824', commits_ahead: 1, pushed: true, remote_sha: 'bca3824', pr_number: 936, verification_surface_present: true },
+  { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
   // NOTE: no REBASED entry — the branch is already on origin, so 3f-0a is skipped.
   { outcome: 'SCAN_CLEAN' },
@@ -2468,6 +2527,7 @@ $PREAMBLE
 setMachinery('brief-record-completeness-lint',
   { outcome: 'CREATED', path: '/tmp/repo.wt/brief-record-completeness-lint' },
   { outcome: 'RECOVER_COMMITTED', sha: '140fc64', commits_ahead: 1, pushed: false, remote_sha: '', verification_surface_present: false },
+  { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
   { outcome: 'REBASED', base: 'b', tip: 't', sha: '140fc64' },
   { outcome: 'SCAN_CLEAN' },
@@ -2510,6 +2570,7 @@ $PREAMBLE
 setMachinery('pushed-item',
   { outcome: 'CREATED', path: '/tmp/repo.wt/pushed-item' },
   { outcome: 'RECOVER_PUSHED', sha: 'shaP', commits_ahead: 2, pushed: true, remote_sha: 'shaP', verification_surface_present: true },
+  { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
   { outcome: 'SCAN_CLEAN' },
   { outcome: 'PUSHED', sha: 'shaP', branch: 'build/pushed-item' },
@@ -2609,6 +2670,7 @@ for (const [slug, pr, sha] of [['a1', 11, 'sha-a1'], ['a2', 12, 'sha-a2'], ['a3'
   setMachinery(slug,
     { outcome: 'CLAIMED' },
     { outcome: 'CREATED', path: '/tmp/repo.wt/' + slug },
+    { outcome: 'REVIEW_DIFF' },
     { outcome: 'GATE_PASS' },
     { outcome: 'REBASED', base: 'b', tip: 't', sha },
     { outcome: 'SCAN_CLEAN' },
@@ -2643,17 +2705,17 @@ const soloCalls = machineryCalls.filter(c => !/^Steps: /m.test(c.promptFull)).le
 const unbatched = machineryStepLog.length + soloCalls;
 
 if (!reason && workerCalls.length !== 3) reason = 'expected 3 worker spawns, got ' + workerCalls.length;
-// 4 machinery executors per item: prelude, gate, pr-batch, ci-batch.
-if (!reason && machineryCalls.length !== 12) reason = 'expected 12 machinery executors (4/item), got ' + machineryCalls.length + ': ' + JSON.stringify(machineryCalls.map(c => c.opts.label));
-if (!reason && callLog.length !== 15) reason = 'expected 15 total agent spawns for the level, got ' + callLog.length;
+// 5 machinery executors per item: prelude, review-diff (temperloop#1430), gate, pr-batch, ci-batch.
+if (!reason && machineryCalls.length !== 15) reason = 'expected 15 machinery executors (5/item), got ' + machineryCalls.length + ': ' + JSON.stringify(machineryCalls.map(c => c.opts.label));
+if (!reason && callLog.length !== 18) reason = 'expected 18 total agent spawns for the level, got ' + callLog.length;
 // …and that is a real reduction against the un-batched equivalent of this run.
-if (!reason && unbatched !== 33) reason = 'expected the un-batched equivalent to be 33 spawns, got ' + unbatched;
+if (!reason && unbatched !== 36) reason = 'expected the un-batched equivalent to be 36 spawns, got ' + unbatched;
 if (!reason && !(machineryCalls.length < unbatched)) reason = 'batching did not reduce machinery spawns: ' + machineryCalls.length + ' vs ' + unbatched;
 
-// Per item, the executors are exactly these four, in this order.
+// Per item, the executors are exactly these five, in this order.
 for (const slug of ['a1', 'a2', 'a3']) {
   const labels = machineryCalls.filter(c => (c.opts.label||'').includes(slug)).map(c => c.opts.label);
-  const want = ['prelude:' + slug, 'gate:' + slug, 'pr-batch:' + slug, 'ci-batch:' + slug + '#0'];
+  const want = ['prelude:' + slug, 'review-diff:' + slug, 'gate:' + slug, 'pr-batch:' + slug, 'ci-batch:' + slug + '#0'];
   if (!reason && JSON.stringify(labels) !== JSON.stringify(want))
     reason = slug + ' machinery executors wrong: ' + JSON.stringify(labels);
   // Every mechanical step still RAN — batching removed spawns, not work.
@@ -2672,6 +2734,7 @@ setMachinery('pre-ok',
   { outcome: 'CLAIMED' },
   { outcome: 'DEPS_MERGED' },
   { outcome: 'CREATED', path: '/tmp/repo.wt/pre-ok' },
+  { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
   { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-pre' },
   { outcome: 'SCAN_CLEAN' },
@@ -2719,6 +2782,7 @@ $PREAMBLE
 
 setMachinery('slow-ci',
   { outcome: 'CREATED', path: '/tmp/repo.wt/slow-ci' },
+  { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
   { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-slow' },
   { outcome: 'SCAN_CLEAN' },
@@ -2805,6 +2869,7 @@ setMachinery('q-item',
   { outcome: 'CLAIMED' },
   { outcome: 'DEPS_MERGED' },
   { outcome: 'CREATED', path: WT },
+  { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
   { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-q' },
   { outcome: 'SCAN_CLEAN' },
@@ -3224,6 +3289,7 @@ $PREAMBLE
 // adopt it and flow on to CI — never re-push, never re-open.
 setMachinery('to-item',
   { outcome: 'CREATED', path: '/tmp/repo.wt/to-item' },
+  { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
   { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-to' },
   { outcome: 'SCAN_CLEAN' },
@@ -3250,6 +3316,7 @@ run_node_case "K1071 escalate: a timed-out step with NO landed side-effect escal
 $PREAMBLE
 setMachinery('to2',
   { outcome: 'CREATED', path: '/tmp/repo.wt/to2' },
+  { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
   { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha2' },
   { outcome: 'SCAN_CLEAN' },
@@ -3285,6 +3352,7 @@ globalThis.agent = async (prompt, opts = {}) => {
   const label = opts.label || '';
   if (isWorkerCall(opts)) return { status: 'done', summary: 's', acceptance_results: [], commits: [] };
   if (label.startsWith('prelude:')) return { results: [{ outcome: 'CREATED', path: '/tmp/repo.wt/sl' }] };
+  if (label.startsWith('review-diff:')) return { outcome: 'REVIEW_DIFF', files: [] };
   if (label.startsWith('gate:')) return { outcome: 'GATE_PASS' };
   if (label.startsWith('pr-batch:')) return { results: [
     { outcome: 'REBASED', sha: 'x' },
@@ -3319,6 +3387,7 @@ globalThis.agent = async (prompt, opts = {}) => {
   if (isWorkerCall(opts)) return { status: 'done', summary: 's', acceptance_results: [], commits: [] };
   const l = opts.label || '';
   if (l.startsWith('prelude:')) return { results: [{ outcome: 'CREATED', path: '/tmp/repo.wt/c' }] };
+  if (l.startsWith('review-diff:')) return { outcome: 'REVIEW_DIFF', files: [] };
   if (l.startsWith('gate:')) return { outcome: 'GATE_PASS' };
   if (l.startsWith('pr-batch:')) return { results: [{ outcome: 'REBASED', sha: 'x' }, { outcome: 'SCAN_CLEAN' }, { outcome: 'PUSHED', sha: 'x' }, { outcome: 'PR_OPENED', pr_number: 9 }] };
   if (l.startsWith('ci-batch:')) return { results: [{ mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN' }, { outcome: 'CI_GREEN' }] };
@@ -3473,6 +3542,7 @@ run_node_case "K1067 push/RECOVER_PR_OPEN: a LOST push-batch return whose PR alr
 $PREAMBLE
 setMachinery('lost-push-adopt',
   { outcome: 'CREATED', path: '/tmp/repo.wt/lost-push-adopt' },
+  { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
   { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-lp' },
   { outcome: 'SCAN_CLEAN' },
@@ -3500,6 +3570,7 @@ run_node_case "K1067 push/RECOVER_PUSHED: resumes at pr-open only, no re-push" "
 $PREAMBLE
 setMachinery('lost-push-resume-open',
   { outcome: 'CREATED', path: '/tmp/repo.wt/lost-push-resume-open' },
+  { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
   { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-rp' },
   { outcome: 'SCAN_CLEAN' },
@@ -3529,6 +3600,7 @@ run_node_case "K1067 push/RECOVER_COMMITTED: resumes at push then pr-open, no re
 $PREAMBLE
 setMachinery('lost-push-resume-both',
   { outcome: 'CREATED', path: '/tmp/repo.wt/lost-push-resume-both' },
+  { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
   { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-rc' },
   { outcome: 'SCAN_CLEAN' },
@@ -3560,6 +3632,7 @@ run_node_case "K1067 push/RECOVER_NONE: a lost push return with nothing landed e
 $PREAMBLE
 setMachinery('lost-push-none',
   { outcome: 'CREATED', path: '/tmp/repo.wt/lost-push-none' },
+  { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
   { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-ln' },
   { outcome: 'SCAN_CLEAN' },
@@ -3583,6 +3656,7 @@ run_node_case "K1067 push negative: a GENUINE push failure (not a lost return) e
 $PREAMBLE
 setMachinery('genuine-push-fail',
   { outcome: 'CREATED', path: '/tmp/repo.wt/genuine-push-fail' },
+  { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
   { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-gp' },
   { outcome: 'SCAN_CLEAN' },
@@ -3606,6 +3680,7 @@ run_node_case "K1067 pr-open/RECOVER_PR_OPEN: a LOST pr-open-batch return whose 
 $PREAMBLE
 setMachinery('lost-open-adopt',
   { outcome: 'CREATED', path: '/tmp/repo.wt/lost-open-adopt' },
+  { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
   { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-lo' },
   { outcome: 'SCAN_CLEAN' },
@@ -3634,6 +3709,7 @@ run_node_case "K1067 pr-open negative: a GENUINE pr-open failure (not a lost ret
 $PREAMBLE
 setMachinery('genuine-open-fail',
   { outcome: 'CREATED', path: '/tmp/repo.wt/genuine-open-fail' },
+  { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
   { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-go' },
   { outcome: 'SCAN_CLEAN' },
@@ -3691,12 +3767,12 @@ globalThis.args = { ...baseArgs, items: [
 const mod = await loadLevel();
 const result = await mod.default();
 const CTX = 'owner/repo · 3 items · alpha (#11), beta (#12), gamma (#13)';
-const EXPECTED = ['claim','build','gate','PR','CI'].map(s => 'build level · ' + s + ' — ' + CTX);
+const EXPECTED = ['claim','build','review','gate','PR','CI'].map(s => 'build level · ' + s + ' — ' + CTX);
 let reason = null;
 if ((result.parked ?? []).length !== 3) reason = 'expected 3 parked, got ' + JSON.stringify(result);
 // One phase() per stage, in pipeline order, no repeats and no regressions.
 else if (JSON.stringify(phases) !== JSON.stringify(EXPECTED))
-  reason = 'phase() sequence must be exactly the five stages in order, each carrying the #903 context.\n  got:      ' + JSON.stringify(phases) + '\n  expected: ' + JSON.stringify(EXPECTED);
+  reason = 'phase() sequence must be exactly the six stages in order, each carrying the #903 context.\n  got:      ' + JSON.stringify(phases) + '\n  expected: ' + JSON.stringify(EXPECTED);
 // #903 non-regression, restated positively: EVERY stage title names repo, count and items.
 else if (!phases.every(p => p.includes('owner/repo') && p.includes('3 items') && p.includes('alpha (#11)')))
   reason = 'a stage phase dropped the #903 run context: ' + JSON.stringify(phases);
@@ -3707,6 +3783,7 @@ else {
   const STAGE_OF_LABEL = [
     [/^prelude:/,      'claim'],
     [/^worker:/,       'build'],
+    [/^review-diff:/,  'review'],
     [/^gate:/,         'gate'],
     [/^pr-batch:/,     'PR'],
     [/^ci-batch:/,     'CI'],
@@ -3736,7 +3813,7 @@ const mod = await loadLevel();
 const result = await mod.default();
 let reason = null;
 if ((result.parked ?? []).length !== 5) reason = 'expected 5 parked, got ' + JSON.stringify(result);
-else if (phases.length !== 5) reason = 'expected 5 stage phases, got ' + JSON.stringify(phases);
+else if (phases.length !== 6) reason = 'expected 6 stage phases, got ' + JSON.stringify(phases);
 else if (!phases.every(p => p.includes('5 items') && p.includes('i1 (#400), i2 (#401), i3 (#402) +2 more')))
   reason = 'every stage title must name at most PHASE_TITLE_MAX_ITEMS items and collapse the rest: ' + JSON.stringify(phases);
 else if (phases.some(p => p.includes('i4') || p.includes('i5')))
@@ -3753,6 +3830,7 @@ globalThis.phase = (t) => phases.push(String(t));
 setMachinery('rec1',
   { outcome: 'CREATED', path: '/tmp/repo.wt/rec1' },
   { outcome: 'RECOVER_PR_OPEN', sha: 'sha-r', commits_ahead: 1, pushed: true, remote_sha: 'sha-r', pr_number: 4242, verification_surface_present: true },
+  { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
   // No REBASED entry — an already-pushed recovery skips 3f-0a.
   { outcome: 'SCAN_CLEAN' },
@@ -3775,7 +3853,7 @@ else if (probe.opts.phase !== 'build level · recover — owner/repo · 1 item �
 else if (phases.some(p => p.includes('· recover —')))
   reason = 'an off-path recovery must NEVER move the global phase cursor: ' + JSON.stringify(phases);
 // Cursor advanced monotonically over the stages it did reach.
-else if (JSON.stringify(phases) !== JSON.stringify(['claim','build','gate','PR','CI'].map(s => 'build level · ' + s + ' — owner/repo · 1 item · rec1 (#77)')))
+else if (JSON.stringify(phases) !== JSON.stringify(['claim','build','review','gate','PR','CI'].map(s => 'build level · ' + s + ' — owner/repo · 1 item · rec1 (#77)')))
   reason = 'stage cursor must advance monotonically over the stages actually reached: ' + JSON.stringify(phases);
 console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
 "
@@ -4134,6 +4212,198 @@ grep -q 'deferred to §3e.5; discrimination not established worker-side' "$MJS" 
   || fail "#1319d: workerPrompt()'s Discrimination evidence section must tell the worker the exact wording for a deferred-bare-gate criterion (lockstep with build.md)"
 
 echo "PASS: #1319 discrimination-evidence guard — workerPrompt gates the requirement on requireDiscriminationEvidence (no /sweep, /fix leak); build.md §3c/Step-3 args and pr.sh's recap consumer in lockstep; the degraded-case warning+tally, the corrected /sweep,/fix rationale, and the deferred-bare-gate reconciliation are all in lockstep too (§3e spec-review follow-up)"
+
+# ============================================================================
+# TEST (K1430): §3e mandatory/routed pre-push review runs INSIDE driveItem —
+#   the review is spawned by driveItem itself via agent({agentType}), never
+#   delegated to the 3c worker (which cannot spawn a nested subagent at all).
+#   Before this item the mandatory claude/commands/*.md -> workflow-reviewer
+#   rule (foundation#1007) was worker-discretion prose with no code path to
+#   discharge it — every command-doc PR reported a STRUCTURALLY GUARANTEED
+#   "skipped — unavailable". These four cases exercise the real thing: a
+#   mandatory run, a genuine unavailability degrade, a BLOCKING escalation,
+#   and tsv-driven routing for a non-command-doc file.
+# ============================================================================
+run_node_case "K1430 mandatory: a claude/commands/*.md diff spawns workflow-reviewer directly (never via the worker), and a clean pass carries into the PR body" "
+$PREAMBLE
+
+setMachinery('cmd-md-item',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/cmd-md-item' },
+  { outcome: 'REVIEW_DIFF', files: ['claude/commands/build.md'] },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-cmd' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'sha-cmd', branch: 'build/cmd-md-item' },
+  { outcome: 'PR_OPENED', pr_number: 999 },
+  { outcome: 'CI_GREEN' },
+);
+happyWorker('cmd-md-item');
+setReview('cmd-md-item', '## Summary\\nAll good, no invariant violations.\\n\\n## Findings\\n(none)\\n');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'cmd-md-item', branch: 'build/cmd-md-item', title: 'Touch build.md', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+let reason = null;
+if ((result.parked ?? []).length !== 1) reason = 'expected 1 parked: ' + JSON.stringify(result);
+else if ((result.escalations ?? []).length !== 0) reason = 'expected 0 escalations: ' + JSON.stringify(result.escalations);
+const reviewCall = callLog.find(c => isReviewCall(c.opts));
+if (!reason && !reviewCall) reason = 'no review agent() call spawned for a claude/commands/*.md diff — the mandatory rule never fired';
+else if (!reason && reviewCall.opts.label !== 'review:cmd-md-item#workflow-reviewer')
+  reason = 'unexpected review label: ' + reviewCall.opts.label;
+else if (!reason && reviewCall.opts.agentType !== 'workflow-reviewer')
+  reason = 'review agent() spawned with the wrong agentType: ' + reviewCall.opts.agentType;
+if (!reason) {
+  const prBatch = callLog.find(c => (c.opts.label||'').startsWith('pr-batch:cmd-md-item'));
+  if (!prBatch) reason = 'no pr-batch call logged';
+  else if (!prBatch.promptFull.includes('workflow-reviewer'))
+    reason = 'the PR body-assembling command must carry evidence the review actually RAN (never a guaranteed default skip): ' + prBatch.promptFull.slice(0, 400);
+}
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+run_node_case "K1430 unavailable: reviewer resolution failure degrades legibly (never a hard fail, never silently invisible)" "
+$PREAMBLE
+const logged = [];
+globalThis.log = (m) => logged.push(String(m));
+
+setMachinery('unavail-item',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/unavail-item' },
+  { outcome: 'REVIEW_DIFF', files: ['claude/commands/build.md'] },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-un' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'sha-un', branch: 'build/unavail-item' },
+  { outcome: 'PR_OPENED', pr_number: 1000 },
+  { outcome: 'CI_GREEN' },
+);
+happyWorker('unavail-item');
+setReview('unavail-item', reviewUnavailable('workflow-reviewer'));
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'unavail-item', branch: 'build/unavail-item', title: 'Touch build.md', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+let reason = null;
+if ((result.parked ?? []).length !== 1) reason = 'a genuinely unavailable reviewer must not block the item: ' + JSON.stringify(result);
+else if ((result.escalations ?? []).length !== 0) reason = 'unavailability must degrade, never escalate: ' + JSON.stringify(result.escalations);
+else if (!logged.some(m => m.includes('workflow-reviewer available as source; run workflows/scripts/install/project-agents.sh to enable')))
+  reason = 'missing the remedy-bearing degradation notice (message-schema.md § Degradation notice): ' + JSON.stringify(logged);
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+run_node_case "K1430 blocking: a HIGH finding escalates review-blocking BEFORE 3f push, never silently proceeds" "
+$PREAMBLE
+
+setMachinery('blocking-item',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/blocking-item' },
+  { outcome: 'REVIEW_DIFF', files: ['claude/commands/build.md'] },
+);
+happyWorker('blocking-item');
+setReview('blocking-item', '## Summary\\n1 finding.\\n\\n## Findings\\n### [HIGH] Silent failure mode in claude/commands/build.md Step 3\\n**Where:** claude/commands/build.md — Step 3\\n**Issue:** x\\n');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'blocking-item', branch: 'build/blocking-item', title: 'Touch build.md', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+let reason = null;
+if ((result.parked ?? []).length !== 0) reason = 'a BLOCKING review finding must never park the item: ' + JSON.stringify(result);
+else if ((result.escalations ?? []).length !== 1) reason = 'expected exactly 1 escalation: ' + JSON.stringify(result.escalations);
+else if (result.escalations[0].kind !== 'review-blocking') reason = 'wrong escalation kind: ' + result.escalations[0].kind;
+else {
+  const prBatch = callLog.find(c => (c.opts.label||'').startsWith('pr-batch:blocking-item'));
+  if (prBatch) reason = 'a blocking review must stop BEFORE 3f (push/PR) — pr-batch must never spawn: ' + JSON.stringify(prBatch.opts.label);
+}
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+run_node_case "K1430 routing: a tsv-matched extension routes to ITS reviewer (not workflow-reviewer, not docs-reviewer)" "
+$PREAMBLE
+const TAB = String.fromCharCode(9);
+const tsv = '.py' + TAB + 'python-reviewer' + TAB + 'claude/agents/reviewers/python-reviewer.md\\n';
+
+setMachinery('routed-item',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/routed-item' },
+  { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/foo.py'], tsv },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-rt' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'sha-rt', branch: 'build/routed-item' },
+  { outcome: 'PR_OPENED', pr_number: 1001 },
+  { outcome: 'CI_GREEN' },
+);
+happyWorker('routed-item');
+setReview('routed-item', '## Summary\\nclean\\n\\n## Findings\\n(none)\\n');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'routed-item', branch: 'build/routed-item', title: 'Touch a .py file', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+let reason = null;
+if ((result.parked ?? []).length !== 1) reason = 'expected 1 parked: ' + JSON.stringify(result);
+const reviewCall = callLog.find(c => isReviewCall(c.opts));
+if (!reason && (!reviewCall || reviewCall.opts.agentType !== 'python-reviewer'))
+  reason = 'a .py-only diff must route via the tsv to python-reviewer, got: ' + JSON.stringify(reviewCall && reviewCall.opts.agentType);
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+# --- K1430 static lockstep guards: §3e mandatory/routed pre-push review ------
+# build.md §3e is the SPEC; build-level.mjs's driveItem is the as-built
+# encoding (the same lockstep discipline as every other *_BUILD_MD guard in
+# this file). This asserts the CLASSIFICATION — the review is declared and
+# ordered between 3d and 3e.5, spawning the reviewer directly — never the
+# implementation details. An absent build.md is a HARD FAIL (temperloop#1438's
+# own anti-pattern: a check that cannot run must never report PASS), never a
+# skip-if-absent.
+grep -q 'async function runReviewers' "$MJS" \
+  || fail "#1430: build-level.mjs must define runReviewers() — the §3e driver that spawns the routed reviewer(s) itself"
+grep -q 'function determineReviewers' "$MJS" \
+  || fail "#1430: build-level.mjs must define determineReviewers() — the routing DECISION (kept in legible .mjs, DESIGN NOTE 1), never buried in an opaque agent prompt"
+grep -q 'agentType: route.reviewer' "$MJS" \
+  || fail "#1430: the reviewer must be spawned via agent({agentType}) directly — never delegated to the 3c worker"
+grep -q 'foundation#1007' "$MJS" \
+  || fail "#1430: the mandatory claude/commands/*.md -> workflow-reviewer rule (foundation#1007) must be named in build-level.mjs, not left to worker discretion"
+grep -q 'MACHINERY_RESOLUTION_ERR.test(msg)' "$MJS" \
+  || fail "#1430: reviewer-unavailability detection must reuse machineryAgent's own MACHINERY_RESOLUTION_ERR precedent (temperloop#1014), not a new ad hoc check"
+
+# Ordering — §3e runs BETWEEN 3d (the anyFailed check) and 3e.5 (the gate), and
+# 3e.5 still precedes 3f. A future edit that reorders these blocks — moving
+# rather than removing the exact defect this item fixes — must fail here,
+# unconditionally.
+ANYFAILED_LINE="$(grep -n 'const anyFailed = ' "$MJS" | head -1 | cut -d: -f1)"
+REVIEW_CALL_LINE="$(grep -n 'const review = await runReviewers(item, wt);' "$MJS" | head -1 | cut -d: -f1)"
+GATE_MARKER_LINE="$(grep -n -- '--- 3e.5. Parent-side acceptance gate' "$MJS" | head -1 | cut -d: -f1)"
+PR_MARKER_LINE="$(grep -n -- '--- 3f. Push and open the PR' "$MJS" | head -1 | cut -d: -f1)"
+[ -n "$ANYFAILED_LINE" ] || fail "#1430: could not locate 3d's anyFailed check in build-level.mjs"
+[ -n "$REVIEW_CALL_LINE" ] || fail "#1430: could not locate the runReviewers() call site in build-level.mjs"
+[ -n "$GATE_MARKER_LINE" ] || fail "#1430: could not locate the 3e.5 acceptance-gate marker in build-level.mjs"
+[ -n "$PR_MARKER_LINE" ] || fail "#1430: could not locate the 3f push/PR marker in build-level.mjs"
+[ "$ANYFAILED_LINE" -lt "$REVIEW_CALL_LINE" ] \
+  || fail "#1430: the §3e review must run AFTER 3d's anyFailed check, not before"
+[ "$REVIEW_CALL_LINE" -lt "$GATE_MARKER_LINE" ] \
+  || fail "#1430: the §3e review must run BEFORE 3e.5's acceptance gate — this is the ordering the whole item exists to fix"
+[ "$GATE_MARKER_LINE" -lt "$PR_MARKER_LINE" ] \
+  || fail "#1430: 3e.5 must still precede 3f — the review must not reorder the rest of the pipeline"
+echo "PASS: #1430 review-ordering guard — determineReviewers/runReviewers spawn agent({agentType}) directly, reusing MACHINERY_RESOLUTION_ERR, strictly between 3d and 3e.5"
+
+K1430_BUILD_MD="$REPO_ROOT/claude/commands/build.md"
+[ -f "$K1430_BUILD_MD" ] \
+  || fail "#1430: claude/commands/build.md is missing — the prose half of this contract pair cannot be verified"
+grep -q 'foundation#1007' "$K1430_BUILD_MD" \
+  || fail "#1430: build.md §3e must still name the mandatory command-doc rule (foundation#1007)"
+grep -q 'workflow-reviewer' "$K1430_BUILD_MD" \
+  || fail "#1430: build.md §3e must name workflow-reviewer"
+grep -q 'orchestrator↔workflow boundary is irreversible-action plus single-writer' "$K1430_BUILD_MD" \
+  || fail "#1430: build.md §3e must record WHY the review runs inside the workflow rather than the orchestrator (temperloop#1430's own rationale)"
+echo "PASS: #1430 build.md rationale guard — §3e records why the review runs inside build-level.mjs, not the orchestrator"
 
 echo ""
 echo "All test_workflow.sh cases passed."
