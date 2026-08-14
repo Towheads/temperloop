@@ -200,6 +200,18 @@ make validate-diagnose-queue-emit	workflows/scripts/validate-diagnose-queue-emit
 bash workflows/scripts/tests/test_diagnose_queue_emit.sh	workflows/scripts/emit-diagnose-queue.sh workflows/scripts/validate-diagnose-queue-emit.sh workflows/scripts/build/gate.sh workflows/scripts/tests/test_diagnose_queue_emit.sh meta/data/raw/README.md
 bash workflows/scripts/validate-provider-disclosure.sh	workflows/scripts/validate-provider-disclosure.sh workflows/scripts/model-comparison/**
 bash workflows/scripts/model-comparison/tests/test_allowlist.sh	workflows/scripts/model-comparison/tests/test_allowlist.sh workflows/scripts/validate-provider-disclosure.sh workflows/scripts/model-comparison/**
+bash workflows/scripts/tests/test_validate_provider_disclosure.sh	workflows/scripts/tests/test_validate_provider_disclosure.sh workflows/scripts/validate-provider-disclosure.sh workflows/scripts/model-comparison/**
+# The "a check that could not run reports success" gate (temperloop#1476,
+# epic #1409) and its own fixture suite. Depends on the registry/allowlist
+# it reads, workflows/scripts/config/check-surface-registry.tsv and
+# check-surface-degenerate-allowlist.tsv (covered by the `workflows/scripts/
+# config/**`-scoped rows elsewhere would be over-broad to duplicate here, so
+# named explicitly), plus EVERY registered surface's own script and test
+# file — a change to any of them can flip this gate's verdict (an anchor
+# moving, a fixture regressing) even though it doesn't touch this gate's own
+# two files. Generous on purpose, per this file's own header.
+bash workflows/scripts/validate-check-surface-degenerate-coverage.sh	workflows/scripts/validate-check-surface-degenerate-coverage.sh workflows/scripts/config/check-surface-registry.tsv workflows/scripts/config/check-surface-degenerate-allowlist.tsv workflows/scripts/lib/cannot-evaluate.sh workflows/scripts/validate-provider-disclosure.sh workflows/scripts/tests/test_validate_provider_disclosure.sh workflows/scripts/validate-model-usage-emit.sh workflows/scripts/tests/test_model_usage_emit.sh workflows/scripts/model-comparison/replay.sh workflows/scripts/model-comparison/tests/test_replay_isolation.sh scripts/quality-gates.sh
+bash workflows/scripts/tests/test_check_surface_degenerate_coverage.sh	workflows/scripts/tests/test_check_surface_degenerate_coverage.sh workflows/scripts/validate-check-surface-degenerate-coverage.sh workflows/scripts/config/check-surface-registry.tsv workflows/scripts/config/check-surface-degenerate-allowlist.tsv
 bash workflows/scripts/validate-model-usage-emit.sh	workflows/scripts/validate-model-usage-emit.sh workflows/scripts/emit-model-usage.sh workflows/scripts/model-comparison/**
 bash workflows/scripts/tests/test_model_usage_emit.sh	workflows/scripts/emit-model-usage.sh workflows/scripts/validate-model-usage-emit.sh workflows/scripts/tests/test_model_usage_emit.sh workflows/scripts/model-comparison/** workflows/scripts/build/build.config.sh workflows/scripts/config/setting-registry.tsv docs/features/telemetry.md docs/features/model-comparison.md scripts/quality-gates.sh workflows/scripts/kernel/kernel-manifest.txt
 bash workflows/scripts/model-comparison/tests/test_replay_isolation.sh	workflows/scripts/model-comparison/tests/test_replay_isolation.sh workflows/scripts/model-comparison/replay.sh workflows/scripts/model-comparison/** workflows/scripts/build/worktree.sh workflows/scripts/build/build.config.sh workflows/scripts/config/setting-registry.tsv workflows/scripts/lib/cannot-evaluate.sh

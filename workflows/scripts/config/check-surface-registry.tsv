@@ -1,0 +1,71 @@
+# check-surface-registry.tsv — the registry validate-check-surface-degenerate-
+# coverage.sh enforces (temperloop#1476, epic #1409 "a check that could not
+# run reports success"). A REGISTRY, not a filename glob (load-bearing — see
+# that script's own header): a row's SURFACE is either a bare script path or
+# a `<script-path>:<subcommand>` pair, so a subcommand of a general
+# orchestration script (replay.sh's `diff-scope`) is reachable even though no
+# `validate-*.sh` glob could ever match it.
+#
+# SEED SET, DELIBERATELY NOT EXHAUSTIVE. This registers the three surfaces
+# epic #1409's own motivating instances named. Dozens of this repo's other
+# `validate-*.sh` scripts are not yet registered at all — that is legal
+# (coverage is opt-in, grows as surfaces are added) and is not itself a gate
+# failure. Widening this registry is future work, tracked nowhere yet.
+#
+# FORMAT — TAB-separated, five columns, one row per (SURFACE, CASE):
+#   1. SURFACE     a script path (repo-relative) or `<script-path>:<subcommand>`
+#   2. CASE        one of: absent, unreadable, empty — the three degenerate-
+#                  input shapes epic #1409's three motivating defects named
+#   3. STATUS      covered | not-applicable
+#   4. TEST_FILE   (STATUS=covered only) repo-relative path to the test file
+#                  carrying the fixture; `-` when STATUS=not-applicable
+#   5. DETAIL      (STATUS=covered) a literal substring `grep -F` must find in
+#                  TEST_FILE — the anchor proving the non-zero-exit assertion
+#                  exists; (STATUS=not-applicable) a mandatory, non-empty,
+#                  human-readable justification for why this case does not
+#                  apply to this surface's own input shape
+#
+# EVERY registered surface needs all three CASE rows (each covered or
+# explicitly not-applicable, never silently omitted) — the gate fails
+# REGISTRY-INCOMPLETE on a missing row. `not-applicable` is not a bare
+# escape: it requires a real, reviewable justification, and every
+# not-applicable claim in this file gets read by whoever reviews the PR that
+# adds it, exactly like any other line in this repo.
+#
+# `covered` rows are STRUCTURAL presence checks (a literal substring is found
+# in the named test file), not a re-execution of the fixture — quality-
+# gates.sh already runs the referenced TEST_FILE itself as its own gate; this
+# registry's job is proving the mapping stays intact, and this gate ALSO
+# checks the TEST_FILE is itself wired into scripts/quality-gates.sh (a
+# fixture nobody runs in CI proves nothing).
+
+# ── validate-provider-disclosure.sh (epic #1409 motivating instance 1: it
+#    printed OK / exit 0 when it could not read its disclosure log) ─────────
+# Dedicated coverage shipped by THIS item (temperloop#1476) — the honest
+# red-before/green-after demonstration surface, since this validator's
+# existing incidental exercise in test_allowlist.sh is that OTHER module's
+# fixture suite (allowlist.sh), not a dedicated suite of this validator's own.
+workflows/scripts/validate-provider-disclosure.sh	absent	covered	workflows/scripts/tests/test_validate_provider_disclosure.sh	an absent committed allowlist: exit 1 (COMMITTED-MISSING), not 0
+workflows/scripts/validate-provider-disclosure.sh	unreadable	covered	workflows/scripts/tests/test_validate_provider_disclosure.sh	an unreadable disclosure log: exit 1 (CANNOT EVALUATE), not 0
+workflows/scripts/validate-provider-disclosure.sh	empty	covered	workflows/scripts/tests/test_validate_provider_disclosure.sh	an empty disclosure log with a non-empty watermark: exit 1 (TRUNCATED), not 0
+
+# ── validate-model-usage-emit.sh (epic #1409 motivating instance 2: it
+#    printed OK / exit 0 on an unreadable directory and on `--file -` with
+#    closed stdin) — ALREADY COMPLIANT. Fixtures shipped when the defect was
+#    fixed, in workflows/scripts/tests/test_model_usage_emit.sh. Registered
+#    here verbatim; that file is NOT edited by this item. ─────────────────
+workflows/scripts/validate-model-usage-emit.sh	absent	covered	workflows/scripts/tests/test_model_usage_emit.sh	an absent scan dir: exit 1 (CANNOT EVALUATE), not 0
+workflows/scripts/validate-model-usage-emit.sh	unreadable	covered	workflows/scripts/tests/test_model_usage_emit.sh	an unreadable raw dir: exit 1 (CANNOT EVALUATE), not 0
+workflows/scripts/validate-model-usage-emit.sh	empty	covered	workflows/scripts/tests/test_model_usage_emit.sh	closed stdin: exit 1 (CANNOT EVALUATE), not 0
+
+# ── workflows/scripts/model-comparison/replay.sh:diff-scope (epic #1409
+#    motivating instance 3: it returned {"status":"eligible"} at exit 0 for
+#    an unresolvable git ref) — ALREADY COMPLIANT for its one applicable
+#    case. Fixture shipped when the defect was fixed, in
+#    workflows/scripts/model-comparison/tests/test_replay_isolation.sh
+#    (test 9). Registered here verbatim; that file is NOT edited by this
+#    item. This is the item's worked example of a SUBCOMMAND registry entry —
+#    exactly the shape a `validate-*.sh` filename glob cannot reach. ────────
+workflows/scripts/model-comparison/replay.sh:diff-scope	absent	covered	workflows/scripts/model-comparison/tests/test_replay_isolation.sh	diff-scope should fail (non-zero) on an unresolvable base/head
+workflows/scripts/model-comparison/replay.sh:diff-scope	unreadable	not-applicable	-	diff-scope's positional inputs are a repo path and two git commit-ish refs, not a file it opens directly — there is no chmod-000 analog for a git ref. The repo-root argument's own accessibility is validated by git itself on every invocation (every fixture in test_replay_isolation.sh runs diff-scope against a real, throwaway git repo), and an inaccessible repo-root surfaces as the same non-zero ERROR path test 9 already pins for an unresolvable ref.
+workflows/scripts/model-comparison/replay.sh:diff-scope	empty	not-applicable	-	diff-scope has no required file-shaped input that can be "empty" the way a log or record file can. Its one optional file argument, --issue-text-file, is documented as legal-when-absent (falls back to the no-named-files classification per replay.sh's own header); an empty issue-text-file degrades to that identical, already-legal classification rather than opening a new failure mode worth a dedicated fixture.

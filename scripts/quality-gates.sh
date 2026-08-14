@@ -697,6 +697,35 @@ KERNEL_GATES=(
   # at all, and let eight mutations of the very guarantees it claimed to
   # cover survive untouched.
   "bash workflows/scripts/model-comparison/tests/test_allowlist.sh"
+  # Dedicated degenerate-input fixture suite for validate-provider-
+  # disclosure.sh (temperloop#1476, epic #1409 "a check that could not run
+  # reports success") — absent committed allowlist (COMMITTED-MISSING),
+  # unreadable disclosure log (CANNOT EVALUATE — epic #1409's motivating
+  # instance 1, reproduced directly), and an emptied-in-place log whose
+  # watermark still records entries (TRUNCATED). Distinct from
+  # test_allowlist.sh immediately above (that suite's job is allowlist.sh,
+  # the library) — this is the validator's own named home, referenced by
+  # workflows/scripts/config/check-surface-registry.tsv. Same direct-`bash`
+  # form as the sibling model-comparison test gates.
+  "bash workflows/scripts/tests/test_validate_provider_disclosure.sh"
+  # The "a check that could not run reports success" gate itself
+  # (temperloop#1476, epic #1409): validate-check-surface-degenerate-
+  # coverage.sh enforces that every REGISTERED check surface
+  # (workflows/scripts/config/check-surface-registry.tsv — a registry, not a
+  # filename glob, so a SUBCOMMAND like replay.sh's `diff-scope` is
+  # reachable) ships a fixture proving a non-zero exit on absent/unreadable/
+  # empty input, or is named on the shrink-only
+  # check-surface-degenerate-allowlist.tsv ratchet. Direct `bash` form, no
+  # Makefile target, matching the validate-provider-disclosure.sh gate
+  # above.
+  "bash workflows/scripts/validate-check-surface-degenerate-coverage.sh"
+  # ...and its own fixture suite — same "both halves are registered" shape
+  # as validate-feature-docs.sh / validate-provider-disclosure.sh above:
+  # discrimination proofs (delete a registered fixture's anchor, watch this
+  # gate go red naming the surface+case, restore, watch it go green),
+  # allowlist-growth detection against a throwaway git fixture, and the
+  # CANNOT-EVALUATE fail-closed paths.
+  "bash workflows/scripts/tests/test_check_surface_degenerate_coverage.sh"
   # Replay corpus selection + isolated replay worktree (temperloop#1254,
   # epic #1225 "model comparison harness"): replay.sh selects eligible
   # closed-issue + merged-PR pairs from this repo's own history (real `gh`
