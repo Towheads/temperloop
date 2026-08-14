@@ -269,6 +269,20 @@ jobs:
           git clone "https://github.com/$DEMO_REPO.git" "$RUNNER_TEMP/demo-repo"
           echo "DEMO_DIR=$RUNNER_TEMP/demo-repo" >> "$GITHUB_ENV"
 
+      # WHY (temperloop#1443): an Actions runner ships with NO git
+      # user.name/user.email, and the `init` leg below commits — its
+      # proposal-PR generator (workflows/scripts/proposal/proposal-pr.sh)
+      # commits the proposed tree before pushing it. Without an identity that
+      # commit dies with "Author identity unknown / fatal: empty ident name"
+      # and the round trip can never go green. The standard Actions bot
+      # identity is right here: these commits are the workflow's, not a
+      # person's. Must precede the `init` step (it is `--global`, so it
+      # covers the demo checkout cloned above and any other).
+      - name: Configure a git identity for the round trip
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+
       # --- The real round trip: init -> eject -------------------------------
       #
       # `temperloop init` is deliberately fail-open at the shell-exit-code

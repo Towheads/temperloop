@@ -27,6 +27,10 @@
 #     anywhere in the proposal diff), empty content still lands 0-byte, and a
 #     base already carrying the newline-terminated file re-reads as NO_CHANGES
 #     rather than a spurious one-byte diff
+#   - git-identity preflight (temperloop#1443): with no resolvable identity the
+#     run is refused BEFORE the branch is cut, with a remedy naming both
+#     `git config --global` commands and never inventing an identity; an
+#     env-supplied identity still passes
 #   - EXISTS outcome when gh reports a PR already exists (mirrors pr.sh)
 #   - PR body: caller body + generator-owned "## Files changed" + footer
 #   - --repo-dir not a git repo -> ERROR
@@ -389,6 +393,85 @@ out="$(bash "$SCRIPT" open --repo-dir "$NLREPO" --branch feat/nl-retry --title x
 [ "$(jq -r .outcome <<<"$out")" = "NO_CHANGES" ] \
   || fail "an already-newline-terminated base did not yield NO_CHANGES — the write manufactured a spurious diff (got: $out)"
 echo "PASS: a base already carrying the newline-terminated files re-reads as NO_CHANGES (no spurious trailing-newline diff)"
+
+# =============================================================================
+# GIT-IDENTITY PREFLIGHT (temperloop#1443)
+#
+# The generator commits, and a fresh GitHub Actions runner has no git
+# user.name/user.email — so `init`'s proposal leg died with a raw "Author
+# identity unknown / fatal: empty ident name" AFTER the branch was cut. The
+# preflight must refuse first, and refuse LEGIBLY.
+#
+# Its own fixture repo + its own identity-less environment: HOME is
+# redirected (no ~/.gitconfig), the system config is switched off, the
+# suite's GIT_AUTHOR_*/GIT_COMMITTER_* exports are unset for the call, and
+# `user.useConfigOnly` disables git's gecos/hostname auto-detection — which
+# together is exactly the runner's state, portably (a dev machine's gecos
+# name would otherwise let git synthesise one and the case would not fire).
+# =============================================================================
+git init -q --bare --initial-branch=main "$TMP/upstream-id.git"
+git clone -q "$TMP/upstream-id.git" "$TMP/repo-id" 2>/dev/null
+git -C "$TMP/repo-id" commit -q --allow-empty -m init
+git -C "$TMP/repo-id" push -q origin main 2>/dev/null
+git -C "$TMP/repo-id" fetch -q origin
+IDREPO="$(cd "$TMP/repo-id" && pwd -P)"
+git -C "$IDREPO" config user.useConfigOnly true
+mkdir -p "$TMP/nohome"
+
+noident() {
+  env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL \
+      -u GIT_COMMITTER_NAME -u GIT_COMMITTER_EMAIL \
+      HOME="$TMP/nohome" XDG_CONFIG_HOME="$TMP/nohome/.config" \
+      GIT_CONFIG_NOSYSTEM=1 "$@"
+}
+# Precondition: this environment really has no identity git would commit with.
+noident git -C "$IDREPO" var GIT_AUTHOR_IDENT >/dev/null 2>&1 \
+  && fail "fixture is not identity-less — the preflight case would not exercise anything" || true
+
+manifest_of ".temperloop/config:ident=1" > "$TMP/m-ident.json"
+rc=0
+out="$(noident bash "$SCRIPT" open --repo-dir "$IDREPO" --branch feat/no-ident \
+  --title x --body y --files-manifest "$TMP/m-ident.json" --base main --dry-run \
+  2>"$TMP/ident-stderr")" || rc=$?
+[ "$rc" -ne 0 ] || fail "an identity-less run was not refused (got: $out)"
+[ "$(jq -r .outcome <<<"$out")" = "ERROR" ] \
+  || fail "identity preflight not a structured ERROR (got: $out)"
+
+# The remedy names BOTH commands, verbatim and runnable — not a raw git error.
+err="$(jq -r .error <<<"$out")"
+remedy="$err
+$(cat "$TMP/ident-stderr")"
+grep -qF 'git config --global user.name' <<<"$remedy" \
+  || fail "identity refusal does not name 'git config --global user.name' (error: $err)"
+grep -qF 'git config --global user.email' <<<"$remedy" \
+  || fail "identity refusal does not name 'git config --global user.email' (error: $err)"
+grep -qF 'empty ident name' <<<"$remedy" \
+  && fail "identity refusal leaked the raw git error instead of the remedy (got: $remedy)" || true
+# ...and the remedy is readable WITHOUT decoding JSON (init.sh pretty-prints
+# the outcome; the human-readable copy has to reach the log on its own).
+grep -qF 'git config --global user.email' "$TMP/ident-stderr" \
+  || fail "the remedy never reached stderr — a caller that only pretty-prints the JSON shows no fix"
+
+# Refused BEFORE any mutation, and no identity was invented on the operator's
+# behalf: no proposal branch, no commit, HEAD still on the base.
+if git -C "$IDREPO" show-ref --verify --quiet refs/heads/feat/no-ident; then
+  fail "the identity-less run still cut the proposal branch — the preflight ran AFTER the checkout, not before"
+fi
+[ "$(git -C "$IDREPO" rev-parse --abbrev-ref HEAD)" = "main" ] \
+  || fail "the identity-less run moved HEAD off the base branch"
+[ "$(git -C "$IDREPO" rev-list --count HEAD)" = "1" ] \
+  || fail "the identity-less run authored a commit — it must never invent an identity"
+echo "PASS: no resolvable git identity -> structured ERROR + both 'git config --global' remedy commands, before any branch is cut"
+
+# The guard is not "reject everything": an identity supplied the OTHER way git
+# accepts (GIT_AUTHOR_*/GIT_COMMITTER_* env vars, no config at all) still runs.
+out="$(noident env GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@test \
+  GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@test \
+  bash "$SCRIPT" open --repo-dir "$IDREPO" --branch feat/env-ident \
+  --title x --body y --files-manifest "$TMP/m-ident.json" --base main --dry-run)"
+[ "$(jq -r .outcome <<<"$out")" = "DRY_RUN" ] \
+  || fail "an env-supplied identity was refused by the preflight (got: $out)"
+echo "PASS: an env-supplied (GIT_AUTHOR_*/GIT_COMMITTER_*) identity still passes the preflight"
 
 # --- error: --repo-dir not a git repo ---------------------------------------
 mkdir -p "$TMP/notgit"
