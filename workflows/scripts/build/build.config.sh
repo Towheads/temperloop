@@ -156,6 +156,13 @@ fi
 # structurally-overlapping set is untouched and still takes the modal Step-4
 # gate at the level boundary. Level boundaries remain a dependency barrier for
 # STARTING the next level either way.
+# PATH SCOPE (temperloop#1452): Step 3h.5 runs on /build's `--no-workflow`
+# CONVERSATIONAL path only, so this setting is read there and is INERT on the
+# default Workflow path — build-level.mjs neither merges nor writes the plan
+# note, and returns only at the level boundary, so it cannot be 3h.5's actor.
+# A default-path run batches every item to the Step-4 gate regardless of this
+# value; that is a documented accepted trade-off, not a bug to work around by
+# flipping this setting.
 # Measured motivation (2026-08-02): three PRs opened together took 68/69/145
 # min open-to-merge against 10-33 min for solo PRs — level batching converts
 # within-level parallelism into a merge-queue pileup.

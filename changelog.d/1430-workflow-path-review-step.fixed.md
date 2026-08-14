@@ -18,5 +18,6 @@
   coverage going forward. §3e also now records why this review runs *inside*
   the workflow rather than the conversational orchestrator: the
   orchestrator↔workflow boundary is irreversible-action-plus-single-writer, and
-  by the time the workflow returns, 3h has removed the worktree and 3h.5 may
-  already have merged the PR.
+  by the time the workflow returns, the item is already pushed with its PR open
+  and the orchestrator's post-return partition removes the worktree a review
+  would need to inspect.

@@ -2,7 +2,9 @@
 #
 # build merge-gate mechanics — the deterministic-machinery script that owns the
 # 4a/4b/4c merge-gate steps of /build — and, over a one-PR set, its per-item
-# 3h.5 as-you-go merge (temperloop#1026) — (epic #253, spike #245). Reading a
+# 3h.5 as-you-go merge (temperloop#1026; that step runs on /build's
+# `--no-workflow` conversational path only — temperloop#1452 — so this script's
+# one-PR mode has a caller only there) — (epic #253, spike #245). Reading a
 # PR's mergeability/liveness, detecting strict-main, computing the mechanical
 # risk verdict over a selected PR set, queuing an --auto merge, nudging a
 # still-BEHIND branch, and polling until MERGED are all pure functions of
