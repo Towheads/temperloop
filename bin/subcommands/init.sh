@@ -173,7 +173,14 @@
 #     for a design-brief marker (accept already happened) or a decline
 #     marker (decline already happened + its re-offer pointer was filed)
 #     before ever offering — a re-run of this script neither re-files the
-#     epic nor re-nags after a decline.
+#     epic nor re-nags after a decline. The probe is THREE-VALUED
+#     (temperloop#1444): already-filed / not-filed / UNKNOWN. Its queries
+#     carry the now-mandatory `is:issue` qualifier, and its result is
+#     validated digits-only before it is ever treated as an issue number —
+#     `gh` prints its error body to STDOUT, so an unvalidated fail-open let
+#     a 422 blob read as "already filed as #<blob>". A probe that cannot
+#     answer degrades to UNKNOWN, which WITHHOLDS the offer with a legible
+#     notice; it never claims the epic is already filed.
 #   - Skip vs. decline are DELIBERATELY DISTINCT outcomes. A non-interactive
 #     run (no TTY, or a CI/GITHUB_ACTIONS ambient signal, and no
 #     --yes-first-epic/--no-first-epic preset) SKIPS with a plain notice —
@@ -797,14 +804,69 @@ else
     # a prior accept already filed the epic (design-brief marker), or a
     # prior decline already filed the durable re-offer pointer (decline
     # marker). Either hit means: never re-offer.
-    first_epic_existing_num="$("$INIT_GH_BIN" api -X GET search/issues \
-      -f q="repo:$gh_repo in:body \"$first_epic_marker\"" \
-      --jq '.items[0].number // empty' 2>/dev/null || true)"
+    #
+    # THREE-VALUED, deliberately (temperloop#1444): "already filed",
+    # "not filed", and UNKNOWN. The probe used to be two-valued and got
+    # both halves wrong at once:
+    #
+    #   1. `is:issue` is now REQUIRED. GitHub's search/issues endpoint
+    #      422s on a query carrying neither `is:issue` nor
+    #      `is:pull-request`. That is external API drift — no commit in
+    #      this repo caused it — which is exactly why the fix cannot stop
+    #      at the qualifier.
+    #   2. `gh` writes its ERROR BODY to STDOUT. So the old fail-open
+    #      (`2>/dev/null || true`) handed the raw 422 JSON blob back as
+    #      the "issue number": non-empty, therefore reported as
+    #      `already filed as #{"message":…}` and passed straight into
+    #      _init_set_handoff, corrupting the handoff too. ANY probe error
+    #      — rate limit, network blip, auth scope, outage — silently read
+    #      as "already filed, skip".
+    #
+    # So the captured value is VALIDATED as digits-only before it is ever
+    # treated as an issue number, and a probe that errors (or returns
+    # anything non-numeric) is recorded as UNKNOWN rather than folded into
+    # "no". The validation is the durable half: it makes the probe robust
+    # to the NEXT external change, not just this one.
+    #
+    # Sets $first_epic_probe_num (digits, or empty) and
+    # $first_epic_probe_failed (non-empty = UNKNOWN).
+    _init_first_epic_probe() {
+      first_epic_probe_num=""
+      first_epic_probe_failed=""
+      first_epic_probe_num="$("$INIT_GH_BIN" api -X GET search/issues \
+        -f q="repo:$gh_repo is:issue in:body \"$1\"" \
+        --jq '.items[0].number // empty' 2>/dev/null)" \
+        || first_epic_probe_failed=1
+      case "$first_epic_probe_num" in
+        '') ;;
+        *[!0-9]*)
+          first_epic_probe_num=""
+          first_epic_probe_failed=1
+          ;;
+      esac
+      if [ -n "$first_epic_probe_failed" ]; then
+        first_epic_probe_num=""
+      fi
+    }
+
+    _init_first_epic_probe "$first_epic_marker"
+    first_epic_existing_num="$first_epic_probe_num"
+    first_epic_probe_unknown="$first_epic_probe_failed"
     first_epic_existing_pointer=""
-    if [ -z "$first_epic_existing_num" ]; then
-      first_epic_existing_pointer="$("$INIT_GH_BIN" api -X GET search/issues \
-        -f q="repo:$gh_repo in:body \"$first_epic_decline_marker\"" \
-        --jq '.items[0].number // empty' 2>/dev/null || true)"
+    if [ -z "$first_epic_existing_num" ] && [ -z "$first_epic_probe_unknown" ]; then
+      _init_first_epic_probe "$first_epic_decline_marker"
+      first_epic_existing_pointer="$first_epic_probe_num"
+      first_epic_probe_unknown="$first_epic_probe_failed"
+    fi
+
+    # NEVER a silent skip (kernel § Subagent usage / legible degradation).
+    # This notice states the FACT — the probe could not answer — and the
+    # arm below states the DISPOSITION, so neither line has to guess at
+    # the other's job. Deliberately worded without the token `FAILED`:
+    # .github/workflows/install-tier2.yml treats that marker as fatal, and
+    # an unanswerable probe is a degrade, not a failed action.
+    if [ -n "$first_epic_probe_unknown" ]; then
+      echo "first-epic: idempotency probe unavailable — the search/issues probe errored or returned a non-numeric result, so whether the epic is already filed is UNKNOWN (never assumed 'already filed')"
     fi
 
     if [ -n "$first_epic_existing_num" ]; then
@@ -815,6 +877,23 @@ else
       handoff_next="the substrate is still unconfigured and tracked by #$first_epic_existing_pointer. Re-run \`temperloop init\` with --yes-first-epic (or open the epic by hand from claude/templates/first-epic-setup.md) when you want it."
     elif [ -z "$consent_first_epic" ] && ! _init_first_epic_attended; then
       echo "first-epic: skipped — no interactive operator detected (no TTY, or an unattended/CI signal is set); point-of-use principle defaults and the managed-merge floor still apply with zero configuration — pass --yes-first-epic/--no-first-epic to decide non-interactively"
+      handoff_next="$handoff_unoffered"
+    elif [ -n "$first_epic_probe_unknown" ]; then
+      # UNKNOWN state, ranked AFTER the ambient-CI arm on purpose: an
+      # unattended run has a truer, more specific reason to skip (there is
+      # nobody to ask), so it should not be reported as a probe outage.
+      # Reached only when an operator IS present (or consented) and we
+      # still cannot tell whether the epic exists: withhold, because
+      # filing a duplicate epic is the one outcome the probe exists to
+      # prevent.
+      #
+      # This arm prints a SECOND '^first-epic: ' line (the notice above
+      # states the fact, this one the disposition).
+      # .github/workflows/install-tier2.yml's init leg accounts for that:
+      # it reads the LAST such line as the disposition rather than
+      # requiring exactly one, so a transient search outage degrades
+      # legibly instead of failing a release gate.
+      echo "first-epic: skipped — idempotency state unknown (see the probe notice above), so the offer is withheld rather than risk filing a duplicate epic; re-run \`temperloop init\` once \`gh\` is healthy, or open the epic by hand from claude/templates/first-epic-setup.md"
       handoff_next="$handoff_unoffered"
     else
       first_epic_decision="$consent_first_epic"

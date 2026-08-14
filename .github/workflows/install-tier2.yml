@@ -322,7 +322,59 @@ jobs:
             echo "::error::install-tier2: 'temperloop init' never printed its handoff ('next step: …') — the run did not reach the end of its contract. See the init.log artifact."
             exit 1
           fi
-          echo "init: OK — config bootstrapped, proposal PR opened, handoff printed (first-epic offer deliberately un-requested, see file header):"
+          # The first-epic offer must be disposed by a LEGITIMATE arm, and the
+          # corrupted disposition temperloop#1444 shipped must be impossible.
+          # That bug printed `already filed as #{"message":…,"status":"422"}` —
+          # gh's error BODY, on stdout, mistaken for an issue number — so ANY
+          # probe error read as "already filed, skip". The invariant asserted
+          # here is therefore: exactly one first-epic line, it is one of the
+          # known-good forms, and if it is the already-filed form its number is
+          # DIGITS. A bare "did it skip?" check cannot tell a real skip from
+          # that bug; this can, without depending on external state.
+          #
+          # Deliberately NOT asserting the ambient-CI arm specifically
+          # ('skipped — no interactive operator detected'). That arm is only
+          # reachable while the demo repo has no first epic filed, so pinning
+          # it would make this release gate hostage to demo-repo issue state —
+          # one `temperloop init --yes-first-epic` run against that repo (a
+          # legitimate manual test) would turn a release red for a reason
+          # unrelated to the release. The demo repo does NOT currently meet
+          # that precondition: Towheads/temperloop-demo#25 and #26 both carry
+          # the design-brief marker, so today init legitimately reports
+          # "already filed as #26". Restoring that baseline — and the finding
+          # that mangling a marker prefix does NOT defeat GitHub's phrase
+          # search (tried in temperloop#797 on #25, which still matches) — is
+          # tracked separately; the ambient-CI arm stays unexercised here
+          # until then, which is a known gap, not a silent one.
+          # The LAST '^first-epic: ' line is the disposition. It can be preceded
+          # by the probe-unavailable NOTICE line (init.sh prints the fact, then
+          # the disposition), so this deliberately does not require exactly one
+          # line — a transient search outage must not fail a release gate.
+          fe="$(grep '^first-epic: ' "$RUNNER_TEMP/init.log" | tail -n 1 || true)"
+          fe_ok=""
+          case "$fe" in
+            'first-epic: skipped'*) fe_ok=1 ;;
+            'first-epic: previously declined'*) fe_ok=1 ;;
+            'first-epic: filed '*) fe_ok=1 ;;
+            'first-epic: already filed as #'*)
+              # Everything between '#' and the next space must be digits. This
+              # is the temperloop#1444 guard: that bug put gh's 422 error body
+              # here, whose first token ('{"message":"Query') is not digits.
+              fe_num="${fe#first-epic: already filed as #}"
+              fe_num="${fe_num%% *}"
+              case "$fe_num" in
+                ''|*[!0-9]*) fe_ok="" ;;
+                *) fe_ok=1 ;;
+              esac
+              ;;
+          esac
+          if [ -z "$fe" ] || [ -z "$fe_ok" ]; then
+            echo "::error::install-tier2: 'temperloop init' did not dispose its first-epic offer through a legitimate arm (expected a final '^first-epic: ' line of a known-good form, with a DIGITS-only number on the already-filed form — the temperloop#1444 corruption printed gh's 422 error body there). See the init.log artifact and the line(s) below:"
+            grep '^first-epic: ' "$RUNNER_TEMP/init.log" || true
+            exit 1
+          fi
+          echo "init: OK — config bootstrapped, proposal PR opened, first-epic offer disposed through a legitimate arm, handoff printed:"
+          grep '^first-epic: ' "$RUNNER_TEMP/init.log" || true
           grep '^next step: ' "$RUNNER_TEMP/init.log"
 
       # The manifest `eject` reverts holds exactly one entry on a healthy run:
