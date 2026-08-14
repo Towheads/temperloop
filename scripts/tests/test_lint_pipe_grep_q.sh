@@ -258,13 +258,41 @@ else
   fail "T4-overlay: detection did NOT flag the synthetic fixture — T4 would fail there instead of emitting a named skip"
 fi
 
-if this_reason="$(_composed_overlay_reason "$ROOT")"; then
-  fail "T4-overlay: detection incorrectly flagged THIS kernel-native checkout ($ROOT) as a composed overlay ($this_reason) — T4's real coverage checks would wrongly skip"
+# The NEGATIVE control must be a fixture, not $ROOT. An earlier revision
+# asserted "$ROOT is not a composed overlay" — true in this repo, FALSE in
+# every vendoring consumer, so the suite failed for a consumer whose tree the
+# detection had correctly flagged. That is the very class temperloop#1505
+# fixed, reintroduced one check below the fix. So: build a synthetic
+# KERNEL-NATIVE tree (real dirs, no kernel/ subtree, no overlay marker) and
+# assert detection leaves IT unflagged. Both directions are then proven by
+# fixtures and the result no longer depends on where the suite is run from.
+SYNTH_NATIVE="$(mktemp -d "${TMPDIR:-/tmp}/lint-t4-native.XXXXXX")"
+(
+  set -e
+  mkdir -p "$SYNTH_NATIVE/bin" "$SYNTH_NATIVE/claude" "$SYNTH_NATIVE/scripts"
+  printf '#!/usr/bin/env bash\necho ok\n' > "$SYNTH_NATIVE/bin/temperloop"
+  chmod +x "$SYNTH_NATIVE/bin/temperloop"
+  : > "$SYNTH_NATIVE/claude/CLAUDE.kernel.md"
+  git -C "$SYNTH_NATIVE" init -q
+  git -C "$SYNTH_NATIVE" add -A
+  git -c user.name=test -c user.email=test@test -C "$SYNTH_NATIVE" commit -q -m synth-native
+)
+if native_reason="$(_composed_overlay_reason "$SYNTH_NATIVE")"; then
+  fail "T4-overlay: detection wrongly flagged a synthetic KERNEL-NATIVE tree ($native_reason) — T4's real coverage checks would skip where they must run"
 else
-  pass "T4-overlay: detection correctly leaves this kernel-native checkout ($ROOT) unflagged — T4's coverage checks above ran for real"
+  pass "T4-overlay: detection correctly leaves a synthetic kernel-native tree unflagged — T4 still runs for real where it belongs"
 fi
 
-rm -rf "$SYNTH"
+# Report which arm THIS checkout is, for legibility. Both are correct; this is
+# an observation, never an assertion, precisely so the suite passes identically
+# on the kernel repo and on a vendoring consumer.
+if this_reason="$(_composed_overlay_reason "$ROOT")"; then
+  echo "  note: this checkout is a composed overlay ($this_reason) — T4 above emitted its named skip, as designed"
+else
+  echo "  note: this checkout is kernel-native — T4 above ran its coverage checks for real"
+fi
+
+rm -rf "$SYNTH" "$SYNTH_NATIVE"
 
 # ---------------------------------------------------------------------------
 # T5 — self-exemption. The lint and this test necessarily carry the shape as
