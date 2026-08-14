@@ -781,9 +781,10 @@ const PRINCIPLES_DEFAULT_REPO = input.principlesDefaultRepo || '';
 
 // PRINCIPLES_KERNEL_FALLBACK — last-resort degradation, used ONLY when the
 // orchestrator supplied no `principlesSummaries` at all this run (an older
-// orchestrator, or a `sweep.md`/`fix.md` caller — both share this file's
-// `workerPrompt()` but do not yet resolve/pass this hand-off; #1432 scopes
-// `/build` only). A static snapshot of `claude/engineering-principles.md`'s
+// orchestrator, or a consuming-repo caller that has not wired the hand-off —
+// all three first-party callers of this file's shared `workerPrompt()`,
+// build.md/sweep.md/fix.md, resolve and pass it; #1432 wired /build,
+// temperloop#1460 wired the other two). A static snapshot of `claude/engineering-principles.md`'s
 // kernel-only principle NAMES — this runtime cannot read that file itself to
 // stay current, so a worker on the fallback path gets a legible floor (never
 // a silently empty set, which from the outside would look identical to
@@ -939,7 +940,8 @@ function stepBoundInvoke(name, kind) {
 // the WORKTREE checkout (see 3e.5, temperloop#626), never via this fallback.
 function machineryBin(repoRoot, name) {
   // De-obfuscated fast path (temperloop#72). When the orchestrator has already
-  // resolved the build-machinery directory in its OWN shell (build.md Step 0) and
+  // resolved the build-machinery directory in its OWN shell (build.md Step 0, and
+  // sweep.md/fix.md Step 0 as of temperloop#1460 — all three callers pass it) and
   // passed it as input.machineryBinDir, emit a PLAIN quoted absolute path. The
   // executed machinery command line then carries NO nested `$(readlink …)`
   // command-substitution — the very construct the auto-mode safety classifier
@@ -1343,8 +1345,9 @@ function principlesSection(item) {
     lines.push(
       '',
       'DEGRADED — no orchestrator-resolved principle set reached this worker this run',
-      '(`principlesSummaries` was absent, e.g. a `/sweep` or `/fix` caller that has not',
-      "wired build.md's Step 1.8 hand-off yet). The list above is a STATIC KERNEL-ONLY",
+      '(`principlesSummaries` was absent — an older orchestrator, or a consuming-repo',
+      "caller that has not wired build.md's Step 1.8 hand-off; /build, /sweep and /fix",
+      'all resolve and pass it). The list above is a STATIC KERNEL-ONLY',
       'snapshot — this runtime has no filesystem to read',
       '`claude/engineering-principles.md` itself — with NO project `## Principles`',
       'extension applied. Treat it as a floor, never as confirmation the project slot',

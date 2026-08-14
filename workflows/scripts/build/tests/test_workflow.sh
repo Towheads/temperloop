@@ -2159,6 +2159,38 @@ done
 unset _md _p _cfg
 echo "PASS: #1021 gate-budget guard — named setting, bounded slice loop, timeout/fail split, all three callers wired"
 
+# --- temperloop#1460: the SAME three-caller invariant, for the two hand-offs
+# build.md passed alone while sweep.md/fix.md silently omitted them. Both ride
+# the identical Step-0 seam as gateSliceSecs above, and both DEGRADE SILENTLY
+# when a caller drops them — which is exactly why they need a mechanical guard
+# rather than review:
+#   (a) machineryBinDir — omitting it makes machineryBin() fall back to the
+#       nested $(dirname "$(readlink -f …)") command-substitution the auto-mode
+#       classifier denied as an obfuscated-command bypass on --unattended runs
+#       (temperloop#72). /sweep's DEFAULT posture is --unattended, so the
+#       omission produced recurring machinery-denied bursts on every push step.
+#   (b) principlesSummaries / principlesDefaultRepo — omitting them pins that
+#       caller's workers on workerPrompt()'s static kernel-only DEGRADED
+#       fallback permanently (PR #1439), with no project § Principles applied.
+# Guard the resolution site (the plain cd+pwd form / the Step 1.8 reference)
+# AND the args hand-off, per caller — a spec that names the value but never
+# passes it is the half-wired shape this item found.
+for _md in build fix sweep; do
+  _p="$(cd "$(dirname "${BASH_SOURCE[0]}")" && cd ../../../.. && pwd)/claude/commands/$_md.md"
+  grep -q 'machineryBinDir' "$_p" \
+    || fail "#1460: $_md.md must pass machineryBinDir in its build-level.mjs args (every caller wires it — omitting it re-arms the temperloop#72 classifier denial)"
+  grep -qF 'cd workflows/scripts/build 2>/dev/null && pwd' "$_p" \
+    || fail "#1460: $_md.md Step 0 must resolve machineryBinDir with the plain cd+pwd form (a nested readlink substitution here is the very shape #72 denied)"
+  grep -q 'principlesSummaries' "$_p" \
+    || fail "#1460: $_md.md must pass principlesSummaries in its build-level.mjs args (omitting it pins that caller's workers on the DEGRADED kernel-only fallback)"
+  grep -q 'principlesDefaultRepo' "$_p" \
+    || fail "#1460: $_md.md must pass principlesDefaultRepo alongside principlesSummaries (the lookup key workerPrompt() falls back to)"
+  grep -q 'Step 1.8' "$_p" \
+    || fail "#1460: $_md.md must reference build.md § Step 1.8 as the single principle-resolution implementation (pointer, never a re-derivation)"
+done
+unset _md _p
+echo "PASS: #1460 machineryBinDir + principles hand-off guard — all three callers resolve and pass both"
+
 # ============================================================================
 # TEST (K712): worker background-gate stall — prevention + cure
 #   The worker prompt MUST embed the FOREGROUND-ONLY contract (prevention), and
@@ -3962,7 +3994,8 @@ else if (!w.promptFull.includes('Home Principle')) reason = 'an item whose own r
 else if (w.promptFull.includes('DEGRADED')) reason = 'falling back to the default pair is NOT the degraded path — principlesSummaries WAS supplied this run';
 if (reason) { console.log(JSON.stringify({ ok: false, reason })); process.exit(0); }
 
-// Pass 4: principlesSummaries entirely OMITTED (e.g. sweep.md/fix.md today) —
+// Pass 4: principlesSummaries entirely OMITTED (an older orchestrator or a
+// consuming-repo caller — all three first-party callers pass it, temperloop#1460) —
 // worker still gets a bounded, legible list: the static kernel-only fallback
 // PLUS an explicit DEGRADED notice, never a silent empty set.
 callLog.length = 0;
