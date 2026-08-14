@@ -212,6 +212,21 @@ bash workflows/scripts/tests/test_validate_provider_disclosure.sh	workflows/scri
 # two files. Generous on purpose, per this file's own header.
 bash workflows/scripts/validate-check-surface-degenerate-coverage.sh	workflows/scripts/validate-check-surface-degenerate-coverage.sh workflows/scripts/config/check-surface-registry.tsv workflows/scripts/config/check-surface-degenerate-allowlist.tsv workflows/scripts/lib/cannot-evaluate.sh workflows/scripts/validate-provider-disclosure.sh workflows/scripts/tests/test_validate_provider_disclosure.sh workflows/scripts/validate-model-usage-emit.sh workflows/scripts/tests/test_model_usage_emit.sh workflows/scripts/model-comparison/replay.sh workflows/scripts/model-comparison/tests/test_replay_isolation.sh scripts/quality-gates.sh
 bash workflows/scripts/tests/test_check_surface_degenerate_coverage.sh	workflows/scripts/tests/test_check_surface_degenerate_coverage.sh workflows/scripts/validate-check-surface-degenerate-coverage.sh workflows/scripts/config/check-surface-registry.tsv workflows/scripts/config/check-surface-degenerate-allowlist.tsv
+
+# Gate the dropped executable bit (temperloop#1326, epic #1415) and its own
+# fixture suite. The gate reads its two config files (registry + shrink-only
+# grandfather allowlist) and checks the current permission bits of every
+# REGISTERED path — the seed registry is this repo's `workflows/scripts/
+# validate-*.sh` family, so a MODE-ONLY change to any of them (the exact
+# defect class this gate exists to catch — a dropped bit with no content
+# change) must reach this gate on a scoped run, not just a content change.
+# `git diff --name-only` reports a mode-only change like any other, so the
+# wildcard below is sufficient; it is deliberately broad, matching this
+# file's own "generous on purpose" convention (see the check-surface-
+# degenerate-coverage rows immediately above for the identical shape).
+bash workflows/scripts/validate-exec-bit-registry.sh	workflows/scripts/validate-exec-bit-registry.sh workflows/scripts/config/exec-bit-registry.tsv workflows/scripts/config/exec-bit-grandfather-allowlist.tsv workflows/scripts/lib/cannot-evaluate.sh workflows/scripts/validate-*.sh
+bash workflows/scripts/tests/test_exec_bit_registry.sh	workflows/scripts/tests/test_exec_bit_registry.sh workflows/scripts/validate-exec-bit-registry.sh workflows/scripts/config/exec-bit-registry.tsv workflows/scripts/config/exec-bit-grandfather-allowlist.tsv workflows/scripts/lib/cannot-evaluate.sh
+
 bash workflows/scripts/validate-model-usage-emit.sh	workflows/scripts/validate-model-usage-emit.sh workflows/scripts/emit-model-usage.sh workflows/scripts/model-comparison/**
 bash workflows/scripts/tests/test_model_usage_emit.sh	workflows/scripts/emit-model-usage.sh workflows/scripts/validate-model-usage-emit.sh workflows/scripts/tests/test_model_usage_emit.sh workflows/scripts/model-comparison/** workflows/scripts/build/build.config.sh workflows/scripts/config/setting-registry.tsv docs/features/telemetry.md docs/features/model-comparison.md scripts/quality-gates.sh workflows/scripts/kernel/kernel-manifest.txt
 bash workflows/scripts/model-comparison/tests/test_replay_isolation.sh	workflows/scripts/model-comparison/tests/test_replay_isolation.sh workflows/scripts/model-comparison/replay.sh workflows/scripts/model-comparison/** workflows/scripts/build/worktree.sh workflows/scripts/build/build.config.sh workflows/scripts/config/setting-registry.tsv workflows/scripts/lib/cannot-evaluate.sh

@@ -408,6 +408,8 @@ quality-gates workflows/scripts/tests/test_validate_feature_docs.sh
 # files (directly under workflows/scripts/ and workflows/scripts/tests/)
 # need their own exact-path claim.
 quality-gates workflows/scripts/validate-check-surface-degenerate-coverage.sh
+quality-gates workflows/scripts/validate-exec-bit-registry.sh
+quality-gates workflows/scripts/tests/test_exec_bit_registry.sh
 quality-gates workflows/scripts/tests/test_check_surface_degenerate_coverage.sh
 quality-gates workflows/scripts/validate-design-brief.sh
 quality-gates workflows/scripts/tests/test_validate_design_brief.sh

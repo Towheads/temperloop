@@ -442,6 +442,7 @@ kernel workflows/scripts/validate-provider-disclosure.sh
 # glob since it lives directly under workflows/scripts/, one level above
 # both the tests/ and config/ globs.
 kernel workflows/scripts/validate-check-surface-degenerate-coverage.sh
+kernel workflows/scripts/validate-exec-bit-registry.sh
 # model-usage attribution-stream emit + its content-level validator
 # (temperloop#1253, epic #1225, ADR 0026/0028) — a stranger's kernel checkout
 # needs both to work against its own repo, exactly like the sibling

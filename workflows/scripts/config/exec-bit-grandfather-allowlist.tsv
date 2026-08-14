@@ -1,0 +1,30 @@
+# exec-bit-grandfather-allowlist.tsv — the SHRINK-ONLY ratchet of registered-
+# but-not-yet-compliant executable-bit scripts (temperloop#1326, epic #1415).
+# Enforced by workflows/scripts/validate-exec-bit-registry.sh: the gate FAILS
+# if a path appears here that was not already present at
+# EXEC_BIT_ALLOWLIST_BASE_REF (default origin/main) — see that script's own
+# ratchet section for the exact mechanics, mirroring workflows/scripts/
+# validate-check-surface-degenerate-coverage.sh's own allowlist ratchet
+# (temperloop#1476) and docs/features/backfill-exempt.txt's.
+#
+# THE LIST ONLY SHRINKS. Starting empty is expected, not a failure — every
+# path this item registered was already 755, or (the one exception) is fixed
+# to 755 by this same item, so there is no known debt to grandfather in on
+# adoption day. A FUTURE widening of exec-bit-registry.tsv that discovers a
+# currently-non-compliant script may list it here (with a REASON) instead of
+# being forced to fix it in the same PR that discovers it — the debt becomes
+# VISIBLE and PAYABLE rather than blocking unrelated work — but it is never a
+# place to add a path that was never registered in the first place; being
+# on this list already implies the path is known to the registry mechanism
+# and simply not yet compliant.
+#
+# When a listed path's executable bit is restored, DELETE its line here in
+# the SAME PR — the gate fails GRANDFATHER-STALE if a path is both registered
+# AND compliant AND still listed here (paying debt down means removing the
+# exemption, not just fixing the bit).
+#
+# FORMAT — TAB-separated, two columns:
+#   1. PATH     same grammar as exec-bit-registry.tsv's PATH column — must
+#               also appear as a row in that file
+#   2. REASON   mandatory, non-empty justification (name the tracking issue
+#               if one exists)

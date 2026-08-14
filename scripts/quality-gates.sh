@@ -726,6 +726,24 @@ KERNEL_GATES=(
   # allowlist-growth detection against a throwaway git fixture, and the
   # CANNOT-EVALUATE fail-closed paths.
   "bash workflows/scripts/tests/test_check_surface_degenerate_coverage.sh"
+  # Gate the dropped executable bit, keyed to a registry (temperloop#1326,
+  # epic #1415): a script can lose its executable bit (an incidental
+  # `mode change 100755 => 100644`, e.g. in a rebase) and stay green forever
+  # — every gate here invokes its scripts via `bash <path>` or a `make`
+  # target, so the bit is irrelevant to CI and matters only for direct
+  # `./script` invocation. Registry-keyed (workflows/scripts/config/
+  # exec-bit-registry.tsv), NOT shebang-keyed — a shebang-glob rule measured
+  # 96 false positives on this tree, of which exactly one was a genuine
+  # defect. Same registry + shrink-only grandfather-allowlist shape as
+  # validate-check-surface-degenerate-coverage.sh above. Direct `bash` form,
+  # no Makefile target, matching that gate.
+  "bash workflows/scripts/validate-exec-bit-registry.sh"
+  # ...and its own fixture suite — discrimination proofs (drop a registered
+  # path's executable bit, watch this gate go red naming the file and its
+  # actual mode, restore, watch it go green), the grandfather-allowlist
+  # debt/stale-exemption checks, allowlist-growth detection against a
+  # throwaway git fixture, and the CANNOT-EVALUATE fail-closed paths.
+  "bash workflows/scripts/tests/test_exec_bit_registry.sh"
   # Replay corpus selection + isolated replay worktree (temperloop#1254,
   # epic #1225 "model comparison harness"): replay.sh selects eligible
   # closed-issue + merged-PR pairs from this repo's own history (real `gh`
