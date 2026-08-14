@@ -1020,17 +1020,12 @@ KERNEL_GATES=(
   # as the count-prose gate above.
   "bash workflows/scripts/validate-prose-budget.sh"
   "bash workflows/scripts/tests/test_validate_prose_budget.sh"
-  # AI-authorship footer gate (temperloop#1407, product-docs rewrite):
-  # validate-docs-footer.sh checks that every in-scope product-docs page
-  # (README.md + docs/**/*.md minus its own explicit exemption list) ends
-  # with a well-formed provenance footer — '---', then '*Written by
-  # <model-id> on <YYYY-MM-DD>.*' with a strict model-id/ISO-date pattern,
-  # plus optional '*Last updated by …*' appends. The exemption list is
-  # self-maintaining: an exempt page that gains a footer fails with a
-  # remove-the-exemption message. Same direct-`bash` form as the gates
-  # above.
-  "bash workflows/scripts/validate-docs-footer.sh"
-  "bash workflows/scripts/tests/test_validate_docs_footer.sh"
+  # (The AI-authorship footer gate — validate-docs-footer.sh and its test —
+  # is CLASS-gated as a KERNEL-CONTENT gate just below this array, not listed
+  # here: it asserts THIS repo's own README.md + docs/**/*.md carry the
+  # product-docs provenance footer, which a consumer's own docs have no
+  # obligation to. See the kernel-content block after SKIPPED_KERNEL_GATES,
+  # temperloop#1423.)
   # Semantic-redundancy chunker (temperloop#854, half (a) of the P9
   # semantic-redundancy probe split from #830; epic #810 contract amendment
   # P9): chunks the manifest-driven always-loaded surface into rule-sized
@@ -1390,22 +1385,12 @@ KERNEL_GATES=(
   # generator-owned).
   "bash workflows/scripts/validate-design-brief.sh"
   "bash workflows/scripts/tests/test_validate_design_brief.sh"
-  # Positive on-ramp anchor-registry gate (ADR 0024, temperloop#1117): the
-  # validate-capture-backstop.sh / validate-activation-registry.sh mold
-  # applied to the four cross-surface on-ramp anchors (bin/temperloop's
-  # first-run banner, README.md's quickstart, bin/README.md,
-  # docs/features/install-cli.md) that drifted silently once already
-  # (temperloop#1116) — asserts what each registered anchor MUST say
-  # (workflows/scripts/config/onramp-anchors.tsv), never a tree-wide sweep
-  # for a retired name. See the registry's own header for why: a sweep
-  # ships with an exemption list on day one (CHANGELOG.md/docs/adr/**/
-  # Plans-archive/** name the retired command legitimately, as history),
-  # and the exemption list becomes the thing people edit to make the build
-  # green. Same direct-`bash` form as the sibling validator gates above
-  # (kernel Makefile is generator-owned; a `make` target exists too —
-  # `make validate-onramp-anchors` — for a human running it locally).
-  "bash workflows/scripts/validate-onramp-anchors.sh"
-  "bash workflows/scripts/tests/test_validate_onramp_anchors.sh"
+  # (The on-ramp anchor-registry gate — validate-onramp-anchors.sh and its
+  # test — is CLASS-gated as a KERNEL-CONTENT gate just below this array, not
+  # listed here: it asserts THIS repo's own README.md / bin/temperloop /
+  # bin/README.md / docs/features/install-cli.md narrate temperloop's onramp,
+  # which a consumer's own surfaces never do. See the kernel-content block
+  # after SKIPPED_KERNEL_GATES, temperloop#1423.)
 )
 
 # Surface-conditional kernel gates (temperloop#488, class-gated per temperloop#691).
@@ -1445,6 +1430,61 @@ else
     SKIPPED_KERNEL_GATES+=("${_sd_gate#bash workflows/scripts/tests/} — kernel self-distribution gate (vendoring consumer, .kernel-pin present)")
   done
   unset _sd_gate
+fi
+
+# Kernel-CONTENT gates — the SECOND class, same mechanism and same ONE signal as
+# SELF_DISTRIBUTION_GATES above (temperloop#1423, extending temperloop#691).
+#
+# WHAT DISTINGUISHES THIS CLASS. A gate belongs here only if it asserts the
+# CONTENT OF THE KERNEL REPO'S OWN PRODUCT SURFACES — the prose in temperloop's
+# root README, its CLI's first-run banner, its product-docs pages — against
+# whatever repo root it happens to resolve to. Reached through a consuming
+# repo's compat symlink, that root is the CONSUMER's, and a consumer is a
+# different product: its README narrates its own thing, its docs/ are its own
+# pages. No amount of overlay wiring makes such a gate pass there, and it should
+# not — an adopter is not obliged to describe temperloop's install path, or to
+# stamp temperloop's docs-rewrite authorship footer, on its own surfaces.
+#
+# WHAT DOES *NOT* BELONG HERE — the load-bearing exclusion. "Fails in a vendored
+# tree" is NOT the test. A gate whose LOGIC is vendoring-blind (a path
+# assumption that only holds in the kernel checkout, a discovery pass that will
+# not traverse a symlinked dir) is a REAL BUG that must keep failing until it is
+# fixed upstream — temperloop#1420 (lint-pipe-grep-q.sh flagging its own help
+# text) and temperloop#1424 (pipeline-spend-report.sh --by-agent-type finding
+# zero agent definitions through a symlinked claude/agents) both present
+# identically to a class member in CI, and both are live product-correctness
+# defects. Sweeping them in here would bury them. The bar for adding a gate is
+# therefore a positive argument that an adopter's repo CANNOT AND SHOULD NOT
+# satisfy the assertion — never that the gate is currently red.
+KERNEL_CONTENT_GATES=(
+  # ADR 0024's four on-ramp anchors (temperloop#1117): bin/temperloop's
+  # first-run banner, README.md's quickstart, bin/README.md,
+  # docs/features/install-cli.md — the registered places that must all name
+  # temperloop's own install command and adoption path
+  # (workflows/scripts/config/onramp-anchors.tsv). A consumer's root README is
+  # a different product's README.
+  "bash workflows/scripts/validate-onramp-anchors.sh"
+  "bash workflows/scripts/tests/test_validate_onramp_anchors.sh"
+  # The AI-authorship footer gate (temperloop#1407): every in-scope page of
+  # THIS repo's product docs (README.md + docs/**/*.md, minus an exemption
+  # list naming temperloop's own unrewritten pages) must end with the
+  # '*Written by <model-id> on <date>.*' provenance footer. Transparency about
+  # AI authorship is a stated property of the KERNEL's docs; a consumer's docs
+  # tree is its own, written by whoever wrote it.
+  "bash workflows/scripts/validate-docs-footer.sh"
+  "bash workflows/scripts/tests/test_validate_docs_footer.sh"
+)
+if [[ ! -f "$REPO_ROOT/.kernel-pin" ]]; then
+  # Kernel's own checkout (no .kernel-pin) — full kernel-content coverage.
+  KERNEL_GATES+=("${KERNEL_CONTENT_GATES[@]}")
+else
+  # Vendoring consumer (repo-root .kernel-pin present) — these assert kernel
+  # product content the consumer's own surfaces do not carry.
+  for _kc_gate in "${KERNEL_CONTENT_GATES[@]}"; do
+    _kc_name="${_kc_gate#bash }"
+    SKIPPED_KERNEL_GATES+=("${_kc_name##*/} — kernel-content gate (vendoring consumer, .kernel-pin present)")
+  done
+  unset _kc_gate _kc_name
 fi
 # scripts/update-kernel.sh's own breaking-delta gate (temperloop#89) —
 # black-box regression proof that lifting semver_major()/breaking_sections()

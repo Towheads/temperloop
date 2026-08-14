@@ -18,6 +18,13 @@
 # to the full set instead of narrowing; an uncommitted or brand-new file is in
 # scope (this runs MID-work, not after a commit); and a red gate is still red.
 #
+# ALSO COVERED HERE (cases 13-15, temperloop#1423): the OTHER selector that
+# decides which gates a run contains — the CLASS gating applied while the list
+# is BUILT, on a repo-root `.kernel-pin`. Same contract, same reason to test it:
+# a gate may only leave a run's set if the omission is NAMED. Those three cases
+# run an UNPATCHED copy against the real gate list (via `--list`, which runs
+# nothing); see their own block at the bottom of this file.
+#
 # HERMETIC. Every case runs a PATCHED COPY of the real quality-gates.sh in a
 # throwaway git repo whose gate list is four synthetic scripts and whose
 # gate-path map is a four-row fixture — so the REAL flag parsing, selector
@@ -344,9 +351,113 @@ else
 $RUN_OUT"
 fi
 
+# ==========================================================================
+# CLASS-GATED GATE COMPOSITION (temperloop#691, temperloop#1423)
+#
+# Same subject as cases 1-12 above — WHICH gates a run contains, and whether
+# every omission is NAMED — but keyed on the OTHER selector: the gate CLASS
+# gating quality-gates.sh applies while it BUILDS the list, before any flag is
+# parsed. Two classes share one signal, a repo-root `.kernel-pin` (present in a
+# vendoring consumer, absent in the kernel's own checkout):
+#   SELF_DISTRIBUTION_GATES  how the kernel bootstraps/renames/self-updates
+#   KERNEL_CONTENT_GATES     assertions about the kernel's OWN product surfaces
+#                            (its README's onramp narrative, its product-docs
+#                            authorship footers) — a consumer's surfaces belong
+#                            to a different product and can never satisfy them
+#
+# These cases run an UNPATCHED copy of the real script — the synthetic 4-gate
+# splice used above would erase the very list under test — with `--list`, which
+# prints the composed set and exits before a single gate runs (fast, hermetic,
+# no `make`). Case 15 is the ANTI-BURIAL guard: a gate that goes red in a
+# vendored tree because of a REAL BUG must stay in the consumer's set, red,
+# rather than being swept into the skip class.
+# ==========================================================================
+
+# qg_list <root> — the real script's --list, run from <root>.
+qg_list() { bash "$1/scripts/quality-gates.sh" --list 2>/dev/null; }
+
+# The real kernel-content class members, verbatim as quality-gates.sh names
+# them. Literal on purpose: this suite is the thing that would catch a member
+# silently leaving (or joining) the class.
+KC_GATES=(
+  "bash workflows/scripts/validate-onramp-anchors.sh"
+  "bash workflows/scripts/tests/test_validate_onramp_anchors.sh"
+  "bash workflows/scripts/validate-docs-footer.sh"
+  "bash workflows/scripts/tests/test_validate_docs_footer.sh"
+)
+
+# --------------------------------------------------------------------------
+# 13. THE KERNEL'S OWN CHECKOUT (no .kernel-pin) keeps FULL coverage — every
+#     kernel-content gate still runs. A regression here would silently shrink
+#     the kernel's own gate set, which is the whole risk of adding a class.
+# --------------------------------------------------------------------------
+if [ -f "$REPO_ROOT/.kernel-pin" ]; then
+  fail "case 13 precondition: this kernel checkout unexpectedly carries a .kernel-pin"
+else
+  KC_UNPINNED="$(qg_list "$REPO_ROOT")"
+  kc_missing=0
+  for g in "${KC_GATES[@]}"; do
+    grep -qxF "[kernel]  $g" <<<"$KC_UNPINNED" || { kc_missing=$((kc_missing + 1)); echo "  missing: $g" >&2; }
+  done
+  if [ "$kc_missing" -eq 0 ] && ! grep -q 'kernel-content gate' <<<"$KC_UNPINNED"; then
+    pass "no .kernel-pin: all ${#KC_GATES[@]} kernel-content gates RUN (none skipped)"
+  else
+    fail "kernel checkout lost kernel-content coverage ($kc_missing missing, or a skip line was emitted)"
+  fi
+fi
+
+# --------------------------------------------------------------------------
+# 14. A VENDORING CONSUMER (.kernel-pin at the repo root) skips the class —
+#     and NAMES every member it skipped, exactly as the self-distribution
+#     class does. Never a silent drop.
+# --------------------------------------------------------------------------
+PINNED="$WORK/pinned"
+mkdir -p "$PINNED/scripts"
+cp "$SRC" "$PINNED/scripts/quality-gates.sh"
+printf 'tag=v0.0.0\n' >"$PINNED/.kernel-pin"
+KC_PINNED="$(qg_list "$PINNED")"
+kc_leaked=0
+kc_unnamed=0
+for g in "${KC_GATES[@]}"; do
+  if grep -qxF "[kernel]  $g" <<<"$KC_PINNED"; then
+    kc_leaked=$((kc_leaked + 1)); echo "  still registered: $g" >&2
+  fi
+  kc_base="${g##*/}"
+  grep -qxF "[skipped] $kc_base — kernel-content gate (vendoring consumer, .kernel-pin present)" <<<"$KC_PINNED" \
+    || { kc_unnamed=$((kc_unnamed + 1)); echo "  unnamed skip: $kc_base" >&2; }
+done
+if [ "$kc_leaked" -eq 0 ] && [ "$kc_unnamed" -eq 0 ]; then
+  pass ".kernel-pin present: kernel-content class is skipped AND every member is named"
+else
+  fail "consumer classing: $kc_leaked still registered, $kc_unnamed skipped without a name"
+fi
+
+# --------------------------------------------------------------------------
+# 15. ANTI-BURIAL (the load-bearing one, temperloop#1423). A gate that goes red
+#     in a vendored tree because of a REAL UPSTREAM BUG — lint-pipe-grep-q.sh
+#     flagging its own help text (temperloop#1420), the spend report finding
+#     zero agent definitions through a symlinked claude/agents (temperloop#1424)
+#     — is NOT inapplicable-by-content and must stay in the consumer's set so it
+#     keeps failing until it is fixed. Class-gating it would bury it.
+# --------------------------------------------------------------------------
+NOT_CLASSED=(
+  "bash scripts/lint-pipe-grep-q.sh"
+  "bash scripts/tests/test_lint_pipe_grep_q.sh"
+  "bash workflows/scripts/tests/test_pipeline_spend_report.sh"
+)
+buried=0
+for g in "${NOT_CLASSED[@]}"; do
+  grep -qxF "[kernel]  $g" <<<"$KC_PINNED" || { buried=$((buried + 1)); echo "  buried: $g" >&2; }
+done
+if [ "$buried" -eq 0 ]; then
+  pass "real-bug gates stay in a vendoring consumer's set (not swept into the skip class)"
+else
+  fail "anti-burial: $buried real-bug gate(s) left the consumer's gate set"
+fi
+
 echo
 if [ "$fail_count" -eq 0 ]; then
-  echo "OK — quality-gates.sh --scoped: all cases passed"
+  echo "OK — quality-gates.sh --scoped + gate classing: all cases passed"
   exit 0
 fi
 echo "FAILED $fail_count case(s)" >&2
