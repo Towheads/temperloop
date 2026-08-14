@@ -51,8 +51,34 @@ Gates are ordered `KERNEL_GATES` then `OVERLAY_GATES`, and run from
 the repository root regardless of the caller's own working directory (a
 build worker running from a throwaway worktree still resolves every `make`
 target correctly). `--list` prints every gate's full command line prefixed
-`[kernel]` or `[overlay]`, without running anything — useful for auditing
-exactly what a run will execute before it executes it.
+`[kernel]`, `[overlay]`, or `[skipped]`, without running anything — useful
+for auditing exactly what a run will execute before it executes it.
+
+**Kernel-only gate classes.** Some kernel gates cannot apply in a repo that
+*vendors* the kernel as a subtree, so they are gated by **class** on one
+signal — a repo-root `.kernel-pin`, present in a vendoring consumer and
+absent in the kernel's own checkout. Gating the class, rather than guarding
+each gate on its own surface probe, is what keeps the rule from drifting the
+moment a new sibling gate is added without one. There are two classes:
+
+- `SELF_DISTRIBUTION_GATES` — how the kernel bootstraps, rename-migrates,
+  version-embeds and self-updates a fresh install of *itself*
+  (`bin/bootstrap.sh`, the rename shim, the repo-root `VERSION`,
+  `bin/subcommands/update.sh`). A consumer pulls the kernel through its own
+  subtree flow and carries none of that surface.
+- `KERNEL_CONTENT_GATES` — assertions about the *content of the kernel's own
+  product surfaces*: its README's on-ramp narrative and installer command,
+  its CLI's first-run banner, the AI-authorship footers on its product-docs
+  pages. Reached through a consumer's compat symlink, those gates read the
+  *consumer's* README and `docs/`, which belong to a different product and
+  are under no obligation to say any of it.
+
+"Fails in a vendored tree" is deliberately **not** the test for either class.
+A gate whose *logic* is vendoring-blind — a path assumption or a discovery
+pass that will not traverse a symlinked directory — is a real bug that must
+keep failing until it is fixed upstream; class-gating it would bury it. A
+skipped class is never silent: every member is named on its own `[skipped]`
+line and in the run's `skipped gate — …` preamble, with the reason.
 
 ### Parallel execution
 
