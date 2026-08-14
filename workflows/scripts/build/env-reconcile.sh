@@ -39,6 +39,28 @@
 #                                                "Vendored-hook drift" block
 #                                                below for the comparison
 #                                                contract and the remedy.
+#                              COMPOSED_STALE:<input>
+#                                                the composed ~/.claude/CLAUDE.md
+#                                                (a real generated FILE, never a
+#                                                symlink — `make doctor` cannot
+#                                                see it) is OLDER, by mtime, than
+#                                                one of its named inputs
+#                                                (claude/CLAUDE.kernel.md,
+#                                                claude/CLAUDE.overlay.md,
+#                                                workflows/scripts/build/build.config.sh)
+#                                                under the checkout named by
+#                                                ENV_RECONCILE_CLAUDE_MD_SOURCE_CHECKOUT
+#                                                — i.e. the host is serving a
+#                                                stale, silently-superseded set
+#                                                of rules to every session. NOT
+#                                                per-checkout like the classes
+#                                                above: the composed file is a
+#                                                single machine-wide artifact,
+#                                                so this is checked once. See
+#                                                the "Composed CLAUDE.md
+#                                                staleness" block below for the
+#                                                mtime-vs-cmp rationale and the
+#                                                fail-open contract.
 #                            Default checkouts: foundation, stageFind,
 #                            ssmobile, subsetwiki, temperloop (the interactive
 #                            operator checkout of the kernel repo — a DIFFERENT
@@ -172,6 +194,20 @@
 #   ENV_RECONCILE_VENDORED_HOOKS            (default build-worktree-guard.sh —
 #                                            space-separated hook basenames to
 #                                            compare)
+#   ENV_RECONCILE_CLAUDE_MD_SOURCE_CHECKOUT (unset by default — a SINGLE
+#                                            checkout path naming which
+#                                            checkout's claude/CLAUDE.*.md +
+#                                            build.config.sh are the composed
+#                                            ~/.claude/CLAUDE.md's "inputs".
+#                                            UNSET means the check reports
+#                                            UNVERIFIABLE rather than guessing
+#                                            — see "Composed CLAUDE.md
+#                                            staleness" below for why a guess
+#                                            is unsafe here.)
+#   ENV_RECONCILE_CLAUDE_MD_TARGET          (default $HOME/.claude/CLAUDE.md —
+#                                            the composed file's own path;
+#                                            overridable so tests never touch
+#                                            a real ~/.claude)
 #
 # ── Vendored-hook drift (STALE_VENDORED_HOOK, foundation#1353 / F#932) ────────
 # A guard hook is the source of truth HERE (claude/hooks/) and is push-synced
@@ -229,6 +265,51 @@
 # foreign-tree write), so a doctor class here would pin doctor non-zero forever,
 # fire a futile `make install` every session, and bury doctor's real
 # MISSING/DANGLING signal.
+#
+# ── Composed CLAUDE.md staleness (COMPOSED_STALE, temperloop#1618) ──────────
+# The installed ~/.claude/CLAUDE.md is a COMPOSED real file (kernel doc +
+# overlay + a rendered "## Knowledge store routing" section, per
+# install-claude-md.sh) — deliberately not a symlink, which is exactly why
+# `make doctor` (a symlink classifier) structurally cannot see it go stale. A
+# stale composed file is not inert: it actively feeds superseded rules to
+# every session on the host while looking identical to a current one.
+#
+# MECHANISM IS MTIME, DELIBERATELY — NOT the vendored-hook block's `cmp`
+# comparator above (_hook_body / _stale_vendored_hooks). That comparator
+# diffs a copy against an EXPECTED-CONTENT baseline: the canonical hook file
+# IS byte-identical to a correctly-synced copy (once the sync preamble is
+# stripped), so a mismatch is unambiguous drift. The composed CLAUDE.md has
+# no such baseline to diff against without re-running install-claude-md.sh
+# itself — which this READ-ONLY reconciler must never do (see the file's own
+# READ-ONLY / FAIL-OPEN contract below). Concretely: compose injects a
+# generated "## Knowledge store routing" section present in NEITHER
+# claude/CLAUDE.kernel.md nor claude/CLAUDE.overlay.md, and substitutes
+# `{{SETTING_NAME}}` placeholder tokens the kernel doc's raw text still
+# carries — so a `cmp` of the composed file against either source ALONE
+# would differ every time, drift or not, and there is no third
+# "expected-composed-output" file to diff against short of composing one.
+# mtime sidesteps needing a content baseline entirely: is the artifact
+# older than the things that feed it, yes or no. Do NOT "fix" this to `cmp`
+# — see classify_composed_claude_md's own header for the same point in code.
+#
+# SOURCE CHECKOUT IS NAMED EXPLICITLY, NEVER ASSUMED. `make install-claude`
+# composes from WHICHEVER checkout ran it; the generated-file banner records
+# only the source basenames, never the producing checkout's path; and this
+# script's own OPERATOR_CHECKOUTS registry cannot be trusted to guess it
+# either — the host that motivated this check has ~/.claude/* resolving into
+# a checkout not even in DEFAULT_OPERATOR_CHECKOUTS. So
+# ENV_RECONCILE_CLAUDE_MD_SOURCE_CHECKOUT must be set explicitly; unset means
+# "can't verify" (UNVERIFIABLE), never a guessed comparison.
+#
+# NOT PER-CHECKOUT. Every other operator-checkout class above is evaluated
+# once per entry in OPERATOR_CHECKOUTS. This one is a single machine-wide
+# check (there is exactly one ~/.claude/CLAUDE.md), evaluated once, and
+# reported in its own report section / a single FINDINGS entry — see the
+# "Composed CLAUDE.md" emit block near the end of the main-enumeration guard.
+#
+# REPORT-ONLY: never re-runs install-claude-md.sh / `make install-claude`,
+# never rewrites the composed file, never touches ~/.claude/ at all — reading
+# two mtimes is its entire footprint.
 #
 # READ-ONLY / FAIL-OPEN contract: this script never runs `git fetch`, never
 # writes a file, never calls `launchctl load/unload`, never invokes `gh` in
@@ -294,6 +375,14 @@ _REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." 2>/dev/null && pwd -P)" || _REPO_ROOT=""
 DEFAULT_CANONICAL_HOOK_DIR=""
 [ -n "$_REPO_ROOT" ] && DEFAULT_CANONICAL_HOOK_DIR="$_REPO_ROOT/claude/hooks"
 CANONICAL_HOOK_DIR="${ENV_RECONCILE_CANONICAL_HOOK_DIR:-$DEFAULT_CANONICAL_HOOK_DIR}"
+
+# Composed ~/.claude/CLAUDE.md staleness (COMPOSED_STALE). See the "Composed
+# CLAUDE.md staleness" header block above for the mtime-not-cmp rationale and
+# the fail-open contract. CLAUDE_MD_SOURCE_CHECKOUT is UNSET by default —
+# deliberately no guessed default (see that block); classify_composed_claude_md
+# reports UNVERIFIABLE when it is empty.
+CLAUDE_MD_TARGET="${ENV_RECONCILE_CLAUDE_MD_TARGET:-$HOME/.claude/CLAUDE.md}"
+CLAUDE_MD_SOURCE_CHECKOUT="${ENV_RECONCILE_CLAUDE_MD_SOURCE_CHECKOUT:-}"
 read -r -a VENDORED_HOOKS <<<"${ENV_RECONCILE_VENDORED_HOOKS:-build-worktree-guard.sh}"
 
 # ── Host-role ownership (#531) ────────────────────────────────────────────────
@@ -689,6 +778,68 @@ classify_operator_checkout() {
   printf '%s' "$classes"
 }
 
+# ── classify_composed_claude_md <target> <source_checkout> ───────────────────
+# Prints zero or more space-separated `COMPOSED_STALE:<input-basename>` tokens
+# (empty = fresh/OK), or a single `UNVERIFIABLE:<reason>` token when freshness
+# cannot be established. NOT per-checkout like every classify_* above — the
+# composed ~/.claude/CLAUDE.md is one machine-wide artifact, so the caller
+# invokes this exactly once (see the main-enumeration "Composed CLAUDE.md"
+# section), not per OPERATOR_CHECKOUTS entry.
+#
+# MTIME, DELIBERATELY — NOT the vendored-hook block's `cmp` comparator
+# (_hook_body / _stale_vendored_hooks above). That comparator has a
+# byte-identical expected-content baseline (the canonical hook file) to diff
+# a copy against. The composed CLAUDE.md has none: install-claude-md.sh
+# injects a generated "## Knowledge store routing" section present in
+# NEITHER claude/CLAUDE.kernel.md nor claude/CLAUDE.overlay.md, and
+# substitutes `{{SETTING_NAME}}` placeholders — so a `cmp` against either
+# source alone would differ every time, drift or not, and producing a real
+# "expected composed output" to diff against means re-running compose, which
+# this READ-ONLY reconciler must never do. mtime needs no content baseline:
+# is the artifact older than what feeds it, yes or no. See the "Composed
+# CLAUDE.md staleness" block in this file's own header for the full
+# rationale — do NOT "fix" this to `cmp`.
+#
+# FAIL-OPEN: <source_checkout> empty/absent, <target> missing, or ANY ONE of
+# the three named inputs missing under <source_checkout> all print
+# UNVERIFIABLE (never COMPOSED_STALE, never silent OK) — a partial input set
+# cannot establish "composed is current", so this refuses to guess.
+classify_composed_claude_md() {
+  local target="$1" checkout="$2"
+  local -a inputs=(
+    "claude/CLAUDE.kernel.md"
+    "claude/CLAUDE.overlay.md"
+    "workflows/scripts/build/build.config.sh"
+  )
+  local rel abspath tmtime imtime classes="" _i=0
+
+  [ -n "$checkout" ] || { printf 'UNVERIFIABLE:no-source-checkout-configured'; return 0; }
+  [ -d "$checkout" ] || { printf 'UNVERIFIABLE:source-checkout-not-found:%s' "$checkout"; return 0; }
+  [ -f "$target" ] || { printf 'UNVERIFIABLE:composed-missing:%s' "$target"; return 0; }
+
+  # Every named input must be present to establish freshness AT ALL — a
+  # partial input set is "can't verify", never a partial comparison (that
+  # would silently under-report drift the missing input might itself show).
+  _i=0
+  while [ "$_i" -lt "${#inputs[@]}" ]; do
+    rel="${inputs[$_i]}"; _i=$((_i + 1))
+    [ -f "$checkout/$rel" ] || { printf 'UNVERIFIABLE:input-missing:%s' "$rel"; return 0; }
+  done
+
+  tmtime="$(file_mtime "$target")"
+  _i=0
+  while [ "$_i" -lt "${#inputs[@]}" ]; do
+    rel="${inputs[$_i]}"; _i=$((_i + 1))
+    abspath="$checkout/$rel"
+    imtime="$(file_mtime "$abspath")"
+    if [ "$imtime" -gt "$tmtime" ]; then
+      classes="${classes}COMPOSED_STALE:$(basename "$rel") "
+    fi
+  done
+
+  printf '%s' "$classes"
+}
+
 # ── classify_worktree <repo> <wt_dir> ─────────────────────────────────────────
 # <repo> is the PARENT checkout root (without .wt); <wt_dir> is the
 # <repo>.wt/<slug> directory being examined.
@@ -1051,6 +1202,26 @@ while [ "$_i" -lt "${#OPERATOR_CHECKOUTS[@]}" ]; do
   fi
 done
 
+# Composed ~/.claude/CLAUDE.md staleness (COMPOSED_STALE) — a single
+# machine-wide check, not per-checkout (see classify_composed_claude_md's own
+# header and the "Composed CLAUDE.md staleness" block in this file's header).
+COMPOSED_LINES=""
+cls="$(classify_composed_claude_md "$CLAUDE_MD_TARGET" "$CLAUDE_MD_SOURCE_CHECKOUT")"
+if [ -z "$cls" ]; then
+  COMPOSED_LINES="  OK           $CLAUDE_MD_TARGET"$'\n'
+else
+  case "$cls" in
+    UNVERIFIABLE:*)
+      # Fail-open, informational — never counted as drift (add's default).
+      COMPOSED_LINES="  UNVERIFIABLE $CLAUDE_MD_TARGET  [${cls}]"$'\n'
+      ;;
+    *)
+      COMPOSED_LINES="  DRIFT        $CLAUDE_MD_TARGET  [${cls% }]"$'\n'
+      add "- ⚠️ composed CLAUDE.md drift: $CLAUDE_MD_TARGET — ${cls% } (source: $CLAUDE_MD_SOURCE_CHECKOUT)" drift
+      ;;
+  esac
+fi
+
 WT_LINES=""
 wt_checked=0
 _i=0
@@ -1118,6 +1289,8 @@ echo "-- cron/kernel checkouts --"
 printf '%s' "$CRON_LINES"
 echo "-- operator/consumer checkouts --"
 printf '%s' "$OPERATOR_LINES"
+echo "-- composed CLAUDE.md --"
+printf '%s' "$COMPOSED_LINES"
 echo "-- worktrees ($wt_checked checked) --"
 printf '%s' "$WT_LINES"
 echo "-- launchd agents ($agent_checked checked) --"

@@ -977,5 +977,162 @@ echo "PASS: unreadable plist -> exit 0, never a crash"
 [ "$(git -C "$ACB" rev-parse origin/main)" = "$ACB_ORIGIN_BEFORE" ] \
   || fail "agent-checkout-behind's origin/main ref moved -- env-reconcile.sh must NEVER fetch"
 echo "PASS: AGENT_CHECKOUT_BEHIND detection stays read-only and never fetches"
+# --- COMPOSED_STALE: composed ~/.claude/CLAUDE.md staleness (temperloop#1618) -
+# A synthetic "source checkout" (never a real ~/.claude — hermetic, no network)
+# carrying the three named inputs, with CONTROLLED mtimes via `touch -t` (the
+# same convention already used above for AGENT_STALE, #1173).
+mkdir -p "$TMP/cmd-src/claude" "$TMP/cmd-src/workflows/scripts/build"
+printf '# kernel\n' > "$TMP/cmd-src/claude/CLAUDE.kernel.md"
+printf '# overlay\n' > "$TMP/cmd-src/claude/CLAUDE.overlay.md"
+printf '# build config\n' > "$TMP/cmd-src/workflows/scripts/build/build.config.sh"
+CMDSRC="$(cd "$TMP/cmd-src" && pwd -P)"
+
+mkdir -p "$TMP/cmd-composed"
+COMPOSED="$TMP/cmd-composed/CLAUDE.md"
+printf '# composed\n' > "$COMPOSED"
+
+# Case: composed-newer-than-all — every input is older than the composed file
+# -> OK, no COMPOSED_STALE.
+touch -t 202001010000 "$CMDSRC/claude/CLAUDE.kernel.md" "$CMDSRC/claude/CLAUDE.overlay.md" \
+  "$CMDSRC/workflows/scripts/build/build.config.sh"
+touch -t 202006010000 "$COMPOSED"
+rc=0
+cfresh="$(
+  ENV_RECONCILE_CLAUDE_MD_TARGET="$COMPOSED" \
+  ENV_RECONCILE_CLAUDE_MD_SOURCE_CHECKOUT="$CMDSRC" \
+  ENV_RECONCILE_CRON_CHECKOUTS="$TMP/no-such-cron-checkout" \
+  ENV_RECONCILE_OPERATOR_CHECKOUTS="$TMP/no-such-operator-checkout" \
+  ENV_RECONCILE_LAUNCHD_DIRS="$TMP/no-such-launchd-dir" \
+  bash "$SCRIPT" --format report
+)" || rc=$?
+[ "$rc" -eq 0 ] || fail "composed-newer-than-all: expected exit 0 (got $rc); output:
+$cfresh"
+grep -qE "OK +$COMPOSED\$" <<<"$cfresh" \
+  || fail "composed newer than all inputs should report OK; output:
+$cfresh"
+if grep -q "COMPOSED_STALE" <<<"$cfresh"; then
+  fail "composed newer than all inputs wrongly flagged COMPOSED_STALE; output:
+$cfresh"
+fi
+echo "PASS: composed CLAUDE.md newer than every input -> OK, no COMPOSED_STALE"
+
+# Case: composed-older-than-an-input — bump ONE input (kernel.md) past the
+# composed file's mtime -> COMPOSED_STALE:CLAUDE.kernel.md, counted as drift.
+touch -t 202007010000 "$CMDSRC/claude/CLAUDE.kernel.md"
+rc=0
+cstale="$(
+  ENV_RECONCILE_CLAUDE_MD_TARGET="$COMPOSED" \
+  ENV_RECONCILE_CLAUDE_MD_SOURCE_CHECKOUT="$CMDSRC" \
+  ENV_RECONCILE_CRON_CHECKOUTS="$TMP/no-such-cron-checkout" \
+  ENV_RECONCILE_OPERATOR_CHECKOUTS="$TMP/no-such-operator-checkout" \
+  ENV_RECONCILE_LAUNCHD_DIRS="$TMP/no-such-launchd-dir" \
+  bash "$SCRIPT" --format report
+)" || rc=$?
+[ "$rc" -eq 0 ] || fail "composed-older-than-an-input: expected exit 0 (got $rc); output:
+$cstale"
+grep -q "DRIFT.*$COMPOSED.*COMPOSED_STALE:CLAUDE.kernel.md" <<<"$cstale" \
+  || fail "composed older than a bumped input should flag COMPOSED_STALE:CLAUDE.kernel.md; output:
+$cstale"
+grep -q "^DRIFT: 1$" <<<"$cstale" \
+  || fail "expected exactly 1 alarm for the composed-staleness case; output:
+$cstale"
+echo "PASS: composed CLAUDE.md older than a bumped input -> COMPOSED_STALE:CLAUDE.kernel.md, counted as drift"
+
+# The class must also reach --format entry (the /tidy routing path), like
+# every other class in this file.
+rc=0
+centry="$(
+  ENV_RECONCILE_CLAUDE_MD_TARGET="$COMPOSED" \
+  ENV_RECONCILE_CLAUDE_MD_SOURCE_CHECKOUT="$CMDSRC" \
+  ENV_RECONCILE_CRON_CHECKOUTS="$TMP/no-such-cron-checkout" \
+  ENV_RECONCILE_OPERATOR_CHECKOUTS="$TMP/no-such-operator-checkout" \
+  ENV_RECONCILE_LAUNCHD_DIRS="$TMP/no-such-launchd-dir" \
+  bash "$SCRIPT" --format entry
+)" || rc=$?
+[ "$rc" -eq 0 ] || fail "composed-stale --format entry: expected exit 0 (got $rc)"
+grep -q "COMPOSED_STALE:CLAUDE.kernel.md" <<<"$centry" \
+  || fail "--format entry omitted COMPOSED_STALE — /tidy would never see it; got:
+$centry"
+echo "PASS: COMPOSED_STALE reaches --format entry too"
+
+# Reset kernel.md back to older-than-composed for the fail-open cases below.
+touch -t 202001010000 "$CMDSRC/claude/CLAUDE.kernel.md"
+
+# Case: override-unset — ENV_RECONCILE_CLAUDE_MD_SOURCE_CHECKOUT unset ->
+# UNVERIFIABLE, never a guessed comparison, never counted as drift.
+rc=0
+cunset="$(
+  ENV_RECONCILE_CLAUDE_MD_TARGET="$COMPOSED" \
+  ENV_RECONCILE_CRON_CHECKOUTS="$TMP/no-such-cron-checkout" \
+  ENV_RECONCILE_OPERATOR_CHECKOUTS="$TMP/no-such-operator-checkout" \
+  ENV_RECONCILE_LAUNCHD_DIRS="$TMP/no-such-launchd-dir" \
+  bash "$SCRIPT" --format report
+)" || rc=$?
+[ "$rc" -eq 0 ] || fail "override-unset: expected exit 0 (got $rc); output:
+$cunset"
+grep -q "UNVERIFIABLE $COMPOSED  \[UNVERIFIABLE:no-source-checkout-configured\]" <<<"$cunset" \
+  || fail "unset ENV_RECONCILE_CLAUDE_MD_SOURCE_CHECKOUT should report UNVERIFIABLE, not guess; output:
+$cunset"
+grep -q "^OK$" <<<"$cunset" \
+  || fail "unset source checkout must not itself count as drift (fail-open); output:
+$cunset"
+echo "PASS: ENV_RECONCILE_CLAUDE_MD_SOURCE_CHECKOUT unset -> UNVERIFIABLE, never a guessed comparison, never drift"
+
+# Case: an input absent — overlay.md missing under the source checkout ->
+# UNVERIFIABLE, never a crash, never a false-clean OK.
+rm -f "$CMDSRC/claude/CLAUDE.overlay.md"
+rc=0
+cmissing="$(
+  ENV_RECONCILE_CLAUDE_MD_TARGET="$COMPOSED" \
+  ENV_RECONCILE_CLAUDE_MD_SOURCE_CHECKOUT="$CMDSRC" \
+  ENV_RECONCILE_CRON_CHECKOUTS="$TMP/no-such-cron-checkout" \
+  ENV_RECONCILE_OPERATOR_CHECKOUTS="$TMP/no-such-operator-checkout" \
+  ENV_RECONCILE_LAUNCHD_DIRS="$TMP/no-such-launchd-dir" \
+  bash "$SCRIPT" --format report
+)" || rc=$?
+[ "$rc" -eq 0 ] || fail "input-absent: expected exit 0 (got $rc); output:
+$cmissing"
+grep -q "UNVERIFIABLE:input-missing:claude/CLAUDE.overlay.md" <<<"$cmissing" \
+  || fail "a missing required input should report UNVERIFIABLE:input-missing, never guess partial freshness; output:
+$cmissing"
+grep -q "^OK$" <<<"$cmissing" \
+  || fail "a missing input must not itself count as drift (fail-open); output:
+$cmissing"
+if grep -q "COMPOSED_STALE" <<<"$cmissing"; then
+  fail "a missing input must never produce a COMPOSED_STALE verdict; output:
+$cmissing"
+fi
+echo "PASS: an input file absent -> UNVERIFIABLE:input-missing, never a crash, never a false-clean"
+printf '# overlay\n' > "$CMDSRC/claude/CLAUDE.overlay.md"   # restore for the next case
+
+# Case: composed file absent — the composed target itself doesn't exist ->
+# UNVERIFIABLE, never a crash.
+rc=0
+cnone="$(
+  ENV_RECONCILE_CLAUDE_MD_TARGET="$TMP/cmd-composed/no-such-CLAUDE.md" \
+  ENV_RECONCILE_CLAUDE_MD_SOURCE_CHECKOUT="$CMDSRC" \
+  ENV_RECONCILE_CRON_CHECKOUTS="$TMP/no-such-cron-checkout" \
+  ENV_RECONCILE_OPERATOR_CHECKOUTS="$TMP/no-such-operator-checkout" \
+  ENV_RECONCILE_LAUNCHD_DIRS="$TMP/no-such-launchd-dir" \
+  bash "$SCRIPT" --format report
+)" || rc=$?
+[ "$rc" -eq 0 ] || fail "composed-absent: expected exit 0 (got $rc); output:
+$cnone"
+grep -q "UNVERIFIABLE:composed-missing:$TMP/cmd-composed/no-such-CLAUDE.md" <<<"$cnone" \
+  || fail "an absent composed file should report UNVERIFIABLE:composed-missing, never crash; output:
+$cnone"
+grep -q "^OK$" <<<"$cnone" \
+  || fail "an absent composed file must not itself count as drift (fail-open); output:
+$cnone"
+echo "PASS: composed file absent -> UNVERIFIABLE:composed-missing, never a crash, never a false-clean"
+
+# READ-ONLY: the synthetic source checkout's inputs are untouched by
+# env-reconcile.sh itself (only this test's own deliberate touch/rm/restore
+# calls above ever changed them — none of those were env-reconcile.sh).
+[ -f "$CMDSRC/claude/CLAUDE.kernel.md" ] && [ -f "$CMDSRC/claude/CLAUDE.overlay.md" ] \
+  && [ -f "$CMDSRC/workflows/scripts/build/build.config.sh" ] \
+  || fail "COMPOSED_STALE detection must be READ-ONLY — a source-checkout input went missing"
+[ -f "$COMPOSED" ] || fail "COMPOSED_STALE detection must be READ-ONLY — the composed fixture file went missing"
+echo "PASS: COMPOSED_STALE detection stays read-only"
 
 echo "ALL PASS: test_env_reconcile.sh"
