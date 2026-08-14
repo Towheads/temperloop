@@ -71,10 +71,11 @@
 # the reason anything below stops. No mapfile / associative arrays / GNU-only
 # flags (bash 3.2).
 #
-# NOTE FOR THE GATE POOL: sections 2 and 9 mutate the LIVE
-# workflows/scripts/model-comparison/replay.sh in place and restore it, so
-# this suite is registered in the same SERIAL lane as its three replay
-# siblings in scripts/quality-gates.sh.
+# NOTE FOR THE GATE POOL: sections 2 and 9 mutate a $WORK-local COPY of
+# workflows/scripts/model-comparison/replay.sh (temperloop#1421 — never the
+# live tree file, which stays untouched throughout this suite), so nothing
+# below requires the SERIAL lane its three replay siblings sit in for other
+# reasons in scripts/quality-gates.sh.
 #
 # Usage: bash workflows/scripts/model-comparison/tests/test_replay_preflight_cost_unit.sh
 #
@@ -123,6 +124,38 @@ mutate_file() {
     die "mutate_file: old text not found-or-not-unique (count=$count)\n" unless $count == 1;
     s/\Q$o\E/$n/;
   ' "$file"
+}
+
+# mk_mirror <dest> — a throwaway, symlink-backed mirror of workflows/scripts
+# under <dest> (same helper as test_replay_score.sh's own, temperloop#1421),
+# so a mutation proof can edit ONE real copy of replay.sh without ever
+# writing into the checkout — in a vendoring overlay $SUT is a composed-tree
+# SYMLINK into kernel/, and an in-place mutation (write-temp-then-rename-
+# over-path) would replace the symlink with a forked regular file.
+# Relative resolution (HERE/../build, HERE/stats.sh, etc.) all still work
+# because the DIRECTORIES are real and only the leaves are links.
+mk_mirror() {
+  local d="$1" f b
+  mkdir -p "$d/workflows/scripts/model-comparison"
+  for f in "$SCRIPTS_DIR"/*; do
+    b="$(basename "$f")"
+    [ "$b" = "model-comparison" ] && continue
+    ln -s "$f" "$d/workflows/scripts/$b"
+  done
+  for f in "$MC_DIR"/*; do
+    ln -s "$f" "$d/workflows/scripts/model-comparison/$(basename "$f")"
+  done
+}
+
+# unlink_and_copy <mirror-path> — swap one mirrored symlink for a real,
+# editable copy of its target (same helper as test_replay_score.sh's own).
+unlink_and_copy() {
+  local p="$1" target
+  target="$(cd -P "$(dirname "$p")" && pwd)/$(basename "$p")"
+  local real; real="$(readlink "$target")"
+  rm -f "$target"
+  cp "$real" "$target"
+  chmod u+w "$target"
 }
 
 # mk_corpus <file> <n-eligible> — n eligible corpus records, one per line,
@@ -226,21 +259,24 @@ ok "2 the agreed unit explicitly names cost-weighting ('$pf_unit'), never a bare
 #     agreement assertion must go RED — proving test 1 measures the two
 #     programs' actual agreement and is not a tautology over one constant.
 count
-cp "$SUT" "$WORK/replay.sh.orig-2m"
-mutate_file "$SUT" \
+MIRROR_2M="$WORK/mirror-2m"
+mk_mirror "$MIRROR_2M"
+SUT_2M="$MIRROR_2M/workflows/scripts/model-comparison/replay.sh"
+unlink_and_copy "$SUT_2M"
+mutate_file "$SUT_2M" \
   'REPLAY_COST_BASIS_UNIT="cost-weighted-token-units"' \
   'REPLAY_COST_BASIS_UNIT="token_count"' \
   || fail "2m: mutation apply failed"
-mut_out="$(pf bash "$SUT" preflight --corpus-file "$CORPUS_20")"
+mut_out="$(pf bash "$SUT_2M" preflight --corpus-file "$CORPUS_20")"
 mut_unit="$(jq -r '.cost_basis // "<<absent>>"' <<<"$mut_out")"
-cp "$WORK/replay.sh.orig-2m" "$SUT"
+rm -rf "$MIRROR_2M"
 [ "$mut_unit" = "token_count" ] || fail "2m: the mutation did not take effect (got '$mut_unit')"
 [ "$mut_unit" != "$rep_unit" ] \
   || fail "2m: reverting the gate to the pre-fix raw unit still agreed with the report — test 1 is not load-bearing"
-# and the restored tree agrees again
+# and the real, untouched $SUT still agrees (it was never written to)
 [ "$(jq -r .cost_basis <<<"$(pf bash "$SUT" preflight --corpus-file "$CORPUS_20")")" = "$rep_unit" ] \
-  || fail "2m: the SUT was not restored cleanly"
-ok "2m MUTATION PROOF: reverting the gate's unit to the pre-fix 'token_count' breaks agreement with the report (restored, test 1 green again)"
+  || fail "2m: the real \$SUT no longer agrees with the report — mutation leaked outside its \$WORK mirror copy"
+ok "2m MUTATION PROOF: reverting the gate's unit to the pre-fix 'token_count' breaks agreement with the report (mutation isolated to a \$WORK mirror copy, test 1 green again against the real \$SUT)"
 
 # ═══════════════════════════════════════════════════════════════════════════
 # SECTION B — THE CONSTANT: in the pinned unit, grounded in the measurement
@@ -396,27 +432,30 @@ ok "9 FAIL CLOSED: an unresolvable SPEND_WEIGHT_* (non-numeric OR negative) -> C
 #     sail through as a normal PREFLIGHT, silently applied — proving test 9
 #     measures that guard rather than the JSON parse that follows it.
 count
-cp "$SUT" "$WORK/replay.sh.orig-9m"
-mutate_file "$SUT" \
+MIRROR_9M="$WORK/mirror-9m"
+mk_mirror "$MIRROR_9M"
+SUT_9M="$MIRROR_9M/workflows/scripts/model-comparison/replay.sh"
+unlink_and_copy "$SUT_9M"
+mutate_file "$SUT_9M" \
   "      ''|*[!0-9.]*|*.*.*)" \
   "      __this_pattern_can_never_match__)" \
   || fail "9m: mutation apply failed"
 # The exit code is deliberately not asserted here: the POINT of this mutation
 # is that the run stops failing closed at all, which the outcome below states.
 mut9_out="$(pf env SPEND_WEIGHT_CACHE_READ="-1" \
-  bash "$SUT" preflight --corpus-file "$CORPUS_20")" || true
-cp "$WORK/replay.sh.orig-9m" "$SUT"
+  bash "$SUT_9M" preflight --corpus-file "$CORPUS_20")" || true
+rm -rf "$MIRROR_9M"
 [ "$(jq -r .outcome <<<"$mut9_out")" = "PREFLIGHT" ] \
   || fail "9m: disabling the weights guard did not reproduce the fail-OPEN behavior — test 9 is not load-bearing (got: $mut9_out)"
 [ "$(jq -r .cost_weights.cache_read <<<"$mut9_out")" = "-1" ] \
   || fail "9m: expected the unguarded run to publish the nonsense weight it accepted, got: $mut9_out"
-# restored: the guard fires again
+# the real, untouched $SUT still guards (it was never written to)
 rest_rc=0
 rest_out="$(pf env SPEND_WEIGHT_CACHE_READ="-1" \
   bash "$SUT" preflight --corpus-file "$CORPUS_20")" || rest_rc=$?
 [ "$rest_rc" -ne 0 ] && [ "$(jq -r .outcome <<<"$rest_out")" = "CANNOT_EVALUATE" ] \
-  || fail "9m: the SUT was not restored cleanly (got: $rest_out)"
-ok "9m MUTATION PROOF: disabling the weights guard makes a negative weight fail OPEN and be applied silently (restored, test 9 green again)"
+  || fail "9m: the real \$SUT no longer guards — mutation leaked outside its \$WORK copy (got: $rest_out)"
+ok "9m MUTATION PROOF: disabling the weights guard makes a negative weight fail OPEN and be applied silently (mutation isolated to a \$WORK copy, test 9 green again against the real \$SUT)"
 
 echo
 echo "test_replay_preflight_cost_unit.sh: $pass/$total checks passed"

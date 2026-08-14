@@ -57,6 +57,8 @@ set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MC_DIR="$(cd "$HERE/.." && pwd)"
+SCRIPTS_DIR="$(cd "$MC_DIR/.." && pwd)"
+BUILD_DIR="$SCRIPTS_DIR/build"
 SUT="$MC_DIR/replay.sh"
 
 # shellcheck source=../../lib/portable-timeout.sh
@@ -93,6 +95,45 @@ mutate_file() {
     die "mutate_file: old text not found-or-not-unique (count=$count)\n" unless $count == 1;
     s/\Q$o\E/$n/;
   ' "$file"
+}
+
+# mk_mirror <dest> — a throwaway, symlink-backed mirror of workflows/scripts
+# under <dest> (same helper as test_replay_score.sh's own, temperloop#1421),
+# so a mutation proof can edit ONE real copy of a script without ever
+# writing into the checkout — in a vendoring overlay $SUT is a composed-tree
+# SYMLINK into kernel/, and an in-place mutation (write-temp-then-rename-
+# over-path) would replace the symlink with a forked regular file. Both
+# model-comparison/ AND build/ are expanded into real directories of
+# individually-symlinked leaves (this suite mutates a file under each — SUT
+# itself, and build/worktree.sh for the write-guard mutation proof);
+# relative resolution (HERE/../build, SCRIPT_DIR/lib/merged-detect.sh, etc.)
+# all still work because every DIRECTORY on the path is real and only the
+# leaves are links.
+mk_mirror() {
+  local d="$1" f b
+  mkdir -p "$d/workflows/scripts/model-comparison" "$d/workflows/scripts/build"
+  for f in "$SCRIPTS_DIR"/*; do
+    b="$(basename "$f")"
+    case "$b" in model-comparison|build) continue ;; esac
+    ln -s "$f" "$d/workflows/scripts/$b"
+  done
+  for f in "$MC_DIR"/*; do
+    ln -s "$f" "$d/workflows/scripts/model-comparison/$(basename "$f")"
+  done
+  for f in "$BUILD_DIR"/*; do
+    ln -s "$f" "$d/workflows/scripts/build/$(basename "$f")"
+  done
+}
+
+# unlink_and_copy <mirror-path> — swap one mirrored symlink for a real,
+# editable copy of its target (same helper as test_replay_score.sh's own).
+unlink_and_copy() {
+  local p="$1" target
+  target="$(cd -P "$(dirname "$p")" && pwd)/$(basename "$p")"
+  local real; real="$(readlink "$target")"
+  rm -f "$target"
+  cp "$real" "$target"
+  chmod u+w "$target"
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -150,16 +191,19 @@ ok "1 resolve-base returns the true fork point, not <merge>^1"
 
 # --- mutation proof: swap merge-base for a naive <merge>^1 read -----------
 count
-cp "$SUT" "$WORK/replay.sh.orig-1"
-mutate_file "$SUT" \
+MIRROR_1="$WORK/mirror-1"
+mk_mirror "$MIRROR_1"
+SUT_1="$MIRROR_1/workflows/scripts/model-comparison/replay.sh"
+unlink_and_copy "$SUT_1"
+mutate_file "$SUT_1" \
   'base="$(git -C "$repo" merge-base "${mc}^1" "${mc}^2" 2>/dev/null)"' \
   'base="$(git -C "$repo" rev-parse "${mc}^1" 2>/dev/null)"' \
   || fail "1m: mutation apply failed"
-mut_out="$(bash "$SUT" resolve-base "$FP_FIX" "$FP_M")"
+mut_out="$(bash "$SUT_1" resolve-base "$FP_FIX" "$FP_M")"
 mut_base="$(jq -r .base <<<"$mut_out" 2>/dev/null)"
-cp "$WORK/replay.sh.orig-1" "$SUT"
+rm -rf "$MIRROR_1"
 [ "$mut_base" = "$FP_C2" ] || fail "1m: mutation (naive ^1) should have produced base=C2 ($FP_C2), got $mut_base — mutation didn't take effect as expected"
-ok "1m MUTATION PROOF: reverting merge-base to a naive <merge>^1 flips the resolved base to C2 (wrong) — restored, the real script gave C0 (test 1 above)"
+ok "1m MUTATION PROOF: reverting merge-base to a naive <merge>^1 flips the resolved base to C2 (wrong) — mutation isolated to a \$WORK mirror copy, the real \$SUT gave C0 (test 1 above) and is unaffected"
 
 # ---------------------------------------------------------------------------
 # 2. resolve-base REJECTS a non-2-parent commit (squash/rebase-merge shape).
@@ -285,24 +329,27 @@ ok "9 diff-scope fails CLOSED (ERROR, non-zero) on an unresolvable base/head —
 
 # --- mutation proof: restore the fail-open behavior, confirm RED, restore -
 count
-cp "$SUT" "$WORK/replay.sh.orig-9"
-mutate_file "$SUT" \
+MIRROR_9="$WORK/mirror-9"
+mk_mirror "$MIRROR_9"
+SUT_9="$MIRROR_9/workflows/scripts/model-comparison/replay.sh"
+unlink_and_copy "$SUT_9"
+mutate_file "$SUT_9" \
   'if ! git -C "$repo" cat-file -e "${base}^{commit}" 2>/dev/null; then' \
   'if false; then' \
   || fail "9m: mutation apply (base check) failed"
-mutate_file "$SUT" \
+mutate_file "$SUT_9" \
   'if ! git -C "$repo" cat-file -e "${head}^{commit}" 2>/dev/null; then' \
   'if false; then' \
   || fail "9m: mutation apply (head check) failed"
 rc=0
-mut_out="$(bash "$SUT" diff-scope "$DS_FIX" deadbeefdeadbeefdeadbeefdeadbeefdeadbeef cafebabecafebabecafebabecafebabecafebabe 2>&1)" || rc=$?
-cp "$WORK/replay.sh.orig-9" "$SUT"
+mut_out="$(bash "$SUT_9" diff-scope "$DS_FIX" deadbeefdeadbeefdeadbeefdeadbeefdeadbeef cafebabecafebabecafebabecafebabecafebabe 2>&1)" || rc=$?
+rm -rf "$MIRROR_9"
 [ "$rc" -eq 0 ] || fail "9m: expected the mutated (pre-fix) script to exit 0 (fail-open), got rc=$rc"
 case "$mut_out" in
   *'"status":"eligible"'*) ;;
   *) fail "9m: expected the mutated script to reproduce the false-eligible bug, got: $mut_out" ;;
 esac
-ok "9m MUTATION PROOF: removing the fail-closed base/head check reproduces the false-eligible-at-exit-0 bug — restored, test 9 above is green again"
+ok "9m MUTATION PROOF: removing the fail-closed base/head check reproduces the false-eligible-at-exit-0 bug — mutation isolated to a \$WORK mirror copy, test 9 above (the real \$SUT) is unaffected"
 
 # ═══════════════════════════════════════════════════════════════════════════
 # SECTION C — fixture repo + stub gh for the `corpus` end-to-end pipeline
@@ -509,10 +556,15 @@ pr_obj() {
   pr_obj 310 "" '[{"number":2311}]' "Fix pr310"                        # no merge commit at all
 } | jq -s '.' >"$PR_LIST_FILE"
 
-run_corpus() {
+# run_corpus_on <script> <args...> — like run_corpus, against an explicit
+# script path (used by the 10bm mutation leg to run a mirrored, mutated
+# copy instead of $SUT).
+run_corpus_on() {
+  local script="$1"; shift
   env GH_CALL_LOG="$GH_CALL_LOG" GH_PR_LIST_FILE="$PR_LIST_FILE" GH_FIXTURE_DIR="$FIXDIR" \
-      PATH="$STUBBIN:$PATH" bash "$SUT" corpus "$@"
+      PATH="$STUBBIN:$PATH" bash "$script" corpus "$@"
 }
+run_corpus() { run_corpus_on "$SUT" "$@"; }
 
 # ---------------------------------------------------------------------------
 # 10. corpus end-to-end: classification, contamination traps, acceptance
@@ -646,8 +698,11 @@ ok "10b corpus ranking: eligible < flagged-eligible < rejected tiers, and within
 
 # --- mutation proof: drop the file_count secondary sort key ---------------
 count
-cp "$SUT" "$WORK/replay.sh.orig-10b"
-mutate_file "$SUT" \
+MIRROR_10B="$WORK/mirror-10b"
+mk_mirror "$MIRROR_10B"
+SUT_10B="$MIRROR_10B/workflows/scripts/model-comparison/replay.sh"
+unlink_and_copy "$SUT_10B"
+mutate_file "$SUT_10B" \
   '      (if .status=="eligible" then 0 elif .status=="flagged-eligible" then 1 else 2 end),
       (.file_count // 999999)
     ) | .[]' \
@@ -655,7 +710,7 @@ mutate_file "$SUT" \
     ) | .[]' \
   || fail "10bm: mutation apply failed"
 MUT_OUT="$WORK/corpus-out-mut.jsonl"
-run_corpus --repo fixture-org/fixture-repo --repo-root "$CORPUS_FIX" --limit 20 --out "$MUT_OUT" >/dev/null
+run_corpus_on "$SUT_10B" --repo fixture-org/fixture-repo --repo-root "$CORPUS_FIX" --limit 20 --out "$MUT_OUT" >/dev/null
 mut_prs=()
 while IFS= read -r line; do
   [ -n "$line" ] || continue
@@ -663,12 +718,12 @@ while IFS= read -r line; do
   [ "$st" = "eligible" ] || continue
   mut_prs+=("$(jq -r .pr <<<"$line")")
 done <"$MUT_OUT"
-cp "$WORK/replay.sh.orig-10b" "$SUT"
+rm -rf "$MIRROR_10B"
 # With the secondary key gone, jq's stable sort preserves EMISSION order
 # (301,302,303 — ascending PR number, i.e. DESCENDING file_count) instead of
 # ascending file_count (303,302,301).
 [ "${mut_prs[0]}" = "301" ] || fail "10bm: expected the mutated (insertion-order) output to start with 301, got ${mut_prs[*]}"
-ok "10bm MUTATION PROOF: dropping the file_count secondary sort key falls back to insertion order (301 first) — restored, test 10b above is green again"
+ok "10bm MUTATION PROOF: dropping the file_count secondary sort key falls back to insertion order (301 first) — mutation isolated to a \$WORK mirror copy, test 10b above (the real \$SUT) is unaffected"
 
 # ---------------------------------------------------------------------------
 # 11. REPLAY_CORPUS_SAMPLE_MULTIPLIER wiring: --target N with no --limit
@@ -769,22 +824,31 @@ case "$reported_guard" in ARMED|UNARMED|UNKNOWN) ;; *) fail "14: isolation.guard
 ok "14 property 2 (write-guard class): .build-guard marker present, and replay.sh forwards worktree.sh's REAL guard verdict ($reported_guard on this host), not a hardcoded one"
 
 # --- mutation proof: worktree.sh drops the .build-guard marker ------------
+# Mutates a mirrored COPY of build/worktree.sh (never the real tree file —
+# temperloop#1421) and drives it through a mirrored (symlinked, unmutated)
+# replay.sh, whose own $HERE/../build/worktree.sh resolves INTO this same
+# mirror — so replay.sh genuinely reaches the mutated worktree.sh, exactly
+# as it would the real one, without either file in the checkout ever being
+# touched.
 count
-WORKTREE_SH_REAL="$MC_DIR/../build/worktree.sh"
-cp "$WORKTREE_SH_REAL" "$WORK/worktree.sh.orig"
-mutate_file "$WORKTREE_SH_REAL" \
+MIRROR_14="$WORK/mirror-14"
+mk_mirror "$MIRROR_14"
+SUT_14="$MIRROR_14/workflows/scripts/model-comparison/replay.sh"
+WORKTREE_SH_14="$MIRROR_14/workflows/scripts/build/worktree.sh"
+unlink_and_copy "$WORKTREE_SH_14"
+mutate_file "$WORKTREE_SH_14" \
   '> "$wt_path/.build-guard"' \
   '> "$wt_path/.build-guard.DISABLED-BY-MUTATION"' \
   || fail "14m: mutation apply failed"
 MUT_SLUG="replay-mut-slug-14"
-mut_prep_out="$(bash "$SUT" worktree-prepare "$WT_FIX" "$MUT_SLUG" "$WT_BASE" 2>&1)"
+mut_prep_out="$(bash "$SUT_14" worktree-prepare "$WT_FIX" "$MUT_SLUG" "$WT_BASE" 2>&1)"
 mut_wt_path="${WT_FIX}.wt/${MUT_SLUG}"
 marker_present=1
 [ -f "$mut_wt_path/.build-guard" ] || marker_present=0
-bash "$SUT" worktree-teardown "$WT_FIX" "$MUT_SLUG" >/dev/null 2>&1 || true
-cp "$WORK/worktree.sh.orig" "$MC_DIR/../build/worktree.sh"
+bash "$SUT_14" worktree-teardown "$WT_FIX" "$MUT_SLUG" >/dev/null 2>&1 || true
+rm -rf "$MIRROR_14"
 [ "$marker_present" -eq 0 ] || fail "14m: expected the mutated worktree.sh to omit .build-guard, but it was present: $mut_prep_out"
-ok "14m MUTATION PROOF: removing worktree.sh's .build-guard write leaves the worktree unarmed — restored, test 14 above is green again"
+ok "14m MUTATION PROOF: removing worktree.sh's .build-guard write leaves the worktree unarmed — mutation isolated to a \$WORK mirror copy, test 14 above (the real files) is unaffected"
 
 # ---------------------------------------------------------------------------
 # 15. Property 3 — PER-REPO-DERIVED SCRATCH PATH. Deterministic
@@ -798,19 +862,22 @@ ok "15 property 3: deterministic per-repo-derived scratch path (<repo-root>.wt/<
 
 # --- mutation proof: the JSON lies about the path --------------------------
 count
-cp "$SUT" "$WORK/replay.sh.orig-15"
-mutate_file "$SUT" \
+MIRROR_15="$WORK/mirror-15"
+mk_mirror "$MIRROR_15"
+SUT_15="$MIRROR_15/workflows/scripts/model-comparison/replay.sh"
+unlink_and_copy "$SUT_15"
+mutate_file "$SUT_15" \
   '--arg path "$wt_path" --arg branch "$branch" --arg base "$base_sha" \' \
   '--arg path "/tmp/WRONG-PATH-MUTATION" --arg branch "$branch" --arg base "$base_sha" \' \
   || fail "15m: mutation apply failed"
 MUT_SLUG2="replay-mut-slug-15"
-mut_prep_out2="$(bash "$SUT" worktree-prepare "$WT_FIX" "$MUT_SLUG2" "$WT_BASE")"
-bash "$SUT" worktree-teardown "$WT_FIX" "$MUT_SLUG2" >/dev/null 2>&1 || true
-cp "$WORK/replay.sh.orig-15" "$SUT"
+mut_prep_out2="$(bash "$SUT_15" worktree-prepare "$WT_FIX" "$MUT_SLUG2" "$WT_BASE")"
+bash "$SUT_15" worktree-teardown "$WT_FIX" "$MUT_SLUG2" >/dev/null 2>&1 || true
+rm -rf "$MIRROR_15"
 mut_reported_path="$(jq -r .path <<<"$mut_prep_out2")"
 [ "$mut_reported_path" = "/tmp/WRONG-PATH-MUTATION" ] || fail "15m: mutation should have made .path report the wrong literal, got $mut_reported_path"
 [ "$mut_reported_path" != "${WT_FIX}.wt/${MUT_SLUG2}" ] || fail "15m: mutation had no effect"
-ok "15m MUTATION PROOF: a JSON that lies about .path is caught by the exact-path assertion — restored, test 15 above is green again"
+ok "15m MUTATION PROOF: a JSON that lies about .path is caught by the exact-path assertion — mutation isolated to a \$WORK mirror copy, test 15 above (the real \$SUT) is unaffected"
 
 # ---------------------------------------------------------------------------
 # 16. worktree-teardown removes the worktree AND the branch cleanly.
@@ -845,8 +912,11 @@ ok "17 worktree-prepare tears down cleanly on the FAILURE path (unreachable base
 
 # --- mutation proof: skip the failure-path teardown ------------------------
 count
-cp "$SUT" "$WORK/replay.sh.orig-17"
-mutate_file "$SUT" \
+MIRROR_17="$WORK/mirror-17"
+mk_mirror "$MIRROR_17"
+SUT_17="$MIRROR_17/workflows/scripts/model-comparison/replay.sh"
+unlink_and_copy "$SUT_17"
+mutate_file "$SUT_17" \
   '  if [ "$failed" -eq 1 ]; then
     bash "$WORKTREE_SH" remove "$repo_root" "$slug" >/dev/null 2>&1 || true
     jq -cn --arg e "$fail_reason"' \
@@ -856,17 +926,17 @@ mutate_file "$SUT" \
 FAIL_SLUG_M="replay-fail-slug-mut"
 FAIL_WT_PATH_M="${WT_FIX}.wt/${FAIL_SLUG_M}"
 mut_fail_rc=0
-bash "$SUT" worktree-prepare "$WT_FIX" "$FAIL_SLUG_M" deadbeefdeadbeefdeadbeefdeadbeefdeadbeef >/dev/null 2>&1 || mut_fail_rc=$?
+bash "$SUT_17" worktree-prepare "$WT_FIX" "$FAIL_SLUG_M" deadbeefdeadbeefdeadbeefdeadbeefdeadbeef >/dev/null 2>&1 || mut_fail_rc=$?
 residue_present=0
 [ -e "$FAIL_WT_PATH_M" ] && residue_present=1
-cp "$WORK/replay.sh.orig-17" "$SUT"
+rm -rf "$MIRROR_17"
 # manual cleanup of the residue the mutation deliberately left behind
 git -C "$WT_FIX" worktree remove --force "$FAIL_WT_PATH_M" >/dev/null 2>&1 || rm -rf "$FAIL_WT_PATH_M"
 git -C "$WT_FIX" worktree prune >/dev/null 2>&1 || true
 git -C "$WT_FIX" branch -D "build/${FAIL_SLUG_M}" >/dev/null 2>&1 || true
 [ "$mut_fail_rc" -ne 0 ] || fail "17m: fixture sanity: mutated script should still exit non-zero"
 [ "$residue_present" -eq 1 ] || fail "17m: expected the mutation to LEAVE residue (that's the point of this proof) but none was found"
-ok "17m MUTATION PROOF: removing the failure-path teardown call leaves worktree residue behind — restored and manually cleaned, test 17 above is green again"
+ok "17m MUTATION PROOF: removing the failure-path teardown call leaves worktree residue behind — mutation isolated to a \$WORK mirror copy (manually cleaned), test 17 above (the real \$SUT) is unaffected"
 
 # ═══════════════════════════════════════════════════════════════════════════
 # SECTION E — verify-clean-parent (BACKSTOP, not the primary control)
@@ -924,16 +994,19 @@ ok "19 schema: fixed versioned shape, and schema_version matches what corpus act
 
 # --- mutation proof: schema's own schema_version silently drifts ----------
 count
-cp "$SUT" "$WORK/replay.sh.orig-19"
-mutate_file "$SUT" \
+MIRROR_19="$WORK/mirror-19"
+mk_mirror "$MIRROR_19"
+SUT_19="$MIRROR_19/workflows/scripts/model-comparison/replay.sh"
+unlink_and_copy "$SUT_19"
+mutate_file "$SUT_19" \
   'jq -cn --arg sv "$REPLAY_RECORD_SCHEMA_VERSION" '"'"'{' \
   'jq -cn --arg sv "replay-record-v2-DRIFTED" '"'"'{' \
   || fail "19m: mutation apply failed"
-mut_schema_out="$(bash "$SUT" schema)"
+mut_schema_out="$(bash "$SUT_19" schema)"
 mut_sv="$(jq -r .schema_version <<<"$mut_schema_out")"
-cp "$WORK/replay.sh.orig-19" "$SUT"
+rm -rf "$MIRROR_19"
 [ "$mut_sv" != "$corpus_record_sv" ] || fail "19m: mutation had no visible effect (schema_version still matched)"
-ok "19m MUTATION PROOF: hardcoding a divergent schema_version in cmd_schema is caught by the schema/corpus consistency check — restored, test 19 above is green again"
+ok "19m MUTATION PROOF: hardcoding a divergent schema_version in cmd_schema is caught by the schema/corpus consistency check — mutation isolated to a \$WORK mirror copy, test 19 above (the real \$SUT) is unaffected"
 
 # ═══════════════════════════════════════════════════════════════════════════
 # SECTION G — hard constraint: no shift-2-no-op infinite loop on a trailing
