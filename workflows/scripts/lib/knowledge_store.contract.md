@@ -16,8 +16,16 @@ interface into scope. It sets no shell options; the sourcing script owns
 ## Configuration
 
 Exactly one environment variable selects the store root, and one selects the
-backend. There is no second path setting — every operation resolves its target
-location through `ks_root` (directly or via a backend's own call to it).
+backend — but an unset root does not resolve straight to the default below.
+Every operation resolves its target location through `ks_root`, and `ks_root`
+itself checks a machine-local config file before falling back to the XDG
+default: when `KNOWLEDGE_STORE_ROOT` is unset, it tries
+`_ks_machine_conf_root()`, which reads `KNOWLEDGE_STORE_ROOT` back out of the
+file named by `KNOWLEDGE_STORE_MACHINE_CONF` (default
+`${XDG_CONFIG_HOME:-$HOME/.config}/temperloop/build.config.sh`), sourced in an
+isolated subshell; only if that file is missing, unreadable, or yields no
+absolute path does resolution fall through to the XDG default. An explicitly
+set `KNOWLEDGE_STORE_ROOT` is always honored verbatim, ahead of both.
 
 | Variable | Default | Meaning |
 |---|---|---|
