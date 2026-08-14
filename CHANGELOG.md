@@ -152,6 +152,41 @@ reads that marker; a stranger greps for it before pulling.
 
 `env-reconcile.sh` now reports **`AGENT_CHECKOUT_BEHIND`** — a new drift class on the launchd-agent role. Each declared `infra/launchd/*.plist`'s `WorkingDirectory` is read and, when it resolves to a git checkout, compared against the already-fetched `origin/<default>` (reusing the same `default_branch_of` → `git merge-base --is-ancestor` mechanism `BEHIND_MAIN` uses, now factored into a shared `_behind_origin_default` helper). This closes the gap where a merged fix can close its issue, move its board item to Done, and still never reach the nightly actually running from a stale checkout — every other signal reads green. Report-only and read-only: never fetches, never mutates the target checkout. Fails open on an absent `WorkingDirectory` key, a non-existent path, or a path that isn't a git checkout — reported as "can't verify," never a crash or a false BEHIND claim. Emitted in both `--format report` and `--format entry`.
 
+- **A new CI gate now requires every registered check surface to prove it can
+  fail — ship a fixture asserting a non-zero exit on absent, unreadable, and
+  empty input — closing the class behind epic #1409's three motivating
+  defects** (a validator that read `OK` / exit 0 off input it never actually
+  read). `workflows/scripts/validate-check-surface-degenerate-coverage.sh`
+  enforces a REGISTRY (`workflows/scripts/config/check-surface-registry.tsv`),
+  not a `validate-*.sh` filename glob — a registry row names either a bare
+  script or a `<script>:<subcommand>` pair, so `replay.sh diff-scope` (a
+  subcommand of a general orchestration script, unreachable by any filename
+  glob) is registerable. Surfaces not yet compliant ride an explicit,
+  shrink-only ratchet (`workflows/scripts/config/check-surface-degenerate-allowlist.tsv`)
+  — the gate FAILS if the allowlist grows, diffed against the committed copy
+  at `origin/main`, with an explicit bootstrap exemption for the commit that
+  introduces the file itself. Seeded with the epic's three motivating
+  surfaces: `validate-provider-disclosure.sh` gets brand-new dedicated
+  degenerate-input fixtures (`workflows/scripts/tests/test_validate_provider_disclosure.sh`
+  — absent committed allowlist, unreadable disclosure log, and an
+  emptied-in-place log whose watermark anchor still records entries);
+  `validate-model-usage-emit.sh` and `replay.sh diff-scope` are registered
+  as already-compliant against their existing fixtures (`test_model_usage_emit.sh`,
+  `test_replay_isolation.sh`), unmodified. `tagging.sh` (#1480) and
+  `batch.sh`'s line-141 bootstrap check (#1487) are named on the allowlist,
+  explicitly out of this item's scope. The gate is itself fail-closed —
+  routed through the shared `cannot_evaluate_emit` idiom
+  (`workflows/scripts/lib/cannot-evaluate.sh`) on an unreadable registry/
+  allowlist/registered test file or an unresolvable ratchet base ref — and
+  every ordinary failure names the exact surface and case (`MISSING-FIXTURE`,
+  `TEST-FILE-NOT-GATED`, `REGISTRY-INCOMPLETE`, `ALLOWLIST-GREW`, ...),
+  never a bare non-zero exit. Its own fixture suite
+  (`workflows/scripts/tests/test_check_surface_degenerate_coverage.sh`)
+  proves the gate discriminates by mutation — delete a registered fixture's
+  anchor, confirm RED naming the surface+case, restore, confirm GREEN — plus
+  the allowlist-growth ratchet against a throwaway git fixture and every
+  CANNOT-EVALUATE fail-closed path.
+
 ### Changed
 
 - **Product docs rewritten end to end around a ratified value statement**
@@ -356,6 +391,86 @@ reads that marker; a stranger greps for it before pulling.
   exceptions.
 
 `/tidy` Step 0 no longer deadlocks every subsequent drain on a stalled archive PR. It previously early-exited on **any** open archive PR with one line into a log nobody reads, so a PR that went red on a stale base blocked extraction indefinitely with no alarm and no recovery path (observed: 7–26 session stubs stranded for days). Step 0 now classifies the open PR using the same predicate `archive-session.sh` uses — stalled ⟺ its checks rollup is `FAILURE`, or its `mergeStateStatus` is `BEHIND` — and on a stalled PR invokes the archiver's `heal-stalled-pr` entry point to rebase its branch onto the default branch, so the next run finds it green. The drain still exits without extracting on every path (the efficiency early-exit is preserved), and the stalled outcome — healed or heal-failed — is now surfaced as a pending-decisions entry rather than a silent skip. The check remains fail-open on a `gh` error.
+
+`/tidy`'s nightly headless run no longer dies at the cross-machine drain lock's sync-wait. Step 0's lock protocol previously had one arm: acquire → wait `TIDY_SYNC_WAIT` seconds via a **backgrounded** sleep → elect the earliest-timestamped lock. A `claude -p` one-shot has no re-invoke-on-background-completion loop (the same fact `build.md` § 3g keys its own headless branch on), so the nightly cron run ended the session *at* the wait and never resumed at the election — every night's drain lost to a zero-stub no-op. Step 0 item 4 now selects between two arms on exactly that predicate, `PIPELINE_OPERATOR_ABSENT=1`: a loop-capable run keeps the wait-and-elect path unchanged, while a headless run takes a new non-blocking arm (item 4f) with `--force-now` semantics — no sync wait, no election, never blocks. The headless arm still writes its own `.drain.lock.<HOST>` and still yields to a peer: it first does one cheap read of the lock files already listed, reaps any past `TIDY_LOCK_STALE_AFTER`, and skips the drain as a legible no-op if a live peer lock remains. Its residual risk is stated narrowly rather than implied away — Step 4's search-then-add dedup absorbs Things-task duplication **only**, so vault-note duplication in the check-then-write TOCTOU window is recorded as an accepted residual risk. The stale-lock reap (both arms) now names its failure path: the delete is best-effort, and a failed delete just leaves the lock for a later run to reap. The kernel ships no nightly plist — exporting `PIPELINE_OPERATOR_ABSENT=1` from the overlay's nightly wrapper is the install half of this fix, and a wrapper that omits it behaves exactly as before.
+
+- **The "cannot evaluate" idiom now fails CLOSED instead of open when a
+  caller forgets to branch on it** (#1475). Five independently reinvented
+  `*_cannot_evaluate()` functions across
+  `workflows/scripts/model-comparison/{batch,judge,score,replay}.sh` — four
+  byte-identical modulo a script-name prefix — every one of them returning 0
+  (a bare `jq`+`printf` body with no explicit `return`, so the function's
+  own exit status was whatever `printf` happened to return). A caller that
+  forgot to branch on the result fell straight through to the OK path — the
+  exact defect shape epic #1409 targets, reinvented inside the idiom meant
+  to prevent it. All five now delegate to one shared helper,
+  `cannot_evaluate_emit` in the new `workflows/scripts/lib/cannot-evaluate.sh`,
+  which returns the reserved `RC_CANNOT_EVALUATE` (2) as its OWN status —
+  converging on the same value three sibling standalone conventions already
+  used (`KERNEL_LIB_RC_CANNOT_EVALUATE`, `PA_RC_CANNOT_EVALUATE`,
+  `FD_RC_CANNOT_EVALUATE`) rather than minting a fourth. `replay.sh`'s
+  `preflight` — the one instance that previously printed the machine JSON
+  verdict but no human-readable stderr diagnostic — now prints one, matching
+  its four siblings. Every existing call site already followed the old
+  helper with its own explicit `return 1`, so no observed exit behavior
+  changes; the fix is forward-looking, for the next caller that doesn't.
+  The reserved code and the two output shapes are registered as a
+  machine-parsed surface in `claude/presentation-plane.md`.
+
+- **Six kernel gates that broke in a composed overlay checkout (a repo
+  vendoring this kernel as a subtree, e.g. foundation) now self-scope or work
+  correctly there, while still running for real in the kernel's own
+  checkout** (#1490):
+  - `scripts/lint-pipe-grep-q.sh` matched its two self-exempt files by a
+    literal `$REPO_ROOT`-prefixed path, so a vendoring overlay's compat
+    symlink (`scripts/lint-pipe-grep-q.sh -> ../kernel/scripts/lint-pipe-
+    grep-q.sh`) resolved `REPO_ROOT` to the overlay root and the lint's own
+    vendored originals under `kernel/` never matched — producing false
+    positives against the lint's own deliberate fixtures. Self-exemption is
+    now by RESOLVED (symlink-followed) path on both sides of the comparison,
+    so only the two named files are exempt — a genuine violation elsewhere
+    under a vendored `kernel/` tree is still flagged.
+  - `scripts/tests/test_assemble_changelog.sh` demanded a root
+    `CHANGELOG.md` unconditionally; a consumer may not use the changelog
+    fragment workflow at its own root at all. It now emits a legible SKIP
+    when no `CHANGELOG.md` is present.
+  - `workflows/scripts/validate-onramp-anchors.sh` (and its test) demanded
+    the consumer's own `README.md`/`bin/README.md`/`bin/temperloop`/
+    `docs/features/install-cli.md` carry the kernel's adopter onramp
+    narrative — kernel-product prose a vendoring consumer repo has no
+    obligation to carry. Both now detect a composed overlay tree (the same
+    two-signal detection `sandbox_skip_if_composed_tree` already uses) and
+    emit a legible SKIP there.
+  - `workflows/scripts/pipeline-spend-report.sh`'s `--by-agent-type` agent
+    allowlist walked `claude/agents` with a bare `find`, which macOS/BSD
+    `find` silently refuses to descend into when the directory is a
+    SYMLINK (the compat-symlink shape every vendoring consumer uses for
+    `claude/agents`) — collapsing `recognized_agent_definitions` to 0 and
+    every seat assertion to unattributed. Now uses `find -L` so a symlinked
+    `claude/agents` resolves exactly like a real one.
+  - `workflows/scripts/board/tests/test_board_host_label.sh` resolved its
+    search root with plain `pwd` (not `pwd -P`), so a vendoring consumer's
+    compat symlink (`workflows/scripts/board -> ../../kernel/workflows/
+    scripts/board`) kept the symlink in the path — and real macOS/BSD grep
+    (unlike GNU grep) silently refuses to descend into a symlinked
+    top-level directory argument, so the structural "exactly one inline
+    site" check found nothing and failed. Now resolves physical
+    (`pwd -P`) throughout.
+  - `workflows/scripts/model-comparison/tests/test_comparison_report.sh`'s
+    `mkmirror()` helper used a plain `cp -R` to relocate the
+    `model-comparison/` directory into a throwaway mutation-testing scratch
+    dir. On a consumer whose files under that directory are individual
+    relative symlinks into the vendored `kernel/` copy, `cp -R` preserves
+    those symlinks as symlinks rather than copying their content — so once
+    relocated to a scratch dir with no `kernel/` sibling, they go dangling
+    and the mirrored producer degrades ("comparison-statistics library is
+    missing") before the mutation under test is ever reached. Now uses
+    `cp -RL` to dereference.
+
+  Each fix ships a regression test that reproduces the exact composed-overlay
+  symlink shape (a synthetic `kernel/` subtree plus compat symlinks at the
+  overlay path) and proves both directions: the gate still catches a real
+  problem there, and the kernel's own checkout is unaffected.
 
 ## [0.29.0] - 2026-08-13 — BREAKING
 
