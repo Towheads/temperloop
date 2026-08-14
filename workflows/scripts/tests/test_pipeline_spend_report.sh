@@ -1066,6 +1066,46 @@ check_eq "BAT DEGRADE: with zero deployed agent definitions found, recognized_ag
   "0" "$(printf '%s' "$J10Z" | jq -r '.by_agent_type.recognized_agent_definitions')"
 check "BAT DEGRADE: ...and the notice names workflows/scripts/install/project-agents.sh as the reason" \
   bash -c "printf '%s' '$J10Z' | jq -e '.by_agent_type.notice | test(\"project-agents.sh\")' >/dev/null"
+
+# ---------------------------------------------------------------------------
+# 10h. SYMLINKED claude/agents (composed-overlay layout, temperloop#1490).
+#      In a consuming repo that vendors this kernel as a subtree (foundation,
+#      stageFind, ssmobile, subsetwiki), claude/agents is a compat SYMLINK
+#      into the vendored kernel/claude/agents (CLAUDE.md's own agent-
+#      ownership convention: "claude/agents is a symlink into the vendored
+#      kernel subtree"), never a real directory. `find "$dir" -name '*.md'`
+#      (no `-L`) silently returns NOTHING for a symlinked starting-point
+#      argument under this repo's macOS/BSD dev shell — recognized_agent_
+#      definitions collapsed to 0 exactly as in 10g above, but for a
+#      checkout that DOES have agent definitions deployed, just reached
+#      through a symlink — so every BAT CORE seat assertion (10c above)
+#      would silently collapse to unattributed on a composed overlay. Same
+#      copy-into-a-stripped-tree technique as 10g, but with claude/agents
+#      built as a SYMLINK to a real sibling directory instead of omitted.
+# ---------------------------------------------------------------------------
+SYMAGENTS_TREE="$TMP/symlinked-agents-1490-style"
+mkdir -p "$SYMAGENTS_TREE/workflows/scripts/build" "$SYMAGENTS_TREE/kernel/claude/agents" "$SYMAGENTS_TREE/claude"
+cp "$BIN" "$SYMAGENTS_TREE/workflows/scripts/pipeline-spend-report.sh"
+cp "$REPO_ROOT/workflows/scripts/build/build.config.sh" "$SYMAGENTS_TREE/workflows/scripts/build/build.config.sh"
+cat >"$SYMAGENTS_TREE/kernel/claude/agents/shell-reviewer.md" <<'EOF'
+# fixture agent definition (temperloop#1490 10h)
+EOF
+ln -s ../kernel/claude/agents "$SYMAGENTS_TREE/claude/agents"
+R10SYM="$TMP/bat-symlinked-agents"
+{ usage_line reqSY1 2026-07-15T10:00:00.000Z claude-opus-5 100 0 10 2 text; } \
+  | bat_mkext "$R10SYM" sess1 sy0001
+bat_sidecar "$R10SYM/sess1/subagents/agent-sy0001.jsonl" <<'EOF'
+{"agentType":"shell-reviewer"}
+EOF
+J10SYM="$(SPEND_WEIGHT_INPUT=1 SPEND_WEIGHT_CACHE_READ=0.1 SPEND_WEIGHT_CACHE_CREATE=1.25 SPEND_WEIGHT_OUTPUT=5 \
+          SPEND_MACHINERY_MAX_CALLS=6 SPEND_WORKER_PROFILE_MIN_CALLS=1 \
+          bash "$SYMAGENTS_TREE/workflows/scripts/pipeline-spend-report.sh" --root "$R10SYM" --by-agent-type --format json)"
+check_eq "BAT SYMLINK: with claude/agents reached through a symlink (composed-overlay layout), recognized_agent_definitions is still positive" \
+  "1" "$(printf '%s' "$J10SYM" | jq -r '.by_agent_type.recognized_agent_definitions')"
+check_eq "BAT SYMLINK: ...and the allowlisted sidecar still becomes a seat rather than falling to unattributed" \
+  "1" "$(printf '%s' "$J10SYM" | jq -r '.by_agent_type.seats["shell-reviewer"].agents')"
+check "BAT SYMLINK: ...and no degradation notice fires when definitions were found through the symlink" \
+  bash -c "printf '%s' '$J10SYM' | jq -e '.by_agent_type.notice == null' >/dev/null"
 check "BAT DEGRADE: ...and the sole agent still lands in unattributed rather than being dropped" \
   bash -c "printf '%s' '$J10Z' | jq -e '.by_agent_type.unattributed.agents == 1' >/dev/null"
 

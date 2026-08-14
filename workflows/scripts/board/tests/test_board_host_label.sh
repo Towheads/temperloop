@@ -24,9 +24,26 @@
 # `hostname` binary.
 set -euo pipefail
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-LIB_DIR="$(cd "$HERE/../lib" && pwd)"
-BOARD_DIR="$(cd "$HERE/.." && pwd)"
+# All four paths below resolve PHYSICAL (`pwd -P`, not plain `pwd`), and
+# consistently so — every one of them, not just BOARD_DIR — per
+# temperloop#1490. In a consumer that vendors this board toolkit through a
+# compat symlink (foundation: workflows/scripts/board -> ../../kernel/
+# workflows/scripts/board), a logical `pwd` here would keep that symlink in
+# HERE/LIB_DIR/BOARD_DIR, and the structural check below (grep -rlE over
+# BOARD_DIR) would silently find NOTHING: real macOS/BSD grep
+# (/usr/bin/grep — NOT a GNU-compatible grep some shells alias onto)
+# refuses to descend into a symlinked TOP-LEVEL directory argument, unlike
+# GNU grep, which follows it. That is a false failure (empty "found:" list),
+# not evidence the class ever re-diverged — confirmed by reproducing the
+# identical grep call directly against both the symlinked and physical
+# path. Resolving physical is the fix; it must apply to HERE too (not just
+# BOARD_DIR), because the self-exclusion filter on line ~44 below compares
+# grep's (now-physical) output against "$HERE/test_board_host_label.sh" —
+# a stale logical HERE would stop matching and the test would wrongly count
+# itself as a second inline site.
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+LIB_DIR="$(cd "$HERE/../lib" && pwd -P)"
+BOARD_DIR="$(cd "$HERE/.." && pwd -P)"
 BOARD_SH="$LIB_DIR/board.sh"
 
 fail() { echo "FAIL: $1" >&2; exit 1; }
@@ -47,7 +64,7 @@ fi
 # board-mirror.sh (workflows/scripts/build/) used a THIRD variant
 # (${SUBSET_HOST_LABEL:-${STAGEFIND_HOST_LABEL:-$(hostname -s)}}) before this
 # fix — assert it too now calls the shared helper instead of inlining.
-BUILD_MIRROR="$(cd "$HERE/../../build" && pwd)/board-mirror.sh"
+BUILD_MIRROR="$(cd "$HERE/../../build" && pwd -P)/board-mirror.sh"
 if [ -f "$BUILD_MIRROR" ] && grep -qE '\$\{SUBSET_HOST_LABEL:-' "$BUILD_MIRROR"; then
   fail "board-mirror.sh still inlines the chain instead of calling board_host_label"
 fi

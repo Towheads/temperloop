@@ -80,6 +80,51 @@ SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT_DEFAULT="$(cd -P "$SCRIPT_DIR/../.." && pwd)"
 : "${ONRAMP_GATE_ROOT:=$REPO_ROOT_DEFAULT}"
 REPO="$ONRAMP_GATE_ROOT"
+
+# ── Self-scoping (temperloop#1490) ─────────────────────────────────────────
+# ADR 0024's four registered anchors are KERNEL-PRODUCT onramp prose — the
+# CLI's own first-run banner, this repo's README quickstart, bin/README.md,
+# docs/features/install-cli.md's adoption-path paragraph, all narrating
+# `temperloop testbed -> first epic -> promote -> adopt`. A repo that
+# vendors this kernel as a subtree (foundation, stageFind, ssmobile,
+# subsetwiki) is not itself an adopter-facing kernel product and has no
+# obligation for its OWN root README/bin/docs to carry that narrative — yet
+# $REPO above resolves to that consumer's root whenever this script is
+# reached through its compat symlink (e.g. foundation's workflows/scripts/
+# validate-onramp-anchors.sh -> ../../kernel/workflows/scripts/validate-
+# onramp-anchors.sh), so without this check every registered anchor would
+# fail there for a reason that has nothing to do with drift.
+#
+# Detection mirrors workflows/scripts/tests/lib/sandbox.sh's
+# sandbox_skip_if_composed_tree (temperloop#267/#488) — same two signals,
+# reimplemented inline rather than sourced: this is a production KERNEL_GATES
+# validator (a `bash workflows/scripts/validate-onramp-anchors.sh` gate
+# entry, and its own `make validate-onramp-anchors` target for a human to run
+# locally), never a test, and test infra (workflows/scripts/tests/lib/)
+# stays test-scoped rather than becoming a dependency of shipped gate
+# machinery.
+#
+# Deliberately keyed on $REPO (which honors an ONRAMP_GATE_ROOT override),
+# not on some separate "am I in an overlay" global — so the fixture suite
+# below, which always points ONRAMP_GATE_ROOT at a throwaway mktemp tree,
+# never trips this (a throwaway fixture dir carries neither signal).
+if { [ -f "$REPO/claude/CLAUDE.kernel.md" ] && [ -f "$REPO/claude/CLAUDE.overlay.md" ]; } \
+   || { [ -d "$REPO/kernel" ] && { [ -f "$REPO/kernel/bin/temperloop" ] || [ -f "$REPO/kernel/claude/CLAUDE.kernel.md" ]; }; }; then
+  echo "SKIP: validate-onramp-anchors — composed overlay tree detected at $REPO."
+  if [ -f "$REPO/claude/CLAUDE.kernel.md" ] && [ -f "$REPO/claude/CLAUDE.overlay.md" ]; then
+    echo "  claude/CLAUDE.overlay.md is present beside claude/CLAUDE.kernel.md under $REPO/claude."
+  else
+    echo "  a kernel/ subtree is vendored at the repo root ($REPO/kernel)."
+  fi
+  echo "  ADR 0024's four onramp anchors (bin/temperloop's first-run banner,"
+  echo "  README.md's quickstart, bin/README.md, docs/features/install-cli.md)"
+  echo "  are kernel-PRODUCT onramp prose (temperloop#1117) — a vendoring"
+  echo "  consumer repo is not itself an adopter-facing kernel product and"
+  echo "  carries no obligation for its own root surfaces to narrate it."
+  echo "  Exiting 0 (legible skip, not a failure)."
+  exit 0
+fi
+
 REGISTRY="$REPO/workflows/scripts/config/onramp-anchors.tsv"
 
 # Lines of context on each side of a registered locator. Generous enough to

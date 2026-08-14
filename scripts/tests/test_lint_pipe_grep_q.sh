@@ -179,6 +179,78 @@ else
   bash "$LINT" 2>&1 | sed 's/^/      | /'
 fi
 
+# ---------------------------------------------------------------------------
+# T7 — vendored-overlay self-exemption (temperloop#1490). REPRODUCES the
+# exact shape a consuming overlay repo vendors this kernel through:
+#   <synth>/kernel/scripts/lint-pipe-grep-q.sh          (real vendored file)
+#   <synth>/kernel/scripts/tests/test_lint_pipe_grep_q.sh (real vendored file)
+#   <synth>/scripts/lint-pipe-grep-q.sh -> ../kernel/scripts/lint-pipe-grep-q.sh
+#   <synth>/scripts/tests -> ../kernel/scripts/tests        (whole-dir symlink,
+#     the same shape as foundation's real `scripts/tests -> ../kernel/
+#     scripts/tests`)
+# git-tracked so `git ls-files` (the lint's own file-set source) lists BOTH
+# the compat-symlink entry point AND the two vendored originals under
+# kernel/ — the exact condition that produced 42 false positives before this
+# fix (REPO_ROOT resolves to the overlay root through the entry-point
+# symlink, so a literal-string SELF/SELF_TEST comparison never matched the
+# kernel/-prefixed paths git also lists for the very same physical files).
+#
+# Proves TWO things, not one: (a) the two vendored originals stay silent —
+# self-exemption survived the overlay reflection; (b) a THIRD file dropped
+# in the same vendored kernel/ tree, that is NOT one of the two exempt
+# files, still gets flagged — the fix narrows the match to exactly two
+# resolved paths, never widens it to the whole kernel/ prefix.
+# ---------------------------------------------------------------------------
+echo "T7 — vendored-overlay self-exemption (only the two named files, not the whole kernel/ prefix)"
+SYNTH="$(mktemp -d "${TMPDIR:-/tmp}/lint-pipe-grep-q-overlay.XXXXXX")"
+(
+  set -e
+  mkdir -p "$SYNTH/kernel/scripts/tests" "$SYNTH/scripts"
+  cp "$LINT" "$SYNTH/kernel/scripts/lint-pipe-grep-q.sh"
+  cp "$ROOT/scripts/tests/test_lint_pipe_grep_q.sh" "$SYNTH/kernel/scripts/tests/test_lint_pipe_grep_q.sh"
+  # A genuine violation living INSIDE the vendored kernel/ tree, deliberately
+  # NOT one of the two exempt files — this must still be flagged.
+  printf '#!/usr/bin/env bash\necho x | grep -q needle\n' \
+    > "$SYNTH/kernel/scripts/tests/test_something_else.sh"
+  ln -s ../kernel/scripts/lint-pipe-grep-q.sh "$SYNTH/scripts/lint-pipe-grep-q.sh"
+  ln -s ../kernel/scripts/tests "$SYNTH/scripts/tests"
+  git -C "$SYNTH" init -q
+  git -C "$SYNTH" add -A
+  git -c user.name=test -c user.email=test@test -C "$SYNTH" commit -q -m synth
+)
+
+if (cd "$SYNTH" && bash scripts/lint-pipe-grep-q.sh); then
+  fail "T7: expected the lint to FAIL (a genuine violation sits in kernel/scripts/tests/test_something_else.sh), got a clean exit"
+else
+  out="$(cd "$SYNTH" && bash scripts/lint-pipe-grep-q.sh 2>&1 || true)"
+  if printf '%s\n' "$out" | grep -F 'test_something_else.sh' >/dev/null; then
+    pass "T7: still flags a genuine violation inside the vendored kernel/ tree"
+  else
+    fail "T7: did not name kernel/scripts/tests/test_something_else.sh in its report:"
+    printf '%s\n' "$out" | sed 's/^/      | /'
+  fi
+  if printf '%s\n' "$out" | grep -F 'lint-pipe-grep-q.sh:' >/dev/null \
+     || printf '%s\n' "$out" | grep -F 'test_lint_pipe_grep_q.sh:' >/dev/null; then
+    fail "T7: the two self-exempt files were flagged (self-exemption did not survive the overlay reflection):"
+    printf '%s\n' "$out" | sed 's/^/      | /'
+  else
+    pass "T7: neither self-exempt file (compat-symlink entry point or vendored kernel/ original) was flagged"
+  fi
+fi
+
+# Neutralize the one genuine violation and re-run: with NO real violation
+# left, the lint must now exit 0 clean — proving the two vendored originals
+# really are exempt (not merely under-scanned alongside a masking failure).
+rm -f "$SYNTH/kernel/scripts/tests/test_something_else.sh"
+if (cd "$SYNTH" && bash scripts/lint-pipe-grep-q.sh >/dev/null 2>&1); then
+  pass "T7: clean overlay tree (violation removed) exits 0 — the two vendored originals are genuinely exempt, not just outrun by a masking failure"
+else
+  fail "T7: overlay tree still fails after removing the one genuine violation:"
+  (cd "$SYNTH" && bash scripts/lint-pipe-grep-q.sh) 2>&1 | sed 's/^/      | /'
+fi
+
+rm -rf "$SYNTH"
+
 echo
 echo "test_lint_pipe_grep_q: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
