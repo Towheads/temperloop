@@ -1042,6 +1042,50 @@ assert_has "$HELP_OUT" "Usage:" "prints the usage line"
 assert_has "$HELP_OUT" "check-changelog-entry.sh [--base REF] [--head REF]" "prints the invocation"
 assert_has "$HELP_OUT" "Exit codes:" "prints the exit-code table"
 
+# ── 35. REAL TABLE: a change to the changelog machinery now owes a fragment ──
+# temperloop#1353. The gate parses VERSIONING.md's contract-surface table at run
+# time and uses exactly that set to decide what counts as contract surface. The
+# table did not cover the changelog machinery itself, so a change to the gate
+# resolved to NO contract-surface path and the gate reported "no contract-surface
+# path changed" at exit 0. A genuinely BREAKING change to that machinery shipped
+# an entry only because its author volunteered one; nothing required it.
+#
+# This asserts the new row reaches the RESOLVED SURFACE SET, not merely that it
+# appears in the file. The distinction is the whole point: check-changelog-entry.sh
+# is ALREADY named in the explanatory prose below the table, which the parser
+# never reads — so a test that grepped VERSIONING.md for the path would pass with
+# the row in the prose, i.e. with the defect fully intact. This case copies the
+# REAL VERSIONING.md into a hermetic repo (real table, real parser) and requires
+# a change touching only the gate script to come back RED.
+echo "35. a change to the changelog machinery is contract surface (real table)"
+D="$TMP/r35"; new_repo "$D" >/dev/null
+cp "$REPO/VERSIONING.md" "$D/VERSIONING.md"
+mkdir -p "$D/workflows/scripts"
+echo "# the changelog gate" > "$D/workflows/scripts/check-changelog-entry.sh"
+git -C "$D" add -A >/dev/null
+git -C "$D" commit -qm "seed the real contract-surface table" >/dev/null
+BASE="$(git -C "$D" rev-parse HEAD)"
+echo "# the changelog gate, v2" > "$D/workflows/scripts/check-changelog-entry.sh"
+git -C "$D" commit -aqm "change the changelog gate itself"
+run_gate "$D" "$BASE"
+assert_status 1 "$RUN_STATUS" "RED: the changelog gate is now contract surface"
+assert_has "$RUN_OUT" "workflows/scripts/check-changelog-entry.sh" "names the gate script as the touched surface"
+
+# Discrimination: strip ONLY the new row from the same real table and the very
+# same change goes green again — proving the verdict comes from the row being in
+# the parsed column, not from anything else in the file. Built by deleting the
+# row rather than by diffing against origin/main, so this stays valid after the
+# row merges.
+grep -v 'The changelog gate itself' "$REPO/VERSIONING.md" > "$D/VERSIONING.md"
+git -C "$D" commit -aqm "remove the changelog-gate row from the table" >/dev/null
+BASE_NOROW="$(git -C "$D" rev-parse HEAD)"
+echo "# the changelog gate, v3" > "$D/workflows/scripts/check-changelog-entry.sh"
+git -C "$D" commit -aqm "change the gate again, with the row absent"
+run_gate "$D" "$BASE_NOROW"
+assert_status 0 "$RUN_STATUS" "GREEN once the row is removed — the row is what discriminates"
+assert_has "$RUN_OUT" "no contract-surface path changed" "reproduces the pre-fix verdict verbatim"
+
+
 echo
 echo "test_check_changelog_entry: $pass passed, $fail failed"
 [[ "$fail" -eq 0 ]]
