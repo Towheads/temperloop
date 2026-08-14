@@ -42,6 +42,25 @@
 #      recovery, HEAD untouched (acceptance criterion 2, pre-update-era
 #      branch).
 #
+# Three further legs cover the $TEMPERLOOP_KERNEL_REF ref pin
+# (temperloop#1474 — the knob .github/workflows/install-tier2.yml sets on a
+# `workflow_dispatch` run so its documented pre-tag dry run tests the ref it
+# was dispatched against instead of the last release):
+#
+#   E. A fresh bootstrap with TEMPERLOOP_KERNEL_REF set lands on THAT ref and
+#      not the newest tag — twice over, once with a raw commit SHA (the
+#      untagged mainline commit between v9.2.0 and v9.3.0, so landing there
+#      is only possible via the pin) and once with a symbolic ref that is a
+#      DELIBERATELY OLDER tag (v9.1.0), proving the pin beats version sort
+#      rather than merely agreeing with it.
+#   F. TEMPERLOOP_KERNEL_REF set-but-EMPTY is indistinguishable from unset:
+#      the newest `v*` tag, same message, byte-for-byte the leg-A behavior
+#      (the `${VAR:+x}` guard's whole point).
+#   G. TEMPERLOOP_KERNEL_REF naming a ref that does not resolve FAILS LOUDLY
+#      (exit 1, message naming the ref) and never silently falls back to the
+#      newest tag — the fallback would recreate exactly the "claims to test
+#      one thing, tests another" bug the knob exists to fix.
+#
 # SAFETY: every TEMPERLOOP_HOME/TEMPERLOOP_BIN_DIR used below lives under
 # the sandbox root; bootstrap.sh and update.sh are only ever invoked against
 # those throwaway paths, never against $REPO_ROOT itself. The tripwire in
@@ -274,6 +293,118 @@ grep -qF "git -C $D_HOME fetch --tags" "$d_out" \
 [ "$(git -C "$D_HOME" rev-parse HEAD)" = "$d_head_before" ] \
   || fail "D: HEAD must be untouched by a re-run that fails before delegating"
 pass "D: a re-run against an install predating 'temperloop update' fails legibly (exit 1) with a stated two-option recovery — never a dead end"
+
+# ===========================================================================
+# 6. RUNS E/F/G — the $TEMPERLOOP_KERNEL_REF pin (temperloop#1474).
+#
+# FIXTURE_TAGGED's default-branch tip is deliberately one UNTAGGED commit
+# ahead of v9.2.0, which is exactly the real shape these legs care about: a
+# `workflow_dispatch` against `main` when `main` is ahead of the newest
+# release tag. Pinning to that tip and landing on it — rather than on
+# v9.2.0 — IS the bug temperloop#1474 reports, inverted into an assertion.
+# ===========================================================================
+# RUN C2 tags v9.3.0 on this shared fixture to give `temperloop update`
+# somewhere to move to, so neither the newest tag nor the tip is what it was
+# at build time. Re-establish the shape these legs need explicitly rather
+# than hardcoding a tag name that an earlier leg can invalidate: one fresh
+# UNTAGGED commit on top, and the newest tag read back at this moment.
+echo "fixture: untagged commit for the ref-pin legs" >> "$FIXTURE_TAGGED/.fixture-marker"
+git -C "$FIXTURE_TAGGED" add .fixture-marker
+git -C "$FIXTURE_TAGGED" commit -q -m "fixture: untagged commit for the ref-pin legs" \
+  || fail "E: could not add the untagged tip commit the ref-pin legs need"
+tagged_tip="$(git -C "$FIXTURE_TAGGED" rev-parse HEAD)"
+latest_now="$(git -C "$FIXTURE_TAGGED" tag -l 'v*' --sort=-v:refname | head -n1)"
+[ -n "$latest_now" ] || fail "E: fixture precondition broken — expected at least one v* tag"
+[ "$(git -C "$FIXTURE_TAGGED" rev-parse "$latest_now^{commit}")" != "$tagged_tip" ] \
+  || fail "E: fixture precondition broken — the tip must be AHEAD of the newest tag ($latest_now), or these legs prove nothing"
+
+# --- E: a set ref pins to THAT ref, not the newest tag ----------------------
+E_HOME="$SANDBOX_HOME/install-e/share"
+E_BIN="$SANDBOX_HOME/install-e/bin"
+e_out="$SANDBOX_ROOT/e.out"
+env "${SANDBOX_ENV_ARGS[@]}" \
+    TEMPERLOOP_KERNEL_REPO="file://$FIXTURE_TAGGED" \
+    TEMPERLOOP_KERNEL_REF="$tagged_tip" \
+    TEMPERLOOP_HOME="$E_HOME" \
+    TEMPERLOOP_BIN_DIR="$E_BIN" \
+    sh "$BOOTSTRAP_SH" >"$e_out" 2>&1 \
+  || fail "E: a fresh bootstrap with TEMPERLOOP_KERNEL_REF set must succeed (output: $(cat "$e_out"))"
+[ "$(git -C "$E_HOME" rev-parse HEAD)" = "$tagged_tip" ] \
+  || fail "E: the install must land on the requested ref ($tagged_tip), got $(git -C "$E_HOME" rev-parse HEAD)"
+if [ "$(git -C "$E_HOME" rev-parse HEAD)" = "$(git -C "$FIXTURE_TAGGED" rev-parse "$latest_now^{commit}")" ]; then
+  fail "E: the install landed on the newest tag ($latest_now) — the ref pin was ignored (the temperloop#1474 bug)"
+fi
+grep -qF "pinning fresh install to requested ref" "$e_out" \
+  || fail "E: expected the requested-ref pin line naming \$TEMPERLOOP_KERNEL_REF (output: $(cat "$e_out"))"
+[ -x "$E_BIN/temperloop" ] || fail "E1: temperloop must still be symlinked onto TEMPERLOOP_BIN_DIR"
+pass "E1: TEMPERLOOP_KERNEL_REF pins a fresh install to a raw commit SHA (the untagged tip), NOT the newest release tag"
+
+# --- E2: a SYMBOLIC ref that is an OLDER tag — the pin beats version sort ---
+# E1 lands on a commit the tag sort could never have chosen, which proves the
+# pin is consulted. E2 is the sharper case: v9.1.0 IS a tag, and it sorts
+# BELOW the newest one, so landing there is only possible if the pin
+# overrides version sort rather than coinciding with it.
+E2_HOME="$SANDBOX_HOME/install-e2/share"
+E2_BIN="$SANDBOX_HOME/install-e2/bin"
+e2_out="$SANDBOX_ROOT/e2.out"
+[ "$latest_now" != "v9.1.0" ] \
+  || fail "E2: fixture precondition broken — v9.1.0 must NOT be the newest tag, or this leg proves nothing"
+env "${SANDBOX_ENV_ARGS[@]}" \
+    TEMPERLOOP_KERNEL_REPO="file://$FIXTURE_TAGGED" \
+    TEMPERLOOP_KERNEL_REF="v9.1.0" \
+    TEMPERLOOP_HOME="$E2_HOME" \
+    TEMPERLOOP_BIN_DIR="$E2_BIN" \
+    sh "$BOOTSTRAP_SH" >"$e2_out" 2>&1 \
+  || fail "E2: a fresh bootstrap pinned to the older tag v9.1.0 must succeed (output: $(cat "$e2_out"))"
+[ "$(git -C "$E2_HOME" describe --tags --exact-match HEAD 2>/dev/null)" = "v9.1.0" ] \
+  || fail "E2: the install must land on v9.1.0, got $(git -C "$E2_HOME" describe --tags --always HEAD 2>/dev/null) — version sort beat the explicit pin"
+pass "E2: TEMPERLOOP_KERNEL_REF pins to an OLDER tag (v9.1.0) over the newest ($latest_now) — the pin beats version sort, it does not merely agree with it"
+
+# --- F: set-but-EMPTY is indistinguishable from unset -----------------------
+# The `${VAR:+x}` guard in bootstrap.sh is what buys this. A `${VAR:-}` guard
+# would treat an empty value as "set", pin to the empty string, and fail — so
+# this leg is a direct regression test on that specific expansion choice.
+F_HOME="$SANDBOX_HOME/install-f/share"
+F_BIN="$SANDBOX_HOME/install-f/bin"
+f_out="$SANDBOX_ROOT/f.out"
+env "${SANDBOX_ENV_ARGS[@]}" \
+    TEMPERLOOP_KERNEL_REPO="file://$FIXTURE_TAGGED" \
+    TEMPERLOOP_KERNEL_REF="" \
+    TEMPERLOOP_HOME="$F_HOME" \
+    TEMPERLOOP_BIN_DIR="$F_BIN" \
+    sh "$BOOTSTRAP_SH" >"$f_out" 2>&1 \
+  || fail "F: a fresh bootstrap with an EMPTY TEMPERLOOP_KERNEL_REF must succeed (output: $(cat "$f_out"))"
+grep -qF "pinning fresh install to latest release tag $latest_now" "$f_out" \
+  || fail "F: an empty ref must take the unchanged latest-tag path (output: $(cat "$f_out"))"
+[ "$(git -C "$F_HOME" describe --tags --exact-match HEAD 2>/dev/null)" = "$latest_now" ] \
+  || fail "F: an empty ref must land on $latest_now exactly as an unset one does"
+pass "F: TEMPERLOOP_KERNEL_REF set-but-empty is indistinguishable from unset — the default latest-tag install ($latest_now)"
+
+# --- G: an unresolvable ref fails LOUDLY, never falls back ------------------
+G_HOME="$SANDBOX_HOME/install-g/share"
+G_BIN="$SANDBOX_HOME/install-g/bin"
+g_out="$SANDBOX_ROOT/g.out"
+g_bad_ref="no-such-ref-temperloop-1474"
+if env "${SANDBOX_ENV_ARGS[@]}" \
+       TEMPERLOOP_KERNEL_REPO="file://$FIXTURE_TAGGED" \
+       TEMPERLOOP_KERNEL_REF="$g_bad_ref" \
+       TEMPERLOOP_HOME="$G_HOME" \
+       TEMPERLOOP_BIN_DIR="$G_BIN" \
+       sh "$BOOTSTRAP_SH" >"$g_out" 2>&1; then
+  fail "G: an unresolvable TEMPERLOOP_KERNEL_REF must FAIL, not succeed (output: $(cat "$g_out"))"
+fi
+grep -qF "$g_bad_ref" "$g_out" \
+  || fail "G: the error must name the offending ref '$g_bad_ref' (output: $(cat "$g_out"))"
+grep -qF "Refusing to fall back" "$g_out" \
+  || fail "G: the error must state it is refusing to fall back to the newest tag (output: $(cat "$g_out"))"
+# The load-bearing half: it must not have silently landed on v9.2.0 anyway.
+if [ -d "$G_HOME/.git" ] \
+   && [ "$(git -C "$G_HOME" describe --tags --exact-match HEAD 2>/dev/null || true)" = "$latest_now" ]; then
+  fail "G: a bad ref silently fell back to the newest tag — exactly the failure the knob exists to prevent"
+fi
+[ ! -x "$G_BIN/temperloop" ] \
+  || fail "G: a refused install must not leave a temperloop symlink behind"
+pass "G: an unresolvable TEMPERLOOP_KERNEL_REF fails loudly naming the ref — never a silent fallback to the newest tag"
 
 # ===========================================================================
 # 7. Tripwire: $REPO_ROOT's own git state (HEAD, branch, working-tree

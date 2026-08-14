@@ -90,7 +90,10 @@ name: Install Tier-2 (install + adopt-path round trip)
 # `bin/bootstrap.sh`'s first-install block pins a fresh install to the
 # NEWEST release tag it can see (`git tag -l 'v*' --sort=-v:refname | head
 # -n1`, then `git checkout --detach`) — NOT to the ref this workflow
-# checked out. So the weekly run was ALREADY testing the last release tag
+# checked out, unless $TEMPERLOOP_KERNEL_REF overrides it, which on this
+# workflow happens on a `workflow_dispatch` run ONLY (temperloop#1474; see
+# the bootstrap step's own ref-split comment). On the tag-triggered release
+# path nothing overrides it. So the weekly run was ALREADY testing the last release tag
 # rather than `main`; it was a release test fired at an arbitrary moment.
 # Triggering on the tag makes the timing match the semantics that were
 # always there. This is also why the `fetch-depth: 0` checkout below is
@@ -119,8 +122,14 @@ name: Install Tier-2 (install + adopt-path round trip)
 # `workflow_dispatch` by hand rather than assuming silence means health.
 #
 # `workflow_dispatch` therefore remains, for exactly two uses: an ad-hoc
-# drift probe during a release gap, and a pre-tag dry run against `main`
-# when you want the live-path proof BEFORE cutting rather than after.
+# drift probe during a release gap, and a pre-tag dry run against the ref
+# you dispatch it on (`main`, or any branch) when you want the live-path
+# proof BEFORE cutting rather than after. That second use only became real
+# in temperloop#1474: a dispatch used to inherit the newest-`v*`-tag pin
+# below and so silently re-tested the LAST RELEASE, not the ref it was
+# dispatched against. It now sets $TEMPERLOOP_KERNEL_REF to $GITHUB_SHA —
+# see the ref-split comment on the bootstrap step for the full split, and
+# note that a TAG-triggered run still leaves that variable unset.
 #
 # WHERE THIS SITS IN THE RELEASE PROCEDURE. The tag is pushed by hand
 # (VERSIONING.md § Cutting a release step 3), so this run necessarily
@@ -205,10 +214,34 @@ jobs:
         with:
           node-version: "20"
 
+      # THE REF SPLIT, AND WHY IT IS A SPLIT (temperloop#1474). bootstrap.sh
+      # pins a fresh install to the newest `v*` tag it can see, and this
+      # checkout is `fetch-depth: 0`, so EVERY tag is present regardless of
+      # which ref the run was dispatched against. That is exactly right on a
+      # TAG-triggered run — the release gate must exercise the same code path
+      # a newcomer's `curl … | sh` takes, with no CI-only knob in the way —
+      # and exactly wrong on a `workflow_dispatch` run, whose documented
+      # second purpose is a pre-tag dry run against the checked-out ref:
+      # without a pin, a dispatch silently reinstalls the LAST RELEASE and
+      # reports on that instead (observed in run 31775347946, which
+      # reproduced a bug already fixed on the ref it was dispatched against).
+      #
+      # So: a dispatch sets $TEMPERLOOP_KERNEL_REF to the checked-out commit;
+      # a tag-triggered run leaves it UNSET — never set-to-empty by accident,
+      # which is why this is an `if` in the step body rather than a `${{ }}`
+      # ternary in `env:` — so the real release gate keeps exact newcomer
+      # semantics. Both arms echo which ref the install was pinned to, so a
+      # run's log states plainly what was actually tested.
       - name: Bootstrap the temperloop CLI from this checkout
         run: |
           TEMPERLOOP_HOME="$RUNNER_TEMP/temperloop-home"
           TEMPERLOOP_BIN_DIR="$RUNNER_TEMP/temperloop-bin"
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            export TEMPERLOOP_KERNEL_REF="$GITHUB_SHA"
+            echo "install-tier2: workflow_dispatch — pinning the install to the checked-out commit $GITHUB_SHA (ref: $GITHUB_REF_NAME), NOT the newest v* tag."
+          else
+            echo "install-tier2: $GITHUB_EVENT_NAME run — no ref pin; bootstrap resolves the newest v* tag exactly as a newcomer's install does."
+          fi
           TEMPERLOOP_KERNEL_REPO="file://$GITHUB_WORKSPACE" \
             TEMPERLOOP_HOME="$TEMPERLOOP_HOME" \
             TEMPERLOOP_BIN_DIR="$TEMPERLOOP_BIN_DIR" \
@@ -229,15 +262,26 @@ jobs:
       # run triggered by v0.30.0 could silently have exercised some other tag.
       # Asserting shipped == the triggering tag turns "a round trip passed"
       # into "the round trip tested the release being cut". Guarded on
-      # GITHUB_REF_TYPE so `workflow_dispatch` (no tag) is unaffected.
+      # GITHUB_REF_TYPE so `workflow_dispatch` (which pins to $GITHUB_SHA and
+      # therefore has no triggering tag to compare against — see the ref-split
+      # note on the bootstrap step) is unaffected: it skips that comparison
+      # and keeps only the two version checks below, which hold for ANY
+      # pinned commit because every commit carries its own VERSION file.
       # Fail-closed: unlike init there is no degraded-network excuse for a
       # wrong version string. continue-on-error so the round trip below still
       # runs and the verdict reports every leg at once.
+      #
+      # This leg also PRINTS the commit the install actually landed on, so a
+      # run's log answers "what was tested?" without cross-reading the
+      # bootstrap step (temperloop#1474).
       - name: "Version embedded in the install"
         id: version
         continue-on-error: true
         run: |
           set -euo pipefail
+          pinned_commit="$(git -C "$TEMPERLOOP_HOME" rev-parse HEAD)"
+          pinned_desc="$(git -C "$TEMPERLOOP_HOME" describe --tags --always HEAD 2>/dev/null || echo "$pinned_commit")"
+          echo "install pinned to  : $pinned_commit ($pinned_desc)"
           shipped="$(sed -e 's/[[:space:]]//g' -e '/^$/d' "$TEMPERLOOP_HOME/VERSION" | head -n1)"
           [ -n "$shipped" ] || { echo "::error::install-tier2: pinned checkout $TEMPERLOOP_HOME has no readable VERSION file"; exit 1; }
           if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
