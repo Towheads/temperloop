@@ -37,7 +37,7 @@ when a backgrounded wait finishes — takes the full wait-and-elect path above.
 The **nightly headless one-shot has no such re-invoke loop**, so a
 backgrounded sync wait would end the session *at* the wait and the drain
 would never resume. That run instead takes a non-blocking arm: one cheap read
-of the lock files already listed (reaping any stale one), yield as a legible
+of the lock files, listed via its own filtered query (reaping any stale one), yield as a legible
 no-op if a live peer lock is present, otherwise write its own lock and
 proceed immediately — no wait, no election — releasing it at the end like any
 other run. The residual cost is a narrow check-then-write race: the
