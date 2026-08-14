@@ -125,14 +125,118 @@ while [ "$i" -le "$FIXN" ]; do
 done
 
 # ---------------------------------------------------------------------------
+# _composed_overlay_reason <root> — self-scoping detection (temperloop#1505),
+# same two signals as workflows/scripts/validate-onramp-anchors.sh's own
+# inline copy (itself matching workflows/scripts/tests/lib/sandbox.sh's
+# sandbox_skip_if_composed_tree, temperloop#267/#488/#1490) — reimplemented
+# inline as a predicate rather than sourced, because sandbox.sh's version
+# `exit 0`s the WHOLE calling suite and T4 needs to self-scope only ITS OWN
+# five-path coverage assertion, leaving T1/T2/T3/T5/T6 (which reference no
+# checkout-shape-dependent path) running for real on any checkout shape.
+# Prints a reason and returns 0 iff <root> is a composed overlay; prints
+# nothing and returns 1 on a kernel-native checkout.
+# ---------------------------------------------------------------------------
+_composed_overlay_reason() {
+  local root="$1"
+  if [ -f "$root/claude/CLAUDE.kernel.md" ] && [ -f "$root/claude/CLAUDE.overlay.md" ]; then
+    printf '%s\n' "claude/CLAUDE.overlay.md is present beside claude/CLAUDE.kernel.md under $root/claude"
+    return 0
+  fi
+  if [ -d "$root/kernel" ] && { [ -f "$root/kernel/bin/temperloop" ] || [ -f "$root/kernel/claude/CLAUDE.kernel.md" ]; }; then
+    printf '%s\n' "a kernel/ subtree is vendored at the repo root ($root/kernel)"
+    return 0
+  fi
+  return 1
+}
+
+# ---------------------------------------------------------------------------
 # T4 — the default file set has neither of the two blind spots temperloop#1050
 # names. There is deliberately NO pipefail predicate, so a sourced lib that sets
 # no `set` line (issue-marker-probe.sh — a live site, visible only WITHOUT such a
 # predicate) is covered; and the set is not `*.sh`-only, so the extensionless
 # entry points that DO set pipefail are covered too.
+#
+# SELF-SCOPED (temperloop#1505): the five paths below are asserted by exact
+# git-tracked granularity. On a composed overlay whose top-level dirs (bin,
+# .temperloop, workflows, ...) are DIRECTORY symlinks into a vendored
+# kernel/ subtree, `git ls-files` tracks each such dir as ONE symlink entry
+# and can never enumerate a path underneath it — bin/temperloop is simply
+# not a tracked path at that root, regardless of the file existing on disk.
+# That is a structural property of git, not a lint defect (see T4-overlay
+# below, which proves both that this predicate correctly detects the shape
+# and that the underlying symptom reproduces on a synthetic fixture). A
+# kernel-native checkout (this worktree) is unaffected and must still run
+# these five checks for real and strictly.
 # ---------------------------------------------------------------------------
 echo "T4 — default file set covers extensionless scripts and pipefail-less libs"
 listing="$(bash "$LINT" --list 2>/dev/null)"
+if overlay_reason="$(_composed_overlay_reason "$ROOT")"; then
+  echo "  SKIP: T4 coverage checks — composed overlay tree detected ($overlay_reason)."
+  echo "    git tracks bin/.temperloop/workflows (etc.) as directory symlinks into"
+  echo "    kernel/ here, so git ls-files cannot enumerate bin/temperloop and its"
+  echo "    siblings as individually tracked paths at this root — T4 asserts"
+  echo "    kernel-native path granularity a symlink-vendored consumer structurally"
+  echo "    cannot have (temperloop#1505). Exiting this check 0 (legible skip, not"
+  echo "    a failure); T1/T2/T3/T5/T6 are unaffected and still run for real."
+else
+  for want in \
+    bin/temperloop \
+    bin/foundation \
+    .temperloop/report.d/tokens \
+    workflows/scripts/report-producers/tokens \
+    workflows/scripts/lib/issue-marker-probe.sh
+  do
+    if printf '%s\n' "$listing" | grep -Fx "$want" >/dev/null; then
+      pass "file set includes $want"
+    else
+      fail "file set MISSING $want"
+    fi
+  done
+fi
+
+# ---------------------------------------------------------------------------
+# T4-overlay — proves the self-scoping above on a SYNTHETIC composed-overlay
+# fixture (temperloop#1505), reproducing the exact shape: a vendored kernel/
+# subtree plus directory symlinks at the overlay root (bin -> kernel/bin,
+# .temperloop -> kernel/.temperloop, workflows -> kernel/workflows, scripts
+# -> kernel/scripts — the entry-point symlink T7 above already uses this
+# same idiom for). Never reads the operator's real ~/dev/foundation.
+#
+# Proves three things:
+#   (a) the fixture genuinely reproduces the symptom — all five paths are
+#       unreachable via `git ls-files` through the fixture's own directory
+#       symlinks, exactly like the temperloop#1505 report;
+#   (b) _composed_overlay_reason correctly FLAGS the synthetic overlay root;
+#   (c) _composed_overlay_reason correctly leaves THIS kernel-native
+#       checkout ($ROOT) unflagged — the skip branch above never fires here.
+# ---------------------------------------------------------------------------
+echo "T4-overlay — composed-overlay detection reproduces + self-scopes the temperloop#1505 symptom"
+SYNTH="$(mktemp -d "${TMPDIR:-/tmp}/lint-t4-overlay.XXXXXX")"
+(
+  set -e
+  mkdir -p "$SYNTH/kernel/bin" "$SYNTH/kernel/.temperloop/report.d" \
+           "$SYNTH/kernel/workflows/scripts/report-producers" \
+           "$SYNTH/kernel/workflows/scripts/lib" "$SYNTH/kernel/scripts"
+  cp "$LINT" "$SYNTH/kernel/scripts/lint-pipe-grep-q.sh"
+  printf '#!/usr/bin/env bash\necho ok\n' > "$SYNTH/kernel/bin/temperloop"
+  printf '#!/usr/bin/env bash\necho ok\n' > "$SYNTH/kernel/bin/foundation"
+  printf '#!/usr/bin/env bash\necho ok\n' > "$SYNTH/kernel/.temperloop/report.d/tokens"
+  printf '#!/usr/bin/env bash\necho ok\n' > "$SYNTH/kernel/workflows/scripts/report-producers/tokens"
+  printf '#!/usr/bin/env bash\necho ok\n' > "$SYNTH/kernel/workflows/scripts/lib/issue-marker-probe.sh"
+  chmod +x "$SYNTH/kernel/bin/temperloop" "$SYNTH/kernel/bin/foundation" \
+           "$SYNTH/kernel/.temperloop/report.d/tokens" \
+           "$SYNTH/kernel/workflows/scripts/report-producers/tokens"
+  ln -s kernel/bin "$SYNTH/bin"
+  ln -s kernel/.temperloop "$SYNTH/.temperloop"
+  ln -s kernel/workflows "$SYNTH/workflows"
+  ln -s kernel/scripts "$SYNTH/scripts"
+  git -C "$SYNTH" init -q
+  git -C "$SYNTH" add -A
+  git -c user.name=test -c user.email=test@test -C "$SYNTH" commit -q -m synth
+)
+
+synth_listing="$(cd "$SYNTH" && bash scripts/lint-pipe-grep-q.sh --list 2>/dev/null)"
+synth_missing=0
 for want in \
   bin/temperloop \
   bin/foundation \
@@ -140,12 +244,27 @@ for want in \
   workflows/scripts/report-producers/tokens \
   workflows/scripts/lib/issue-marker-probe.sh
 do
-  if printf '%s\n' "$listing" | grep -Fx "$want" >/dev/null; then
-    pass "file set includes $want"
-  else
-    fail "file set MISSING $want"
-  fi
+  printf '%s\n' "$synth_listing" | grep -Fx "$want" >/dev/null || synth_missing=$((synth_missing + 1))
 done
+if [ "$synth_missing" -eq 5 ]; then
+  pass "T4-overlay: synthetic fixture reproduces the symptom (all 5 paths unreachable via git ls-files through the dir symlinks)"
+else
+  fail "T4-overlay: synthetic fixture did not reproduce the symptom ($synth_missing/5 paths missing; expected 5) — fixture shape may not match the real overlay layout"
+fi
+
+if synth_reason="$(_composed_overlay_reason "$SYNTH")"; then
+  pass "T4-overlay: detection correctly flags the synthetic composed-overlay fixture ($synth_reason)"
+else
+  fail "T4-overlay: detection did NOT flag the synthetic fixture — T4 would fail there instead of emitting a named skip"
+fi
+
+if this_reason="$(_composed_overlay_reason "$ROOT")"; then
+  fail "T4-overlay: detection incorrectly flagged THIS kernel-native checkout ($ROOT) as a composed overlay ($this_reason) — T4's real coverage checks would wrongly skip"
+else
+  pass "T4-overlay: detection correctly leaves this kernel-native checkout ($ROOT) unflagged — T4's coverage checks above ran for real"
+fi
+
+rm -rf "$SYNTH"
 
 # ---------------------------------------------------------------------------
 # T5 — self-exemption. The lint and this test necessarily carry the shape as
