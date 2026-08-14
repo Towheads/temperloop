@@ -188,6 +188,12 @@
 //   orchestrator rolls the list into the Step 6 summary tally (build.md §3f
 //   step 2's sibling verification_surface degraded-case pattern).
 //
+//   A parked record also carries `review: { ran, skipped, mandatory_ok }`
+//   (temperloop#1450) — the §3e reviewer tally across every round this item's
+//   build ran (the original 3e pass plus any CI-fix re-review), the source
+//   for the Step 6 "reviewer outcome" summary build.md §3e promises. Absent
+//   only for a spike (kind:spike skips 3b-3h and never reviews).
+//
 //   The workflow NEVER writes the plan note (race-safety: the orchestrator
 //   serializes all plan-note writeback at the level boundary). It only RETURNS
 //   what to write. Escalations leave the worktree INTACT (the orchestrator
@@ -255,6 +261,12 @@ const SPINE_OUTCOME_SCHEMA = {
         // tree. Collapsing either into GATE_FAIL is what made an escalation
         // payload indistinguishable from real breakage.
         'GATE_PASS', 'GATE_FAIL', 'GATE_ABSENT', 'GATE_SLICE', 'GATE_TIMEOUT',
+        // The 3e pre-push review's diff/routing-data fetch (temperloop#1430).
+        // ONE outcome carrying both the changed-file list and the
+        // reviewer-routing.tsv text — the .mjs does the routing DECISION
+        // itself (DESIGN NOTE 1: branching logic stays in legible .mjs), this
+        // step only reads the two raw inputs off the worktree.
+        'REVIEW_DIFF',
         'CLAIMED', 'CLAIM_CONFLICT',
         // worktree.sh deps-merged (3b-0) — its outcomes were consumed at the
         // call site (~line 595) but never listed here; an omitted outcome is
@@ -306,6 +318,11 @@ const SPINE_OUTCOME_SCHEMA = {
     failed_run_ids: { type: 'array', items: { type: ['number', 'string'] } },
     // free-form detail the executor may pass through (e.g. gate output tail)
     detail: { type: 'string' },
+    // REVIEW_DIFF passthrough (temperloop#1430) — the changed-file list (repo-
+    // relative paths, from `git diff --name-only` in the worktree) and the raw
+    // reviewer-routing.tsv text (empty string when the worktree ships none).
+    files: { type: 'array', items: { type: 'string' } },
+    tsv: { type: 'string' },
     // 3e.5 sliced-gate fields (temperloop#1021). resumeAt — the 0-based gate
     // index the NEXT slice starts at; failed — failures seen in THIS slice (the
     // driver accumulates); elapsedSecs / budgetSecs — the margin pair that makes
@@ -1942,7 +1959,12 @@ function discriminationGaps(verdict) {
     .map((r) => (r.criterion ? String(r.criterion) : '(unlabeled criterion)'));
 }
 
-function park(slug, pr, pushedSha, acceptanceResults, noCi, recovery, discriminationGapList) {
+// park()'s trailing two arguments are two INDEPENDENT degraded-case tallies
+// (temperloop#1319's discriminationGapList, temperloop#1450's review) that
+// happened to land on the same function in the same window — neither
+// supersedes the other; both are optional and independently omitted when
+// empty/absent, exactly like `no_ci` above.
+function park(slug, pr, pushedSha, acceptanceResults, noCi, recovery, discriminationGapList, review) {
   const parked = { slug, pr, pushed_sha: pushedSha, acceptance_results: acceptanceResults ?? [] };
   // temperloop#939: a record reconstructed from observable side-effects after a
   // lost worker return carries its provenance EXPLICITLY. `acceptance_unverified`
@@ -1968,6 +1990,14 @@ function park(slug, pr, pushedSha, acceptanceResults, noCi, recovery, discrimina
   if (discriminationGapList && discriminationGapList.length > 0) {
     parked.discrimination_gaps = discriminationGapList;
   }
+  // temperloop#1450 — the §3e Step 6 tally build.md §3e promises needs
+  // SOMEWHERE to read from. `review` is reviewTally()'d { ran, skipped,
+  // mandatory_ok } across every review round this item's build actually ran
+  // (the 3e pass plus any CI-fix re-review) — absent for a spike (skips
+  // 3b-3h, never reviews) or omitted by an older call site. `mandatory_ok`
+  // is false iff a mandatory (foundation#1007) route was ever genuinely
+  // skipped, not merely "an optional reviewer wasn't available".
+  if (review) parked.review = review;
   return {
     _kind: 'parked',
     slug,
@@ -1984,6 +2014,269 @@ function park(slug, pr, pushedSha, acceptanceResults, noCi, recovery, discrimina
 // null/absent result and crashing the level (temperloop#72).
 function machineryDenied(out) {
   return out == null || out.outcome === 'SPINE_DENIED';
+}
+
+// -----------------------------------------------------------------------------
+// §3e — the mandatory/routed pre-push review (temperloop#1430).
+// -----------------------------------------------------------------------------
+// build.md §3e's routing rules, run for REAL inside this driver — see that
+// section's own "why this runs inside the workflow" paragraph for the
+// orchestrator↔workflow-boundary rationale. Before this item the review lived
+// only as worker-discretion prose: the 3c worker CANNOT spawn a nested
+// `agent({agentType})` (the "No context-inheriting research forks" contract in
+// workerPrompt() forbids exactly that shape), so the mandatory
+// `claude/commands/*.md` → `workflow-reviewer` rule (foundation#1007) could
+// never actually run on the default Workflow path — every command-doc PR
+// reported a STRUCTURALLY GUARANTEED "skipped — unavailable", which read as a
+// legible degradation but was in fact a permanent no-op. This driver spawns
+// the reviewer itself, so the same skip notice now fires only when the
+// reviewer genuinely fails to resolve.
+
+// reviewDiffCmd — ONE solo runMachinery call that reads the two raw inputs the
+// routing DECISION needs off the worktree: the changed-file list (relative to
+// the fresh origin/<default>, three-dot so only THIS branch's own commits
+// count) and the raw reviewer-routing.tsv text (empty string when the
+// worktree ships none — a consuming repo that has not vendored it). Mirrors
+// pr.sh's own `default_branch()` fallback chain (origin/HEAD, else
+// main/master) so this never depends on pr.sh being invoked first.
+function reviewDiffCmd(wt) {
+  const tsvPath = `${wt}/workflows/scripts/config/reviewer-routing.tsv`;
+  return [
+    `cd ${sq(wt)} || exit 1`,
+    `default="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##')"`,
+    `if [ -z "$default" ]; then`,
+    `  for b in main master; do`,
+    `    if git show-ref --verify --quiet "refs/remotes/origin/$b"; then default="$b"; break; fi`,
+    `  done`,
+    `fi`,
+    `[ -n "$default" ] || default=main`,
+    `files_json="$(git diff --name-only "origin/$default...HEAD" 2>/dev/null | jq -R -s -c 'split("\\n") | map(select(length>0))')"`,
+    `[ -n "$files_json" ] || files_json='[]'`,
+    `if [ -f ${sq(tsvPath)} ]; then tsv_json="$(jq -R -s -c . < ${sq(tsvPath)})"; else tsv_json='""'; fi`,
+    `printf '{"outcome":"REVIEW_DIFF","files":%s,"tsv":%s}\\n' "$files_json" "$tsv_json"`,
+  ].join('\n');
+}
+
+// parseTsvRows / reviewGlobMatch — the SAME extension/glob axis
+// reviewer-routing.tsv declares (ADR 0008), read fresh off the worktree's own
+// copy each run so this never drifts from the tracked source of truth (never
+// a hardcoded restatement — the exact drift check-reviewer-routing.sh guards
+// against in build.md prose applies here too, just enforced by reading the
+// file instead of a lint).
+function parseTsvRows(tsvText) {
+  return String(tsvText ?? '')
+    .split('\n')
+    .map((l) => l.replace(/\r$/, ''))
+    .filter((l) => l && !l.trim().startsWith('#'))
+    .map((l) => l.split('\t'))
+    .filter((cols) => cols.length >= 2 && cols[0] && cols[1])
+    .map(([key, reviewer]) => ({ key: key.trim(), reviewer: reviewer.trim() }));
+}
+function reviewGlobMatch(key, file) {
+  if (key.endsWith('/**')) return file.startsWith(key.slice(0, -2));
+  return file.endsWith(key); // extension form, e.g. '.py'
+}
+
+const REVIEW_COMMANDS_DOC_RE = /^claude\/commands\/.*\.md$/;
+const REVIEW_PROSE_MD_RE = /\.md$/;
+
+// determineReviewers — build.md §3e's full routing rule set, applied to this
+// item's changed-file set. Every matching axis is included (build.md: "A
+// change matching more than one axis ... runs each matching reviewer").
+// Returns [{ reviewer, mandatory, reasons[] }, ...], reviewer names deduped.
+function determineReviewers(item, files, tsvText) {
+  const rows = parseTsvRows(tsvText);
+  const matched = new Map(); // reviewer -> Set(reasons)
+  const add = (reviewer, reason) => {
+    if (!reviewer) return;
+    if (!matched.has(reviewer)) matched.set(reviewer, new Set());
+    matched.get(reviewer).add(reason);
+  };
+
+  if (item.review) add(item.review, 'review: override');
+  if (item.kind === 'architectural') add('architecture-reviewer', 'kind: architectural');
+
+  let anyCommandsDoc = false;
+  for (const f of files) {
+    if (REVIEW_COMMANDS_DOC_RE.test(f)) {
+      anyCommandsDoc = true;
+      continue; // the mandatory rule below claims this file, never the tsv/prose fallback
+    }
+    let tsvHit = false;
+    for (const row of rows) {
+      if (reviewGlobMatch(row.key, f)) {
+        add(row.reviewer, `${row.key} -> ${row.reviewer}`);
+        tsvHit = true;
+      }
+    }
+    if (!tsvHit && REVIEW_PROSE_MD_RE.test(f)) {
+      add('docs-reviewer', 'prose *.md fallback (no tsv row)');
+    }
+  }
+  // Mandatory command-doc rule (foundation#1007) — always wins for a
+  // claude/commands/*.md diff, regardless of any tsv row or the prose
+  // fallback; never omitted, never worker-discretion.
+  if (anyCommandsDoc) add('workflow-reviewer', 'claude/commands/*.md (foundation#1007 — mandatory)');
+
+  return Array.from(matched.entries()).map(([reviewer, reasons]) => ({
+    reviewer,
+    mandatory: reviewer === 'workflow-reviewer' && anyCommandsDoc,
+    reasons: Array.from(reasons),
+  }));
+}
+
+// reviewPrompt — a read-only pass over THIS item's diff, carrying the same
+// effective (kernel ∪ project) principle set §3c hands the worker (build.md
+// §3e: "Reuse that resolution; do not re-resolve it here") as additional
+// evaluation criteria. The reviewer's own agent definition (claude/agents/…)
+// owns its checklist/output-format contract; this prompt only scopes it.
+function reviewPrompt(item, wt, route, files) {
+  return [
+    `You are running build.md's §3e mandatory/routed pre-push review for /build`,
+    `item \`${item.slug}\` (route: ${route.reasons.join('; ')}).`,
+    '',
+    '## Scope — READ-ONLY, advisory',
+    `Review the changes on this branch relative to origin/<default>, in the worktree`,
+    `at ${wt}. Run \`git diff\` / \`git log\` yourself there — the file list below is a`,
+    'pointer, not the diff. Make no edits, no commits.',
+    '',
+    `Changed files (${files.length}):`,
+    files.length ? files.map((f) => `  - ${f}`).join('\n') : '  (none reported)',
+    '',
+    ...principlesSection(item),
+    '',
+    "Follow your own agent definition's checklist and output format exactly.",
+  ].join('\n');
+}
+
+// reviewHasBlockingFinding — this repo's reviewer catalog (workflow-reviewer,
+// docs-reviewer, architecture-reviewer, the per-language reviewers) all share
+// one output contract: `### [HIGH | MEDIUM | LOW] <name> in <file>`. A HIGH
+// finding is the blocking bar — build.md §3e: "Blocking issues loop back to
+// 3c with the review feedback as context."
+function reviewHasBlockingFinding(text) {
+  return /^\s*###\s*\[\s*HIGH\b/im.test(String(text ?? ''));
+}
+
+// runReviewers — the §3e driver. Fetches the routing inputs (one machinery
+// call), resolves the matching reviewer set, and spawns EACH directly via
+// `agent({agentType})` — never delegated to the 3c worker. Returns:
+//   { escalation }                                   — the diff fetch itself failed
+//   { summary, notes, blocking: [], ran, skipped }   — normal return (blocking may be non-empty)
+// `summary` is a short tally line for the PR body (criterion: the PR must
+// carry real evidence of a real pass, never a guaranteed-skip default).
+// `notes` (temperloop#1450) is the FULL findings text for every reviewer that
+// ran, one `### <reviewer>` block each — a non-blocking (MEDIUM/LOW-only)
+// review is still advisory OUTPUT, not silently discarded after the HIGH
+// check. Empty string when nothing ran. Callers splice `notes` into a durable
+// surface (the PR body, at the 3f call site) rather than letting it evaporate
+// once the blocking check has read it.
+async function runReviewers(item, wt) {
+  const diffOut = await runMachinery(reviewDiffCmd(wt), {
+    label: `review-diff:${item.slug}`,
+    slug: item.slug,
+    phase: enterStage(STAGE_REVIEW),
+  });
+  if (machineryDenied(diffOut)) {
+    return { escalation: escalate(item.slug, 'machinery-denied', { step: 'review-diff', out: diffOut }) };
+  }
+  if (diffOut.outcome !== 'REVIEW_DIFF') {
+    return { escalation: escalate(item.slug, 'review-diff-error', { diffOut }) };
+  }
+  const files = Array.isArray(diffOut.files) ? diffOut.files : [];
+  const tsvText = typeof diffOut.tsv === 'string' ? diffOut.tsv : '';
+  const routes = determineReviewers(item, files, tsvText);
+  if (routes.length === 0) {
+    return { summary: '', notes: '', blocking: [], ran: [], skipped: [] };
+  }
+
+  const ran = [];
+  const skipped = [];
+  const blocking = [];
+  const notesParts = [];
+  for (const route of routes) {
+    let text;
+    try {
+      // No `schema` — a plain read-only advisory pass, not a machine-validated
+      // verdict (build.md §3e: "docs-reviewer is advisory only ... never a
+      // checks gate entry"). Deliberately no `model` override either: the
+      // reviewer's OWN agent definition sets its tier (e.g.
+      // claude/agents/workflow-reviewer.md declares `model: sonnet`).
+      text = await agent(reviewPrompt(item, wt, route, files), {
+        // `#<reviewer>` (not `:<reviewer>`) matches the label grammar every
+        // other multi-part label in this file already uses (e.g.
+        // `ci-batch:<slug>#<n>`) — the slug is always the run of characters up
+        // to the first `#`, never a second `:`-delimited segment.
+        label: `review:${item.slug}#${route.reviewer}`,
+        phase: stagePhase(STAGE_REVIEW),
+        agentType: route.reviewer,
+      });
+    } catch (err) {
+      const msg = String((err && err.message) || err);
+      // Reuse machineryAgent's own resolution-failure detection (temperloop#1014)
+      // as the precedent — the SAME two markers of "agent() could not resolve
+      // this agentType at all", never a broader catch. This is what makes the
+      // skip notice fire on GENUINE unavailability only, never as a guaranteed
+      // default: before this item there was no code path here at all, so the
+      // notice was unconditional; now it is conditioned on this real check.
+      if (MACHINERY_RESOLUTION_ERR.test(msg)) {
+        // Every reviewer this repo names (the tsv's own agent-catalog-path
+        // column; workflow-reviewer/docs-reviewer/architecture-reviewer/
+        // requirements-auditor) ships as source under claude/agents/ — so the
+        // remedy-bearing form (message-schema.md § Degradation notice's one
+        // sanctioned mode-2 variant) always applies here, never the bare form.
+        const note = `skipped — ${route.reviewer} available as source; run workflows/scripts/install/project-agents.sh to enable`;
+        log(`[${item.slug}] §3e review — ${note}`);
+        skipped.push({ reviewer: route.reviewer, note, mandatory: route.mandatory });
+        continue;
+      }
+      // A genuine (non-resolution) error is not evidence the capability is
+      // unavailable, but review is advisory (never a `checks` gate) — degrade
+      // rather than take the whole item down over an LLM-judgment pass.
+      const note = `skipped — ${route.reviewer} errored (${msg})`;
+      log(`[${item.slug}] §3e review — ${note}`);
+      skipped.push({ reviewer: route.reviewer, note, mandatory: route.mandatory });
+      continue;
+    }
+    if (text == null) {
+      const note = `skipped — ${route.reviewer} returned no verdict (skip/transient)`;
+      log(`[${item.slug}] §3e review — ${note}`);
+      skipped.push({ reviewer: route.reviewer, note, mandatory: route.mandatory });
+      continue;
+    }
+    const textStr = String(text);
+    ran.push({ reviewer: route.reviewer, mandatory: route.mandatory });
+    log(`[${item.slug}] §3e review — ${route.reviewer} ran (${route.reasons.join('; ')})`);
+    // temperloop#1450 — keep the FULL text, not just the name: a MEDIUM/LOW-only
+    // review is still real advisory output and must not evaporate once the HIGH
+    // check below has read it.
+    notesParts.push(`### ${route.reviewer}\n${textStr}`);
+    if (reviewHasBlockingFinding(textStr)) {
+      blocking.push({ reviewer: route.reviewer, findings: textStr });
+    }
+  }
+
+  const parts = [];
+  if (ran.length) parts.push(`§3e review — ran: ${ran.map((r) => r.reviewer).join(', ')}`);
+  if (skipped.length) parts.push(skipped.map((s) => s.note).join('; '));
+  return { summary: parts.join(' · '), notes: notesParts.join('\n\n'), blocking, ran, skipped };
+}
+
+// reviewTally — merge one or more runReviewers() rounds (the original 3e pass
+// plus any CI-fix re-review, temperloop#1450) into the ONE summary object
+// park() threads through to the orchestrator's Step 6 tally. `mandatory_ok`
+// is false iff any SKIPPED entry across every round carried `mandatory: true`
+// — i.e. the foundation#1007 command-doc rule was genuinely degraded at least
+// once, never merely "some optional reviewer wasn't available".
+function reviewTally(...rounds) {
+  const ran = [];
+  const skipped = [];
+  for (const r of rounds) {
+    if (!r) continue;
+    ran.push(...(r.ran ?? []));
+    skipped.push(...(r.skipped ?? []));
+  }
+  return { ran, skipped, mandatory_ok: !skipped.some((s) => s.mandatory) };
 }
 
 async function driveItem(item) {
@@ -2271,6 +2564,29 @@ async function driveItem(item) {
   // 3h below once `pr` is known, and threaded to park() for the Step 6 tally.
   const discGaps = discriminationGaps(verdict);
 
+  // --- 3e. Mandatory/routed pre-push review (temperloop#1430) --------------
+  // Runs HERE — between 3d and 3e.5, inside this driver — spawning the routed
+  // reviewer(s) itself via `agent({agentType})`. See build.md §3e's own "why
+  // this runs inside the workflow, not the orchestrator" paragraph: by the
+  // time this driver RETURNS to the orchestrator, 3h has removed the worktree
+  // a review would need to inspect and 3h.5 may already have merged the PR —
+  // a loop-back to 3c is only reachable from INSIDE driveItem, never after.
+  const review = await runReviewers(item, wt);
+  if (review.escalation) return review.escalation;
+  if (review.blocking.length > 0) {
+    return escalate(item.slug, 'review-blocking', { findings: review.blocking });
+  }
+  // Carried into the PR body at 3f below (verdictJson.summary) — the PR must
+  // carry REAL evidence a review ran (or a legible, non-guaranteed skip
+  // notice), never silently read as if the gate had passed by default.
+  // `notes` (temperloop#1450) is the reviewer's FULL findings text, rendered
+  // as its own `## Review notes` section so a non-blocking (MEDIUM/LOW-only)
+  // pass is still visible to the human reviewer — not computed, checked for
+  // HIGH, and thrown away.
+  const reviewSummarySuffix =
+    (review.summary ? `\n\n${review.summary}` : '') +
+    (review.notes ? `\n\n## Review notes\n${review.notes}` : '');
+
   // --- 3e.5. Parent-side acceptance gate (quality-gates.sh) ----------------
   // Run the project's static gate SSOT against the worker's work. ABSENT (the
   // script doesn't exist, e.g. foundation itself) → skip. FAIL → escalate
@@ -2474,7 +2790,11 @@ async function driveItem(item) {
   // reads from the verdict — summary + acceptance_results — assembled compactly.
   const verdictJson = JSON.stringify({
     status: 'done',
-    summary: verdict.summary ?? '',
+    // temperloop#1430: the §3e review outcome rides the PR body via `summary`
+    // (the one verdict field pr.sh always renders) — this is what lets a real
+    // review pass (or a genuine, non-guaranteed skip) be OBSERVED on the PR
+    // itself, rather than living only in this run's transcript.
+    summary: (verdict.summary ?? '') + reviewSummarySuffix,
     acceptance_results: verdict.acceptance_results ?? [],
     // temperloop#939: a recovered verdict carries a synthesized inline surface.
     // pr.sh resolves the surface by precedence (file flag → path key → inline),
@@ -2654,7 +2974,14 @@ async function driveItem(item) {
       `the worker never proved these checks can fail (temperloop#1319): ${discGaps.map((c) => `"${c}"`).join(', ')}`,
     );
   }
-  return park(item.slug, pr, ciResult.finalSha ?? pushedSha, verdict.acceptance_results, ciResult.noCi === true, recovery, discGaps);
+  // temperloop#1450 — merge the ORIGINAL 3e pass with any CI-fix re-review
+  // round(s) (ciResult.fixReviewRounds) into the ONE tally park() carries, so
+  // the Step 6 summary can render whether §3e actually discharged, across
+  // every review this item's build ran, not just the first. Two INDEPENDENT
+  // degraded-case tallies ride this one park() call now (discGaps from
+  // #1319, reviewSummary from #1450) — see park()'s own signature comment.
+  const reviewSummary = reviewTally(review, ...(ciResult.fixReviewRounds ?? []));
+  return park(item.slug, pr, ciResult.finalSha ?? pushedSha, verdict.acceptance_results, ciResult.noCi === true, recovery, discGaps, reviewSummary);
 }
 
 // -----------------------------------------------------------------------------
@@ -2727,6 +3054,14 @@ async function ciPollLoop(item, ownerRepo, pr, initialSha, wt) {
   // `sha` changes (buffered results are pinned to the previous head — #254).
   let buffer = [];
   let batchIdx = 0;
+  // temperloop#1450 — one runReviewers() result per CI-fix commit re-reviewed
+  // below (the CI_FAILED arm), so a green resolution can hand them back to
+  // driveItem for the Step 6 tally (park()'s `review` argument via
+  // reviewTally()). A CI-fix commit can touch anything — including the very
+  // command doc whose edit tripped the ORIGINAL lint failure — and without
+  // this it would ship unreviewed under a PR body that only describes the
+  // FIRST push.
+  const fixReviewRounds = [];
 
   for (let slice = 0; slice < maxSlices; slice++) {
     if (buffer.length === 0) {
@@ -2814,7 +3149,7 @@ async function ciPollLoop(item, ownerRepo, pr, initialSha, wt) {
       { outcome: 'ERROR', error: 'ci-poll step produced no result in its batch' };
 
     if (out.outcome === 'CI_GREEN') {
-      return { ok: true, finalSha: sha };
+      return { ok: true, finalSha: sha, fixReviewRounds };
     }
 
     if (out.outcome === 'NO_CI') {
@@ -2825,7 +3160,7 @@ async function ciPollLoop(item, ownerRepo, pr, initialSha, wt) {
       // `no_ci: true` sentinel, instead of falling through to the catch-all
       // below and escalating `ci-failed` (the exact mis-escalation this fixes).
       log(`[${item.slug}] PR #${pr}: no CI configured on this SHA — skipping the CI gate (slice ${slice + 1})`);
-      return { ok: true, finalSha: sha, noCi: true };
+      return { ok: true, finalSha: sha, noCi: true, fixReviewRounds };
     }
 
     if (out.outcome === 'TIMEOUT') {
@@ -2870,6 +3205,26 @@ async function ciPollLoop(item, ownerRepo, pr, initialSha, wt) {
       if (fixVerdict.status !== 'done') {
         return { escalation: 'ci-failed', payload: { fixVerdict, sha } };
       }
+      // temperloop#1450 — re-run §3e against the CI-fix DIFF before pushing it.
+      // The fix worker can touch anything (including the very command doc
+      // whose edit tripped the original lint failure): without this, a
+      // CI-fix commit ships to the open PR with NO second pass through the
+      // mandatory claude/commands/*.md -> workflow-reviewer rule
+      // (foundation#1007) — the exact structurally-guaranteed-skip class this
+      // item exists to close, just relocated one stage later than 3f. Reuses
+      // the SAME runReviewers() the original 3e pass used; its own diff fetch
+      // re-reads the worktree, whose HEAD now includes the fix commit, so the
+      // diff naturally covers the fix on top of the original push.
+      const fixReview = await runReviewers(item, wt);
+      if (fixReview.escalation) {
+        const esc = fixReview.escalation.escalation;
+        return { escalation: esc.kind, payload: { ...esc.payload, sha } };
+      }
+      if (fixReview.blocking.length > 0) {
+        log(`[${item.slug}] §3e review on the CI-fix commit found a BLOCKING finding — escalating before push`);
+        return { escalation: 'review-blocking', payload: { findings: fixReview.blocking, stage: 'ci-fix', sha } };
+      }
+      fixReviewRounds.push(fixReview);
       // Push the fixed SHA and pin the re-poll to it. This is a plain push — no
       // --force — because the CI-fix worker's head is a fast-forward descendant
       // by construction: it resets to the remote tip (`git reset --hard
@@ -2989,11 +3344,12 @@ const PHASE_TITLE_MAX_ITEMS = 3;
 // collapsed row backwards.
 const STAGE_CLAIM = 'claim';
 const STAGE_BUILD = 'build';
+const STAGE_REVIEW = 'review';
 const STAGE_GATE = 'gate';
 const STAGE_PR = 'PR';
 const STAGE_CI = 'CI';
 const STAGE_RECOVER = 'recover';
-const STAGE_ORDER = [STAGE_CLAIM, STAGE_BUILD, STAGE_GATE, STAGE_PR, STAGE_CI];
+const STAGE_ORDER = [STAGE_CLAIM, STAGE_BUILD, STAGE_REVIEW, STAGE_GATE, STAGE_PR, STAGE_CI];
 
 // The items whose slugs/issues every stage heading names — the ACTIVE subset
 // (post-onlySlugs filter), assigned by buildLevel() before any fan-out. Empty
