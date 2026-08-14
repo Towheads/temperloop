@@ -387,6 +387,11 @@ const WORKER_VERDICT_SCHEMA = {
             description:
               'A POINTER to where the criterion is verifiable: file:line, test name, or command + its verdict. Not the argument for it — that belongs in the verification-surface FILE. Word-bounded; see the prompt\'s "Output shape" section.',
           },
+          discrimination_evidence: {
+            type: 'string',
+            description:
+              'Proof this criterion\'s own check can actually FAIL, not just that it currently passes: which mechanism you removed or broke, that the suite went RED without it, and that restoring it went GREEN. Required whenever the run\'s prompt carries the "Discrimination evidence" section (temperloop#1319; today: /build only — see REQUIRE_DISCRIMINATION_EVIDENCE); omit only when this criterion genuinely has no test to discriminate. Word-bounded; see the prompt\'s "Output shape" section.',
+          },
         },
       },
     },
@@ -689,6 +694,36 @@ const WORKER_EVIDENCE_MAX_WORDS = Math.max(
     ? Math.floor(Number(input.workerEvidenceMaxWords))
     : WORKER_EVIDENCE_MAX_WORDS_DEFAULT,
 );
+
+// --- §3c test-discrimination evidence requirement (temperloop#1319) ---------
+// A worker reporting `passed: true` on its own say-so is exactly the class of
+// self-report this pipeline has repeatedly had to distrust — a check that
+// PASSES because it can never FAIL (a mistargeted assertion, a fixture that
+// never exercises the changed path) looks identical, from the returned
+// verdict alone, to a check that genuinely discriminates. The fix is not more
+// prose asking the worker to "verify carefully" — it is asking for the
+// specific artifact that PROVES discrimination happened: which mechanism was
+// removed, that the suite went red without it, that restoring it went green.
+//
+// Gated on a per-run input flag (`requireDiscriminationEvidence`, boolean —
+// `=== true`, not `||`/`??`, since an accidentally-truthy non-boolean must
+// never silently arm a requirement the caller didn't intend) rather than
+// baked unconditionally into the shared workerPrompt(), on the SAME Step-0
+// hand-off seam as gateSliceSecs/principlesSummaries above, and for a
+// structural reason specific to THIS setting: workerPrompt() is shared by
+// THREE callers whose `acceptance` shape differs. `/build`'s items carry
+// real, per-criterion `acceptance:` bullets from a plan note — exactly the
+// shape this discipline targets. `/sweep` and `/fix` (build-level.mjs's
+// other two callers, per their own Step 0 sourcing of this same file) pass a
+// single bare-string placeholder, `"(self-verify the issue is resolved)"` —
+// not a testable per-criterion bullet at all, so demanding mechanism/red/green
+// evidence FOR it would ask the worker to fabricate structure the caller
+// never supplied. `/build` passes `requireDiscriminationEvidence: true`
+// explicitly (claude/commands/build.md Step 3 args); `/sweep` and `/fix`
+// omit the key and the requirement stays OFF for them — the same
+// caller-scoped widening `principlesSummaries` already establishes for a
+// different §3c requirement, not a new pattern.
+const REQUIRE_DISCRIMINATION_EVIDENCE = input.requireDiscriminationEvidence === true;
 
 // --- §3c effective engineering principles (temperloop#1432) ------------------
 // build.md §3c requires embedding the EFFECTIVE (kernel ∪ project) engineering
@@ -1286,6 +1321,38 @@ function principlesSection(item) {
   return lines;
 }
 
+// discriminationEvidenceSection — the §3c "test-discrimination evidence"
+// requirement (temperloop#1319), a SELF-CONTAINED section appended once into
+// workerPrompt()'s array, mirroring principlesSection()'s shape so a sibling
+// edit to workerPrompt() rebases cleanly. Gated on REQUIRE_DISCRIMINATION_
+// EVIDENCE (see that constant's own comment for why) — returns an EMPTY
+// array, not a degraded/notice variant, when the caller didn't ask for it:
+// unlike principlesSummaries' "never silence" rule, an unrequired discipline
+// staying silent is correct here, because /sweep's and /fix's bare-string
+// acceptance has no per-criterion shape for the requirement to attach to.
+function discriminationEvidenceSection() {
+  if (!REQUIRE_DISCRIMINATION_EVIDENCE) return [];
+  return [
+    '',
+    '## Discrimination evidence — prove each check can actually FAIL (temperloop#1319)',
+    'A self-report that a check "passed" is worthless if the check could never have',
+    'failed. For EVERY acceptance criterion above, report — in that criterion\'s',
+    '`acceptance_results[].discrimination_evidence` field — the evidence that your',
+    'verification actually DISCRIMINATES pass from fail, at minimum:',
+    '- **Which mechanism you removed or broke** to exercise the negative case (the',
+    '  specific call, guard, assertion, or behavior the criterion depends on).',
+    '- **That the suite went RED without it** — the failing run, command + verdict.',
+    '- **That restoring it went GREEN** — the passing run, command + verdict.',
+    'A criterion you never watched fail is unverified, no matter how confidently you',
+    'report it `passed: true` — a vacuously-passing check is indistinguishable from a',
+    'real one in the returned verdict alone, which is exactly the failure this field',
+    'exists to close. If a criterion genuinely has no test to discriminate (a docs-only',
+    'change, a config value with no behavior to break), say so explicitly in that field',
+    'rather than leaving it empty. Like `evidence`, keep it to a compact pointer — at',
+    `most ${WORKER_EVIDENCE_MAX_WORDS} words — never a narrative.`,
+  ];
+}
+
 function workerPrompt(item, worktreePath, extraSection) {
   const accList = acceptanceList(item);
   const accBullets = accList
@@ -1336,6 +1403,7 @@ function workerPrompt(item, worktreePath, extraSection) {
     '',
     '## Acceptance (self-verify each before returning done)',
     accBullets || '  - (none specified)',
+    ...discriminationEvidenceSection(),
     '',
     '## Verification surface — write to a FILE, return only the path',
     `Write your verification-surface markdown block to ${worktreePath}/.build-verification.md`,
