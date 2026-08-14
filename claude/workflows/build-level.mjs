@@ -690,6 +690,65 @@ const WORKER_EVIDENCE_MAX_WORDS = Math.max(
     : WORKER_EVIDENCE_MAX_WORDS_DEFAULT,
 );
 
+// --- §3c effective engineering principles (temperloop#1432) ------------------
+// build.md §3c requires embedding the EFFECTIVE (kernel ∪ project) engineering
+// principle set in the worker's prompt, in summary form, so the worker weighs
+// its own choices against it. This file cannot resolve that itself: resolving
+// it needs `claude/engineering-principles.md` (a repo FILE) merged with a
+// project's `Projects/<project>/Priorities.md` § Principles (a VAULT read via
+// MCP) — and the Workflow runtime has neither a filesystem nor tool access
+// (DESIGN NOTE 1, same structural wall GATE_SLICE_SECS/model-tier settings hit
+// above). So this rides the SAME Step-0-hand-off seam: the orchestrator
+// resolves the merge ONCE PER RUN, per distinct (repo, project) pair
+// (`claude/commands/build.md` § Step 1.8), and hands the RENDERED text
+// straight through as `input.principlesSummaries` — a map keyed by each
+// pair's `repo` string (the plan's `ownerRepo` for the default/primary pair,
+// an item's own `repo:` for a cross-repo pair) — plus `input.principlesDefaultRepo`
+// (== `ownerRepo`) for the items that carry no `repo:` of their own.
+const PRINCIPLES_SUMMARIES =
+  input.principlesSummaries && typeof input.principlesSummaries === 'object'
+    ? input.principlesSummaries
+    : {};
+const PRINCIPLES_DEFAULT_REPO = input.principlesDefaultRepo || '';
+
+// PRINCIPLES_KERNEL_FALLBACK — last-resort degradation, used ONLY when the
+// orchestrator supplied no `principlesSummaries` at all this run (an older
+// orchestrator, or a `sweep.md`/`fix.md` caller — both share this file's
+// `workerPrompt()` but do not yet resolve/pass this hand-off; #1432 scopes
+// `/build` only). A static snapshot of `claude/engineering-principles.md`'s
+// kernel-only principle NAMES — this runtime cannot read that file itself to
+// stay current, so a worker on the fallback path gets a legible floor (never
+// a silently empty set, which from the outside would look identical to
+// "principles applied") plus an explicit notice that the project extension
+// was NOT applied. See principlesSection() below for the notice text.
+const PRINCIPLES_KERNEL_FALLBACK = [
+  '1. Every meaningful behavior tested for every state — no coverage-percentage gate [kernel]',
+  '2. Quality bars strict from day one [kernel]',
+  '3. Deterministic tests over recorded fixtures, never live-network [kernel]',
+  '4. Verify at the human-AI seam [kernel]',
+  '5. Counter AI failure modes structurally [kernel]',
+  '6. Limit blast radius through boundaries [kernel]',
+  '7. Advisory over enforced discipline [kernel]',
+].join('\n');
+
+// resolvePrinciplesSummary — per-item lookup: this item's own `repo:` first
+// (a cross-repo item's pair), else the default pair, else the static
+// fallback. Returns { text, degraded } so the caller can append the
+// degradation notice only when the fallback actually fired.
+function resolvePrinciplesSummary(item) {
+  const key = (item && item.repo) || PRINCIPLES_DEFAULT_REPO;
+  if (key && Object.prototype.hasOwnProperty.call(PRINCIPLES_SUMMARIES, key)) {
+    return { text: PRINCIPLES_SUMMARIES[key], degraded: false };
+  }
+  if (
+    PRINCIPLES_DEFAULT_REPO &&
+    Object.prototype.hasOwnProperty.call(PRINCIPLES_SUMMARIES, PRINCIPLES_DEFAULT_REPO)
+  ) {
+    return { text: PRINCIPLES_SUMMARIES[PRINCIPLES_DEFAULT_REPO], degraded: false };
+  }
+  return { text: PRINCIPLES_KERNEL_FALLBACK, degraded: true };
+}
+
 // -----------------------------------------------------------------------------
 // Command-building helpers — EVERY interpolated value goes through sq().
 // -----------------------------------------------------------------------------
@@ -1193,6 +1252,40 @@ function acceptanceList(item) {
       : [];
 }
 
+// principlesSection — the §3c "effective engineering principles" block
+// (temperloop#1432), a SELF-CONTAINED section appended once into
+// workerPrompt()'s array (below) rather than threaded through existing
+// lines, so a sibling edit to workerPrompt() (e.g. #1319) rebases cleanly on
+// this one. Embeds the orchestrator-resolved (or, on the degraded path,
+// static-fallback) summary verbatim — this file never re-derives the merge
+// itself (see the PRINCIPLES_* block above for why it can't).
+function principlesSection(item) {
+  const resolved = resolvePrinciplesSummary(item);
+  const lines = [
+    '## Effective engineering principles — weigh your choices against these',
+    'This is the SAME merged (kernel ∪ project) principle set build.md § Step 1.8',
+    'resolves once for this run and § 3e hands the pre-push reviewer for this',
+    "item's (repo, project) pair — reused here, not re-derived. Weigh your own",
+    'choices against it, and if your own summary cites a principle-shaped',
+    'concern, name the principle and its origin (`kernel` or `project`).',
+    '',
+    resolved.text,
+  ];
+  if (resolved.degraded) {
+    lines.push(
+      '',
+      'DEGRADED — no orchestrator-resolved principle set reached this worker this run',
+      '(`principlesSummaries` was absent, e.g. a `/sweep` or `/fix` caller that has not',
+      "wired build.md's Step 1.8 hand-off yet). The list above is a STATIC KERNEL-ONLY",
+      'snapshot — this runtime has no filesystem to read',
+      '`claude/engineering-principles.md` itself — with NO project `## Principles`',
+      'extension applied. Treat it as a floor, never as confirmation the project slot',
+      'is empty.',
+    );
+  }
+  return lines;
+}
+
 function workerPrompt(item, worktreePath, extraSection) {
   const accList = acceptanceList(item);
   const accBullets = accList
@@ -1296,6 +1389,8 @@ function workerPrompt(item, worktreePath, extraSection) {
     '- If a single command would exceed the ~10-min Bash foreground cap — or the tighter',
     '  ~5-min cache-TTL budget above — NARROW or split it, or return `blocked` / `failed`',
     '  and let the orchestrator run it parent-side — never background-and-wait.',
+    '',
+    ...principlesSection(item),
     '',
     extraSection ?? '',
     '',

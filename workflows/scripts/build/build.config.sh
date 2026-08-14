@@ -816,7 +816,18 @@ fi
 # largest tracked file" convention as the very first seeding of this cap:
 # 1100. The ratchet moves both ways — a future raise still needs its own
 # measured justification, never a restored high-water mark.
-: "${PROSE_BUDGET_TIER2_FILE_CAP:=1100}"
+#
+# RAISED, 1100 → 1111 (2026-08-13, temperloop#1432). build.md §3c required
+# resolving the effective (kernel ∪ project) engineering principle set and
+# embedding it in the worker prompt, but nothing implemented it — this item
+# closes that gap: a new "## Step 1.8 — Resolve the effective engineering
+# principle set" section (the once-per-run orchestrator resolution §3c/§3e
+# both reuse) plus one new arg-description bullet for its `principlesSummaries`
+# / `principlesDefaultRepo` hand-off. Trimmed once already (merged 7 numbered
+# sub-steps to 5) before raising; `claude/commands/build.md` is again the
+# largest tracked file, at 1111 — same zero-headroom convention as every
+# prior seeding.
+: "${PROSE_BUDGET_TIER2_FILE_CAP:=1111}"
 
 # ── Pipeline spend profiler (temperloop#958) ───────────────────────────────
 # Settings for `workflows/scripts/pipeline-spend-report.sh` and its

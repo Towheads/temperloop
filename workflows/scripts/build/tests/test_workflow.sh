@@ -3811,5 +3811,120 @@ grep -q "phase: phaseName ?? 'worker'" "$MJS" \
   || fail "#1294: the off-path recovery spawns must use stagePhase(), which never moves the cursor"
 echo "PASS: #1294 stage-phase guard — one monotonic enterStage() cursor, explicit opts.phase at every spawn, meta.phases deliberately absent"
 
+# ============================================================================
+# TEST (K1432): §3c "effective engineering principles" — the orchestrator-
+#   resolved (kernel ∪ project) set rides input.principlesSummaries /
+#   input.principlesDefaultRepo into workerPrompt(), keyed per (repo, project)
+#   pair. Four sub-cases in one node case (mirrors K1080's shape): the default
+#   pair, a cross-repo item's OWN pair, an item whose repo has no resolved
+#   pair (falls back to default, NOT degraded), and principlesSummaries
+#   omitted entirely (falls back to the static kernel-only snapshot, WITH an
+#   explicit degradation notice — never a silent empty set).
+# ============================================================================
+run_node_case "K1432: effective engineering principles ride input.principlesSummaries into the worker prompt, keyed by (repo, project) pair" "
+$PREAMBLE
+
+// Pass 1: default pair resolved and supplied — embedded verbatim, no DEGRADED notice.
+happyMachinery('pr-item', 910, 'shaPr');
+happyWorker('pr-item');
+globalThis.args = { ...baseArgs, principlesSummaries: {
+  'owner/repo': '1. Test Kernel Principle — do the thing [kernel]\\n2. Test Project Principle — do the other thing [project]\\n\\n(kernel (7) ∪ project (Projects/repo/Priorities.md: 1))',
+}, principlesDefaultRepo: 'owner/repo', items: [
+  { slug: 'pr-item', branch: 'build/pr-item', title: 'PR item', kind: 'impl', acceptance: ['c'] },
+]};
+let mod = await loadLevel();
+await mod.default();
+let w = callLog.find(c => (c.opts.label||'') === 'worker:pr-item');
+let reason = null;
+if (!w) reason = 'no worker call logged (default pair)';
+else if (!w.promptFull.includes('## Effective engineering principles')) reason = 'worker prompt missing the principles section (default pair)';
+else if (!w.promptFull.includes('Test Kernel Principle')) reason = 'worker prompt missing the resolved kernel entry (default pair)';
+else if (!w.promptFull.includes('Test Project Principle')) reason = 'worker prompt missing the resolved project entry (default pair)';
+else if (w.promptFull.includes('DEGRADED')) reason = 'default-pair prompt must NOT carry the degradation notice';
+if (reason) { console.log(JSON.stringify({ ok: false, reason })); process.exit(0); }
+
+// Pass 2: a cross-repo item (its own repo: differs from ownerRepo) picks ITS
+// pair's summary, not the default's.
+callLog.length = 0;
+happyMachinery('xr-item', 911, 'shaXr');
+happyWorker('xr-item');
+globalThis.args = { ...baseArgs, principlesSummaries: {
+  'owner/repo': '1. Home Principle [kernel]',
+  'other/repo': '1. Foreign Kernel Principle [kernel]\\n\\n(kernel (7) only — no project § Principles declared)',
+}, principlesDefaultRepo: 'owner/repo', items: [
+  { slug: 'xr-item', branch: 'build/xr-item', title: 'XR item', kind: 'impl', acceptance: ['c'], repo: 'other/repo' },
+]};
+mod = await loadLevel();
+await mod.default();
+w = callLog.find(c => (c.opts.label||'') === 'worker:xr-item');
+if (!w) reason = 'no worker call logged (cross-repo pair)';
+else if (!w.promptFull.includes('Foreign Kernel Principle')) reason = 'cross-repo item must embed ITS OWN pair\\'s summary';
+else if (w.promptFull.includes('Home Principle')) reason = 'cross-repo item must NOT fall back to the default pair when its own pair is resolved';
+if (reason) { console.log(JSON.stringify({ ok: false, reason })); process.exit(0); }
+
+// Pass 3: an item whose OWN repo: has no resolved pair falls back to the
+// default pair's summary (never the static fallback, never DEGRADED — a
+// resolved principlesSummaries map WAS supplied this run).
+callLog.length = 0;
+happyMachinery('unk-item', 912, 'shaUnk');
+happyWorker('unk-item');
+globalThis.args = { ...baseArgs, principlesSummaries: {
+  'owner/repo': '1. Home Principle [kernel]',
+}, principlesDefaultRepo: 'owner/repo', items: [
+  { slug: 'unk-item', branch: 'build/unk-item', title: 'Unknown-repo item', kind: 'impl', acceptance: ['c'], repo: 'unresolved/repo' },
+]};
+mod = await loadLevel();
+await mod.default();
+w = callLog.find(c => (c.opts.label||'') === 'worker:unk-item');
+if (!w) reason = 'no worker call logged (unresolved-repo fallback)';
+else if (!w.promptFull.includes('Home Principle')) reason = 'an item whose own repo pair was not resolved must fall back to the DEFAULT pair\\'s summary';
+else if (w.promptFull.includes('DEGRADED')) reason = 'falling back to the default pair is NOT the degraded path — principlesSummaries WAS supplied this run';
+if (reason) { console.log(JSON.stringify({ ok: false, reason })); process.exit(0); }
+
+// Pass 4: principlesSummaries entirely OMITTED (e.g. sweep.md/fix.md today) —
+// worker still gets a bounded, legible list: the static kernel-only fallback
+// PLUS an explicit DEGRADED notice, never a silent empty set.
+callLog.length = 0;
+happyMachinery('deg-item', 913, 'shaDeg');
+happyWorker('deg-item');
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'deg-item', branch: 'build/deg-item', title: 'Degraded item', kind: 'impl', acceptance: ['c'] },
+]};
+mod = await loadLevel();
+await mod.default();
+w = callLog.find(c => (c.opts.label||'') === 'worker:deg-item');
+if (!w) reason = 'no worker call logged (degraded fallback)';
+else if (!w.promptFull.includes('## Effective engineering principles')) reason = 'omitted principlesSummaries must still carry the principles section (never silently drop it)';
+else if (!w.promptFull.includes('Every meaningful behavior tested for every state')) reason = 'omitted principlesSummaries must fall back to the static kernel-only snapshot';
+else if (!w.promptFull.includes('DEGRADED')) reason = 'omitted principlesSummaries must carry an explicit DEGRADED notice — never a silent kernel-only set';
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+# --- K1432 static lockstep guards: §3c \"effective engineering principles\" ---
+# build.md's Step 1.8 resolves the merged set once per run; §3c/build-level.mjs
+# embed it; a future edit that drops either surface leaves the other rotting.
+grep -q 'function principlesSection' "$MJS" \
+  || fail "#1432: principlesSection() missing — workerPrompt must embed the resolved principle set as its own self-contained section"
+grep -q '## Effective engineering principles — weigh your choices against these' "$MJS" \
+  || fail "#1432: workerPrompt() must embed the '## Effective engineering principles' section"
+grep -q 'input.principlesSummaries' "$MJS" \
+  || fail "#1432: PRINCIPLES_SUMMARIES must read the orchestrator-supplied input.principlesSummaries (Step-0/Step-1.8 hand-off seam)"
+grep -q 'input.principlesDefaultRepo' "$MJS" \
+  || fail "#1432: PRINCIPLES_DEFAULT_REPO must read the orchestrator-supplied input.principlesDefaultRepo"
+grep -q 'PRINCIPLES_KERNEL_FALLBACK' "$MJS" \
+  || fail "#1432: a static kernel-only fallback must exist for when principlesSummaries is entirely absent (never a silent empty set)"
+grep -q "'DEGRADED —" "$MJS" \
+  || fail "#1432: the fallback path must emit a legible DEGRADED notice, not a silent kernel-only list"
+K1432_BUILD_MD="$REPO_ROOT/claude/commands/build.md"
+if [ -f "$K1432_BUILD_MD" ]; then
+  grep -q 'principlesSummaries' "$K1432_BUILD_MD" \
+    || fail "#1432: build.md must name principlesSummaries in its Step 3 args hand-off (lockstep with build-level.mjs)"
+  grep -q 'principlesDefaultRepo' "$K1432_BUILD_MD" \
+    || fail "#1432: build.md must name principlesDefaultRepo in its Step 3 args hand-off (lockstep with build-level.mjs)"
+  grep -q 'Step 1.8' "$K1432_BUILD_MD" \
+    || fail "#1432: build.md must define Step 1.8 — the once-per-run orchestrator resolution §3c/§3e both reuse"
+fi
+echo "PASS: #1432 principles guard — workerPrompt embeds the resolved (or legibly degraded) effective principle set; build.md Step 1.8/§3c/§3e in lockstep"
+
 echo ""
 echo "All test_workflow.sh cases passed."
