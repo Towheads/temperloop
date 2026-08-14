@@ -108,6 +108,16 @@
 # shell + Linux CI.
 
 set -uo pipefail
+# `exec` is a POSIX special builtin: in posix mode, a redirection error on it
+# exits a NON-INTERACTIVE shell immediately, so the `if ! { exec 3< "$src";
+# } 2>/dev/null; then ...` guard below never gets to run its CANNOT EVALUATE
+# arm — the failed-open diagnostic is silently lost (rc still correctly stays
+# 1; only the DIAGNOSTIC vanishes). Narrow trigger (only when POSIXLY_CORRECT
+# is set in the environment), but a real, invisible loss on precisely the
+# fail-closed path epic #1409 exists to protect (temperloop#1370 review).
+# Deterministically closed here rather than left to whatever mode the caller
+# happened to be in.
+set +o posix
 
 SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EMIT_SCRIPT="$SCRIPT_DIR/emit-model-usage.sh"
