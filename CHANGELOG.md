@@ -14,6 +14,271 @@ reads that marker; a stranger greps for it before pulling.
 
 ## [Unreleased]
 
+## [0.31.0] - 2026-08-14
+
+### Added
+
+A new gate catches a script that has lost its executable bit. Every gate invokes
+scripts as `bash <path>` or through a make target, so the bit is invisible to CI
+and a script could ship non-executable indefinitely and stay green — it was
+caught twice by hand, both times surfacing only as an incidental `mode change`
+line in rebase output.
+
+Keyed to an explicit registry (`workflows/scripts/config/exec-bit-registry.tsv`)
+rather than the shebang rule the originating issue proposed. Measured against
+this tree, that rule fired on 96 files — roughly 35 sourced libraries, 58 test
+harnesses invoked as `bash test_x.sh`, 2 sourced config files, and 15 others —
+of which exactly one was a genuine defect. The registry lists the files that must
+carry the bit, so absence of an entry is not a finding.
+
+A grandfather allowlist exists with a shrink-only ratchet, and is currently
+empty: an opt-in registry needs nothing grandfathered. The gate fails closed on
+an absent, unreadable or empty registry rather than passing with nothing checked.
+
+### Changed
+
+`validate-model-usage-emit.sh` now validates every record in a raw-lake file
+with a single batched `python3` process instead of spawning one `python3`
+process per record. The old shape measured ~28ms/record of pure fork/exec
+overhead: 100 records added ~3s to `make gates`, 500 added ~14s, and a
+10,000-record raw lake (a lake that only grows, since `meta/data/raw/*` is
+gitignored and nothing prunes it) added roughly 5 minutes locally. CI itself
+paid nothing (the gitignored lake is always empty there), so this only ever
+cost developers, silently, more every week.
+
+Behavior is unchanged: the same per-record shape/enum/no-host checks run
+against every record, `FAIL` lines still cite the exact same `file:line`,
+and every degenerate-input case (a missing/unreadable raw-lake directory, a
+closed stdin, an unresolvable repo root) still exits non-zero as
+`CANNOT EVALUATE`. The batched call also fails closed if `python3` itself
+crashes mid-batch, or returns fewer verdicts than records sent, rather than
+risk silently treating an unvalidated tail of records as passing.
+
+The contract-surface table in `VERSIONING.md` now carries a row for the changelog
+machinery itself — `check-changelog-entry.sh`, `lib/changelog.sh`,
+`assemble-changelog.sh` and `VERSIONING.md`. The gate parses that table at run
+time to decide what counts as contract surface, and the table did not previously
+cover the gate, so a change to the release-entry contract resolved to no
+contract-surface path and required no entry. A breaking change to that machinery
+shipped an entry only because its author volunteered one.
+
+Categorised `changed` rather than `.breaking`: a vendoring overlay need do
+nothing to keep working. The effect is that a pull request touching those paths
+now owes an entry like any other contract-surface change, and the existing
+opt-out marker still applies. Measured against the last ten merged pull
+requests, none would newly owe an entry.
+
+- **Kernel gates that assert the kernel's own product content are now a
+  class-gated set, so a vendoring overlay can run a release green** (#1423).
+  `KERNEL_GATES` had one tier — every gate the kernel declares, every adopter
+  runs — but a handful of those gates assert the CONTENT of temperloop's own
+  product surfaces and resolve, through a consumer's compat symlink, to the
+  consumer's root. `validate-onramp-anchors.sh` asserts this repo's README
+  quickstart, installer URL and `bin/temperloop` first-run banner;
+  `validate-docs-footer.sh` asserts the AI-authorship footer on this repo's
+  product-docs pages. An adopter's README is a different product's README, and
+  no overlay wiring makes either pass there.
+
+  These four gates (each validator plus its test) move into a new
+  `KERNEL_CONTENT_GATES` array in `scripts/quality-gates.sh`, class-gated on
+  the same single signal the existing `SELF_DISTRIBUTION_GATES` class already
+  uses (temperloop#691): a repo-root `.kernel-pin`, present in a vendoring
+  consumer and absent in the kernel's own checkout. No new signal, no new
+  config knob. In this repo all four still run; in a consumer each is named on
+  its own `SKIPPED_KERNEL_GATES` line with its reason, never dropped silently.
+
+  Deliberately NOT moved: gates that go red in a vendored tree because of a
+  real upstream defect — `lint-pipe-grep-q.sh` flagging its own help text
+  (temperloop#1420), and the spend report finding zero agent definitions
+  through a symlinked `claude/agents` (temperloop#1424). Those must keep
+  failing until they are fixed; class-gating them would bury them. The bar for
+  joining the class is a positive argument that an adopter's repo cannot and
+  should not satisfy the assertion — never that the gate is currently red.
+
+- **The merge-gate approval prompt now leads with the defect, not just the
+  fix** (#1485). `claude/message-schema.md` § Question block gains one named
+  conditionally-required slot — **Problem summary** — required whenever a
+  block asks the operator to approve work that resolves a tracked item: a
+  compressed one-to-two-line restatement of the linked issue's own defect
+  statement (never its title, which the block already carries), ordered
+  problem-first. The slot names a **real, reachable source** — one
+  `gh issue view <n> -R <owner>/<repo> --json body` taken at ask time —
+  because nothing earlier in a run holds the defect prose:
+  `workflows/scripts/build/issue-state.sh resolve` fetches
+  `state,labels,assignees` only, so a resolved issue *number* is not its
+  defect statement. The read is negligible where the slot applies (the gate
+  fires once per run, at a point already issuing `gh` calls for the
+  `gate.sh backend` probe). The slot defines **three arms**, all reachable
+  and all implemented at both consumer sites: the summary rendered;
+  `no linked issue — <reason>` when there is no tracked item; and
+  `summary unavailable — <reason>` when the read fails or returns an empty
+  body — with an explicit **never-fabricate** rule, since a restatement
+  inferred from a title or a diff is strictly worse than a stated absence in
+  the one artifact meant to strengthen merge consent.
+  `claude/commands/fix.md` Step 5 (the `decision_sink_ask` payload) and
+  `claude/commands/build.md` 4a (the per-PR text block, where the 4b option
+  labels' length/4-option cap cannot reach; 4b defers to 4a's rendering)
+  both defer to that slot **by name** rather than restating its shape, and
+  4a's `↳ defect #<n>: …` line is qualified `owner/repo#N` when the item's
+  `repo:` differs from the plan's home repo, mirroring the rule 3f already
+  applies to `Closes`. Previously every named payload slot described the
+  *change* — PR #, title, CI state, the fix, the backend — so an operator
+  approving hours or days after filing had to recall the defect or go read
+  the issue, and consented to a merge without the one thing needed to judge
+  whether it addressed the right problem.
+
+### Fixed
+
+- **The testbed source seam now resolves each provider's directory argument
+  itself, instead of the driver forcing its own `--dir` default on every
+  provider** (#1356): `workflows/scripts/testbed/source.sh` gains a fifth
+  seam member, `dir_arg(dir, seed_dir)`, dispatched by provider kind exactly
+  like the existing four, and `temperloop testbed` gains a `--seed-dir`
+  flag. Before this, one positional argument meant "source repo directory"
+  to `mirror-from-repo` and "seed directory" to `materialize-from-seed`, so
+  the driver's `source_dir="."` default silently overrode the correctly
+  computed in-tree seed default and a seed run produced the repo name
+  `.-testbed` instead of `linkrot-testbed`. The defect was at the call site,
+  not in either provider — `_TESTBED_SEED_DIR_DEFAULT` already resolved the
+  in-tree seed correctly. The driver stays provider-agnostic: it resolves
+  one provider-scoped value through the seam, with no `case` on provider
+  kind anywhere in `bin/subcommands/testbed.sh` (the existing structural
+  guard test still holds). `mirror-from-repo` is unchanged — `--dir` still
+  selects the source repository directory.
+
+  Worth recording next to the existing provider-equivalence test (#1232):
+  that test drives two doubles and asserts an identical call sequence, and
+  is **structurally incapable** of catching this defect — the call sequence
+  genuinely *is* identical for both providers; only the argument's meaning
+  differed. That is the honest limit of equivalence-by-doubles, not a flaw
+  in how it was written. The new regression test therefore drives the
+  **real** providers through the real driver, from two different working
+  directories (including from inside an unrelated git checkout), and pins
+  what "valid repository name" means — matches `^[A-Za-z0-9_.-]+$`, is
+  neither `.` nor `..`, at most 100 characters — a constraint no validator
+  in the tree asserted before now.
+
+- **`temperloop testbed` no longer misattributes source identity on a
+  `materialize-from-seed` run** (#1357). `source_slug` — the value feeding
+  the handoff banner, the consent block's `source :` line, and
+  `testbed_record_add`'s persisted `.source_repo` — was computed ONCE in the
+  driver as a bare `git remote get-url origin` read in the DRIVER's own
+  cwd, identically for both providers, rather than from either provider's
+  own `describe()`. record.sh's own documented schema says `.source_repo`
+  is null for a seed testbed — but running `materialize-from-seed` from
+  inside any git checkout that happened to have an `origin` remote (the
+  likely case for someone trying the demo from a real clone) silently
+  captured that UNRELATED repository's slug instead: a schema violation,
+  persisted, and — since `temperloop uninstall` (#1358) now prints teardown
+  guidance sourced from that same record — not merely cosmetic. temperloop
+  #1356's provider-scoped directory argument fix did not fix this on its
+  own: `source_slug` was never derived from a provider's resolved directory
+  at all.
+
+  The fix folds source identity into `describe()`, the seam member the
+  driver already calls exactly once, already dispatched by provider kind:
+  `describe()`'s JSON payload now carries a `source_repo` field —
+  `mirror-from-repo`'s own implementation resolves it from ITS OWN resolved
+  source directory (the same read `base_name` already derived a slug from);
+  `materialize-from-seed`'s implementation returns `null` unconditionally,
+  since there is no upstream repository to name, ever, regardless of the
+  cwd the command happens to run from. The driver reads `.source_repo` off
+  the already-resolved `describe()` payload instead of re-deriving
+  anything itself — no `case` on provider kind, no second slug parser (the
+  existing structural guard against a provider-kind `case` in
+  `bin/subcommands/testbed.sh` still holds). The handoff's "your real repo
+  (...) is never touched" reassurance is now printed only when
+  `describe()` actually resolved a real source repository — a seed run
+  makes no claim about a real repo at all, rather than falsely reassuring
+  about one. `mirror-from-repo` is unchanged in behavior: `--dir` still
+  names the source repository, and the handoff/consent/record all still
+  carry its slug.
+
+- **`temperloop uninstall` now accounts for the machine-scoped testbed
+  record as its own scope (f)** (#1358): when the record shows a testbed
+  repository still live in the operator's GitHub account
+  (`artifacts.repo_created = true`), uninstall names each repository
+  explicitly and prints the exact `temperloop testbed --teardown --repo …
+  --id …` command for it, instead of saying nothing at all. Before this,
+  `bin/subcommands/uninstall.sh` contained zero occurrences of the string
+  `testbed`, so the only pointer to a live private repo an operator's
+  testbed run had created went unmentioned when they uninstalled. The gap
+  was introduced by the record's own placement: #1227 deliberately put it
+  in machine-scoped XDG state rather than `.temperloop/` (correct — `eject`
+  deletes that directory and the CI round trip runs `eject` mid-flight),
+  and that decision moved it outside every uninstall scope that existed at
+  the time. **The new scope is print-only**, matching the posture of the
+  three advisory scopes already there (bootstrap footprint, eject reminder,
+  cache root): removing the pointer without removing the repo would convert
+  a recoverable artifact into an unrecoverable one, so uninstall never
+  deletes the record or the repo — teardown stays `temperloop testbed
+  --teardown`'s job. That property is asserted, not assumed: the new test
+  diffs the record file byte-for-byte across `uninstall --yes`. The
+  no-record and empty-record cases print nothing rather than a dead-end
+  "you may have leftover state" line.
+
+- **`test_lint_pipe_grep_q.sh` T4 no longer false-fails on a composed overlay
+  checkout** (#1505). T4 asserted that the lint's default file set includes
+  five kernel-native paths (`bin/temperloop`, `bin/foundation`,
+  `.temperloop/report.d/tokens`, `workflows/scripts/report-producers/tokens`,
+  `workflows/scripts/lib/issue-marker-probe.sh`) by exact `git ls-files`
+  granularity. On a consumer that vendors `kernel/` as a subtree behind
+  compat directory symlinks (`bin -> kernel/bin`, etc.), git tracks each such
+  top-level directory as ONE symlink entry, so `git ls-files` structurally
+  cannot enumerate a path underneath it — the five checks failed for a
+  reason unrelated to lint coverage. T4 now self-scopes: it detects a
+  composed overlay (the same two signals `validate-onramp-anchors.sh` and
+  `sandbox_skip_if_composed_tree` already use, temperloop#1490) and emits a
+  NAMED skip there, while still running the five checks for real and
+  strictly on a kernel-native checkout. A new T4-overlay case proves both
+  directions on a synthetic fixture: the symptom reproduces, and the
+  detection neither over- nor under-fires.
+
+- **`test_lint_pipe_grep_q` T4-overlay used the running checkout as its negative
+  control** (#1508, follow-up to #1505). The case added in #1505 asserted
+  *"detection does not flag THIS checkout"* — true in the kernel repo, **false in
+  every vendoring consumer**, so the suite failed for exactly the trees #1505
+  set out to support. The negative control is now a synthetic **kernel-native**
+  fixture (real directories, no `kernel/` subtree, no overlay marker), so both
+  directions are proven by fixtures and the result no longer depends on where
+  the suite is run from. The checkout's own arm is now reported as a `note:`,
+  never asserted. Verified passing on both: 43/43 on a kernel-native checkout
+  (T4 runs for real) and 38/38 on a composed overlay (T4's five coverage checks
+  legibly skip).
+
+- **A lone discovered epic-sized issue now has a pipeline door** (#1524, #1510):
+  `/assess`'s two no-Contract stop sites branch three ways instead of
+  unconditionally redirecting to `/triage` — an epic-shaped issue with missing
+  members still routes to `/triage`; a plain small issue routes to `/fix <n>`
+  (the #1510 misroute); and an epic-sized, Contract-less issue enters a new
+  lone-issue decomposition arm that derives the contract from the issue's own
+  body sections, reusing the existing hand-authored-Contract provenance ask and
+  the `/build` sub-issue mint path. `/fix`'s discovered-epic redirect now names
+  `/assess --epic <N>` rather than the circular `/triage`-first path, closing
+  the redirect cycle in which every command pointed at another refuser.
+
+- **A `^C` or `kill` on a running replay batch now STOPS it instead of
+  cleaning up and continuing to spend** (#1527).
+  `workflows/scripts/model-comparison/batch.sh` — the model-comparison
+  module's spend-bearing entry point, and the only thing that calls
+  `replay.sh execute` in a loop — registered one handler on `EXIT INT TERM`.
+  A bash trap handler *returns*, which is right for EXIT and wrong for a
+  signal: an interrupted batch tore its in-flight worktree down and then
+  calmly started the next leg, so the operator's "stop spending" was
+  acknowledged and ignored. The EXIT arm is unchanged; INT and TERM now run
+  the same cleanup and then re-raise under the default disposition, so the
+  process dies **of** the signal with the conventional signal-derived status
+  (`130` / `143`, deliberately outside the driver's own closed exit-code set)
+  and prints no summary object it never earned. Per-leg failure resilience is
+  untouched — a leg that genuinely fails is still recorded and the batch still
+  continues; only a real signal stops the run, and every leg already in a
+  terminal state is on disk, so re-invoking resumes without re-spending it.
+  `tests/test_replay_batch.sh` gains section I: a stub that TERMs the driver
+  mid-leg proves exactly one of four legs ran, no arm files were assembled,
+  the in-flight worktree was torn down, and the exit status was 143 — plus a
+  mutation proof that restoring the single `trap … EXIT INT TERM` makes the
+  same TERM clean up and run all four legs.
+
 ## [0.30.0] - 2026-08-14
 
 ### Added
