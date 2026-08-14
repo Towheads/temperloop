@@ -179,6 +179,15 @@
 //   results are UNKNOWN — never treat them as passing. The orchestrator MUST
 //   re-verify that item's acceptance itself before the Step 4 merge gate.
 //
+//   A parked record MAY additionally carry `discrimination_gaps: [<criterion>,
+//   ...]` (temperloop#1319) — present ONLY when this run armed
+//   requireDiscriminationEvidence AND the done verdict had at least one
+//   passed:true acceptance_results[] entry with an empty/absent
+//   discrimination_evidence. Non-fatal (kernel principle 7 — advisory, never a
+//   new blocking gate): already logged as a named warning at 3h; the
+//   orchestrator rolls the list into the Step 6 summary tally (build.md §3f
+//   step 2's sibling verification_surface degraded-case pattern).
+//
 //   The workflow NEVER writes the plan note (race-safety: the orchestrator
 //   serializes all plan-note writeback at the level boundary). It only RETURNS
 //   what to write. Escalations leave the worktree INTACT (the orchestrator
@@ -709,20 +718,27 @@ const WORKER_EVIDENCE_MAX_WORDS = Math.max(
 // `=== true`, not `||`/`??`, since an accidentally-truthy non-boolean must
 // never silently arm a requirement the caller didn't intend) rather than
 // baked unconditionally into the shared workerPrompt(), on the SAME Step-0
-// hand-off seam as gateSliceSecs/principlesSummaries above, and for a
-// structural reason specific to THIS setting: workerPrompt() is shared by
-// THREE callers whose `acceptance` shape differs. `/build`'s items carry
-// real, per-criterion `acceptance:` bullets from a plan note — exactly the
-// shape this discipline targets. `/sweep` and `/fix` (build-level.mjs's
-// other two callers, per their own Step 0 sourcing of this same file) pass a
-// single bare-string placeholder, `"(self-verify the issue is resolved)"` —
-// not a testable per-criterion bullet at all, so demanding mechanism/red/green
-// evidence FOR it would ask the worker to fabricate structure the caller
-// never supplied. `/build` passes `requireDiscriminationEvidence: true`
-// explicitly (claude/commands/build.md Step 3 args); `/sweep` and `/fix`
-// omit the key and the requirement stays OFF for them — the same
-// caller-scoped widening `principlesSummaries` already establishes for a
-// different §3c requirement, not a new pattern.
+// hand-off seam as gateSliceSecs/principlesSummaries above. workerPrompt()
+// is shared by THREE callers: `/build`, `/sweep`, and `/fix`.
+//
+// CORRECTION (the mechanical scoping below is accurate; an earlier version of
+// this comment additionally claimed /sweep and /fix structurally CANNOT carry
+// real per-criterion bullets — that claim was FALSE and has been removed).
+// `sweep.md`/`fix.md` both define `acceptance:` as "checkable bullets from the
+// issue body", falling back to the bare-string placeholder
+// `"(self-verify the issue is resolved)"` ONLY when the issue body carries
+// none — and `acceptanceList()` (below) already handles the array case for
+// any caller. So a real, multi-bullet acceptance array from /sweep or /fix
+// DOES have exactly the per-criterion shape this requirement targets; nothing
+// here makes widening to them structurally impossible.
+//
+// The actual reason `/build` passes `requireDiscriminationEvidence: true`
+// (claude/commands/build.md Step 3 args) while `/sweep` and `/fix` omit the
+// key is an OPERATIONAL SCOPE DECISION, not a structural one: temperloop#1319
+// scopes this requirement to `/build` only. `/sweep` and `/fix` inherit the
+// OFF default — the same caller-scoped widening `principlesSummaries`
+// already establishes for a different §3c requirement — until a future item
+// makes the case for extending it to them.
 const REQUIRE_DISCRIMINATION_EVIDENCE = input.requireDiscriminationEvidence === true;
 
 // --- §3c effective engineering principles (temperloop#1432) ------------------
@@ -1325,11 +1341,13 @@ function principlesSection(item) {
 // requirement (temperloop#1319), a SELF-CONTAINED section appended once into
 // workerPrompt()'s array, mirroring principlesSection()'s shape so a sibling
 // edit to workerPrompt() rebases cleanly. Gated on REQUIRE_DISCRIMINATION_
-// EVIDENCE (see that constant's own comment for why) — returns an EMPTY
+// EVIDENCE (see that constant's own comment above for the full rationale,
+// including the correction on why /sweep and /fix are excluded — an
+// operational scope decision, not a structural one) — returns an EMPTY
 // array, not a degraded/notice variant, when the caller didn't ask for it:
 // unlike principlesSummaries' "never silence" rule, an unrequired discipline
-// staying silent is correct here, because /sweep's and /fix's bare-string
-// acceptance has no per-criterion shape for the requirement to attach to.
+// staying silent is correct here, since REQUIRE_DISCRIMINATION_EVIDENCE is
+// false for any caller that never armed the requirement in the first place.
 function discriminationEvidenceSection() {
   if (!REQUIRE_DISCRIMINATION_EVIDENCE) return [];
   return [
@@ -1348,7 +1366,12 @@ function discriminationEvidenceSection() {
     'real one in the returned verdict alone, which is exactly the failure this field',
     'exists to close. If a criterion genuinely has no test to discriminate (a docs-only',
     'change, a config value with no behavior to break), say so explicitly in that field',
-    'rather than leaving it empty. Like `evidence`, keep it to a compact pointer — at',
+    'rather than leaving it empty. **Two DISTINCT exemptions, worded differently — do not',
+    'conflate them:** (1) too coarse to discriminate (above) — say so in your own words;',
+    '(2) a criterion naming the BARE repo-wide gate, which you never run (#997) and',
+    'therefore never watched red or green — for that one write EXACTLY',
+    '`deferred to §3e.5; discrimination not established worker-side` in the field, never',
+    'left empty and never fabricated. Like `evidence`, keep it to a compact pointer — at',
     `most ${WORKER_EVIDENCE_MAX_WORDS} words — never a narrative.`,
   ];
 }
@@ -1893,7 +1916,33 @@ function recoveredVerdict(item, probe, reason) {
 function escalate(slug, kind, payload) {
   return { _kind: 'escalation', slug, escalation: { slug, kind, payload } };
 }
-function park(slug, pr, pushedSha, acceptanceResults, noCi, recovery) {
+
+// discriminationGaps — the temperloop#1319 DEGRADED CASE. WORKER_VERDICT_SCHEMA
+// does not (and per the "advisory, never a new blocking gate" ask, must not)
+// mark `discrimination_evidence` required, §3d branches solely on `.status`,
+// and §3e.5 never looks at it — so a worker that simply OMITS the field on an
+// otherwise-`passed: true` entry produces a `done` verdict that sails through
+// the whole pipeline and renders a PR body indistinguishable from "not
+// applicable" or a pre-#1319 PR. THIS is the load-bearing half criterion 2
+// actually requires: a missing field must be a NAMED, VISIBLE degradation, not
+// a silent one. Mirrors the pre-existing `verification_surface` degraded-case
+// pattern (build.md §3f step 2, "Surface the degraded case") exactly — a
+// legible warning, never a hard failure (kernel principle 7, advisory over
+// enforced discipline): a `passed: false`/`blocked`/`failed` entry is
+// untouched (only a CLAIMED pass with no proof is suspect).
+//
+// Gated on REQUIRE_DISCRIMINATION_EVIDENCE — an unarmed run (today: /sweep,
+// /fix) never required the field in the first place, so it has nothing to
+// degrade FROM and this returns empty unconditionally, exactly like
+// discriminationEvidenceSection() above.
+function discriminationGaps(verdict) {
+  if (!REQUIRE_DISCRIMINATION_EVIDENCE) return [];
+  return (verdict.acceptance_results ?? [])
+    .filter((r) => r && r.passed === true && !(r.discrimination_evidence && String(r.discrimination_evidence).trim()))
+    .map((r) => (r.criterion ? String(r.criterion) : '(unlabeled criterion)'));
+}
+
+function park(slug, pr, pushedSha, acceptanceResults, noCi, recovery, discriminationGapList) {
   const parked = { slug, pr, pushed_sha: pushedSha, acceptance_results: acceptanceResults ?? [] };
   // temperloop#939: a record reconstructed from observable side-effects after a
   // lost worker return carries its provenance EXPLICITLY. `acceptance_unverified`
@@ -1910,6 +1959,15 @@ function park(slug, pr, pushedSha, acceptanceResults, noCi, recovery) {
   // configured)` rather than `CI ✓` in the 4a summary — never letting an
   // untested-by-CI PR look confirmed-green.
   if (noCi === true) parked.no_ci = true;
+  // temperloop#1319: the degraded-case tally, same durable-marker shape as
+  // `no_ci` above — carried on the parked record so the orchestrator can
+  // stamp it on the plan item and roll it into the Step 6 summary (build.md
+  // §3f step 2's sibling "Surface the degraded case" pattern). Omitted
+  // entirely when empty, exactly like `no_ci` is omitted when false, so an
+  // unarmed run's parked records are byte-identical to before this item.
+  if (discriminationGapList && discriminationGapList.length > 0) {
+    parked.discrimination_gaps = discriminationGapList;
+  }
   return {
     _kind: 'parked',
     slug,
@@ -2208,6 +2266,10 @@ async function driveItem(item) {
   if (anyFailed) {
     return escalate(item.slug, 'acceptance-incomplete', { verdict });
   }
+  // temperloop#1319 degraded case: computed once here (empty when
+  // REQUIRE_DISCRIMINATION_EVIDENCE is unarmed), logged as a named warning at
+  // 3h below once `pr` is known, and threaded to park() for the Step 6 tally.
+  const discGaps = discriminationGaps(verdict);
 
   // --- 3e.5. Parent-side acceptance gate (quality-gates.sh) ----------------
   // Run the project's static gate SSOT against the worker's work. ABSENT (the
@@ -2581,7 +2643,18 @@ async function driveItem(item) {
   // A NO_CI resolution (temperloop#605/#618) parks the same, but the returned
   // record carries `no_ci: true` so the orchestrator stamps the sentinel.
   log(`[${item.slug}] parked — PR #${pr} ${ciResult.noCi ? 'no CI configured (skipped)' : 'CI green'}${recovery ? ' (RECOVERED — acceptance unverified)' : ''}`);
-  return park(item.slug, pr, ciResult.finalSha ?? pushedSha, verdict.acceptance_results, ciResult.noCi === true, recovery);
+  // temperloop#1319: the named warning — mirrors the verification_surface
+  // degraded-case wording (build.md §3f step 2) exactly, one line naming the
+  // PR and every gap criterion, so it is visible in the run log AND (via the
+  // parked.discrimination_gaps field above) tallied in the Step 6 summary —
+  // never silently dropped.
+  if (discGaps.length > 0) {
+    log(
+      `[${item.slug}] PR #${pr}: ${discGaps.length} acceptance criterion(s) passed with no discrimination evidence — ` +
+      `the worker never proved these checks can fail (temperloop#1319): ${discGaps.map((c) => `"${c}"`).join(', ')}`,
+    );
+  }
+  return park(item.slug, pr, ciResult.finalSha ?? pushedSha, verdict.acceptance_results, ciResult.noCi === true, recovery, discGaps);
 }
 
 // -----------------------------------------------------------------------------
