@@ -250,13 +250,39 @@ Conditionally-required slot:
   not that it addresses the right problem or that the fix shape was the
   right trade-off — precisely the judgment a blocking approval reserves for
   a human, so a prompt missing it collects a weaker consent than it appears
-  to. **The source must already be in hand** at ask time (the issue the run
-  resolved earlier in its own flow): this slot never licenses a fresh fetch,
-  and a summary that would need one renders as unavailable instead.
-- **No linked item ⇒ state the arm, never drop the slot silently.** A
-  description-minted target or an untracked refactor renders
-  `no linked issue — <one-line reason>` in the slot's place, so the reader
-  can tell "there is no filed defect" from "somebody omitted the summary".
+  to.
+- **Source — ONE `gh issue view <n> -R <owner>/<repo> --json body` at ask
+  time.** Name it, because the defect prose is **not** already in hand when
+  the block renders: the run's own state probe
+  (`workflows/scripts/build/issue-state.sh resolve`) reads
+  `state,labels,assignees` — no `body`, no `title` — so holding a *resolved
+  issue number* is not holding its defect statement. A slot sourced from
+  "whatever the run already has" would therefore take its unavailable arm on
+  essentially every ask, i.e. do nothing. The read is negligible where the
+  slot is required: the gate fires **once per run**, at a point already
+  issuing `gh` calls (the `gate.sh backend` probe), so one issue read buys
+  the operator the defect for the cost of a round-trip already being paid.
+  Fetch it with `-R` naming **the repo the issue is tracked in**, which is
+  not always the repo the PR opens against.
+- **Three arms — exactly one renders, none silently dropped.** All three are
+  live paths, not decoration; a consumer implementing only the first two has
+  left the failure case rendering nothing at all.
+  1. **Summary rendered** — the `--json body` read returned a non-empty
+     body: the compressed one-to-two-line restatement above.
+  2. **`no linked issue — <one-line reason>`** — there is no tracked item to
+     read at all (an untracked refactor or chore), so the reader can tell
+     "there is no filed defect" from "somebody omitted the summary".
+  3. **`summary unavailable — <one-line reason>`** — the read failed or came
+     back empty: deleted issue, auth failure, rate limit, network error, or
+     a blank issue body. Name which.
+- **Never fabricate the defect.** On arm 3 the slot renders the stated
+  absence — it does **not** infer, paraphrase, or reconstruct the defect
+  from the issue title, the PR title, the branch slug, or the diff. An
+  invented restatement is strictly worse than an honest `summary
+  unavailable`, because the operator cannot tell the two apart and the
+  fabrication lands in the one artifact whose whole purpose is to make merge
+  consent better informed. This is the arm's reason for existing: giving the
+  failure path a legitimate rendering is what removes the pressure to guess.
 
 **When the block is the right vehicle.** This structured block (and <!-- cite: MS.5 guard:claude/plan-schema.md -->
 `AskUserQuestion`) fits a **bounded** decision — approve/reject, or pick from
