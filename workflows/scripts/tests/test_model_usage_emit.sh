@@ -857,6 +857,56 @@ chmod +x "$FIXR/workflows/scripts/validate-model-usage-emit.sh"
 check "RESTORED: fixture copy (pristine, no marker) passes cleanly again" \
   bash "$FIXR/workflows/scripts/validate-model-usage-emit.sh" --file "$TMP/good.jsonl"
 
+echo "── 44b. temperloop#1343: the python3 invocation COUNT stays flat regardless of record count ──"
+# The acceptance bar for a fork-count fix in this repo is counting forks
+# directly (commit 9e542a4, temperloop#968) — wall-clock alone is gameable by
+# a chunked-but-not-fully-batched rewrite that still looks flat at small N.
+# So this shadows `python3` on PATH with a counting shim that execs the REAL
+# python3 (found before the shim is installed) — behavior is unchanged, but
+# every invocation is now tallied.
+REAL_PYTHON3="$(command -v python3)"
+[ -n "$REAL_PYTHON3" ] || { echo "FATAL: could not resolve a real python3 on PATH" >&2; exit 1; }
+COUNT_DIR="$TMP/python3-count"
+mkdir -p "$COUNT_DIR/bin"
+cat > "$COUNT_DIR/bin/python3" <<SHIM
+#!/usr/bin/env bash
+echo x >> "$COUNT_DIR/calls"
+exec "$REAL_PYTHON3" "\$@"
+SHIM
+chmod +x "$COUNT_DIR/bin/python3"
+
+# count_python3_calls <n-records> -> sets CALL_COUNT and LAKE_DIR
+count_python3_calls() {
+  local n="$1"
+  local dir="$TMP/lake-$n"
+  mkdir -p "$dir"
+  # printf's format string RECYCLES over extra positional args (one %d per
+  # record), and `seq` supplies those args in ONE word-split — this builds
+  # an n-record synthetic lake with a single printf builtin call, not an
+  # n-iteration bash loop, so lake GENERATION itself stays cheap even at
+  # n=10000 (generation cost is test setup, not the thing being measured).
+  printf '{"schema_version":"1","ts":"2026-08-08T12:00:00Z","session_id":null,"repo":null,"seat":"x","model":"claude-sonnet-5","provider":null,"usage_source":"unavailable","tokens":null,"weighted_units":null,"duration_ms":null,"outcome_ref":"issue:%d"}\n' \
+    $(seq 0 $((n - 1))) > "$dir/model-usage-2026-08.jsonl"
+  rm -f "$COUNT_DIR/calls"
+  MODEL_USAGE_LAST_OUT="$(MODEL_USAGE_RAW_DIR="$dir" PATH="$COUNT_DIR/bin:$PATH" bash "$LINT" 2>&1)"
+  CALL_COUNT="$(wc -l < "$COUNT_DIR/calls" 2>/dev/null | tr -d ' ')"
+  [ -z "$CALL_COUNT" ] && CALL_COUNT=0
+  LAKE_DIR="$dir"
+}
+
+count_python3_calls 1
+CALLS_1="$CALL_COUNT"
+check "sanity: at least one python3 call happened for a 1-record lake" bash -c "[ '$CALLS_1' -ge 1 ]"
+
+# 10,000 records — the exact scale temperloop#1343 measured (~28ms/record of
+# pure fork/exec overhead, ~5 minutes added to a local `make gates`).
+count_python3_calls 10000
+CALLS_10K="$CALL_COUNT"
+check_eq "the validator genuinely processed all 10000 records (not silently truncated)" \
+  "Checked 1 file(s), 10000 record(s)." "$(printf '%s\n' "$MODEL_USAGE_LAST_OUT" | grep -F 'Checked ')"
+check_eq "python3 CALL COUNT is IDENTICAL between a 1-record and a 10,000-record lake — O(1) per file, not O(records)" \
+  "$CALLS_1" "$CALLS_10K"
+
 echo "── 45. sweep (temperloop#1370): no BARE permanent-redirect exec sites remain repo-wide, and the scoped forms are correctly recognized ──"
 # BASE — widened per temperloop#1370 review (LOW): the original
 # `exec [0-9]<` pattern could only ever see an INPUT redirect on a plain

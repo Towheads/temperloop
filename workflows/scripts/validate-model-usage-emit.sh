@@ -259,153 +259,161 @@ else
 committed_providers="$(pa_committed_list 2>/dev/null || true)"
 
 # ---------------------------------------------------------------------------
-# 3+4+5. Per-line: strict parse, then shape + enum + no-host checks.
-# The heavy lifting is one python3 process per line (schema, not JSON
-# validity per se — that is checked first via json.loads with parse_constant
-# rejecting non-finite constants). Provider-allowlist membership is checked
-# in bash (pa_is_allowed) since that function is bash-native; python reports
-# everything else and prints one PASS/FAIL verdict line python parses.
+# 3+4+5. Strict parse, then shape + enum + no-host checks — BATCHED: one
+# python3 process validates every record in a FILE, not one process PER
+# RECORD (temperloop#1343). The old per-record shape (one python3 fork per
+# line) measured ~28ms/record of pure fork/exec overhead — 100 records ≈ 3s,
+# 500 ≈ 14s, and a 10k-record raw lake added roughly 5 minutes to a local
+# `make gates`. Provider-allowlist membership stays checked in bash
+# (pa_is_allowed, bash-native); python reports everything else, one
+# "<lineno>\t<verdict>" line per record, in the SAME order bash fed it, so
+# the case-statement below reads exactly as it always has.
 # ---------------------------------------------------------------------------
-validate_record_py() {
-  # $1 = the raw JSON line. Prints "OK" or "FAIL <reason>" on stdout.
-  python3 - "$1" <<'PYEOF'
+# NOT `PY_BATCH_SCRIPT="$(cat <<'PYEOF' ... )"` — bash 3.2 (every macOS
+# /bin/bash) cannot see that an apostrophe inside a here-doc BODY is inert
+# once that here-doc sits inside a `$( … )` command substitution: it reads
+# the apostrophe as an opening quote and swallows the substitution's closing
+# `)`, and this here-doc's prose/python content carries plenty of them
+# (scripts/lint-bash32-cmdsubst-comment.sh enforces this repo-wide,
+# temperloop#1098). `read -r -d ''` populates the variable from the SAME
+# here-doc with no `$( … )` in sight, so the hazard never applies.
+read -r -d '' PY_BATCH_SCRIPT <<'PYEOF' || true
 import json, sys
-
-line = sys.argv[1]
 
 def reject_nonfinite(x):
     raise ValueError("non-finite JSON constant: " + x)
 
-try:
-    rec = json.loads(line, parse_constant=reject_nonfinite)
-except Exception as e:
-    print("FAIL STRICT-PARSE: " + str(e))
-    sys.exit(0)
+def validate_line(line):
+    # Returns a verdict STRING ("OK" / "OK-PROVIDER <provider>" / "FAIL
+    # <reason>") instead of the old per-process print+sys.exit(0) — this
+    # function now runs once per record INSIDE one long-lived process, so an
+    # early `return` (not sys.exit) is what keeps record N+1 from being
+    # skipped by record N's own exit. Every check below is otherwise
+    # byte-identical to the original per-record script.
+    try:
+        rec = json.loads(line, parse_constant=reject_nonfinite)
+    except Exception as e:
+        return "FAIL STRICT-PARSE: " + str(e)
 
-if not isinstance(rec, dict):
-    print("FAIL SHAPE: top-level record is not a JSON object")
-    sys.exit(0)
+    if not isinstance(rec, dict):
+        return "FAIL SHAPE: top-level record is not a JSON object"
 
-required = ["schema_version", "ts", "session_id", "repo", "seat", "model",
-            "provider", "usage_source", "tokens", "weighted_units",
-            "duration_ms", "outcome_ref"]
-missing = [k for k in required if k not in rec]
-if missing:
-    print("FAIL SHAPE: missing required field(s): " + ", ".join(missing))
-    sys.exit(0)
+    required = ["schema_version", "ts", "session_id", "repo", "seat", "model",
+                "provider", "usage_source", "tokens", "weighted_units",
+                "duration_ms", "outcome_ref"]
+    missing = [k for k in required if k not in rec]
+    if missing:
+        return "FAIL SHAPE: missing required field(s): " + ", ".join(missing)
 
-if "host" in rec:
-    print("FAIL NO-HOST: record carries a 'host' field — ADR 0028 forbids a "
-          "cross-repo operator/machine identifier on this stream")
-    sys.exit(0)
+    if "host" in rec:
+        return ("FAIL NO-HOST: record carries a 'host' field — ADR 0028 forbids a "
+                 "cross-repo operator/machine identifier on this stream")
 
-# BLOCKING 2: CLOSED schema, not a one-key denylist. The `host` check above
-# has its own specific, ADR-0028-quoting message and stays first so that
-# named case keeps its named reason — but `host` is not the only possible
-# cross-repo identifier a future copy-paste could introduce (`hostname`,
-# `operator`, `machine_id`, ...). Reject ANY field outside the required set,
-# by name, generically, rather than enumerating denylist entries one at a
-# time forever.
-extra = sorted(k for k in rec if k not in required)
-if extra:
-    print("FAIL SCHEMA-CLOSED: unexpected field(s) not in the required schema: "
-          + ", ".join(extra))
-    sys.exit(0)
+    # BLOCKING 2: CLOSED schema, not a one-key denylist. The `host` check
+    # above has its own specific, ADR-0028-quoting message and stays first so
+    # that named case keeps its named reason — but `host` is not the only
+    # possible cross-repo identifier a future copy-paste could introduce
+    # (`hostname`, `operator`, `machine_id`, ...). Reject ANY field outside
+    # the required set, by name, generically, rather than enumerating
+    # denylist entries one at a time forever.
+    extra = sorted(k for k in rec if k not in required)
+    if extra:
+        return ("FAIL SCHEMA-CLOSED: unexpected field(s) not in the required schema: "
+                 + ", ".join(extra))
 
-if rec["schema_version"] != "1":
-    print("FAIL SHAPE: schema_version must be the string \"1\", got " + repr(rec["schema_version"]))
-    sys.exit(0)
+    if rec["schema_version"] != "1":
+        return "FAIL SHAPE: schema_version must be the string \"1\", got " + repr(rec["schema_version"])
 
-if not isinstance(rec["ts"], str) or not rec["ts"].endswith("Z") or "T" not in rec["ts"]:
-    print("FAIL SHAPE: ts must be an ISO-8601 UTC string with a Z suffix, got " + repr(rec["ts"]))
-    sys.exit(0)
+    if not isinstance(rec["ts"], str) or not rec["ts"].endswith("Z") or "T" not in rec["ts"]:
+        return "FAIL SHAPE: ts must be an ISO-8601 UTC string with a Z suffix, got " + repr(rec["ts"])
 
-if rec["session_id"] is not None and not isinstance(rec["session_id"], str):
-    print("FAIL SHAPE: session_id must be a string or null")
-    sys.exit(0)
+    if rec["session_id"] is not None and not isinstance(rec["session_id"], str):
+        return "FAIL SHAPE: session_id must be a string or null"
 
-if rec["repo"] is not None and not isinstance(rec["repo"], str):
-    print("FAIL SHAPE: repo must be a string or null")
-    sys.exit(0)
+    if rec["repo"] is not None and not isinstance(rec["repo"], str):
+        return "FAIL SHAPE: repo must be a string or null"
 
-if not isinstance(rec["seat"], str) or rec["seat"].strip() == "":
-    print("FAIL SHAPE: seat must be a non-empty string")
-    sys.exit(0)
+    if not isinstance(rec["seat"], str) or rec["seat"].strip() == "":
+        return "FAIL SHAPE: seat must be a non-empty string"
 
-model = rec["model"]
-if not isinstance(model, str) or model.strip() == "":
-    print("FAIL SHAPE: model must be a non-empty string")
-    sys.exit(0)
+    model = rec["model"]
+    if not isinstance(model, str) or model.strip() == "":
+        return "FAIL SHAPE: model must be a non-empty string"
 
-# CONTENT-LEVEL model-family enum: the family token (opus/sonnet/haiku) is
-# the stable, enumerable part of a Claude model id; the numeric suffix revs
-# too often to enumerate exhaustively. Real ids observed in this repo's own
-# build.config.sh: claude-sonnet-5, claude-opus-4-8, claude-haiku-4-5.
-KNOWN_FAMILIES = ("opus", "sonnet", "haiku")
-segments = model.split("-")
-if segments[0] != "claude" or not any(seg in KNOWN_FAMILIES for seg in segments[1:]):
-    print("FAIL MODEL-ENUM: model '" + model + "' does not name a known Claude "
-          "family (" + "/".join(KNOWN_FAMILIES) + ") — want a claude-<family>-... id")
-    sys.exit(0)
+    # CONTENT-LEVEL model-family enum: the family token (opus/sonnet/haiku)
+    # is the stable, enumerable part of a Claude model id; the numeric suffix
+    # revs too often to enumerate exhaustively. Real ids observed in this
+    # repo's own build.config.sh: claude-sonnet-5, claude-opus-4-8,
+    # claude-haiku-4-5.
+    KNOWN_FAMILIES = ("opus", "sonnet", "haiku")
+    segments = model.split("-")
+    if segments[0] != "claude" or not any(seg in KNOWN_FAMILIES for seg in segments[1:]):
+        return ("FAIL MODEL-ENUM: model '" + model + "' does not name a known Claude "
+                 "family (" + "/".join(KNOWN_FAMILIES) + ") — want a claude-<family>-... id")
 
-usage_source = rec["usage_source"]
-if usage_source not in ("cli-envelope", "unavailable"):
-    print("FAIL SHAPE: usage_source must be 'cli-envelope' or 'unavailable', got " + repr(usage_source))
-    sys.exit(0)
+    usage_source = rec["usage_source"]
+    if usage_source not in ("cli-envelope", "unavailable"):
+        return "FAIL SHAPE: usage_source must be 'cli-envelope' or 'unavailable', got " + repr(usage_source)
 
-provider = rec["provider"]
-tokens = rec["tokens"]
-weighted_units = rec["weighted_units"]
+    provider = rec["provider"]
+    tokens = rec["tokens"]
+    weighted_units = rec["weighted_units"]
 
-if usage_source == "cli-envelope":
-    if provider is None or not isinstance(provider, str) or provider.strip() == "":
-        print("FAIL SHAPE: usage_source is cli-envelope but provider is null/empty")
-        sys.exit(0)
-    if not isinstance(tokens, dict):
-        print("FAIL SHAPE: usage_source is cli-envelope but tokens is not an object")
-        sys.exit(0)
-    for k in ("input", "output", "cache_read", "cache_creation"):
-        if k not in tokens:
-            print("FAIL SHAPE: tokens is missing '" + k + "'")
-            sys.exit(0)
-        v = tokens[k]
-        if isinstance(v, bool) or not isinstance(v, int) or v < 0:
-            print("FAIL SHAPE: tokens." + k + " must be a non-negative integer, got " + repr(v))
-            sys.exit(0)
-    if weighted_units is not None:
-        if isinstance(weighted_units, bool) or not isinstance(weighted_units, int) or weighted_units < 0:
-            print("FAIL SHAPE: weighted_units must be a non-negative integer or null, got " + repr(weighted_units))
-            sys.exit(0)
-    # Emit "OK-PROVIDER <provider>" so the bash wrapper can content-check the
-    # provider against the ADR 0028 committed allowlist (bash-native check).
-    print("OK-PROVIDER " + provider)
-    sys.exit(0)
-else:
-    if provider is not None:
-        print("FAIL SHAPE: usage_source is unavailable but provider is not null")
-        sys.exit(0)
-    if tokens is not None:
-        print("FAIL SHAPE: usage_source is unavailable but tokens is not null")
-        sys.exit(0)
-    if weighted_units is not None:
-        print("FAIL SHAPE: usage_source is unavailable but weighted_units is not null")
-        sys.exit(0)
+    if usage_source == "cli-envelope":
+        if provider is None or not isinstance(provider, str) or provider.strip() == "":
+            return "FAIL SHAPE: usage_source is cli-envelope but provider is null/empty"
+        if not isinstance(tokens, dict):
+            return "FAIL SHAPE: usage_source is cli-envelope but tokens is not an object"
+        for k in ("input", "output", "cache_read", "cache_creation"):
+            if k not in tokens:
+                return "FAIL SHAPE: tokens is missing '" + k + "'"
+            v = tokens[k]
+            if isinstance(v, bool) or not isinstance(v, int) or v < 0:
+                return "FAIL SHAPE: tokens." + k + " must be a non-negative integer, got " + repr(v)
+        if weighted_units is not None:
+            if isinstance(weighted_units, bool) or not isinstance(weighted_units, int) or weighted_units < 0:
+                return "FAIL SHAPE: weighted_units must be a non-negative integer or null, got " + repr(weighted_units)
+        # "OK-PROVIDER <provider>" so the bash wrapper can content-check the
+        # provider against the ADR 0028 committed allowlist (bash-native
+        # check) — same early-return-before-duration_ms/outcome_ref shape the
+        # original per-record script had via its own sys.exit(0) here.
+        return "OK-PROVIDER " + provider
+    else:
+        if provider is not None:
+            return "FAIL SHAPE: usage_source is unavailable but provider is not null"
+        if tokens is not None:
+            return "FAIL SHAPE: usage_source is unavailable but tokens is not null"
+        if weighted_units is not None:
+            return "FAIL SHAPE: usage_source is unavailable but weighted_units is not null"
 
-duration_ms = rec["duration_ms"]
-if duration_ms is not None:
-    if isinstance(duration_ms, bool) or not isinstance(duration_ms, int) or duration_ms < 0:
-        print("FAIL SHAPE: duration_ms must be a non-negative integer or null, got " + repr(duration_ms))
-        sys.exit(0)
+    duration_ms = rec["duration_ms"]
+    if duration_ms is not None:
+        if isinstance(duration_ms, bool) or not isinstance(duration_ms, int) or duration_ms < 0:
+            return "FAIL SHAPE: duration_ms must be a non-negative integer or null, got " + repr(duration_ms)
 
-outcome_ref = rec["outcome_ref"]
-import re
-if not isinstance(outcome_ref, str) or not re.match(r'^(issue|pr):\S+$', outcome_ref):
-    print("FAIL SHAPE: outcome_ref must match '(issue|pr):<ref>', got " + repr(outcome_ref))
-    sys.exit(0)
+    outcome_ref = rec["outcome_ref"]
+    import re
+    if not isinstance(outcome_ref, str) or not re.match(r'^(issue|pr):\S+$', outcome_ref):
+        return "FAIL SHAPE: outcome_ref must match '(issue|pr):<ref>', got " + repr(outcome_ref)
 
-print("OK")
+    return "OK"
+
+# Each input line is "<lineno>\t<raw JSON line>" (bash prepends the lineno it
+# already tracked while reading the file, so this process never needs to
+# duplicate bash's own blank-line-skip / line-counting logic). A trailing
+# blank line is a possible artifact of how bash hands this process its input
+# (a herestring appends its own final newline) rather than a real record, and
+# is skipped the same way bash already skips a blank source line.
+# partition() splits on the FIRST tab only, so a JSON payload that
+# legitimately contains a literal tab (insignificant whitespace between
+# tokens, outside a string) is passed through untouched.
+for raw in sys.stdin:
+    raw = raw.rstrip("\n")
+    if raw == "":
+        continue
+    lineno, _, line = raw.partition("\t")
+    print(lineno + "\t" + validate_line(line))
 PYEOF
-}
 
 n_records=0
 n_files=0
@@ -463,32 +471,69 @@ for f in ${files[@]+"${files[@]}"}; do
   # "$line" ]` arm under `set -u` — that used to dump a raw bash "unbound
   # variable" trace instead of the promised CANNOT EVALUATE / clean handling.
   line=""
+  # Collect (lineno, line) for every NON-BLANK record in THIS file — the read
+  # loop itself is unchanged from before (still per-line, still bash, still
+  # zero forks); only what used to happen PER ITERATION (a python3 spawn) is
+  # deferred to the single batched call below (temperloop#1343).
+  batch_lines=()
   while IFS= read -r line || [ -n "$line" ]; do
     lineno=$((lineno + 1))
     [ -z "$line" ] && continue
     n_records=$((n_records + 1))
-    verdict="$(validate_record_py "$line")"
-    case "$verdict" in
-      OK)
-        : ;;
-      OK-PROVIDER\ *)
-        prov="${verdict#OK-PROVIDER }"
-        if ! pa_is_allowed "$prov" 2>/dev/null; then
-          echo "FAIL  $f:$lineno — PROVIDER-ENUM: provider '$prov' is not in the ADR 0028 committed allowlist (${committed_providers:-<none>})"
-          fail=1
-        fi
-        ;;
-      FAIL*)
-        echo "FAIL  $f:$lineno — ${verdict#FAIL }"
-        fail=1
-        ;;
-      *)
-        echo "FAIL  $f:$lineno — validator produced no verdict (got: $verdict)"
-        fail=1
-        ;;
-    esac
+    batch_lines+=("${lineno}"$'\t'"${line}")
   done <&3
   exec 3<&-
+  # advisory A4 (bash-3.2 empty-array trap, same idiom as $files above):
+  # "${batch_lines[@]}" on a genuinely empty array can itself trip `set -u`
+  # on old bash — reachable here (an all-blank or empty file leaves it
+  # empty), unlike the $files case above (guarded earlier by the
+  # files-non-empty branch).
+  if [ "${#batch_lines[@]}" -gt 0 ]; then
+    batch_input=""
+    printf -v batch_input '%s\n' "${batch_lines[@]}"
+    # No pipe: python3's stdin comes from a herestring, so `$?` right after
+    # this command substitution is python3's OWN exit status (a pipe would
+    # put that behind PIPESTATUS, and PIPESTATUS from INSIDE a command
+    # substitution does not survive the substitution boundary).
+    batch_out="$(python3 -c "$PY_BATCH_SCRIPT" <<<"$batch_input")"
+    py_rc=$?
+    if [ "$py_rc" -ne 0 ]; then
+      echo "validate-model-usage-emit: CANNOT EVALUATE — the batched python3 validator exited $py_rc while validating $f" >&2
+      exit 1
+    fi
+    n_verdicts=0
+    while IFS=$'\t' read -r lineno verdict; do
+      n_verdicts=$((n_verdicts + 1))
+      case "$verdict" in
+        OK)
+          : ;;
+        OK-PROVIDER\ *)
+          prov="${verdict#OK-PROVIDER }"
+          if ! pa_is_allowed "$prov" 2>/dev/null; then
+            echo "FAIL  $f:$lineno — PROVIDER-ENUM: provider '$prov' is not in the ADR 0028 committed allowlist (${committed_providers:-<none>})"
+            fail=1
+          fi
+          ;;
+        FAIL*)
+          echo "FAIL  $f:$lineno — ${verdict#FAIL }"
+          fail=1
+          ;;
+        *)
+          echo "FAIL  $f:$lineno — validator produced no verdict (got: $verdict)"
+          fail=1
+          ;;
+      esac
+    done <<<"$batch_out"
+    # Fail-closed guard against the exact epic #1409 class this batching
+    # rewrite must not reintroduce: a python3 crash (or any other reason the
+    # batch call silently returns fewer verdicts than records sent) must
+    # CANNOT EVALUATE rather than let the missing records' verdicts be
+    # silently treated as passing.
+    if [ "$n_verdicts" -ne "${#batch_lines[@]}" ]; then
+      echo "validate-model-usage-emit: CANNOT EVALUATE — the batched python3 validator returned $n_verdicts verdict(s) for ${#batch_lines[@]} record(s) in $f — a record was silently dropped" >&2
+      exit 1
+    fi
+  fi
 done
 
 echo "Checked $n_files file(s), $n_records record(s)."
