@@ -7,10 +7,14 @@
 # `validate-*.sh` glob could ever match it.
 #
 # SEED SET, DELIBERATELY NOT EXHAUSTIVE. This registers the three surfaces
-# epic #1409's own motivating instances named. Dozens of this repo's other
-# `validate-*.sh` scripts are not yet registered at all — that is legal
-# (coverage is opt-in, grows as surfaces are added) and is not itself a gate
-# failure. Widening this registry is future work, tracked nowhere yet.
+# epic #1409's own motivating instances named, PLUS THIS GATE ITSELF (see the
+# dedicated section below) — review round 2 found an earlier cut of this
+# gate was not registered against its own registry, which is exactly how its
+# absent/unreadable/empty-registry paths shipped unverified (an empty
+# registry passed vacuously). Dozens of this repo's other `validate-*.sh`
+# scripts are not yet registered at all — that is legal (coverage is opt-in,
+# grows as surfaces are added) and is not itself a gate failure. Widening
+# this registry is future work, tracked nowhere yet.
 #
 # FORMAT — TAB-separated, five columns, one row per (SURFACE, CASE):
 #   1. SURFACE     a script path (repo-relative) or `<script-path>:<subcommand>`
@@ -69,3 +73,16 @@ workflows/scripts/validate-model-usage-emit.sh	empty	covered	workflows/scripts/t
 workflows/scripts/model-comparison/replay.sh:diff-scope	absent	covered	workflows/scripts/model-comparison/tests/test_replay_isolation.sh	diff-scope should fail (non-zero) on an unresolvable base/head
 workflows/scripts/model-comparison/replay.sh:diff-scope	unreadable	not-applicable	-	diff-scope's positional inputs are a repo path and two git commit-ish refs, not a file it opens directly — there is no chmod-000 analog for a git ref. The repo-root argument's own accessibility is validated by git itself on every invocation (every fixture in test_replay_isolation.sh runs diff-scope against a real, throwaway git repo), and an inaccessible repo-root surfaces as the same non-zero ERROR path test 9 already pins for an unresolvable ref.
 workflows/scripts/model-comparison/replay.sh:diff-scope	empty	not-applicable	-	diff-scope has no required file-shaped input that can be "empty" the way a log or record file can. Its one optional file argument, --issue-text-file, is documented as legal-when-absent (falls back to the no-named-files classification per replay.sh's own header); an empty issue-text-file degrades to that identical, already-legal classification rather than opening a new failure mode worth a dedicated fixture.
+
+# ── validate-check-surface-degenerate-coverage.sh (THIS GATE — review round
+#    2, temperloop#1476 HIGH 1: an earlier cut was not registered against
+#    its own registry, which is exactly how an EMPTY registry passed
+#    vacuously — absent/unreadable already failed closed, empty did not).
+#    Registering the gate against itself is the structural fix: the
+#    registry ratchet (this file's own §4) now makes it impossible to
+#    silently delete or downgrade these three rows without the gate
+#    catching its own regression. Fixtures in this gate's own suite,
+#    workflows/scripts/tests/test_check_surface_degenerate_coverage.sh. ────
+workflows/scripts/validate-check-surface-degenerate-coverage.sh	absent	covered	workflows/scripts/tests/test_check_surface_degenerate_coverage.sh	the gate's own registry: an ABSENT registry file is CANNOT EVALUATE, not 0
+workflows/scripts/validate-check-surface-degenerate-coverage.sh	unreadable	covered	workflows/scripts/tests/test_check_surface_degenerate_coverage.sh	the gate's own registry: an UNREADABLE registry file is CANNOT EVALUATE, not 0
+workflows/scripts/validate-check-surface-degenerate-coverage.sh	empty	covered	workflows/scripts/tests/test_check_surface_degenerate_coverage.sh	the gate's own registry: an EMPTY registry file is EMPTY-REGISTRY, not 0
