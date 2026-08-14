@@ -831,6 +831,25 @@ Append the record via Bash: `printf '%s\n' '<json>' >> ~/dev/foundation/meta/dat
 
 Emit records for every adjudicated candidate — both accepted and rejected — so the false-positive rate is also measurable.
 
+**Track a per-stub tally as you go** — for every stub processed this run, keep a running `{session_id: {"accepted": N, "rejected": M}}` count of the adjudications actually made for it (both `0`/`0` for a stub with genuinely nothing to extract). This tally is the input to the integrity check below and to the Step 6 summary's `Findings records:` line — do not reconstruct it after the fact from memory.
+
+### Findings integrity check
+
+A self-reported count is not evidence — corroborate it before quoting it. This is the mechanical check foundation#1576 added after a drain run's own Step 6 summary once asserted "Findings records: 16 emitted (8 accepted, 8 rejected)" while **zero** rows dated that day actually existed in the stream: an unverified positive-work claim. **The checker file is `workflows/scripts/drain/findings_integrity.py`** — it is the single findings-integrity checker (a later item extends this same file with additional checks rather than adding a sibling script). <!-- cite: T.23 guard:workflows/scripts/drain/findings_integrity.py -->
+
+Before writing the Step 6 summary's `Findings records:` line, run:
+
+```sh
+python3 workflows/scripts/drain/findings_integrity.py \
+  "$(git rev-parse --show-toplevel)" \
+  --self-report '{"<session_id>": {"accepted": <n>, "rejected": <m>}, ...}'
+```
+
+using the per-stub tally above as the `--self-report` map (or `--self-report-file <path>` for a large batch). The script reads `meta/data/raw/findings-<YYYY-MM>.jsonl` directly — it needs no cooperation from the rest of this step to be correct, so a step that silently skipped its append cannot also talk its way past the corroboration:
+
+- **Exit 0, `FINDINGS_INTEGRITY_OK`** — every self-reported session's accepted/rejected counts match the rows actually present in the stream (including a legitimate `0`/`0` self-report for a stub with nothing to extract, which the script does not flag). Use the script's own **corroborated** totals — not the pre-check self-reported figure — in the Step 6 summary's `Findings records:` line.
+- **Exit 1, `FINDINGS_EMITTED_MISMATCH`** (one line per divergent session) — a self-report that cannot be corroborated. This includes the exact failure this check exists to catch: a stub self-reports ≥1 decision but zero rows actually landed for it (printed with an explicit `[processed transcript, zero rows landed]` tag). **This is a failure, not a log line:** report the script's corroborated (not self-reported) totals in the `Findings records:` line, and additionally add one line to the Step 6 summary's `Skipped/failed` bucket naming the diverging session(s) and the gap, so the failure is visible in the run log rather than absorbed into a cheerful-looking count.
+
 ### Candidate-tells accumulation
 
 **For every accepted extraction with `method: "drain-model-skim"`** (the model caught it, the lexicon didn't), append one entry to the candidate-tells file (`Pipeline/candidate tells.md` vs the legacy `Context/pipeline - candidate tells.md` — target pinned by the append-target resolution rule, `claude/commands/check-in.md`) in the vault via `mcp__obsidian-builtin__vault_append`.
@@ -983,6 +1002,7 @@ One-block summary:
 - Generated navigation: Index.md + N project Home.md(s) regenerated; conflicts (hand-authored, not overwritten): M (surfaced to moc-generation-conflicts surface for check-in)
 - Answered decisions drained: M (issue #s, repos, kinds, artifact types); parse-misses re-queued: M; skipped (contention): M
 - Tooling friction logged: M (categories); friction candidates (≥5/14d): M (categories)
+- Findings records: M emitted (X accepted, Y rejected) — corroborated totals from `findings_integrity.py`; integrity: OK | FINDINGS_EMITTED_MISMATCH (N session(s), see Skipped/failed)
 - Recurrence candidates (≥5/14d): M (types — feedback/pattern/mistake); promotion tasks added: M (titles)
 - Tasks added to Things inbox: M (titles)
 - Tasks needing estimate refinement: M (titles tagged `est:?`)

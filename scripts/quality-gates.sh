@@ -1060,6 +1060,12 @@ KERNEL_GATES=(
   # Recent-findings tally (foundation #960): the drain "Recurrence → promotion"
   # heredoc extracted to drain/tally_recent_findings.py — fixture-seeded, hermetic.
   "make test-tally-findings"
+  # Findings-integrity checker (foundation#1576): corroborates a drain run's
+  # self-reported findings-record emission against what actually landed in
+  # meta/data/raw/findings-*.jsonl, failing FINDINGS_EMITTED_MISMATCH on any
+  # divergence (including a processed transcript that landed zero rows).
+  # Fixture-seeded, hermetic, no network.
+  "make test-findings-integrity"
   # env-hygiene-report wrapper (temperloop#176, epic #168 L2): the thin
   # passthrough over env-reconcile.sh --format entry that /tidy's forthcoming
   # § Environment hygiene step (temperloop#177) will invoke — the environment

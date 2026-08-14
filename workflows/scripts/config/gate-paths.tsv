@@ -296,6 +296,7 @@ make test-scan-stub	workflows/scripts/drain/**
 make test-vault-hygiene	workflows/scripts/drain/**
 bash workflows/scripts/drain/tests/test_generate_moc.sh	workflows/scripts/drain/**
 make test-tally-findings	workflows/scripts/drain/**
+make test-findings-integrity	workflows/scripts/drain/**
 
 # ── Kernel classification / distribution / CLI ──────────────────────────────
 bash workflows/scripts/kernel/tests/test_check_kernel_manifest.sh	workflows/scripts/kernel/**
