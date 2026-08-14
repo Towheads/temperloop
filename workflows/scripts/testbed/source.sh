@@ -6,21 +6,34 @@
 # own repository) and `materialize-from-seed` (a prepared project tracked in
 # this repository, materialized into the reader's own account).
 #
-# WHY FOUR FUNCTIONS, NOT ONE TUPLE (temperloop#1228 notes): the epic's
-# Contract described this seam as a single five-member tuple (`{git content,
-# issue list, default name, provenance-capable, promotable}`), which
-# conflated RESOLVE-TIME capability (what kind of source is this, and can
-# pre-flight check it) with EXECUTE-TIME work products (the git content, the
-# issues) and left pre-flight vestigial for the one check it exists for: a
-# command must be able to describe + pre-flight a source with ZERO writes,
-# before it ever creates anything. Splitting into four members fixes that:
+# WHY FIVE FUNCTIONS, NOT ONE TUPLE (temperloop#1228 notes; the fifth,
+# `dir_arg()`, landed with temperloop#1356 — see "PROVIDER-SCOPED DIRECTORY
+# ARGUMENT RESOLUTION" below): the epic's Contract described this seam as a
+# single five-member tuple (`{git content, issue list, default name,
+# provenance-capable, promotable}`), which conflated RESOLVE-TIME capability
+# (what kind of source is this, and can pre-flight check it) with
+# EXECUTE-TIME work products (the git content, the issues) and left
+# pre-flight vestigial for the one check it exists for: a command must be
+# able to describe + pre-flight a source with ZERO writes, before it ever
+# creates anything. Splitting into separate members fixes that:
 #
-#   describe()             -> {kind, base_name, provenance_capable,
+#   dir_arg(dir, seed_dir) -> the ONE of the driver's two CLI-level
+#                              directory values (--dir, --seed-dir) that
+#                              THIS provider's directory argument actually
+#                              means — see "PROVIDER-SCOPED DIRECTORY
+#                              ARGUMENT RESOLUTION" below. Resolvable with
+#                              ZERO reads of any kind: it is a pure string
+#                              selection, never a filesystem or network
+#                              call.
+#   describe([dir])         -> {kind, base_name, provenance_capable,
 #                              promotable} — resolvable with ZERO network
 #                              writes and ZERO content fetching, so
 #                              pre-flight can run before anything is
-#                              produced.
-#   preflight_checks()     -> the provider's own all-reads checks, as a
+#                              produced. `dir` is this provider's OWN
+#                              resolved directory argument (dir_arg()'s
+#                              return value), never a driver-level CLI flag
+#                              directly.
+#   preflight_checks([dir]) -> the provider's own all-reads checks, as a
 #                              list of zero-arg shell function NAMES the
 #                              driver invokes in order. This is the ONE seam
 #                              that eliminates the per-provider `case` this
@@ -28,18 +41,47 @@
 #                              driver runs whatever this yields and NEVER
 #                              branches on provider kind to decide which
 #                              checks apply.
-#   produce_git(dest)       -> materializes the source's git content by
+#   produce_git(dest, [dir]) -> materializes the source's git content by
 #                              pushing it to `dest` (a git push target —
 #                              URL or local path; the driving command
 #                              resolves the newly-created destination repo
 #                              into a pushable target before calling this).
-#   produce_issues(dest)    -> creates the source's carried-over issues on
-#                              `dest` (an `OWNER/NAME` repo slug, for
+#   produce_issues(dest, [dir]) -> creates the source's carried-over issues
+#                              on `dest` (an `OWNER/NAME` repo slug, for
 #                              `gh issue create --repo`).
 #
 # `describe()` yields `base_name`, NOT a final name — collision-safe
 # uniquification against an existing repo is a shared DOWNSTREAM concern
 # (the command driver's), not each provider's own job.
+#
+# PROVIDER-SCOPED DIRECTORY ARGUMENT RESOLUTION (temperloop#1356). Before
+# this, `describe`/`preflight_checks`/`produce_git`/`produce_issues` all took
+# their provider's directory as a single trailing arg the DRIVER supplied
+# directly from its own `--dir` (default `.`) — fine for mirror-from-repo,
+# whose directory argument genuinely IS "the source repository directory",
+# but wrong for materialize-from-seed, whose directory argument means
+# something else entirely ("which seed directory") and whose own in-tree
+# default (`_TESTBED_SEED_DIR_DEFAULT` below) only applies when that
+# argument is EMPTY — so the driver's `.` default silently reached this
+# provider too and overrode its default from any cwd, yielding a `.`-derived
+# testbed name. `dir_arg()` fixes that WITHOUT a `case` on kind anywhere in
+# the driver (bin/subcommands/testbed.sh has none — see its own T2 test) and
+# without a `case` on kind in this file's public dispatch either (`dir_arg`
+# dispatches by function-name lookup, exactly like the other four members;
+# `testbed_source__fn`/`testbed_source__require` below never branch on a
+# literal kind string). The driver calls `testbed_source_dir_arg <kind>
+# <dir> <seed_dir>` ONCE, passing BOTH of its own CLI-level values
+# (`--dir`, `--seed-dir`) unconditionally, for every kind; each provider's
+# OWN `dir_arg()` implementation picks whichever one is actually its own
+# and returns THAT — mirror-from-repo's returns `dir` (arg 1), ignoring
+# `seed_dir`; materialize-from-seed's returns `seed_dir` (arg 2), ignoring
+# `dir`. The driver then threads that ONE resolved value into
+# describe/preflight_checks/produce_git/produce_issues exactly as before —
+# their own arg-position contracts (documented above and per-provider
+# below) are UNCHANGED by this. "The provider seam owns what its directory
+# argument means" cashes out mechanically to: each provider states, in its
+# own `dir_arg()`, which of the driver's CLI-level directory concepts is
+# its own — never the driver inspecting `kind` to decide.
 #
 # PROVENANCE STAMPING (Produces 5): `mirror-from-repo`'s `produce_issues`
 # stamps a machine-readable `copied from <owner>/<repo>#<N>` line into every
@@ -52,15 +94,15 @@
 #
 # ── Provider dispatch (mirrors workflows/scripts/lib/knowledge_store.sh's
 # backend-dispatch shape: `ks__dispatch` / `_ks_backend_<name>_<op>`) ───────
-# A provider is a set of four `_testbed_provider_<name>_<op>` functions,
+# A provider is a set of five `_testbed_provider_<name>_<op>` functions,
 # where <name> is the provider's kebab-case `kind` with '-' -> '_'
 # (`mirror-from-repo` -> `mirror_from_repo`). Registering a new provider
-# means defining its four functions and sourcing that file before use — no
+# means defining its five functions and sourcing that file before use — no
 # change to the dispatcher below, and no `case` on kind anywhere in this
 # file either. `materialize-from-seed` (temperloop#1230) is the worked
-# proof of that: it was added by defining four more functions and nothing
-# else — the dispatcher, the public seam members, and every downstream
-# caller are byte-for-byte unchanged by its arrival.
+# proof of that shape for the original four — the dispatcher, the public
+# seam members, and every downstream caller are byte-for-byte unchanged by
+# a new provider's arrival.
 #
 # This file is SOURCED — it sets no shell options (the caller owns
 # `set -euo pipefail`; see knowledge_store.sh's own header for the same
@@ -86,7 +128,8 @@ testbed_source__require() {
   fi
 }
 
-# ── Public interface — the four seam members, kind-dispatched ──────────────
+# ── Public interface — the five seam members, kind-dispatched ──────────────
+# testbed_source_dir_arg <kind> <dir> <seed_dir>         -> resolved dir arg
 # testbed_source_describe <kind> [args...]              -> JSON on stdout
 # testbed_source_preflight_checks <kind> [args...]      -> fn names on stdout
 # testbed_source_produce_git <kind> <dest> [args...]    <- pushes git content
@@ -94,6 +137,13 @@ testbed_source__require() {
 # Every call dispatches on <kind> alone; no caller of this seam may branch
 # on provider kind itself — that is exactly the per-provider `case` this
 # interface exists to eliminate downstream.
+testbed_source_dir_arg() {
+  local kind="$1"; shift
+  local fn; fn="$(testbed_source__fn "$kind" dir_arg)"
+  testbed_source__require "$fn" "$kind" dir_arg || return $?
+  "$fn" "$@"
+}
+
 testbed_source_describe() {
   local kind="$1"; shift
   local fn; fn="$(testbed_source__fn "$kind" describe)"
@@ -166,8 +216,18 @@ _testbed_slug_from_remote() {
 # Provider: mirror-from-repo — the reader's own repository. Provenance-
 # capable, promotable. The source is a LOCAL git checkout (default: `.`,
 # the caller's cwd) — every function below takes that checkout's path as an
-# optional trailing/second argument, defaulting to `.`.
+# optional trailing/second argument, defaulting to `.`. The DRIVER resolves
+# that value through this provider's own `dir_arg()` (below), never from its
+# `--dir` flag directly — see "PROVIDER-SCOPED DIRECTORY ARGUMENT
+# RESOLUTION" in this file's header.
 # ═══════════════════════════════════════════════════════════════════════════
+
+# <dir> <seed_dir> -> returns <dir> verbatim: mirror-from-repo's directory
+# argument IS the driver's `--dir` value; it has no use for `--seed-dir`.
+# Zero reads — a pure string selection, safe to call before anything else.
+_testbed_provider_mirror_from_repo_dir_arg() {
+  printf '%s' "${1:-}"
+}
 
 # [source-dir] -> JSON {kind, base_name, provenance_capable, promotable} on
 # stdout. ZERO network calls: `git remote get-url` is a local config read,
@@ -312,6 +372,11 @@ _testbed_provider_mirror_from_repo_produce_issues() {
 # source checkout — same arity, same position, so the driver calls both
 # identically and TEARDOWN (which only ever reads the artifact record the
 # driver writes) sees no difference between a seed testbed and any other.
+# The DRIVER resolves that value through this provider's own `dir_arg()`
+# (below), never from its `--dir` flag directly — see "PROVIDER-SCOPED
+# DIRECTORY ARGUMENT RESOLUTION" in this file's header; that is precisely
+# what keeps a `--dir`/cwd value from ever reaching this provider's naming
+# again (temperloop#1356).
 # ═══════════════════════════════════════════════════════════════════════════
 
 # Resolved once at source time from this file's own location, so a caller in
@@ -325,6 +390,18 @@ _TESTBED_SEED_DIR_DEFAULT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/../demo/seed
 _testbed_seed_dir() {
   local given="${1:-}"
   if [ -n "$given" ]; then printf '%s' "$given"; else printf '%s' "$_TESTBED_SEED_DIR_DEFAULT"; fi
+}
+
+# <dir> <seed_dir> -> returns <seed_dir> verbatim: materialize-from-seed's
+# directory argument IS the driver's `--seed-dir` value, never `--dir` (that
+# belongs to mirror-from-repo alone). Zero reads — a pure string selection,
+# safe to call before anything else. This is the fix for temperloop#1356:
+# before `dir_arg()` existed, the driver had no way to hand this provider
+# `--seed-dir` instead of `--dir` without branching on kind, so it always
+# received `--dir`'s value (default `.`) and silently overrode its own
+# in-tree seed default.
+_testbed_provider_materialize_from_seed_dir_arg() {
+  printf '%s' "${2:-}"
 }
 
 # [seed-dir] -> JSON {kind, base_name, provenance_capable, promotable} on

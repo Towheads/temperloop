@@ -165,17 +165,29 @@ chmod +x "$BIN/gh"
 export PATH="$BIN:$PATH"
 
 # =============================================================================
-# The two DOUBLES. Same shape, same arity as the seam's real four-function
-# contract (workflows/scripts/testbed/source.sh's own header); the ONLY
-# things that differ between them are their kind name and their describe()
-# capability flags — exactly the "source identity" this test excludes from
-# the sequence comparison and separately asserts DOES differ (Part B below).
-# Both share ONE preflight-check function name, `_double_check_ok`, so the
-# driver's pre-flight UNION (its own checks + the provider's) prints the
-# identical ordered list for both runs.
+# The two DOUBLES. Same shape, same arity as the seam's real five-function
+# contract (workflows/scripts/testbed/source.sh's own header — `dir_arg()`
+# plus the original four); the ONLY things that differ between them are their
+# kind name and their describe() capability flags — exactly the "source
+# identity" this test excludes from the sequence comparison and separately
+# asserts DOES differ (Part B below). Both share ONE preflight-check function
+# name, `_double_check_ok`, so the driver's pre-flight UNION (its own checks
+# + the provider's) prints the identical ordered list for both runs.
+#
+# `dir_arg()` is deliberately NOT logged to CALL_LOG: it is a pure,
+# zero-read string-selection step the driver runs once, before Step 1, to
+# resolve which of its own --dir/--seed-dir values this provider means (see
+# testbed.sh's "PROVIDER-SCOPED SOURCE ARGUMENT RESOLUTION") — not one of
+# the four content-producing seam calls Part A's sequence assertion is
+# about. Both doubles return their first argument verbatim (mirroring the
+# real mirror-from-repo provider's own dir_arg()), so `produce_git`/
+# `produce_issues` below still see `src=.` exactly as before.
 # =============================================================================
 _double_check_ok() { return 0; }
 
+_testbed_provider_double_a_dir_arg() {
+  printf '%s' "${1:-}"
+}
 _testbed_provider_double_a_describe() {
   printf 'describe\n' >> "$CALL_LOG"
   jq -cn '{kind:"double-a", base_name:"double-fixture-a", provenance_capable:true, promotable:true}'
@@ -191,6 +203,9 @@ _testbed_provider_double_a_produce_issues() {
   printf 'produce_issues dest=%s src=%s\n' "$1" "$2" >> "$CALL_LOG"
 }
 
+_testbed_provider_double_b_dir_arg() {
+  printf '%s' "${1:-}"
+}
 _testbed_provider_double_b_describe() {
   printf 'describe\n' >> "$CALL_LOG"
   jq -cn '{kind:"double-b", base_name:"double-fixture-b", provenance_capable:false, promotable:false}'
