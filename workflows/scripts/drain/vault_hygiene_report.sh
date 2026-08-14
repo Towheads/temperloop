@@ -215,6 +215,10 @@
 #     --format entry   print a ready-to-append `### … Status: open` block IFF
 #                      any alarm fires (nothing when clean); default prints a
 #                      human-readable report + trailing `ALARM: <n>` / `OK`.
+#                      A class with more than CLASS_ROLLUP_THRESHOLD alarm
+#                      lines in the same run rolls up to one `CLASS ROLL-UP`
+#                      line (count + one example) instead of inlining every
+#                      line — see § Alarm roll-up by class below.
 #     --heal           perform the mechanically-safe auto-heal (folder
 #                      naming-case normalization + wikilink retarget) for any
 #                      finding that qualifies, alongside the normal report.
@@ -1806,6 +1810,72 @@ for _hyg_fn in "${CHECKS[@]}"; do
   "$_hyg_fn"
 done
 
+# ── Alarm roll-up by class (entry-format only) ────────────────────────────────
+# foundation#1479-followup: `--format entry` writes one fresh block into a
+# durable vault surface note per drain run, and a check with many hits (a
+# hundred stray files, a hundred duplicate-note pairs) inlined one line per
+# hit — 16 such blocks made up 88% of a ~684 KB note while carrying only 12%
+# of its post-purge alarm volume. Roll a class up once it crosses
+# CLASS_ROLLUP_THRESHOLD alarm lines in a single run: the individual lines
+# collapse to ONE line carrying the class's alarm count plus a single
+# example — never a bare count, so a reader can still tell what kind of
+# drift the class is without opening the source data — tagged with the
+# literal marker `CLASS ROLL-UP` so it reads unambiguously as a summary,
+# not a finding (this shape mirrors one already hand-written into the real
+# note: "recorded as a CLASS ROLL-UP, not the full 223-line block"). A class
+# AT OR UNDER the threshold is untouched — byte-identical to the per-line
+# output this script always emitted. The default `report` format (an ad-hoc
+# local terminal read, not a note that accretes across runs) is deliberately
+# NOT rolled up.
+CLASS_ROLLUP_THRESHOLD=10
+
+# Reads alarm lines ("- ⚠️ <class>: <detail>") from stdin, groups by
+# <class> (the text before the first ":"), and for any class with MORE than
+# CLASS_ROLLUP_THRESHOLD lines, replaces that class's lines with one
+# roll-up line at the position of its first occurrence (so overall line
+# order otherwise passes through unchanged). Non-alarm lines (ok/info/
+# healed) and any alarm line whose class stays at or under the threshold
+# pass through byte-for-byte. Pure awk, keyed purely off the accumulated
+# FINDINGS text — no bash associative arrays (this script is kept
+# bash-3.2-safe; see the file header) and no per-check changes required, so
+# the § Additive check-registration seam's "nothing shared ever needs to
+# change when a new check is added" guarantee still holds.
+_hyg_rollup_by_class() {
+  awk -v threshold="$CLASS_ROLLUP_THRESHOLD" '
+    {
+      lines[NR] = $0
+      prefix = "- ⚠️ "
+      if (substr($0, 1, length(prefix)) == prefix) {
+        rest = substr($0, length(prefix) + 1)
+        colon = index(rest, ":")
+        if (colon > 0) {
+          cls = substr(rest, 1, colon - 1)
+          detail = substr(rest, colon + 2)
+          class_of[NR] = cls
+          count[cls]++
+          if (!(cls in first_seen)) {
+            first_seen[cls] = NR
+            example[cls] = detail
+          }
+        }
+      }
+    }
+    END {
+      for (i = 1; i <= NR; i++) {
+        cls = class_of[i]
+        if (cls == "") { print lines[i]; continue }
+        if (count[cls] > threshold) {
+          if (i == first_seen[cls]) {
+            printf "- ⚠️ %s: %d (CLASS ROLL-UP — e.g. %s)\n", cls, count[cls], example[cls]
+          }
+        } else {
+          print lines[i]
+        }
+      }
+    }
+  '
+}
+
 # ── Emit ──────────────────────────────────────────────────────────────────────
 if [ "$FORMAT" = "entry" ]; then
   [ "$alarms" -eq 0 ] && exit 0   # clean → append nothing
@@ -1814,7 +1884,7 @@ if [ "$FORMAT" = "entry" ]; then
   printf '### %s · vault hygiene · %s\n' "$ts" "$host"
   printf -- '- **Decision:** dispose of %d vault-hygiene alarm(s) below (drain proposed; check-in disposes).\n' "$alarms"
   printf -- '- **Findings:**\n'
-  printf '%s' "$FINDINGS" | sed 's/^/  /'
+  printf '%s' "$FINDINGS" | _hyg_rollup_by_class | sed 's/^/  /'
   printf -- '- **Status:** open\n'
   exit 0
 fi

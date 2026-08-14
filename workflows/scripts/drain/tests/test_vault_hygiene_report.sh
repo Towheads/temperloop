@@ -823,6 +823,46 @@ xp2report="$(bash "$SCRIPT" --root "$XP2")"
 assert_has "$xp2report" "naming: Decisions/NotReallyCrossProject.md" "cross_project: false is not a marker — note still flags"
 rm -rf "$XP2"
 
+# ── test _hyg_rollup_by_class: alarm roll-up by class (foundation#1479-followup) ──
+# `--format entry` rolls a class of alarm lines up past CLASS_ROLLUP_THRESHOLD
+# (10) instead of inlining every line — the fix for a check with many hits
+# (here: many zero-byte "garbage" files, one alarm line each) dominating the
+# durable vault surface note's byte count. Synthetic fixtures only, no real
+# vault (kernel principle 3).
+echo "--- test _hyg_rollup_by_class: class roll-up threshold ---"
+
+# 11 zero-byte notes -> the "garbage" class alarm crosses the threshold and
+# collapses to ONE line carrying the count plus a single example, not 11
+# per-file lines.
+RU1="$(mktemp -d)"; mkdir -p "$RU1/Context"
+for i in $(seq 1 11); do : > "$RU1/Context/garbage-$i.md"; done
+ru1entry="$(bash "$SCRIPT" --root "$RU1" --format entry)"
+assert_has "$ru1entry" "CLASS ROLL-UP"              "11-of-a-class rolls up (CLASS ROLL-UP marker present)"
+assert_has "$ru1entry" "garbage: 11 (CLASS ROLL-UP" "roll-up line carries the per-class count, not a bare marker"
+assert_has "$ru1entry" "e.g. Context/garbage-"      "roll-up line carries one example, not a bare count"
+ru1_perfile_lines="$(printf '%s' "$ru1entry" | grep -c '(zero-byte) — delete')"
+if [ "$ru1_perfile_lines" -eq 1 ]; then
+  ok "11-of-a-class: exactly the roll-up's one example remains, no per-alarm inlining"
+else
+  fail_test "11-of-a-class inline count" "expected exactly 1 (zero-byte) line (the roll-up's example), got $ru1_perfile_lines"
+fi
+rm -rf "$RU1"
+
+# 10 zero-byte notes -> AT the threshold, not over it: every alarm line
+# stays inline, byte-identical to the pre-roll-up shape (no CLASS ROLL-UP,
+# all 10 lines present).
+RU2="$(mktemp -d)"; mkdir -p "$RU2/Context"
+for i in $(seq 1 10); do : > "$RU2/Context/garbage-$i.md"; done
+ru2entry="$(bash "$SCRIPT" --root "$RU2" --format entry)"
+assert_missing "$ru2entry" "CLASS ROLL-UP" "10-of-a-class (at threshold) stays inline — no roll-up"
+ru2_perfile_lines="$(printf '%s' "$ru2entry" | grep -c '(zero-byte) — delete')"
+if [ "$ru2_perfile_lines" -eq 10 ]; then
+  ok "10-of-a-class: all 10 per-alarm lines still inlined (byte-identical to pre-roll-up shape)"
+else
+  fail_test "10-of-a-class inline count" "expected all 10 (zero-byte) lines inline, got $ru2_perfile_lines"
+fi
+rm -rf "$RU2"
+
 # ── Tally ─────────────────────────────────────────────────────────────────────
 echo "---"
 echo "pass: $pass | fail: $fail"
