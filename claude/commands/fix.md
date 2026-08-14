@@ -210,11 +210,13 @@ Reached from 4a (a fresh drive with `pr` set), 4b (an adopted `ready` PR), or 4f
 
   ```
   decision_sink_ask(
-    <the PR (#, title, CI state) + the fix it lands + the backend (NATIVE|MANAGED) + ANY state caveat>,
+    <the DEFECT this fixes (the Problem summary slot) FIRST, then the PR (#, title, CI state) + the fix it lands + the backend (NATIVE|MANAGED) + ANY state caveat>,
     [ Merge #<pr>, Hold (do not merge) ],
     ask-now
   )
   ```
+
+  **Problem first, then the fix — the leading slot is defined elsewhere, not here.** `<the DEFECT this fixes>` is `claude/message-schema.md`'s **Question block** template § Problem summary slot; that template owns its shape (a compressed one-to-two-line restatement of the issue's own defect statement, **not** its title — the title already rides in the PR slot beside it) and owns the **no-linked-issue arm**. Do not restate either here — the two sites would drift. **The source is already in hand, so this costs no new fetch:** this run resolved `ghIssue` and Step 2's `issue-state.sh resolve` already fetched that issue. A **description-minted target** (`/fix "<description>"` that minted no issue, so there is no `ghIssue`) takes the template's no-linked-issue arm — render `no linked issue — minted from the operator's description`, never a silently-omitted slot.
 
   **The prompt MUST name any non-clean state explicitly** (criterion 3): if the PR is a **draft**, say so and note merging it requires marking it ready; if the PR has a **foreign author showing recent activity**, name the author and that you'd be merging someone else's active work. Absent explicit approval that names the state, do **not** merge. (The seam carries only the ask — the merge mechanics stay outside it, per `/build` Step 4's load-bearing invariant.)
 

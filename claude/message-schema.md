@@ -237,6 +237,27 @@ Shared required slots:
   `## Questions` entry, a decision-queue issue, the pending-decisions note) —
   a pointer to that surface, never a restatement of its grammar.
 
+Conditionally-required slot:
+
+- **Problem summary** — required whenever the block asks the operator to
+  **approve work that resolves a tracked item** (the merge gate is the
+  canonical instance: `claude/commands/fix.md` Step 5 and
+  `claude/commands/build.md` Step 4a/4b). Order the block **problem first,
+  then the change**: a compressed one-to-two-line restatement of the linked
+  issue's own defect statement — **not its title**, which the block already
+  carries as an identifier and which names the change rather than what was
+  broken. Without it the operator can judge that a change is coherent but
+  not that it addresses the right problem or that the fix shape was the
+  right trade-off — precisely the judgment a blocking approval reserves for
+  a human, so a prompt missing it collects a weaker consent than it appears
+  to. **The source must already be in hand** at ask time (the issue the run
+  resolved earlier in its own flow): this slot never licenses a fresh fetch,
+  and a summary that would need one renders as unavailable instead.
+- **No linked item ⇒ state the arm, never drop the slot silently.** A
+  description-minted target or an untracked refactor renders
+  `no linked issue — <one-line reason>` in the slot's place, so the reader
+  can tell "there is no filed defect" from "somebody omitted the summary".
+
 **When the block is the right vehicle.** This structured block (and <!-- cite: MS.5 guard:claude/plan-schema.md -->
 `AskUserQuestion`) fits a **bounded** decision — approve/reject, or pick from
 a small closed set of named options. For an **open-ended** question — an
