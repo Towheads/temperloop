@@ -1,0 +1,27 @@
+# check-surface-degenerate-allowlist.tsv — the SHRINK-ONLY ratchet of
+# registered-but-not-yet-compliant check surfaces (temperloop#1476, epic
+# #1409). Enforced by workflows/scripts/validate-check-surface-degenerate-
+# coverage.sh: the gate FAILS if a surface name appears here that was not
+# already present at CHECK_SURFACE_ALLOWLIST_BASE_REF (default origin/main)
+# — see that script's own "ratchet" section for the exact mechanics. THE
+# LIST ONLY SHRINKS. Starting non-empty is expected, not a failure (mirrors
+# docs/features/backfill-exempt.txt's own "shrink-only ratchet" convention,
+# named in this item's acceptance criteria as the shape to follow).
+#
+# When a surface's degenerate-input fixtures land, DELETE its line here and
+# ADD it (with all three absent/unreadable/empty case rows) to
+# check-surface-registry.tsv in the SAME PR — never add a new line here for
+# a surface that was never registered; being on this list already implies
+# the surface is known to the registry mechanism and simply not yet proven.
+#
+# FORMAT — TAB-separated, two columns:
+#   1. SURFACE   same grammar as check-surface-registry.tsv's SURFACE column
+#                (a script path, or `<script-path>:<subcommand>`)
+#   2. REASON    mandatory, non-empty, one-line justification — name the
+#                tracking issue if one exists
+
+# Explicitly out of scope for temperloop#1476 (both named in that item's own
+# scope boundary — neither script is touched by this item, and neither gets
+# degenerate-input fixtures here):
+workflows/scripts/model-comparison/tagging.sh	tracked separately as temperloop#1480
+workflows/scripts/model-comparison/batch.sh:bootstrap-line-141	the line-141 bootstrap check tracked separately as temperloop#1487
