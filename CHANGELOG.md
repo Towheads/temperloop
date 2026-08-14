@@ -14,6 +14,349 @@ reads that marker; a stranger greps for it before pulling.
 
 ## [Unreleased]
 
+## [0.30.0] - 2026-08-14
+
+### Added
+
+- **A `/build` worker's acceptance self-report now requires — and surfaces —
+  proof each check can actually FAIL, not just that it passed, and a missing
+  proof is a visible degradation rather than a silent one.** A `passed: true`
+  self-report was indistinguishable, from the returned verdict alone, between
+  a genuine test and a vacuously-passing one (a mistargeted assertion, a
+  fixture that never exercises the changed path). Every `acceptance_results[]`
+  entry now carries an optional `discrimination_evidence` field — which
+  mechanism was removed/broken, that the suite went RED without it, that
+  restoring it went GREEN (`claude/workflows/build-level.mjs`
+  `WORKER_VERDICT_SCHEMA`). On `/build` only, `workerPrompt()` requires it via
+  a new, gated `## Discrimination evidence` section — armed by a new
+  `requireDiscriminationEvidence` `args` key on the same Step-0/Step-3
+  hand-off seam as `principlesSummaries`/`gateSliceSecs`; `sweep.md`/`fix.md`
+  deliberately omit the key today (an operational scope decision — their own
+  `acceptance:` field CAN carry a real per-criterion bullet array, same as
+  `/build`'s, so this is not a structural exclusion), so the requirement does
+  not leak to them. The load-bearing other half:
+  `workflows/scripts/build/pr.sh`'s PR-body recap (`assemble_body`) now reads
+  `.discrimination_evidence` alongside `.criterion`/`.passed`/`.evidence`, so
+  the evidence reaches the human reviewing the PR instead of being silently
+  dropped by a jq filter that read only the original three fields.
+  **The field itself is schema-optional and unenforced by §3d/§3e.5 by
+  design** (kernel principle 7, advisory over enforced discipline) — so a
+  worker that simply omits it degrades LEGIBLY instead of silently: a new
+  `discriminationGaps()` in `build-level.mjs` detects any `passed: true` entry
+  with an empty/absent `discrimination_evidence` once `requireDiscriminationEvidence`
+  is armed, logs a named warning at 3h once the PR number is known, and
+  carries the gap list on the parked record's new `discrimination_gaps` field
+  for the orchestrator to roll into the Step 6 summary — mirroring the
+  existing `verification_surface` degraded-case pattern (build.md §3f step 2)
+  exactly. A criterion deferred to the parent-side §3e.5 acceptance gate
+  (build.md's pre-existing #997 carve-out) is a distinct, explicit exemption
+  — its `discrimination_evidence` reads `deferred to §3e.5; discrimination not
+  established worker-side` rather than being left empty or fabricated.
+  `claude/presentation-plane.md` gains a kernel-table row registering the
+  worker verdict JSON as a machine-parsed surface (schema in
+  `build-level.mjs`, prose contract in `claude/commands/build.md` §3c/§3d,
+  kept in lockstep by a new static guard in
+  `workflows/scripts/build/tests/test_workflow.sh`). `PROSE_BUDGET_TIER2_FILE_CAP`
+  (`workflows/scripts/build/build.config.sh`) is raised 1111 → 1130 to fund
+  this item's degraded-case prose plus headroom for the concurrently-building
+  sibling item #1430.
+
+- **`/build` workers are now told the engineering principles they're expected
+  to weigh against.** `claude/commands/build.md` §3c required embedding the
+  effective (kernel ∪ project) engineering principle set in every worker
+  prompt, but nothing implemented it. A new **§ Step 1.8** resolves the
+  merged set once per run, per distinct `(repo, project)` pair — the kernel
+  set from `claude/engineering-principles.md` merged with the project's own
+  `## Principles` extension, per that file's § Merge semantics — and hands
+  the rendered result to `claude/workflows/build-level.mjs` as two new
+  `args` keys on the same Step-0 hand-off seam as `machinerySoloModel`/
+  `gateSliceSecs`: `principlesSummaries` and `principlesDefaultRepo`.
+  `workerPrompt()` embeds the resolved set as a tagged `[kernel]`/`[project]`
+  numbered list in a new `## Effective engineering principles` section,
+  reused (not re-resolved) by §3e's pre-push reviewer. A caller that omits
+  the new args keys — `sweep.md`/`fix.md` today — still gets a bounded,
+  legible prompt: `workerPrompt()` falls back to a static kernel-only
+  snapshot plus an explicit `DEGRADED` notice, never a silent empty set.
+
+- **`bin/bootstrap.sh` gains `TEMPERLOOP_KERNEL_REF`, so a CI dry run can
+  finally test the ref it was dispatched against** (#1474). Bootstrap pins a
+  fresh install to the newest `v*` tag it can see, never to the ref its caller
+  checked out — which is exactly right for a newcomer's `curl … | sh`, and
+  exactly wrong for `install-tier2`'s documented "pre-tag dry run against
+  `main`". That second use silently reinstalled the *last release* and
+  reported on it: a dispatch carrying a just-merged fix reproduced the very
+  bug it fixed, because the fix was not in any tag yet. The new override is a
+  sibling of `TEMPERLOOP_KERNEL_REPO` — `REPO` says which clone URL to install
+  from, `REF` says which ref inside it to land on — and accepts any commit-ish
+  (a SHA, tag, branch, `origin/main`). Two properties are deliberate: it
+  applies to a **first install only**, never the re-run path (which still
+  delegates entirely to `temperloop update`); and a set-but-unresolvable ref
+  is a **hard failure naming the ref**, never a quiet demotion to the newest
+  tag — a fallback would recreate the same "claims to test one thing, tests
+  another" confusion. Unset *or empty* is the unchanged default. **If you
+  install via bootstrap:** nothing changes unless you set the variable.
+  `install-tier2` sets it to the checked-out commit on a `workflow_dispatch`
+  run only; a tag-triggered release-gate run leaves it unset, so the gate
+  keeps the exact newcomer code path with no CI-only knob in it.
+
+- **`/tidy`'s drain findings emission is now mechanically corroborated, not
+  self-reported** (#1576). A drain run's Step 6 summary once asserted
+  "Findings records: 16 emitted (8 accepted, 8 rejected)" while **zero** rows
+  actually existed in `meta/data/raw/findings-<YYYY-MM>.jsonl` that day — an
+  unverified positive-work claim the run had no way to catch on its own. The
+  new `workflows/scripts/drain/findings_integrity.py` checker (the single
+  findings-integrity checker; a follow-up item extends this same file rather
+  than adding a sibling script) compares a drain run's per-session
+  self-reported accept/reject tally against the rows that actually landed in
+  the append-only findings stream, printing the literal token
+  `FINDINGS_EMITTED_MISMATCH` on any divergence — including the case where a
+  processed transcript found candidates to adjudicate but landed zero rows
+  (distinguished from a transcript with genuinely nothing to extract, which
+  legitimately self-reports and lands zero). `claude/commands/tidy.md`'s
+  Findings records step now runs this check before writing the summary line,
+  and treats a mismatch as a run failure to surface, not a log line.
+
+- **`findings_integrity.py` now catches a null `subject_model` that should
+  have been populated** (#1584). Findings records have carried
+  `subject_model: null` while `analyst_model` is populated, collapsing the
+  attribution split that exists so a defect is credited to the model that
+  *produced* it rather than the one that *found* it. A new `--check-subject-model`
+  mode scans every `findings-*.jsonl` record with `subject_model: null`,
+  resolves its `session_id` to the archived session stub
+  (`meta/sessions/archive/`, matched on the same leading-8-char `id8` the
+  archiver's own filename convention uses), and flags the record with the
+  literal token `SUBJECT_MODEL_MISSING` only when that stub's frontmatter
+  actually carried a `model:` line — a stub that genuinely had no `model:`
+  line (38% of archived stubs, 312 of 814, measured) is never flagged, since
+  a false-positive-happy guard here is worse than no guard. Extends the
+  single findings-integrity checker (`workflows/scripts/drain/findings_integrity.py`,
+  #1576) rather than adding a parallel mechanism.
+
+- **`env-reconcile.sh` now detects a stale composed `~/.claude/CLAUDE.md`**
+  (`COMPOSED_STALE`, #1618). The installed `CLAUDE.md` is a real generated
+  file (kernel doc + overlay + a rendered knowledge-store-routing section) —
+  deliberately not a symlink, so `make doctor`'s symlink classifier cannot
+  see it drift. A composed file older, by mtime, than
+  `claude/CLAUDE.kernel.md`, `claude/CLAUDE.overlay.md`, or
+  `workflows/scripts/build/build.config.sh` under the checkout named by the
+  new `ENV_RECONCILE_CLAUDE_MD_SOURCE_CHECKOUT` override now reports
+  `COMPOSED_STALE:<input>` as operator-checkout-role drift, in both
+  `--format report` and `--format entry`. The comparison is mtime,
+  deliberately never `cmp` — the composed file has no expected-content
+  baseline to diff against without re-running the compose. With
+  `ENV_RECONCILE_CLAUDE_MD_SOURCE_CHECKOUT` unset (the default — this script
+  never guesses which checkout produced the install), or with the composed
+  file / any named input missing, the check reports `UNVERIFIABLE` rather
+  than crashing or false-claiming clean. Report-only: never re-runs
+  `install-claude-md.sh` / `make install-claude`, never touches `~/.claude/`.
+
+`env-reconcile.sh` now reports **`AGENT_CHECKOUT_BEHIND`** — a new drift class on the launchd-agent role. Each declared `infra/launchd/*.plist`'s `WorkingDirectory` is read and, when it resolves to a git checkout, compared against the already-fetched `origin/<default>` (reusing the same `default_branch_of` → `git merge-base --is-ancestor` mechanism `BEHIND_MAIN` uses, now factored into a shared `_behind_origin_default` helper). This closes the gap where a merged fix can close its issue, move its board item to Done, and still never reach the nightly actually running from a stale checkout — every other signal reads green. Report-only and read-only: never fetches, never mutates the target checkout. Fails open on an absent `WorkingDirectory` key, a non-existent path, or a path that isn't a git checkout — reported as "can't verify," never a crash or a false BEHIND claim. Emitted in both `--format report` and `--format entry`.
+
+### Changed
+
+- **Product docs rewritten end to end around a ratified value statement**
+  (#1407). `README.md` and the top-level `docs/` pages now lead with what
+  TemperLoop delivers (reviewed CI-gated PRs, collision-free parallel
+  agents, an autonomous backlog with human-gated merges, free-repo support,
+  a readable toolkit) in plain language; the README's opening essay moved to
+  `docs/about.md`, and a new `docs/using-the-pipeline.md` carries the
+  day-to-day operating guide. Every rewritten page ends with an
+  AI-authorship footer (`*Written by <model-id> on <date>.*`), enforced by a
+  new quality gate (`workflows/scripts/validate-docs-footer.sh`) whose
+  exemption list covers the deliberately-untouched families
+  (`docs/features/`, `docs/adr/`, `docs/failure-modes/`) and fails when an
+  exempt page gains a footer, so the list can't go stale silently.
+
+- **The tier-2 install round trip now runs on release tags, not weekly.**
+  `.github/workflows/install-tier2.yml` drops its `schedule` (Mondays 05:00 UTC)
+  and triggers on a `v*.*.0` tag push — minor and major cuts; a patch tag
+  deliberately does not fire it. `workflow_dispatch` remains, for an ad-hoc
+  drift probe during a release gap or a pre-tag dry run against `main`. The
+  timing now matches semantics that were already there: `bin/bootstrap.sh` pins
+  a fresh install to the newest `v*` tag rather than the checked-out ref, so the
+  weekly run was already testing the last release tag, at an arbitrary moment.
+  On a tag-triggered run the version leg additionally asserts that the tag
+  bootstrap pinned to *is* the tag that triggered the run, so a green run proves
+  the release being cut was the one tested. **If you cut kernel releases:**
+  `VERSIONING.md` § Cutting a release step 4 now blocks propagation
+  (`make update-kernel KERNEL_TAG=v<new>`) on that run being green — the tag is
+  pushed by hand, so the gate lands on propagation rather than on tagging.
+  Accepted trade-off: the weekly cron was the only thing catching drift external
+  to the repo (a GitHub API change, a `gh` update, the demo repo rotting) with no
+  commit involved; that now surfaces at cut time, and a long release gap should
+  be covered by a manual `workflow_dispatch`.
+
+`drain/vault_hygiene_report.sh --format entry` now rolls alarms up **by class** past `CLASS_ROLLUP_THRESHOLD` (default 10) instead of inlining every alarm line, so the vault-hygiene surface note stays readable as drift accumulates. A rolled-up class renders as one `CLASS ROLL-UP` line carrying the number of lines rolled up plus one example; a class at or under the threshold is emitted byte-identically to before. Class-**summary** lines (a running total, or an anti-truncation "N not shown") are recorded via a new `add_summary` seam and are never rolled up nor counted, so a capped list can never silently read as the whole list. The default `report` format is unchanged.
+
+### Fixed
+
+- **`validate-model-usage-emit.sh`'s stderr no longer goes silent after it
+  opens a lake file to read.** The open used a bare `exec 3< "$src"
+  2>/dev/null` — `exec` with no command word applies its redirects
+  PERMANENTLY to the current shell once the open succeeds, which was quietly
+  redirecting the validator's own stderr to `/dev/null` for the rest of the
+  run. On the failure path this was harmless (bash stops at the first failed
+  redirection, so the `CANNOT EVALUATE` message still printed) and the one
+  surviving stderr writer already carried its own `2>/dev/null` — but any
+  future diagnostic added after that line would have vanished with no test
+  failure to catch it (temperloop#1370). The open is now scoped with a
+  command group, `{ exec 3< "$src"; } 2>/dev/null`, matching the idiom
+  `workflows/scripts/model-comparison/tagging.sh:357` already uses (and
+  documents) for the identical hazard — the `2>/dev/null` now applies only to
+  the open attempt, not to the shell for the remainder of the script. A
+  repo-wide sweep confirms this was the only bare `exec N< ... 2>/dev/null`
+  site left in the tree.
+
+- **`/build`'s mandatory pre-push review now actually runs on the default
+  Workflow path.** `claude/commands/build.md` §3e requires a `workflow-reviewer`
+  pass on every item whose diff touches `claude/commands/*.md` (foundation#1007),
+  but the 3c worker cannot spawn a nested subagent — so on the default
+  (Workflow) build path the gate collapsed to a **structurally guaranteed**
+  `skipped — unavailable`, indistinguishable from a genuine unavailability.
+  `claude/workflows/build-level.mjs`'s `driveItem` now runs §3e itself, between
+  3d and 3e.5: it fetches the item's changed-file list and the
+  `reviewer-routing.tsv` off the worktree, resolves the full routing rule set
+  (`determineReviewers` — the `review:` override, the `architectural` change
+  kind, the tsv extension/glob axis, the prose `*.md` fallback, and the
+  mandatory `claude/commands/*.md` → `workflow-reviewer` rule), and spawns each
+  matching reviewer directly via `agent({agentType})`. A `HIGH`-severity finding
+  escalates `review-blocking` before 3f (push); reviewer unavailability
+  degrades legibly (reusing `machineryAgent`'s own resolution-failure catch),
+  and a real pass's outcome now rides the PR body via the verdict `summary`, so
+  `workflows/scripts/workflow-reviewer-coverage.sh` can actually observe
+  coverage going forward. §3e also now records why this review runs *inside*
+  the workflow rather than the conversational orchestrator: the
+  orchestrator↔workflow boundary is irreversible-action-plus-single-writer, and
+  by the time the workflow returns, the item is already pushed with its PR open
+  and the orchestrator's post-return partition removes the worktree a review
+  would need to inspect.
+
+- **The tier-2 install round trip no longer dies at the proposal commit for
+  want of a git identity, and the generator now says so in words.** A GitHub
+  Actions runner ships with no `user.name`/`user.email`, and
+  `workflows/scripts/proposal/proposal-pr.sh` commits the proposed tree before
+  pushing it — so `install-tier2.yml`'s `init` leg failed with a raw "Author
+  identity unknown / fatal: empty ident name" buried inside a JSON `error`
+  string, after the proposal branch had already been cut. Two fixes, at two
+  altitudes. The workflow configures the standard `github-actions[bot]`
+  identity in a step of its own before the round trip. And the generator now
+  **preflights** the identity before it touches the checkout: if neither
+  `git config user.name`/`user.email` nor git's own
+  `GIT_AUTHOR_*`/`GIT_COMMITTER_*` resolution yields one, it refuses with the
+  usual structured `ERROR` outcome *plus* a plain-text remedy on stderr naming
+  the exact two `git config --global` commands to run. It never invents an
+  identity — authoring an adopter's first commit as someone they never chose
+  is worse than a clear refusal — and because it refuses before the
+  `checkout -B`, the checkout is no longer left stranded on a half-built
+  proposal branch.
+
+- **`temperloop init`'s first-epic idempotency probe no longer turns any API
+  error into "already filed"** (#1444). The probe searches the adopter's repo
+  for the design-brief / decline markers before offering the pre-designed first
+  epic, and it was broken two ways at once. GitHub's `search/issues` endpoint
+  now **requires** an `is:issue` or `is:pull-request` qualifier and 422s without
+  one — external drift, no commit here caused it — and `gh` writes its error
+  **body to stdout**, so the probe's fail-open (`2>/dev/null || true`) handed
+  that raw JSON blob back as the issue number. It tested non-empty, so `init`
+  printed `first-epic: already filed as #{"message":"Query must include
+  'is:issue' …","status":"422"}` and passed the blob into the handoff too. Any
+  probe error — rate limit, network blip, auth scope, outage — silently
+  disabled the first-epic offer while claiming the epic existed. Both queries
+  now carry `is:issue`, and — the durable half — the captured value is
+  validated digits-only before it is ever treated as an issue number, so no
+  future error body can be mistaken for a hit either. The probe is now
+  three-valued: already-filed, not-filed, or **UNKNOWN**. An unanswerable probe
+  withholds the offer rather than risk a duplicate epic, and says so on its own
+  `first-epic:` line instead of skipping silently. `install-tier2`'s `init` leg
+  additionally asserts the offer was disposed through a **legitimate arm** — a
+  final `first-epic:` line of a known-good form, and, on the already-filed form,
+  an issue number that is actually digits — so this exact corruption now fails
+  the release gate instead of reading as a clean skip. That assertion
+  deliberately does not pin the *ambient-CI* arm specifically: that arm is only
+  reachable while the demo repo has no first epic filed, so pinning it would
+  make a release gate hostage to demo-repo issue state.
+
+- **`/build`'s class-A activation gate no longer has a dead arm that skips
+  itself.** `claude/commands/build.md` §3e.6 routed a `class: A` activation
+  block carrying no `proof:` predicate to "invoke the `/verify` skill", paired
+  with a legible-degradation clause authorizing `skipped — /verify unavailable`
+  when that skill was absent. No `/verify` has ever existed in this repo — no
+  `claude/commands/verify.md`, no other definition — so that arm of a
+  *mandatory* gate could only ever resolve to its own skip notice: the
+  temperloop#1387 shape, a pre-authorized degradation clause dressing a
+  structurally-dead route as an accepted fallback. Both bullets are now gone.
+  The no-predicate case is instead **unreachable by construction** — plan-schema
+  **rule 13** already fails validation for a class-A block with no `proof:`
+  (`workflows/scripts/build/plan.sh`), and `/build` Step 1's validation
+  checklist now names that rule explicitly, so the front door enforces the
+  invariant 3e.6 depends on. Should such an item still arrive (a plan note
+  hand-edited past Step 1), 3e.6 escalates `activation-proof-missing` and loops
+  back to 3c exactly like a Fail — there is no fallback actor and no skip arm.
+  `claude/plan-schema.md` § activation drops its matching "`/build` falls back
+  to driving `/verify`" sentence and states that `proof:` is mandatory;
+  `claude/message-schema.md` § degradation notice keeps its `/verify` reference
+  only as the worked example of the failure, noting that the fix was deleting
+  the route rather than keeping the notice. New static lockstep guards in
+  `workflows/scripts/build/tests/test_plan.sh` (search `K1451`) sit beside the
+  rule-13 behavior cases and fail if any half is reverted independently: the
+  escalation token must be present, no `skipped — /verify` line may reappear in
+  build.md, neither build.md nor plan-schema.md may route to `/verify` while
+  `claude/commands/verify.md` is absent (the clause self-silences if a real
+  `/verify` ever ships), and build.md must keep naming rule 13.
+
+- **`/build` Step 3h.5's as-you-go merge is now explicitly scoped to the
+  `--no-workflow` conversational path, instead of being owned by nobody on the
+  default path.** `claude/commands/build.md` §3h.5 described an item merging at
+  its own CI-green, but on the default Workflow path no actor could perform it:
+  `build-level.mjs` **never merges and never writes the plan note** (both seats
+  3h.5 needs — the `[>]` flip must be durable *before* the merge call), and the
+  orchestrator's `parallel(driveItem)` returns only at the **level boundary**,
+  by which time "its own green" has passed for every item. So a `[>]` sentinel
+  was defined, consumed by the Step-4 gate and by resume, and produced by no
+  one — while §3e's temperloop#1430 paragraph simultaneously claimed the
+  workflow *owned* the as-you-go merge, contradicting the same file's
+  "NEVER merges" contract. §3h.5 now opens with a SCOPE paragraph naming the
+  conversational orchestrator as its actor and stating the **accepted
+  trade-off** for the default path — every item parks `[m]` and takes the
+  single level-boundary gate, re-paying the merge-queue pileup temperloop#1026
+  measured — with `--no-workflow` as the way to get as-you-go merging, the same
+  shape as the speculative-next-level NON-GOAL. §3e's #1430 paragraph drops the
+  false merge-ownership claim (and its stale "3h has removed the worktree"
+  clause: on this path the *orchestrator's* post-return partition removes it)
+  while keeping the push-before-review reasoning that puts §3e inside
+  `driveItem`. The Step-4 gate, the goal statement, the operating principle,
+  the Step-1.4 resume rows, 4d, `claude/plan-schema.md`'s `[>]` and consent-line
+  definitions, `docs/features/merge-gate.md`, `docs/features/build-machinery.md`,
+  `gate.sh` / `emit-item-efficiency.sh` headers, and the
+  `BUILD_MERGE_AS_YOU_GO` config comment + `setting-registry.tsv` row all now
+  carry the same path scope — the setting is read on the conversational path
+  and inert on the default one. No behavior change: nothing performed 3h.5 on
+  the Workflow path before this either.
+
+- **`/sweep` and `/fix` now pass the two `build-level.mjs` hand-offs they were
+  silently dropping.** Both commands drive the shared
+  `claude/workflows/build-level.mjs`, but only `claude/commands/build.md`
+  resolved and passed `machineryBinDir` and
+  `principlesSummaries`/`principlesDefaultRepo`. The two omissions degraded
+  silently: without `machineryBinDir`, `machineryBin()` fell back to the nested
+  `$(dirname "$(readlink -f …)")` command-substitution the auto-mode classifier
+  denies as an obfuscated-command bypass on `--unattended` runs (temperloop#72)
+  — and `--unattended` is `/sweep`'s default posture, so every push/worktree
+  machinery step drew a denial burst; without the principles pair, every
+  `/sweep` and `/fix` worker permanently ran `workerPrompt()`'s static
+  kernel-only `DEGRADED` fallback with no project `## Principles` extension
+  applied. Each command now resolves `machineryBinDir` in its own Step 0 with
+  the same plain `cd`+`pwd` form `/build` uses, and resolves the effective
+  (kernel ∪ project) principle set by pointing at `build.md` § Step 1.8 (the
+  single implementation) with the one-pair simplification their single-repo
+  scope allows. The existing three-caller guard in
+  `workflows/scripts/build/tests/test_workflow.sh` — which already iterated
+  build/fix/sweep for `gateSliceSecs` — now covers both new fields, and
+  `build.md`'s prose no longer names the two commands as the un-wired
+  exceptions.
+
+`/tidy` Step 0 no longer deadlocks every subsequent drain on a stalled archive PR. It previously early-exited on **any** open archive PR with one line into a log nobody reads, so a PR that went red on a stale base blocked extraction indefinitely with no alarm and no recovery path (observed: 7–26 session stubs stranded for days). Step 0 now classifies the open PR using the same predicate `archive-session.sh` uses — stalled ⟺ its checks rollup is `FAILURE`, or its `mergeStateStatus` is `BEHIND` — and on a stalled PR invokes the archiver's `heal-stalled-pr` entry point to rebase its branch onto the default branch, so the next run finds it green. The drain still exits without extracting on every path (the efficiency early-exit is preserved), and the stalled outcome — healed or heal-failed — is now surfaced as a pending-decisions entry rather than a silent skip. The check remains fail-open on a `gh` error.
+
 ## [0.29.0] - 2026-08-13 — BREAKING
 
 ### Changed — BREAKING
