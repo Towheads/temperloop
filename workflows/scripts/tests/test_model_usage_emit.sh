@@ -802,6 +802,79 @@ QG2="$REPO/scripts/quality-gates.sh"
 check "quality-gates.sh still registers exactly the validator + this test suite for model-usage (no drift)" \
   bash -c "grep -Fq 'workflows/scripts/validate-model-usage-emit.sh' '$QG2' && grep -Fq 'workflows/scripts/tests/test_model_usage_emit.sh' '$QG2'"
 
+echo "── 44. MUTATION (temperloop#1370): the exec-redirect fix is SCOPED — stderr written after the successful open survives; a bare exec swallows it ──"
+# The defect: `exec 3<... 2>/dev/null` with NO command word applies its
+# redirects PERMANENTLY to the current shell once the open succeeds — so
+# every stderr write for the REST OF THE SCRIPT silently vanishes. Asserting
+# only "still exits 0" would pass identically whether the bug is present or
+# not (BLOCKING per the acceptance criteria) — this section instead asserts
+# the property the bare form actually destroys: a diagnostic written AFTER
+# the successful open must still reach stderr.
+cp "$LINT" "$FIXR/workflows/scripts/validate-model-usage-emit.sh"
+# Inject a marker stderr write immediately after the successful-open block
+# (right where the issue says "any stderr write added after that line, by
+# anyone, at any time, would disappear" under the bare form) — anchored on
+# the unique `exit 1\n  fi\n  lineno=0` text so this only matches the exact
+# post-open site, not some other `fi`.
+python3 - "$FIXR/workflows/scripts/validate-model-usage-emit.sh" <<'PYEOF'
+import sys
+p = sys.argv[1]
+c = open(p).read()
+needle = "    exit 1\n  fi\n  lineno=0\n"
+assert c.count(needle) == 1, "post-open anchor not found exactly once — production text drifted"
+marker = "    exit 1\n  fi\n  echo \"MARKER-STDERR-AFTER-OPEN\" >&2\n  lineno=0\n"
+open(p, "w").write(c.replace(needle, marker))
+PYEOF
+chmod +x "$FIXR/workflows/scripts/validate-model-usage-emit.sh"
+FIXED_ERR="$(bash "$FIXR/workflows/scripts/validate-model-usage-emit.sh" --file "$TMP/good.jsonl" 2>&1 1>/dev/null)"
+check "WITH the scoped fix ({ exec 3<...; } 2>/dev/null): a stderr write after the successful open IS visible" \
+  bash -c "grep -Fq 'MARKER-STDERR-AFTER-OPEN' <<<\"\$1\"" _ "$FIXED_ERR"
+# Tamper: revert ONLY the exec line to the original bare (buggy) form, on top
+# of the marker-carrying fixture above — reproducing temperloop#1370 exactly.
+# Done via python3 (not sed) to avoid fragile shell/sed escaping around the
+# literal `{`/`}`/`$` characters in the pattern — matches this suite's own
+# established convention for exact-text source mutations.
+python3 - "$FIXR/workflows/scripts/validate-model-usage-emit.sh" <<'PYEOF'
+import sys
+p = sys.argv[1]
+c = open(p).read()
+scoped = 'if ! { exec 3< "$src"; } 2>/dev/null; then'
+bare = 'if ! exec 3< "$src" 2>/dev/null; then'
+assert c.count(scoped) == 1, "scoped exec line not found exactly once — production text drifted"
+open(p, "w").write(c.replace(scoped, bare))
+PYEOF
+chmod +x "$FIXR/workflows/scripts/validate-model-usage-emit.sh"
+check "sanity: the tamper actually reproduced the bare form (no scoping braces left)" \
+  bash -c "! grep -Fq '{ exec 3< \"\$src\"; }' '$FIXR/workflows/scripts/validate-model-usage-emit.sh'"
+BARE_ERR="$(bash "$FIXR/workflows/scripts/validate-model-usage-emit.sh" --file "$TMP/good.jsonl" 2>&1 1>/dev/null)"
+BARE_RC=$?
+check_eq "AFTER tamper (bare exec reintroduced): the script still exits 0 — this is exactly why an exit-code-only check cannot discriminate the bug" \
+  "0" "$BARE_RC"
+check_not "AFTER tamper (bare exec reintroduced): the SAME marker write is now SWALLOWED — proves the check is genuinely load-bearing" \
+  bash -c "grep -Fq 'MARKER-STDERR-AFTER-OPEN' <<<\"\$1\"" _ "$BARE_ERR"
+cp "$LINT" "$FIXR/workflows/scripts/validate-model-usage-emit.sh"
+chmod +x "$FIXR/workflows/scripts/validate-model-usage-emit.sh"
+check "RESTORED: fixture copy (pristine, no marker) passes cleanly again" \
+  bash "$FIXR/workflows/scripts/validate-model-usage-emit.sh" --file "$TMP/good.jsonl"
+
+echo "── 45. sweep (temperloop#1370): exactly one bare 'exec N< ... 2>/dev/null' pattern remains repo-wide, and it is scoped now ──"
+# Excludes: this test file itself (its python-heredoc fixtures and prose both
+# quote the bare pattern verbatim for mutation purposes, never execute it as
+# real code), scoped `{ exec ...; } 2>/dev/null` hits (the fix's own idiom,
+# a false positive of the raw regex against its own comment/prose lines), and
+# comment lines (`:LINENO:<ws>#...`) such as this fix's own explanatory note
+# at validate-model-usage-emit.sh:432 quoting the bare form as the thing NOT
+# to do. [[:space:]] (not \s) for BSD/macOS grep portability.
+BARE_EXEC_HITS="$(grep -rn 'exec [0-9]<[^;]*2>/dev/null' --include='*.sh' "$REPO" 2>/dev/null \
+  | grep -v '/workflows/scripts/tests/' \
+  | grep -v '{ exec ' \
+  | grep -v -E ':[0-9]+:[[:space:]]*#' || true)"
+check_eq "zero remaining BARE 'exec N< ... 2>/dev/null' sites repo-wide (this file's own is now scoped)" "" "$BARE_EXEC_HITS"
+check "the fixed line in validate-model-usage-emit.sh uses the scoped { exec 3< ...; } 2>/dev/null form" \
+  grep -Fq '{ exec 3< "$src"; } 2>/dev/null' "$LINT"
+check "model-comparison/tagging.sh already used the scoped form before this fix (the in-tree idiom this fix copies)" \
+  grep -Fq '{ exec 3<"$src"; } 2>/dev/null' "$REPO/workflows/scripts/model-comparison/tagging.sh"
+
 echo
 if [ "$fail" -gt 0 ]; then
   printf 'test_model_usage_emit: FAILED %d of %d\n' "$fail" "$((pass + fail))"

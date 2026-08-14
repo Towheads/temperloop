@@ -429,7 +429,16 @@ for f in ${files[@]+"${files[@]}"}; do
   # fd and check ITS exit status — `done < "$src"` alone never surfaced this:
   # a failed redirect on a `while` loop still enters the loop with `read`
   # immediately returning EOF, so it silently "succeeds" at 0 records read.
-  if ! exec 3< "$src" 2>/dev/null; then
+  # Scoped command group — NOT a bare `exec 3<... 2>/dev/null`. A bare `exec`
+  # with no command word applies ALL its redirects PERMANENTLY to the current
+  # shell once the open succeeds, which would silently redirect this script's
+  # own stderr to /dev/null for the rest of the run and swallow every later
+  # diagnostic (temperloop#1370). Wrapping in a `{ }` command group scopes the
+  # `2>/dev/null` to just this open attempt (bash saves/restores the group's
+  # fds), while `exec 3<...` inside it still opens fd 3 in the CURRENT shell
+  # (no subshell), so the descriptor survives for the read loop below exactly
+  # as intended. Same idiom as workflows/scripts/model-comparison/tagging.sh.
+  if ! { exec 3< "$src"; } 2>/dev/null; then
     if [ "$f" = "-" ]; then
       echo "validate-model-usage-emit: CANNOT EVALUATE — could not open stdin for reading" >&2
     else
