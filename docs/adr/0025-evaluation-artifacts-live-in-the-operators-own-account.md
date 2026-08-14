@@ -93,7 +93,9 @@ repo, not per-run create-delete` for the rationale.
 This is an **explicit accepted gap, not a silent one**: because CI never
 creates or deletes a repository, it has nothing of that kind to strand — but it
 also means `temperloop testbed` (this ADR's own create-a-disposable-testbed
-path) and its teardown leg have **no weekly automated coverage**. They are
+path) and its teardown leg have **no automated coverage** in that round trip
+(which since temperloop#1425 runs on each minor release tag rather than
+weekly). They are
 exercised only by their own unit tests (a faked `gh`) and by temperloop#1240's
 one-time executed run. The rule ("this project owns no external artifact its
 own teardown cannot reclaim") still holds for what CI actually does — it simply

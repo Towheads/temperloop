@@ -303,7 +303,38 @@ how many PRs/commits it covers, the BREAKING pointer if applicable, then a short
 `Highlights:` list drawn from the CHANGELOG section. `git tag -l --format=
 '%(contents)' v<last>` shows the house style.
 
+**The tag push fires the live install gate.** `v<new>` matches
+`.github/workflows/install-tier2.yml`'s `v*.*.0` trigger, so pushing it starts
+the tier-2 round trip — a real `bin/bootstrap.sh` install of this tag, then
+`temperloop init` → `temperloop eject` against the live demo repo. That run is
+step 4's precondition, so note its URL now rather than hunting for it later:
+
+```sh
+gh run list --workflow=install-tier2.yml --limit 1
+```
+
 ### 4. Propagate to consuming repos
+
+**Do not propagate until the tier-2 run on `v<new>` is green.** It is the only
+proof a stranger's actual install of this tag works against a real GitHub API —
+tier-1's hermetic suite structurally cannot give it, and `checks` never ran it.
+Because the tag is pushed by hand in step 3, this gate necessarily lands *after*
+the tag exists: it gates **propagation, not tagging**. That is the real gate,
+not a consolation — nothing downstream has moved yet, and pre-1.0 an
+unpropagated tag is cheap to fix.
+
+```sh
+gh run watch "$(gh run list --workflow=install-tier2.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
+```
+
+If it fails, read the run's **Round-trip verdict** step first — it names the
+failing leg (`version`/`init`/`eject`) instead of making you dig through logs.
+Fix forward and cut the next tag; do not propagate a tag whose live install
+path is known broken. If the failure is in the demo repo or the environment
+rather than in the release (a `gh` API hiccup, an orphaned proposal branch left
+by a previous run's `eject`), re-run the workflow once that is cleared — a
+`workflow_dispatch` run tests `main` rather than the tag, so prefer re-running
+the tag-triggered run itself.
 
 A tag alone changes nothing downstream — each overlay vendors on its own:
 

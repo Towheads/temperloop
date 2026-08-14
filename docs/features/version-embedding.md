@@ -57,14 +57,19 @@ possible.
 - **`.github/workflows/install-tier2.yml`** gains a `version` leg asserting the
   *installed* CLI (bootstrapped onto PATH) reports its embedded version, not
   `dev` — the real-round-trip proof a hermetic unit gate can't give, since the
-  gate only sees the in-tree checkout.
+  gate only sees the in-tree checkout. Since that workflow moved to a release-tag
+  trigger (temperloop#1425) the same leg additionally asserts, on a tag-triggered
+  run, that the version bootstrap pinned to equals the triggering tag — catching
+  a tag pushed without its VERSION bump (§ Cutting a release step 2) from the
+  install side, where `test_version_embedding.sh` only sees the in-tree checkout.
 
 ## Resource impact
 
 None. A single-line file read (`sed`/`head`) at CLI startup; no network, no
 GitHub API, no measurable added CI time beyond the one new fast gate. The
 `install-tier2` version leg is a `temperloop version` invocation plus a file
-read inside the existing weekly/manual round-trip job — no new job or runner.
+read inside the existing release-triggered/manual round-trip job — no new job
+or runner.
 
 ## Telemetry
 
