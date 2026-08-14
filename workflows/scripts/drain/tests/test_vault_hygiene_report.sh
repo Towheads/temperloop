@@ -836,7 +836,7 @@ echo "--- test _hyg_rollup_by_class: class roll-up threshold ---"
 # `- ⚠️ ` prefix (including its U+FE0F variation selector). This one compares
 # WHOLE lines byte-for-byte via grep -Fx.
 assert_line() { # <haystack> <exact-line> <label>
-  if printf '%s\n' "$1" | grep -Fxq -- "$2"; then
+  if printf '%s\n' "$1" | grep -Fx -- "$2" >/dev/null; then
     ok "$3"
   else
     fail_test "$3" "no byte-identical line: $2"
@@ -880,7 +880,7 @@ else
 fi
 ru2_exact_ok=1
 for i in $(seq 1 10); do
-  printf '%s\n' "$ru2entry" | grep -Fxq -- "  - ⚠️ garbage: Context/garbage-$i.md (zero-byte) — delete" || ru2_exact_ok=0
+  printf '%s\n' "$ru2entry" | grep -Fx -- "  - ⚠️ garbage: Context/garbage-$i.md (zero-byte) — delete" >/dev/null || ru2_exact_ok=0
 done
 if [ "$ru2_exact_ok" -eq 1 ]; then
   ok "10-of-a-class: every line byte-identical to the pre-roll-up shape (indent + '- ⚠️ ' prefix + text)"
