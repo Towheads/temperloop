@@ -3916,14 +3916,20 @@ grep -q 'PRINCIPLES_KERNEL_FALLBACK' "$MJS" \
 grep -q "'DEGRADED —" "$MJS" \
   || fail "#1432: the fallback path must emit a legible DEGRADED notice, not a silent kernel-only list"
 K1432_BUILD_MD="$REPO_ROOT/claude/commands/build.md"
-if [ -f "$K1432_BUILD_MD" ]; then
-  grep -q 'principlesSummaries' "$K1432_BUILD_MD" \
-    || fail "#1432: build.md must name principlesSummaries in its Step 3 args hand-off (lockstep with build-level.mjs)"
-  grep -q 'principlesDefaultRepo' "$K1432_BUILD_MD" \
-    || fail "#1432: build.md must name principlesDefaultRepo in its Step 3 args hand-off (lockstep with build-level.mjs)"
-  grep -q 'Step 1.8' "$K1432_BUILD_MD" \
-    || fail "#1432: build.md must define Step 1.8 — the once-per-run orchestrator resolution §3c/§3e both reuse"
-fi
+# An absent build.md is a HARD FAIL, never a skip (temperloop#1409's own
+# failure class: a check that cannot run must not report PASS). The .mjs
+# side above is already guaranteed present by this file's top-of-file `[ -f
+# "$MJS" ]` guard; build.md carries no such guard, so this line is what
+# keeps a deleted/renamed prose file from silently dropping its half of the
+# lockstep pair instead of going red.
+[ -f "$K1432_BUILD_MD" ] \
+  || fail "#1432: claude/commands/build.md is missing — the prose half of this contract pair cannot be verified"
+grep -q 'principlesSummaries' "$K1432_BUILD_MD" \
+  || fail "#1432: build.md must name principlesSummaries in its Step 3 args hand-off (lockstep with build-level.mjs)"
+grep -q 'principlesDefaultRepo' "$K1432_BUILD_MD" \
+  || fail "#1432: build.md must name principlesDefaultRepo in its Step 3 args hand-off (lockstep with build-level.mjs)"
+grep -q 'Step 1.8' "$K1432_BUILD_MD" \
+  || fail "#1432: build.md must define Step 1.8 — the once-per-run orchestrator resolution §3c/§3e both reuse"
 echo "PASS: #1432 principles guard — workerPrompt embeds the resolved (or legibly degraded) effective principle set; build.md Step 1.8/§3c/§3e in lockstep"
 
 echo ""
