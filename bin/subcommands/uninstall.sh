@@ -16,7 +16,7 @@
 # $XDG_CONFIG_HOME/temperloop/ a human hand-edited after install — see
 # bin/README.md's Uninstall section for the worked example).
 #
-# FOUR SEPARATE REMOVAL SCOPES (bin/README.md § Uninstall has the full
+# FIVE SEPARATE REMOVAL SCOPES (bin/README.md § Uninstall has the full
 # table; eject.sh's print_uninstall_bullet prints the same delineation) —
 # this subcommand is exactly the SECOND one:
 #   (a) the bootstrap footprint (~/.local/bin/temperloop + the `foundation`
@@ -44,6 +44,23 @@
 #       install` but DELIBERATELY left out of this manifest (see
 #       print_cache_store_bullet below for why) rather than folded into
 #       scope (b).
+#   (f) the machine-scoped testbed artifact record
+#       (${XDG_STATE_HOME:-$HOME/.local/state}/temperloop/testbed-record.json,
+#       workflows/scripts/testbed/record.sh) — pointers to testbed
+#       repositories `temperloop testbed` created in the operator's own
+#       GitHub account (temperloop#1358). Lettered (f), not (e): scope (e)
+#       in bin/README.md's Uninstall table is the first-epic substrate,
+#       which has no script and this file has never printed anything about
+#       — the next new scope here simply continues from (d). DELIBERATELY
+#       not folded into the manifest above, for the same reason record.sh's
+#       own header gives: the artifact is a LIVE REMOTE REPOSITORY, not a
+#       local file/symlink this build wrote and can restore/remove. This
+#       script only surfaces which recorded testbed repos still exist and
+#       prints the `temperloop testbed --teardown` command for each
+#       (print_testbed_record_bullet below) — it never deletes one itself,
+#       and never removes the record entry either (removing the pointer
+#       without removing the repo would convert a recoverable artifact into
+#       an unrecoverable one).
 #
 # Usage:
 #   uninstall.sh [--yes] [--dry-run]
@@ -91,11 +108,14 @@ BIN_DIR="$(cd "$SUBCOMMAND_DIR/.." && pwd)"
 LIB_DIR="$BIN_DIR/lib"
 REPO_ROOT="$(cd "$BIN_DIR/.." && pwd)"
 INSTALL_LIB_DIR="$REPO_ROOT/workflows/scripts/install"
+TESTBED_LIB_DIR="$REPO_ROOT/workflows/scripts/testbed"
 
 # shellcheck source=../lib/common.sh
 source "$LIB_DIR/common.sh"
 # shellcheck source=../../workflows/scripts/install/manifest.sh
 source "$INSTALL_LIB_DIR/manifest.sh"
+# shellcheck source=../../workflows/scripts/testbed/record.sh
+source "$TESTBED_LIB_DIR/record.sh"
 
 command -v jq >/dev/null 2>&1 || { echo "uninstall.sh: jq not found on PATH" >&2; exit 1; }
 
@@ -171,6 +191,47 @@ Ran 'temperloop init' in one or more target repos? Their side effects
 EOF
 }
 
+# print_testbed_record_bullet — scope (f): the machine-scoped testbed
+# artifact record (workflows/scripts/testbed/record.sh) — pointers to
+# testbed repositories `temperloop testbed` created in the operator's own
+# GitHub account (temperloop#1358, epic #1411). PRINT-ONLY, like scopes
+# (a)/(d) above: this function never deletes a recorded repo (that stays
+# `temperloop testbed --teardown`'s job) and never removes the record entry
+# either — it only names which repos the record still shows with
+# artifacts.repo_created=true (a testbed's creation IS that mutating step,
+# per record.sh's own contract, so this is effectively "every entry still
+# recorded") and prints the exact teardown command for each.
+#
+# Deliberately prints NOTHING when there is nothing to say: no record file
+# yet, a record with zero entries, or a record this build cannot read (an
+# unknown/newer schema_version — testbed_record_flat then fails and
+# record.sh's own load already explained why on stderr) all fall through to
+# a silent no-op here rather than a dead-end "you may have leftover state"
+# line. This is intentionally NOT called from the --dry-run or the
+# incomplete-uninstall (n_failed>0) exit paths, matching how
+# print_bootstrap_footprint_bullet/print_cache_store_bullet/
+# print_eject_reminder are already scoped to only the two completion paths
+# below.
+print_testbed_record_bullet() {
+  local flat entries n
+  flat="$(testbed_record_flat)" || return 0
+  [ -n "$flat" ] || return 0
+
+  entries="$(jq -c '[.[] | select(.artifacts.repo_created == true)]' <<<"$flat")" || return 0
+  n="$(jq -r 'length' <<<"$entries")" || return 0
+  [ "$n" -gt 0 ] || return 0
+
+  cat <<EOF
+Machine-scoped testbed record ($(testbed_record_file)) — scope (f) of
+  bin/README.md's Uninstall section; print-only, same posture as scopes
+  (a)/(d) above. 'temperloop uninstall' never deletes these — the record
+  still points at $n live testbed repositor$([ "$n" -eq 1 ] && printf y || printf ies) in your GitHub account:
+EOF
+  jq -r '.[] | "  - " + .testbed_repo' <<<"$entries"
+  echo "  Tear each one down explicitly with:"
+  jq -r '.[] | "    temperloop testbed --teardown --repo \"" + .testbed_repo + "\" --id \"" + .id + "\""' <<<"$entries"
+}
+
 # ---------------------------------------------------------------------------
 # CLI parsing
 # ---------------------------------------------------------------------------
@@ -231,6 +292,7 @@ if [ "$n_paths" -eq 0 ]; then
   echo
   print_eject_reminder
   echo
+  print_testbed_record_bullet
   echo "temperloop uninstall: done (no-op)"
   exit 0
 fi
@@ -314,6 +376,7 @@ if [ "$n_failed" -eq 0 ]; then
   echo
   print_eject_reminder
   echo
+  print_testbed_record_bullet
   echo "temperloop uninstall: done"
   exit 0
 else

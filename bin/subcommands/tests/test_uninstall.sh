@@ -32,6 +32,22 @@
 #      every other entry, and reports exit 1 — a bare bash-array-mechanics
 #      check that isn't already covered by the library's own test suite.
 #
+# Tests 8-10 cover temperloop#1358 (epic #1411) — the machine-scoped testbed
+# record's own advisory scope (f), print_testbed_record_bullet:
+#   8. A record with a `repo_created: true` entry: uninstall NAMES that
+#      repo explicitly and prints the exact `temperloop testbed --teardown`
+#      command for it, AND — since this scope is print-only — the record
+#      file itself still exists afterward, untouched, after `--yes`.
+#   9. An empty record (`testbeds: {}`, the state right after
+#      `temperloop testbed --teardown` removes its last entry): uninstall
+#      says nothing about testbeds at all.
+#   10. No record file whatsoever (never ran `temperloop testbed`):
+#      uninstall says nothing about testbeds at all.
+# Every fixture entry is seeded directly via record.sh's own
+# testbed_record_add() (never a real `temperloop testbed` run — no network,
+# no `gh`), mirroring the manifest-seeding pin above for install-manifest
+# fixtures.
+#
 # No network. Every test runs inside a throwaway sandbox HOME/XDG root —
 # nothing touches real machine state.
 set -uo pipefail
@@ -40,6 +56,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$HERE/../../.." && pwd)"
 UNINSTALL="$HERE/../uninstall.sh"
 MANIFEST_SH="$REPO_ROOT/workflows/scripts/install/manifest.sh"
+TESTBED_RECORD_SH="$REPO_ROOT/workflows/scripts/testbed/record.sh"
 SANDBOX_LIB="$REPO_ROOT/workflows/scripts/tests/lib/sandbox.sh"
 
 command -v jq >/dev/null 2>&1 || { echo "SKIP: jq not on PATH"; exit 0; }
@@ -81,6 +98,26 @@ manifest_path_count() {
   sandbox_bash '
     source "'"$MANIFEST_SH"'"
     manifest_load | jq "[.paths|keys[]]|length"
+  '
+}
+
+# seed_testbed_entry <owner/name> — records one testbed entry at that key
+# via record.sh's own testbed_record_add() (source_kind mirror-from-repo,
+# promotable true), exactly the sanctioned fixture strategy this suite's
+# manifest-side seed_created/seed_preexisting already use for
+# manifest.sh. Prints nothing; fails loudly on any write error.
+seed_testbed_entry() {
+  local key="$1"
+  sandbox_bash '
+    source "'"$TESTBED_RECORD_SH"'"
+    testbed_record_add "'"$key"'" mirror-from-repo "'"$key"'-source" true >/dev/null
+  ' || fail "seed_testbed_entry: recording $key failed"
+}
+
+testbed_record_file_path() {
+  sandbox_bash '
+    source "'"$TESTBED_RECORD_SH"'"
+    testbed_record_file
   '
 }
 
@@ -283,6 +320,71 @@ grep -qF "${SANDBOX_XDG_CACHE_HOME}/temperloop" <<<"$out7" && fail "7: guidance 
 
 sandbox_down
 echo "PASS: 7 (cache-store-root guidance honors an explicit CACHE_STORE_ROOT override)"
+
+# =============================================================================
+# Test 8: a testbed record holding a `repo_created: true` entry — uninstall
+#         names that repo explicitly, prints its exact
+#         `temperloop testbed --teardown` command, and (this scope is
+#         print-only) the record file itself still exists afterward, byte-
+#         identical, even after `--yes`.
+# =============================================================================
+sandbox_up uninstall-test8
+
+testbed_key8="me/eval-testbed-8"
+seed_testbed_entry "$testbed_key8"
+record_file8="$(testbed_record_file_path)"
+[ -f "$record_file8" ] || fail "8: setup — the testbed record file should exist after seeding"
+before_record8="$(cat "$record_file8")"
+
+out8="$(run_uninstall --yes 2>&1)" && rc8=0 || rc8=$?
+[ "$rc8" -eq 0 ] || fail "8: uninstall --yes should exit 0 (got rc=$rc8, out: $out8)"
+
+grep -qF "$testbed_key8" <<<"$out8" || fail "8: expected the testbed repo to be named explicitly (got: $out8)"
+grep -qF "temperloop testbed --teardown --repo \"$testbed_key8\"" <<<"$out8" || fail "8: expected the exact teardown command for the repo (got: $out8)"
+grep -q "Machine-scoped testbed record" <<<"$out8" || fail "8: expected the scope (f) heading (got: $out8)"
+grep -qF "you may have leftover state" <<<"$out8" && fail "8: must NOT fall back to a generic leftover-state line (got: $out8)"
+
+[ -f "$record_file8" ] || fail "8: the testbed record file must still exist after uninstall (print-only — never deleted)"
+after_record8="$(cat "$record_file8")"
+[ "$before_record8" = "$after_record8" ] || fail "8: the testbed record must be byte-identical before/after uninstall (print-only)"
+
+sandbox_down
+echo "PASS: 8 (a repo_created:true entry is named explicitly, its teardown command is printed, and the record survives --yes untouched)"
+
+# =============================================================================
+# Test 9: an empty testbed record (testbeds: {} — the state right after
+#         `temperloop testbed --teardown` removes its last entry) —
+#         uninstall says nothing about testbeds at all.
+# =============================================================================
+sandbox_up uninstall-test9
+
+record_file9="$(testbed_record_file_path)"
+mkdir -p "$(dirname "$record_file9")"
+printf '{"schema_version":1,"testbeds":{}}' > "$record_file9"
+
+out9="$(run_uninstall --yes 2>&1)" && rc9=0 || rc9=$?
+[ "$rc9" -eq 0 ] || fail "9: uninstall --yes should exit 0 (got rc=$rc9, out: $out9)"
+grep -qi "testbed" <<<"$out9" && fail "9: an empty testbed record must produce NO testbed-related output (got: $out9)"
+
+sandbox_down
+echo "PASS: 9 (an empty testbed record — testbeds: {} — produces no testbed-related output)"
+
+# =============================================================================
+# Test 10: no testbed record file at all (never ran `temperloop testbed`) —
+#          uninstall says nothing about testbeds at all.
+# =============================================================================
+sandbox_up uninstall-test10
+
+record_file10="$(testbed_record_file_path)"
+[ ! -e "$record_file10" ] || fail "10: setup — no testbed record file should exist yet"
+
+out10="$(run_uninstall --yes 2>&1)" && rc10=0 || rc10=$?
+[ "$rc10" -eq 0 ] || fail "10: uninstall --yes should exit 0 (got rc=$rc10, out: $out10)"
+grep -qi "testbed" <<<"$out10" && fail "10: no testbed record must produce NO testbed-related output (got: $out10)"
+[ ! -e "$record_file10" ] || fail "10: uninstall must never CREATE a testbed record file that didn't already exist"
+
+sandbox_down
+echo "PASS: 10 (no testbed record at all produces no testbed-related output, and none is created)"
 
 echo
 echo "ALL PASS: test_uninstall.sh"
