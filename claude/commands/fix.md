@@ -210,11 +210,25 @@ Reached from 4a (a fresh drive with `pr` set), 4b (an adopted `ready` PR), or 4f
 
   ```
   decision_sink_ask(
-    <the PR (#, title, CI state) + the fix it lands + the backend (NATIVE|MANAGED) + ANY state caveat>,
+    <the DEFECT this fixes (the Problem summary slot) FIRST, then the PR (#, title, CI state) + the fix it lands + the backend (NATIVE|MANAGED) + ANY state caveat>,
     [ Merge #<pr>, Hold (do not merge) ],
     ask-now
   )
   ```
+
+  **Problem first, then the fix — the leading slot is defined elsewhere, not here.** `<the DEFECT this fixes>` is `claude/message-schema.md`'s **Question block** template § Problem summary slot; that template owns its shape (a compressed one-to-two-line restatement of the issue's own defect statement, **not** its title — the title already rides in the PR slot beside it), owns its **three arms**, and owns the **never-fabricate rule**. Do not restate any of that here — the two consumer sites would drift.
+
+  **Fill the slot with ONE read, right here, immediately before the ask** — alongside the `gate.sh backend`/`strict` probes above, which already make this step a `gh`-calling step:
+
+  ```bash
+  gh issue view "$issue" -R "$repo" --json body -q .body
+  ```
+
+  Step 2's `issue-state.sh resolve` did **not** already fetch this — it reads `state,labels,assignees` only, so the run holds the issue *number*, never its defect prose. One extra read on the single target `/fix` drives, once per run, at a modal gate that is about to merge: negligible. Render the arm the read selects — **all three are implemented here, none is skipped**:
+
+  - **Arm 1 — summary rendered.** Non-empty body → the compressed restatement. This is the normal path, **including for a description target**: Step 1 sub-step 4 already minted the issue from the operator's description, so its body *is* the defect statement and the run reaches Step 5 with a real `$issue`.
+  - **Arm 2 — `no linked issue — <one-line reason>`.** No `$issue` to read. Step 1 mints one for every accepted target, so this arm is `/fix`'s **defensive** case rather than its common one — render it anyway (`no linked issue — target carries no issue number`) instead of dropping the slot, so a missing reference reads as a stated absence rather than as an omission.
+  - **Arm 3 — `summary unavailable — <one-line reason>`.** The read exited non-zero or returned an empty body — issue deleted, `gh` auth failure, rate limit, network error, blank body. Name which. **Do not fall back to the issue title, the PR title, or the diff:** the template forbids inferring the defect, and this modal gate is exactly the artifact a fabricated restatement would corrupt.
 
   **The prompt MUST name any non-clean state explicitly** (criterion 3): if the PR is a **draft**, say so and note merging it requires marking it ready; if the PR has a **foreign author showing recent activity**, name the author and that you'd be merging someone else's active work. Absent explicit approval that names the state, do **not** merge. (The seam carries only the ask — the merge mechanics stay outside it, per `/build` Step 4's load-bearing invariant.)
 
