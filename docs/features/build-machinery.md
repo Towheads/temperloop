@@ -186,7 +186,9 @@ dependency levels (above); `writeback` flips an item's checkbox sentinel —
 for the batch merge gate, awaiting consent) → `[x]` merged, with `[>]` as the
 alternate penultimate state for an item that took its consent and merged at
 its own green instead of at the level boundary (consented, merge in flight,
-not yet confirmed landed), and `[v]` (verdict-captured, no
+not yet confirmed landed — written only by `/build`'s `--no-workflow`
+conversational path, whose Step 3h.5 is the sole producer; temperloop#1452),
+and `[v]` (verdict-captured, no
 PR) and `[-]` (skipped) as the two non-merge terminal states — and stamps
 sub-lines recording the item's PR number, pushed SHA, and a human-readable
 run-status line. Because every one of these writes goes through the same

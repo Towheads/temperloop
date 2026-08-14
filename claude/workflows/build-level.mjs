@@ -8,7 +8,10 @@
 // per level (via the Workflow tool), the workflow drives every item's machinery +
 // worker, and returns only what to write back. The orchestrator still owns the
 // MERGE GATE (Step 4) — this workflow never merges and never writes the plan
-// note.
+// note. Corollary (temperloop#1452): build.md §3h.5's as-you-go merge, which
+// needs BOTH of those seats, is scoped to /build's `--no-workflow`
+// conversational path and has no implementation here by design — a
+// Workflow-path level batches every item to the Step-4 gate.
 //
 // -----------------------------------------------------------------------------
 // DESIGN NOTES (read before editing — these three decisions are load-bearing)
@@ -2568,9 +2571,12 @@ async function driveItem(item) {
   // Runs HERE — between 3d and 3e.5, inside this driver — spawning the routed
   // reviewer(s) itself via `agent({agentType})`. See build.md §3e's own "why
   // this runs inside the workflow, not the orchestrator" paragraph: by the
-  // time this driver RETURNS to the orchestrator, 3h has removed the worktree
-  // a review would need to inspect and 3h.5 may already have merged the PR —
-  // a loop-back to 3c is only reachable from INSIDE driveItem, never after.
+  // time this driver RETURNS to the orchestrator, the item is already pushed
+  // with its PR open (irreversible), and the orchestrator's post-return
+  // partition removes the parked item's worktree — the tree a review would
+  // need to inspect. A loop-back to 3c is only reachable from INSIDE
+  // driveItem, never after. (This driver does NOT merge: build.md §3h.5's
+  // as-you-go merge is conversational-path-only — temperloop#1452.)
   const review = await runReviewers(item, wt);
   if (review.escalation) return review.escalation;
   if (review.blocking.length > 0) {

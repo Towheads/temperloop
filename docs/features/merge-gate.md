@@ -132,8 +132,9 @@ verdict with `gate.sh risk` before asking for consent, and — once consent is
 given — either queues a native merge (`gate.sh queue` + `gate.sh poll`) or
 walks the batch through `gate.sh managed-merge` on the managed backend.
 
-It also calls that identical sequence **per item, as each PR goes green**
-(build.md Step 3h.5), over a *one-PR* set — but only for an item the same
+On `/build`'s `--no-workflow` **conversational** path it also calls that
+identical sequence **per item, as each PR goes green** (build.md Step 3h.5),
+over a *one-PR* set — but only for an item the same
 `gate.sh risk` predicate already classes clean and disjoint, so a level's
 merges spread over its duration instead of arriving as one burst. A risky
 verdict is never landed this way; it waits for the batched gate. Because
@@ -141,6 +142,15 @@ each such merge is its own invocation of the per-PR mechanics, the
 re-validate-against-the-current-tip step runs once per merge rather than
 once per level — which matters precisely because an early merge moves the
 base out from under its still-open siblings.
+
+Step 3h.5 is scoped to that path deliberately (temperloop#1452). On the
+**default Workflow path** the per-level `build-level.mjs` neither merges nor
+writes the plan note, and it returns to the orchestrator only at the level
+boundary — so no actor there can land a PR "at its own green", and every
+item batches to the level-boundary gate above. That is the documented,
+accepted trade-off, not a gap: the alternative is a merge-capable workflow
+runtime, which would put an un-consented irreversible merge inside a process
+with no consent surface.
 
 The sweep pipeline reuses the same script for its own per-fix merges. Poll
 tunables (`GATE_CI_POLL_INTERVAL` / `GATE_CI_POLL_TIMEOUT`,
