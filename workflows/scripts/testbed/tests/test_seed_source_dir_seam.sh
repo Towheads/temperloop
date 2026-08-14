@@ -67,7 +67,7 @@ assert_valid_repo_name() {
   case "$name" in
     "." | "..") fail "$label: repo name '$name' is exactly '.' or '..' — not a valid repository name" ;;
   esac
-  if ! printf '%s' "$name" | grep -qE "$REPO_NAME_RE"; then
+  if ! printf '%s' "$name" | grep -E "$REPO_NAME_RE" >/dev/null; then
     fail "$label: repo name '$name' does not match $REPO_NAME_RE"
   fi
   if [ "${#name}" -gt 100 ]; then
