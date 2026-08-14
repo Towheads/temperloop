@@ -824,22 +824,38 @@ assert_has "$xp2report" "naming: Decisions/NotReallyCrossProject.md" "cross_proj
 rm -rf "$XP2"
 
 # ── test _hyg_rollup_by_class: alarm roll-up by class (foundation#1479-followup) ──
-# `--format entry` rolls a class of alarm lines up past CLASS_ROLLUP_THRESHOLD
-# (10) instead of inlining every line — the fix for a check with many hits
-# (here: many zero-byte "garbage" files, one alarm line each) dominating the
-# durable vault surface note's byte count. Synthetic fixtures only, no real
-# vault (kernel principle 3).
+# `--format entry` rolls a class of PER-FINDING alarm lines up past
+# CLASS_ROLLUP_THRESHOLD instead of inlining every line — the fix for a check
+# with many hits (here: many zero-byte "garbage" files, one alarm line each)
+# dominating the durable vault surface note's byte count. Synthetic fixtures
+# only, no real vault (kernel principle 3).
 echo "--- test _hyg_rollup_by_class: class roll-up threshold ---"
 
-# 11 zero-byte notes -> the "garbage" class alarm crosses the threshold and
-# collapses to ONE line carrying the count plus a single example, not 11
-# per-file lines.
+# Exact-line assertion helper: `assert_has` is a substring match, which cannot
+# catch a roll-up pass that mangled indentation, trailing whitespace, or the
+# `- ⚠️ ` prefix (including its U+FE0F variation selector). This one compares
+# WHOLE lines byte-for-byte via grep -Fx.
+assert_line() { # <haystack> <exact-line> <label>
+  if printf '%s\n' "$1" | grep -Fxq -- "$2"; then
+    ok "$3"
+  else
+    fail_test "$3" "no byte-identical line: $2"
+  fi
+}
+
+# 11 zero-byte notes -> the "garbage" class crosses the threshold and
+# collapses to ONE line carrying the rolled-LINE count plus a single example,
+# not 11 per-file lines. The count is labelled "lines rolled up" because that
+# is what it counts — the block's own alarm total is 1 here (the per-file
+# `add`s never call `inc`), so a bare number would read as an alarm count it
+# is not.
 RU1="$(mktemp -d)"; mkdir -p "$RU1/Context"
 for i in $(seq 1 11); do : > "$RU1/Context/garbage-$i.md"; done
 ru1entry="$(bash "$SCRIPT" --root "$RU1" --format entry)"
-assert_has "$ru1entry" "CLASS ROLL-UP"              "11-of-a-class rolls up (CLASS ROLL-UP marker present)"
-assert_has "$ru1entry" "garbage: 11 (CLASS ROLL-UP" "roll-up line carries the per-class count, not a bare marker"
-assert_has "$ru1entry" "e.g. Context/garbage-"      "roll-up line carries one example, not a bare count"
+assert_has "$ru1entry" "CLASS ROLL-UP"                            "11-of-a-class rolls up (CLASS ROLL-UP marker present)"
+assert_has "$ru1entry" "garbage: 11 lines rolled up (CLASS ROLL-UP" "roll-up line labels its number a LINE count, not a bare/alarm count"
+assert_has "$ru1entry" "e.g. Context/garbage-"                    "roll-up line carries one example, not a bare count"
+assert_has "$ru1entry" "garbage files: 11 total"                  "the class-summary line (add_summary) survives the roll-up of its sibling class"
 ru1_perfile_lines="$(printf '%s' "$ru1entry" | grep -c '(zero-byte) — delete')"
 if [ "$ru1_perfile_lines" -eq 1 ]; then
   ok "11-of-a-class: exactly the roll-up's one example remains, no per-alarm inlining"
@@ -850,18 +866,81 @@ rm -rf "$RU1"
 
 # 10 zero-byte notes -> AT the threshold, not over it: every alarm line
 # stays inline, byte-identical to the pre-roll-up shape (no CLASS ROLL-UP,
-# all 10 lines present).
+# all 10 lines present, each matching the emit path's exact text INCLUDING
+# the two-space `sed 's/^/  /'` indent).
 RU2="$(mktemp -d)"; mkdir -p "$RU2/Context"
 for i in $(seq 1 10); do : > "$RU2/Context/garbage-$i.md"; done
 ru2entry="$(bash "$SCRIPT" --root "$RU2" --format entry)"
 assert_missing "$ru2entry" "CLASS ROLL-UP" "10-of-a-class (at threshold) stays inline — no roll-up"
 ru2_perfile_lines="$(printf '%s' "$ru2entry" | grep -c '(zero-byte) — delete')"
 if [ "$ru2_perfile_lines" -eq 10 ]; then
-  ok "10-of-a-class: all 10 per-alarm lines still inlined (byte-identical to pre-roll-up shape)"
+  ok "10-of-a-class: all 10 per-alarm lines still inlined"
 else
   fail_test "10-of-a-class inline count" "expected all 10 (zero-byte) lines inline, got $ru2_perfile_lines"
 fi
+ru2_exact_ok=1
+for i in $(seq 1 10); do
+  printf '%s\n' "$ru2entry" | grep -Fxq -- "  - ⚠️ garbage: Context/garbage-$i.md (zero-byte) — delete" || ru2_exact_ok=0
+done
+if [ "$ru2_exact_ok" -eq 1 ]; then
+  ok "10-of-a-class: every line byte-identical to the pre-roll-up shape (indent + '- ⚠️ ' prefix + text)"
+else
+  fail_test "10-of-a-class byte identity" "at least one line is not byte-identical to '  - ⚠️ garbage: Context/garbage-N.md (zero-byte) — delete'"
+fi
 rm -rf "$RU2"
+
+# ── Two classes in ONE run: per-class isolation ──────────────────────────────
+# The single-class fixtures above cannot catch the most bug-prone part of this
+# awk — count[cls]/first_seen[cls]/example[cls] collapsing across classes, or a
+# rolled class swallowing a neighbouring class's lines. Fixture: "garbage" (5
+# zero-byte notes, OVER a forced threshold of 3) beside "naming" (3 badly-named
+# notes, AT it). CLASS_ROLLUP_THRESHOLD is overridden so the fixture stays tiny
+# rather than needing 11+ real files per class.
+RU3="$(mktemp -d)"; mkdir -p "$RU3/Context" "$RU3/Decisions"
+for i in $(seq 1 5); do : > "$RU3/Context/garbage-$i.md"; done
+for i in $(seq 1 3); do printf 'x\n' > "$RU3/Decisions/badname$i.md"; done
+ru3entry="$(CLASS_ROLLUP_THRESHOLD=3 bash "$SCRIPT" --root "$RU3" --format entry)"
+assert_has "$ru3entry" "garbage: 5 lines rolled up (CLASS ROLL-UP" "two-class: the OVER-threshold class rolls up, with its own count (5, not 8)"
+assert_missing "$ru3entry" "naming: 3 lines rolled up"             "two-class: the AT-threshold neighbour does NOT roll up"
+ru3_naming_lines="$(printf '%s' "$ru3entry" | grep -c '⚠️ naming: Decisions/badname')"
+if [ "$ru3_naming_lines" -eq 3 ]; then
+  ok "two-class: all 3 lines of the under-threshold class survive (not swallowed by the rolled class)"
+else
+  fail_test "two-class naming survival" "expected 3 inline naming lines, got $ru3_naming_lines"
+fi
+ru3_garbage_lines="$(printf '%s' "$ru3entry" | grep -c '(zero-byte) — delete')"
+if [ "$ru3_garbage_lines" -eq 1 ]; then
+  ok "two-class: the rolled class leaves exactly its one roll-up line"
+else
+  fail_test "two-class garbage roll-up" "expected 1 (zero-byte) line, got $ru3_garbage_lines"
+fi
+assert_line "$ru3entry" "  - ⚠️ naming: Decisions/badname2.md — filename doesn't match the \`<project> - <title>\` convention (propose-only: confirm the right project/title split before renaming)" \
+  "two-class: an untouched class's line is byte-identical, mid-run, beside a rolled class"
+assert_has "$ru3entry" "garbage files: 5 total" "two-class: the class-summary line survives beside a rolled class"
+rm -rf "$RU3"
+
+# ── The anti-silent-truncation guarantee survives a roll-up ──────────────────
+# check_duplicate_overlap caps its per-pair lines at DUP_MAX_REPORTED and then
+# emits an 11th line of the SAME class prefix stating how many pairs were
+# hidden ("never truncate silently"). A roll-up that counted that summary line
+# as a finding would trip at exactly threshold+1 — i.e. PRECISELY AND ONLY when
+# the truncation notice exists — and then delete it. `add_summary` is what
+# prevents that: the summary is neither counted nor rolled. 8 same-token notes
+# => 28 candidate pairs, 10 reported, 18 not shown.
+RU4="$(mktemp -d)"; mkdir -p "$RU4/Decisions"
+for i in $(seq 1 8); do printf 'x\n' > "$RU4/Decisions/alpha - beta gamma delta $i.md"; done
+ru4entry="$(bash "$SCRIPT" --root "$RU4" --format entry)"
+assert_has "$ru4entry" "duplicate-overlap: 28 candidate pairs total; 18 not shown" \
+  "duplicate-overlap: the 'N not shown' line survives at the default threshold (10 capped lines are AT it, not over)"
+assert_missing "$ru4entry" "duplicate-overlap: 11" "duplicate-overlap: its summary line is never counted as an 11th finding"
+# Force the class OVER the threshold: the per-pair lines roll up, the
+# anti-truncation summary still passes through verbatim.
+ru4rolled="$(CLASS_ROLLUP_THRESHOLD=3 bash "$SCRIPT" --root "$RU4" --format entry)"
+assert_has "$ru4rolled" "duplicate-overlap: 10 lines rolled up (CLASS ROLL-UP" \
+  "duplicate-overlap: per-pair lines roll up when forced over threshold"
+assert_has "$ru4rolled" "duplicate-overlap: 28 candidate pairs total; 18 not shown" \
+  "duplicate-overlap: the 'N not shown' line ALSO survives when its class IS rolled up"
+rm -rf "$RU4"
 
 # ── Tally ─────────────────────────────────────────────────────────────────────
 echo "---"

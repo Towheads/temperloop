@@ -183,6 +183,9 @@
 #     local count=0
 #     # ... walk $ROOT, call `add "- ⚠️ ..."` + `inc` per finding, or a single
 #     # `add "- ok my-new-lint: 0"` when clean ...
+#     # A line ABOUT the class as a whole (a total, a cap notice, an
+#     # anti-truncation "N not shown") uses `add_summary` instead of `add`
+#     # — see § `add` vs `add_summary` at the helper definitions.
 #   }
 #   register_check check_my_new_lint
 #
@@ -215,10 +218,13 @@
 #     --format entry   print a ready-to-append `### … Status: open` block IFF
 #                      any alarm fires (nothing when clean); default prints a
 #                      human-readable report + trailing `ALARM: <n>` / `OK`.
-#                      A class with more than CLASS_ROLLUP_THRESHOLD alarm
-#                      lines in the same run rolls up to one `CLASS ROLL-UP`
-#                      line (count + one example) instead of inlining every
-#                      line — see § Alarm roll-up by class below.
+#                      A class with more than CLASS_ROLLUP_THRESHOLD
+#                      per-finding lines in the same run rolls up to one
+#                      `CLASS ROLL-UP` line (rolled-line count + one
+#                      example) instead of inlining every line; a
+#                      class-SUMMARY line (`add_summary` — a total, a cap
+#                      notice, an "N not shown") is never rolled up and
+#                      never counted — see § Alarm roll-up by class below.
 #     --heal           perform the mechanically-safe auto-heal (folder
 #                      naming-case normalization + wikilink retarget) for any
 #                      finding that qualifies, alongside the normal report.
@@ -397,8 +403,31 @@ alarms=0
 inc() { alarms=$((alarms + 1)); }
 
 # Findings accumulate as lines; entry-format wraps them, report-format lists them.
+#
+# ── `add` vs `add_summary` ──────────────────────────────────────────────────
+# `add` records ONE finding line — one file, one pair, one note.
+# `add_summary` records a line ABOUT a class as a whole: a running total, a
+# cap notice, an anti-silent-truncation "N not shown". The emitted text is
+# byte-identical either way; the ONLY difference is that `add_summary` also
+# registers the line's ordinal in SUMMARY_LINE_NOS, which the entry-format
+# class roll-up (§ Alarm roll-up by class, bottom of file) reads so that it
+# (a) never deletes a class-summary line and (b) never counts one toward a
+# class's rolled-line total. A check that emits a class summary sharing its
+# per-finding lines' class prefix MUST use `add_summary` — otherwise the
+# roll-up swallows it, which is exactly how check_duplicate_overlap's
+# "never truncate silently" guarantee was lost when the roll-up first
+# landed. `add_summary` says nothing about `inc`: alarm counting stays the
+# caller's own explicit choice, unchanged.
+#
+# FINDINGS_NLINES is the ordinal of the line `add` just wrote; it equals
+# awk's NR in the roll-up pass because a finding is always exactly one line
+# (an assumption the whole emit path — the `sed 's/^/  /'` indent included —
+# has always made).
 FINDINGS=""
-add()  { FINDINGS="${FINDINGS}$1"$'\n'; }
+FINDINGS_NLINES=0
+SUMMARY_LINE_NOS=""
+add()  { FINDINGS="${FINDINGS}$1"$'\n'; FINDINGS_NLINES=$((FINDINGS_NLINES + 1)); }
+add_summary() { add "$1"; SUMMARY_LINE_NOS="${SUMMARY_LINE_NOS}${FINDINGS_NLINES} "; }
 
 # ── Additive check-registration seam ────────────────────────────────────────
 # See the header comment (§ Additive check-registration seam) for the
@@ -459,7 +488,7 @@ EOF
   if [ "$closed_plans" -eq 0 ]; then
     add "- ok closed plans in Plans/: 0"
   else
-    add "- ⚠️ closed plans still in Plans/: ${closed_plans} (status done/complete/abandoned)"
+    add_summary "- ⚠️ closed plans still in Plans/: ${closed_plans} (status done/complete/abandoned)"
     inc
   fi
 }
@@ -510,7 +539,7 @@ EOF
   if [ "$garbage" -eq 0 ]; then
     add "- ok garbage files: 0"
   else
-    add "- ⚠️ garbage files: ${garbage} total (zero-byte / double-dot / stray path)"
+    add_summary "- ⚠️ garbage files: ${garbage} total (zero-byte / double-dot / stray path)"
     inc
   fi
 }
@@ -1798,8 +1827,14 @@ EOF
     add "- ok duplicate-overlap: 0"
   elif [ "$count" -gt "$DUP_MAX_REPORTED" ]; then
     # Never truncate silently — a capped list that reads as the whole list is
-    # how "we covered everything" becomes false.
-    add "- ⚠️ duplicate-overlap: ${count} candidate pairs total; $(( count - DUP_MAX_REPORTED )) not shown (top ${DUP_MAX_REPORTED} listed above, ranked by shared-term count)"
+    # how "we covered everything" becomes false. `add_summary`, not `add`:
+    # this line carries the same `duplicate-overlap` class prefix as the
+    # capped per-pair lines above it, so a plain `add` would let the
+    # entry-format class roll-up count it as an 11th finding line AND then
+    # delete it — destroying the very guarantee this line exists to make.
+    # "reported above" (not "listed above") because those pairs may
+    # themselves have been rolled up into one line by then.
+    add_summary "- ⚠️ duplicate-overlap: ${count} candidate pairs total; $(( count - DUP_MAX_REPORTED )) not shown (top ${DUP_MAX_REPORTED} reported above, ranked by shared-term count)"
   fi
   return 0
 }
@@ -1816,8 +1851,8 @@ done
 # hundred stray files, a hundred duplicate-note pairs) inlined one line per
 # hit — 16 such blocks made up 88% of a ~684 KB note while carrying only 12%
 # of its post-purge alarm volume. Roll a class up once it crosses
-# CLASS_ROLLUP_THRESHOLD alarm lines in a single run: the individual lines
-# collapse to ONE line carrying the class's alarm count plus a single
+# CLASS_ROLLUP_THRESHOLD per-finding lines in a single run: those lines
+# collapse to ONE line carrying HOW MANY LINES WERE ROLLED UP plus a single
 # example — never a bare count, so a reader can still tell what kind of
 # drift the class is without opening the source data — tagged with the
 # literal marker `CLASS ROLL-UP` so it reads unambiguously as a summary,
@@ -1827,25 +1862,60 @@ done
 # output this script always emitted. The default `report` format (an ad-hoc
 # local terminal read, not a note that accretes across runs) is deliberately
 # NOT rolled up.
-CLASS_ROLLUP_THRESHOLD=10
+#
+# ── Two honesty invariants this roll-up must not break ────────────────────
+#   1. A roll-up never destroys a CLASS-SUMMARY line. A class summary — a
+#      total, a cap notice, an anti-silent-truncation "N not shown" — is
+#      emitted via `add_summary` (§ `add` vs `add_summary`), which registers
+#      its ordinal in SUMMARY_LINE_NOS. The roll-up passes every such line
+#      through verbatim, in place. Without this, check_duplicate_overlap's
+#      cap of DUP_MAX_REPORTED per-pair lines plus its 11th "N candidate
+#      pairs total; M not shown" line — same class prefix — landed at
+#      exactly threshold+1 and so rolled up PRECISELY WHEN the truncation
+#      notice existed, deleting it every time it mattered.
+#   2. The printed number is a LINE count, and is labelled as one ("N lines
+#      rolled up") — never presented as a count of alarms. It is neither the
+#      block's `alarms` total (many checks `add` per finding without `inc`,
+#      so a class of 14 lines can sit under "dispose of 1 alarm(s)") nor a
+#      count of underlying findings when the class itself was already capped
+#      upstream (duplicate-overlap caps at DUP_MAX_REPORTED lines while its
+#      own summary line reports the true 28). The class-summary line, being
+#      preserved by invariant 1, remains the authority on the real total.
+#
+# CLASS_ROLLUP_THRESHOLD is an env-overridable registered setting (see
+# setting-registry.tsv), matching INBOX_MAX_STUBS above rather than the bare
+# DUP_MAX_REPORTED/STALE_PLAN_DAYS constants — the override seam is what lets
+# the test suite exercise the multi-class roll-up on tiny fixtures instead of
+# needing 11+ real files per class.
+: "${CLASS_ROLLUP_THRESHOLD:=10}"
 
 # Reads alarm lines ("- ⚠️ <class>: <detail>") from stdin, groups by
 # <class> (the text before the first ":"), and for any class with MORE than
-# CLASS_ROLLUP_THRESHOLD lines, replaces that class's lines with one
-# roll-up line at the position of its first occurrence (so overall line
-# order otherwise passes through unchanged). Non-alarm lines (ok/info/
-# healed) and any alarm line whose class stays at or under the threshold
-# pass through byte-for-byte. Pure awk, keyed purely off the accumulated
-# FINDINGS text — no bash associative arrays (this script is kept
-# bash-3.2-safe; see the file header) and no per-check changes required, so
-# the § Additive check-registration seam's "nothing shared ever needs to
-# change when a new check is added" guarantee still holds.
+# CLASS_ROLLUP_THRESHOLD per-finding lines, replaces that class's per-finding
+# lines with one roll-up line at the position of its first occurrence (so
+# overall line order otherwise passes through unchanged). Non-alarm lines
+# (ok/info/healed), class-summary lines (SUMMARY_LINE_NOS), and any alarm
+# line whose class stays at or under the threshold pass through
+# byte-for-byte. Pure awk, keyed off the accumulated FINDINGS text plus a
+# digits-and-spaces line-number list — no bash associative arrays (this
+# script is kept bash-3.2-safe; see the file header), and a new check needs
+# no change here, so the § Additive check-registration seam's "nothing
+# shared ever needs to change when a new check is added" guarantee still
+# holds (a check that wants its summary preserved just calls `add_summary`).
 _hyg_rollup_by_class() {
-  awk -v threshold="$CLASS_ROLLUP_THRESHOLD" '
+  # summary_nos is space-separated decimal ordinals only — no escape or
+  # format-string hazard in `-v`, and `cls`/`example` are printf ARGUMENTS,
+  # never part of the format string.
+  awk -v threshold="$CLASS_ROLLUP_THRESHOLD" -v summary_nos="$SUMMARY_LINE_NOS" '
+    BEGIN {
+      n = split(summary_nos, s, " ")
+      for (k = 1; k <= n; k++)
+        if (s[k] != "") is_summary[s[k] + 0] = 1
+    }
     {
       lines[NR] = $0
       prefix = "- ⚠️ "
-      if (substr($0, 1, length(prefix)) == prefix) {
+      if (!(NR in is_summary) && substr($0, 1, length(prefix)) == prefix) {
         rest = substr($0, length(prefix) + 1)
         colon = index(rest, ":")
         if (colon > 0) {
@@ -1866,7 +1936,7 @@ _hyg_rollup_by_class() {
         if (cls == "") { print lines[i]; continue }
         if (count[cls] > threshold) {
           if (i == first_seen[cls]) {
-            printf "- ⚠️ %s: %d (CLASS ROLL-UP — e.g. %s)\n", cls, count[cls], example[cls]
+            printf "- ⚠️ %s: %d lines rolled up (CLASS ROLL-UP — e.g. %s)\n", cls, count[cls], example[cls]
           }
         } else {
           print lines[i]
