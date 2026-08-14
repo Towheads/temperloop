@@ -27,12 +27,36 @@ the full rationale.
 
 ## How it works
 
-One workflow, `.github/workflows/install-tier2.yml`, triggered only by
-`schedule` (weekly, Monday 05:00 UTC) and `workflow_dispatch` (manual —
-run this by hand before cutting a kernel release tag; that's its
-release-gate role). Never `pull_request`/`push`/`merge_group` — this item's
-own PR cannot demonstrate a green run; verification is a manual
-`workflow_dispatch` after merge, with `DEMO_REPO_TOKEN` in place.
+One workflow, `.github/workflows/install-tier2.yml`, triggered by a release
+**tag push** matching `v*.*.0` (minor and major cuts; a patch tag
+deliberately does not fire it) and by `workflow_dispatch` (manual — an
+ad-hoc drift probe during a release gap, or a pre-tag dry run against
+`main`). Never `pull_request`/`merge_group`/push-to-a-branch — a PR
+touching this workflow cannot demonstrate a green run; verification is a
+manual `workflow_dispatch` after merge, with `DEMO_REPO_TOKEN` in place.
+
+The tag is the trigger because it always was, implicitly:
+`bin/bootstrap.sh` pins a fresh install to the newest `v*` tag it can see
+(`git tag -l 'v*' --sort=-v:refname`), **not** to the ref this workflow
+checked out — so the retired weekly cron was already testing the last
+release tag rather than `main`, at an arbitrary moment. Triggering on the
+tag makes the timing match semantics that were already there
+(temperloop#1425). It also means the `fetch-depth: 0` checkout is
+load-bearing: it is what puts the tags in the tree bootstrap sorts over.
+
+Because the tag is pushed by hand (VERSIONING.md § Cutting a release step
+3), the run necessarily starts *after* the tag exists. It therefore gates
+**propagation, not tagging**: step 4 of that procedure blocks `make
+update-kernel KERNEL_TAG=v<new>` on a green run here.
+
+**What moving off the weekly cron cost.** The cron was the only thing
+catching drift *external* to this repo — a GitHub API shape change, a `gh`
+CLI update, a runner-image change, the demo repo rotting — none of which
+involve a commit here, and none of which any per-PR gate can see. That
+drift now surfaces at cut time instead of within a week. At this repo's
+release cadence (8 minors in the 12 days to v0.29.0) the gap is days, not
+months; during a long release gap, fire a `workflow_dispatch` by hand
+rather than reading silence as health.
 
 1. **Preflight** — checks out this repo, then hard-fails if `DEMO_REPO_TOKEN`
    (a fine-grained PAT scoped to exactly one repository,
@@ -47,7 +71,16 @@ own PR cannot demonstrate a green run; verification is a manual
 2. **Bootstrap** the `temperloop` CLI from THIS checkout (`bin/bootstrap.sh`
    pointed at a `file://` URL of the just-checked-out tree) — the same
    bootstrap code path a curl-pipe-sh newcomer runs, exercised against the
-   ref actually being release-gated.
+   ref actually being release-gated. The **version leg** then asserts the
+   installed CLI reports the version embedded in its shipped files (never
+   `dev`), and — on a tag-triggered run only — that the tag bootstrap
+   pinned to *is the tag that triggered the run*. That second assertion is
+   what makes this a release gate rather than a run that merely happens
+   near a release: bootstrap picks the newest tag by version sort, not by
+   `$GITHUB_REF`, so without it a run triggered by `v0.30.0` could
+   silently have exercised something else. It also absorbs the one glob
+   wart worth knowing about — GitHub tag filters let `*` match dots, so
+   `v*.*.0` would additionally match a hypothetical `v0.29.10`.
 3. **Clone** the persistent demo repo locally — the newcomer's own first
    `git clone`. There is no separate "reset the repo" step: `init`'s own
    idempotency probes and `eject`'s manifest-driven revert (next point) are
@@ -81,10 +114,15 @@ own PR cannot demonstrate a green run; verification is a manual
    orphaned proposal-PR branch on the shared demo repo).
 5. **Verdict** — a final always-run step writes a leg-by-leg outcome table
    to the job summary and fails the job with an explicit `::error::` line
-   naming exactly which leg(s) (`init`/`eject`) failed. `on: schedule`
-   failures already trigger GitHub's built-in scheduled-workflow-failure
-   notification; this step is what makes a *look* at that failed run
-   immediately legible instead of requiring a log dig.
+   naming exactly which leg(s) (`init`/`eject`) failed, so a failed run is
+   legible at a glance instead of requiring a log dig. Failure reaches a
+   human two ways: the run is triggered by the operator's own `git push
+   origin v<new>`, so GitHub's Actions failure notification goes to the
+   person who just cut the release; and VERSIONING.md step 4 makes reading
+   this run an explicit precondition of propagating, rather than a passive
+   notification someone might not be watching for. (The retired `schedule`
+   trigger leaned on GitHub's built-in *scheduled*-workflow-failure
+   notification, which stopped applying when the cron went.)
 
 ## Integration
 
@@ -102,10 +140,15 @@ it's excluded from the PR gate).
 
 Real network, no billed LLM call (that surface was retired with the `try`
 step). `init`/`eject` make only plain `gh` API calls (free, rate-limited but
-not billed). One run/week (plus occasional manual `workflow_dispatch`
-before a release) keeps this negligible. `concurrency: { group:
+not billed). One run per minor/major release tag, plus the occasional
+manual `workflow_dispatch`. Stated plainly: at this repo's release cadence
+that is **more** runs than the weekly cron it replaced, not fewer — the
+change buys relevance (the run tests the artifact actually shipping), not
+CI minutes. The absolute cost stays negligible either way: a single
+~10-minute ubuntu job with no billed LLM call. `concurrency: { group:
 install-tier2, cancel-in-progress: false }` serializes runs so two
-in-flight round trips never race the same remote demo-repo state.
+in-flight round trips never race the same remote demo-repo state — still
+correct at release cadence, and the reason a per-PR trigger would not be.
 
 Known limitation: if a run's `init` leg succeeds (opening a proposal
 branch/PR) but its `eject` leg then fails to revert it (e.g. a transient
@@ -117,8 +160,8 @@ silent, failure mode.
 **Accepted coverage gap (ADR 0025, amended by temperloop#1234).** This
 workflow never creates or deletes a repository — the demo-repo token is
 scoped to one pre-existing repository and structurally cannot do either.
-Consequently `temperloop testbed` and its teardown leg have NO weekly
-automated coverage: they are exercised only by their own unit tests (a
+Consequently `temperloop testbed` and its teardown leg have NO automated
+coverage here: they are exercised only by their own unit tests (a
 faked `gh`) and by temperloop#1240's one-time executed run. See
 `Decisions/temperloop - CI round trip keeps a persistent demo repo, not
 per-run create-delete` and the amended ADR 0025 consequence for the full

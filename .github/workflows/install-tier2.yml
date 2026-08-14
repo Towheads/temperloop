@@ -79,38 +79,89 @@ name: Install Tier-2 (install + adopt-path round trip)
 #     never go red because the demo repo's API round-trip hiccuped) —
 #     that's what tier-1's hermetic suite is FOR.
 #
-# CADENCE: weekly (Monday 05:00 UTC) is right for a release-gate leg — it
-# only needs to prove the live path still works before a release ships, not
-# on every commit. Also `workflow_dispatch` for an on-demand run — in
-# particular, run this BY HAND once before cutting a kernel release tag
-# (its "release-gate role": a green run here is the real-world proof tier-1
-# can't give, that a stranger's actual `init`/`eject` still works against a
-# live target repo, not just a hermetic sandbox).
+# RELEASE-TRIGGERED (temperloop#1425 — this REPLACED a weekly `schedule`,
+# Mondays 05:00 UTC). A release-gate leg only needs to prove the live path
+# still works before a release ships, and the weekly cron fired on a Monday
+# that had nothing to do with any release. It now fires on the release TAG
+# itself, filtered to `v*.*.0` — minor and major cuts; a patch tag
+# deliberately does not trigger it.
 #
-# VERIFICATION NOTE: this item's own PR cannot demonstrate a green run of
-# this workflow — it never triggers on `pull_request` by design (see below),
-# so a run only happens on the next Monday schedule or an operator's manual
-# `workflow_dispatch` after merge, with `DEMO_REPO_TOKEN` in place.
+# WHY THE TAG IS THE RIGHT TRIGGER, and not merely a tidier one:
+# `bin/bootstrap.sh`'s first-install block pins a fresh install to the
+# NEWEST release tag it can see (`git tag -l 'v*' --sort=-v:refname | head
+# -n1`, then `git checkout --detach`) — NOT to the ref this workflow
+# checked out. So the weekly run was ALREADY testing the last release tag
+# rather than `main`; it was a release test fired at an arbitrary moment.
+# Triggering on the tag makes the timing match the semantics that were
+# always there. This is also why the `fetch-depth: 0` checkout below is
+# load-bearing and must not be "optimized" to a shallow one: it is what
+# puts every tag in the tree bootstrap sorts over.
 #
-# FAILURE VISIBILITY: `on: schedule` failures already trigger GitHub's
-# built-in scheduled-workflow-failure notification (repo Watch settings ->
-# Actions) to the repo's default recipients — no extra notification
-# plumbing needed here. On top of that, the final "Round-trip verdict" job
-# step below writes a leg-by-leg outcome table to $GITHUB_STEP_SUMMARY and
-# fails the job with an explicit `::error::` line NAMING which leg
-# (init/eject) failed — see that step for why a bare exit-code check on
-# `init` isn't enough (it is deliberately fail-open at the shell-exit-code
-# layer; a real failure is caught by content-scanning its captured log for
-# a `FAILED` marker instead).
+# THE ASSERTION THAT MAKES IT A RELEASE GATE. Because bootstrap picks the
+# newest tag by version sort rather than obeying $GITHUB_REF, "a run
+# happened near the release" is not the same claim as "the run tested THIS
+# release". The "Version embedded in the install" step below closes that
+# gap: on a tag-triggered run it asserts the bootstrap-pinned VERSION
+# equals the triggering tag, and fails loudly otherwise. That assertion
+# also absorbs the one glob wart worth knowing about — GitHub tag filters
+# let `*` match dots, so `v*.*.0` would additionally match a hypothetical
+# `v0.29.10`. Harmless at this repo's numbering, and caught by the
+# assertion rather than left to chance if it ever isn't.
 #
-# NEVER pull_request / push / merge_group — this workflow must never gate
-# or run on a PR. If you're tempted to add one of those triggers here,
-# that's tier-1's job (scripts/quality-gates.sh via ci.yml), not this
-# file's.
+# WHAT MOVING OFF THE WEEKLY CRON COSTS, stated honestly: the weekly run
+# was the only thing catching drift EXTERNAL to this repo — a GitHub API
+# shape change, a `gh` CLI update, a runner-image change, the demo repo
+# rotting — none of which involve a commit here and none of which any
+# per-PR gate can see. Under a release trigger that drift surfaces at cut
+# time instead of within a week. At this repo's release cadence (8 minors
+# in the 12 days to v0.29.0) that gap is days, not months, so the trade is
+# cheap — but if a long release gap ever opens up, fire a
+# `workflow_dispatch` by hand rather than assuming silence means health.
+#
+# `workflow_dispatch` therefore remains, for exactly two uses: an ad-hoc
+# drift probe during a release gap, and a pre-tag dry run against `main`
+# when you want the live-path proof BEFORE cutting rather than after.
+#
+# WHERE THIS SITS IN THE RELEASE PROCEDURE. The tag is pushed by hand
+# (VERSIONING.md § Cutting a release step 3), so this run necessarily
+# starts AFTER the tag exists. It therefore gates PROPAGATION, not tagging:
+# step 4 of that procedure blocks `make update-kernel KERNEL_TAG=v<new>` on
+# a green run here. That is a real gate, not a consolation prize —
+# propagation is already a separate manual step, and pre-1.0 an
+# unpropagated tag is cheap to re-cut.
+#
+# VERIFICATION NOTE: a PR touching this workflow cannot demonstrate a green
+# run of it — it never triggers on `pull_request` by design (see below).
+# Post-merge proof is a manual `workflow_dispatch` (which also exercises
+# the non-tag branch of the version assertion); the real release-path proof
+# lands automatically at the next `git push origin v<next>`. Either way,
+# `DEMO_REPO_TOKEN` must be in place.
+#
+# FAILURE VISIBILITY: this workflow used to lean on GitHub's built-in
+# SCHEDULED-workflow-failure notification, which stopped applying the
+# moment the `schedule` trigger went. The replacement is better targeted,
+# not merely equivalent: the run is triggered by the operator's own `git
+# push origin v<new>`, so the Actions failure notification reaches the
+# person who just cut the release — and VERSIONING.md step 4 makes reading
+# this run an explicit precondition of propagating, rather than a passive
+# notification someone might not be watching for. On top of that, the final
+# "Round-trip verdict" job step below writes a leg-by-leg outcome table to
+# $GITHUB_STEP_SUMMARY and fails the job with an explicit `::error::` line
+# NAMING which leg (init/eject) failed — see that step for why a bare
+# exit-code check on `init` isn't enough (it is deliberately fail-open at
+# the shell-exit-code layer; a real failure is caught by content-scanning
+# its captured log for a `FAILED` marker instead).
+#
+# NEVER pull_request / merge_group / push-to-a-BRANCH — this workflow must
+# never gate or run on a PR. The one `push` trigger permitted here is a
+# release TAG (above); adding a branch filter to it, or any of the other
+# three events, is tier-1's job (scripts/quality-gates.sh via ci.yml), not
+# this file's.
 
 on:
-  schedule:
-    - cron: "0 5 * * 1"
+  push:
+    tags:
+      - 'v*.*.0'
   workflow_dispatch: {}
 
 permissions:
@@ -170,6 +221,15 @@ jobs:
       # is the one leg that proves the install carries its own version number —
       # a hermetic unit gate (test_version_embedding.sh) can't, because it only
       # sees the in-tree checkout, not what bootstrap actually landed on PATH.
+      #
+      # On a TAG-triggered run this leg carries a third comparison, and it is
+      # what makes this workflow a release gate rather than a run that merely
+      # happens near a release (temperloop#1425). bootstrap pins to the newest
+      # `v*` tag by version sort, NOT to $GITHUB_REF — so without this check a
+      # run triggered by v0.30.0 could silently have exercised some other tag.
+      # Asserting shipped == the triggering tag turns "a round trip passed"
+      # into "the round trip tested the release being cut". Guarded on
+      # GITHUB_REF_TYPE so `workflow_dispatch` (no tag) is unaffected.
       # Fail-closed: unlike init there is no degraded-network excuse for a
       # wrong version string. continue-on-error so the round trip below still
       # runs and the verdict reports every leg at once.
@@ -180,6 +240,14 @@ jobs:
           set -euo pipefail
           shipped="$(sed -e 's/[[:space:]]//g' -e '/^$/d' "$TEMPERLOOP_HOME/VERSION" | head -n1)"
           [ -n "$shipped" ] || { echo "::error::install-tier2: pinned checkout $TEMPERLOOP_HOME has no readable VERSION file"; exit 1; }
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+            want="${GITHUB_REF_NAME#v}"
+            if [ "$shipped" != "$want" ]; then
+              echo "::error::install-tier2: bootstrap pinned to $shipped but this run was triggered by tag $GITHUB_REF_NAME — the round trip did not test the release being cut. bootstrap.sh picks the newest v* tag by version sort, so this means a higher-sorting tag exists, or the tag was pushed without its VERSION bump (VERSIONING.md § Cutting a release step 2)."
+              exit 1
+            fi
+            echo "OK: bootstrap pinned to the triggering release tag ($GITHUB_REF_NAME)."
+          fi
           reported="$(temperloop version)"
           echo "shipped VERSION file: $shipped"
           echo "temperloop version : $reported"
