@@ -27,6 +27,8 @@
 #      the latest v0.x.y release tag (highest by version sort), detached.
 #      No release tag exists on the remote -> stays on the default branch
 #      tip, with an explicit warning (never a silent, unpinned install).
+#      $TEMPERLOOP_KERNEL_REF (see ENV SETTINGS below) overrides the tag
+#      choice on THIS path only, pinning the clone to a caller-named ref.
 #      RE-RUN (an existing $TEMPERLOOP_HOME/.git): this script NEVER pulls
 #      in place — it delegates entirely to `temperloop update`
 #      (bin/subcommands/update.sh), the sole post-install HEAD mover. A
@@ -45,6 +47,34 @@
 # replacement, rather than being silently ignored (VERSIONING.md pre-1.0
 # bump rules; the v0.15.0 CHANGELOG BREAKING entry carries the migration
 # note).
+#
+# TEMPERLOOP_KERNEL_REF (temperloop#1474) is a fourth override, and a
+# SIBLING of TEMPERLOOP_KERNEL_REPO rather than a new category of surface:
+# REPO says WHICH clone URL to install from, REF says WHICH REF inside it to
+# land on. Set it (non-empty) and a FIRST INSTALL pins the clone to that ref
+# — any commit-ish `git checkout --detach` accepts (a SHA, a tag, a branch,
+# `origin/main`) — INSTEAD of the newest `v*` tag. Unset OR empty is the
+# default newcomer behavior, byte-for-byte as before this knob existed.
+# Two deliberate properties, both load-bearing:
+#   * FIRST-INSTALL ONLY. It never touches the RE-RUN path, which still
+#     delegates everything to `temperloop update` and never pulls in place
+#     (ADR 0002). Pinning an EXISTING install to a ref is `temperloop
+#     update`'s business, not this script's.
+#   * NEVER A SILENT FALLBACK. A set-but-unresolvable ref is a hard exit 1
+#     naming the ref — never a quiet demotion to the newest tag. The whole
+#     point of the knob is that a run installs the ref it says it did; a
+#     fallback would recreate exactly the confusion temperloop#1474 reports
+#     (a CI dry run that claimed to test `main` and tested the last release).
+# Its motivating consumer is .github/workflows/install-tier2.yml, which sets
+# it to $GITHUB_SHA on a `workflow_dispatch` run ONLY — a tag-triggered
+# release-gate run leaves it unset so the gate keeps exact newcomer
+# semantics. Unlike its three siblings this setting needs NO pre-rename
+# compatibility guard: it was born after the rename, so no equivalent ever
+# existed under the old prefix and there is nothing to refuse or migrate.
+# (Spelling that dead name here, even to say it does not exist, trips
+# workflows/scripts/kernel/check-prerename-leak-guard.sh — correctly: the
+# absence is the point, and an allowlist row would assert a grandfathered
+# path that never existed.)
 #
 # UNINSTALL: remove $TEMPERLOOP_BIN_DIR/temperloop and $TEMPERLOOP_HOME —
 # `temperloop eject` documents removal of anything ELSE the CLI wrote to a
@@ -142,7 +172,8 @@ if [ -d "$TEMPERLOOP_HOME/.git" ]; then
 else
   # --- FIRST INSTALL: clone with tag-resolvable history and pin to the
   # latest release tag (falling back to the default branch, with an
-  # explicit warning, only when no release tag exists). -------------------
+  # explicit warning, only when no release tag exists) — unless
+  # $TEMPERLOOP_KERNEL_REF names a ref to pin to instead. -----------------
   echo "bootstrap: cloning $TEMPERLOOP_KERNEL_REPO -> $TEMPERLOOP_HOME ..."
   # A full clone (no --depth) so every tag's target commit is present
   # locally and `git tag -l` / checkout resolve without a follow-up fetch —
@@ -154,23 +185,48 @@ else
   # a curl-one-liner a second or two, not minutes.
   git clone "$TEMPERLOOP_KERNEL_REPO" "$TEMPERLOOP_HOME"
 
-  latest_tag="$(git -C "$TEMPERLOOP_HOME" tag -l 'v*' --sort=-v:refname | head -n1)"
-  if [ -n "$latest_tag" ]; then
-    echo "bootstrap: pinning fresh install to latest release tag $latest_tag ..."
-    git -C "$TEMPERLOOP_HOME" checkout --detach "$latest_tag"
-  else
-    # rev-parse --abbrev-ref (never `symbolic-ref HEAD`) — it prints the
-    # literal string "HEAD" instead of erroring when the fresh clone landed
-    # detached (a source repo with no advertised HEAD symref — e.g. a CI
-    # checkout with no refs/remotes/origin/HEAD — can leave a same-shape
-    # local clone detached even though bootstrap itself never touched HEAD
-    # in this no-tag branch), so this line never depends on a fatal-on-
-    # failure command inside a conditional expansion.
-    cur_branch="$(git -C "$TEMPERLOOP_HOME" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)"
-    if [ "$cur_branch" = "HEAD" ]; then
-      cur_branch="(detached)"
+  # EXPLICIT REF PIN (temperloop#1474) — `${VAR:+x}` (set AND non-empty),
+  # never `${VAR:-}`: same predicate, but `:-` is the DEFAULT-VALUE seam
+  # check-setting-registry.sh parses, and writing it that way would declare
+  # to that lint a default this setting does not have (see the long "WHY
+  # `:+x` AND NOT THE PLAINER `${VAR:-}`" note above the legacy guards). The
+  # `:+`/`:-` pairing also gives the header's stated contract for free:
+  # unset OR empty both take the `else` branch, i.e. the unchanged
+  # newest-`v*`-tag behavior.
+  if [ -n "${TEMPERLOOP_KERNEL_REF:+x}" ]; then
+    # Resolve BEFORE checking out, so an unresolvable ref is one legible
+    # error rather than a raw `git checkout` fatal — and, critically, never
+    # a silent demotion to the newest tag (header: NEVER A SILENT FALLBACK).
+    # `^{commit}` so a ref that exists but does not name a commit is caught
+    # here too, not at checkout time.
+    if ! git -C "$TEMPERLOOP_HOME" rev-parse --verify --quiet "$TEMPERLOOP_KERNEL_REF^{commit}" >/dev/null 2>&1; then
+      echo "bootstrap: ERROR — \$TEMPERLOOP_KERNEL_REF is set to '$TEMPERLOOP_KERNEL_REF', but that ref does not resolve to a commit in the clone of $TEMPERLOOP_KERNEL_REPO at $TEMPERLOOP_HOME." >&2
+      echo "  Refusing to fall back to the newest release tag: this install would then silently be something other than the ref you asked for." >&2
+      echo "  Check the ref (a SHA, tag, or branch present in that repo), or unset \$TEMPERLOOP_KERNEL_REF for the default latest-release install, then remove $TEMPERLOOP_HOME and re-run." >&2
+      exit 1
     fi
-    echo "bootstrap: WARNING — no release tags (v*) found on $TEMPERLOOP_KERNEL_REPO; staying on '$cur_branch' (unpinned, not a release). Once a v0.x.y tag exists, remove $TEMPERLOOP_HOME and re-run this bootstrap to land on it, or run 'temperloop update' after this install completes." >&2
+    echo "bootstrap: pinning fresh install to requested ref $TEMPERLOOP_KERNEL_REF (\$TEMPERLOOP_KERNEL_REF is set — NOT the latest release tag) ..."
+    git -C "$TEMPERLOOP_HOME" checkout --detach "$TEMPERLOOP_KERNEL_REF"
+    echo "bootstrap: pinned ref $TEMPERLOOP_KERNEL_REF -> commit $(git -C "$TEMPERLOOP_HOME" rev-parse HEAD)"
+  else
+    latest_tag="$(git -C "$TEMPERLOOP_HOME" tag -l 'v*' --sort=-v:refname | head -n1)"
+    if [ -n "$latest_tag" ]; then
+      echo "bootstrap: pinning fresh install to latest release tag $latest_tag ..."
+      git -C "$TEMPERLOOP_HOME" checkout --detach "$latest_tag"
+    else
+      # rev-parse --abbrev-ref (never `symbolic-ref HEAD`) — it prints the
+      # literal string "HEAD" instead of erroring when the fresh clone landed
+      # detached (a source repo with no advertised HEAD symref — e.g. a CI
+      # checkout with no refs/remotes/origin/HEAD — can leave a same-shape
+      # local clone detached even though bootstrap itself never touched HEAD
+      # in this no-tag branch), so this line never depends on a fatal-on-
+      # failure command inside a conditional expansion.
+      cur_branch="$(git -C "$TEMPERLOOP_HOME" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)"
+      if [ "$cur_branch" = "HEAD" ]; then
+        cur_branch="(detached)"
+      fi
+      echo "bootstrap: WARNING — no release tags (v*) found on $TEMPERLOOP_KERNEL_REPO; staying on '$cur_branch' (unpinned, not a release). Once a v0.x.y tag exists, remove $TEMPERLOOP_HOME and re-run this bootstrap to land on it, or run 'temperloop update' after this install completes." >&2
+    fi
   fi
 fi
 

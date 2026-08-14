@@ -30,10 +30,11 @@ the full rationale.
 One workflow, `.github/workflows/install-tier2.yml`, triggered by a release
 **tag push** matching `v*.*.0` (minor and major cuts; a patch tag
 deliberately does not fire it) and by `workflow_dispatch` (manual — an
-ad-hoc drift probe during a release gap, or a pre-tag dry run against
-`main`). Never `pull_request`/`merge_group`/push-to-a-branch — a PR
-touching this workflow cannot demonstrate a green run; verification is a
-manual `workflow_dispatch` after merge, with `DEMO_REPO_TOKEN` in place.
+ad-hoc drift probe during a release gap, or a pre-tag dry run against the
+ref you dispatch it on). Never `pull_request`/`merge_group`/push-to-a-branch
+— a PR touching this workflow cannot demonstrate a green run; verification
+is a manual `workflow_dispatch` after merge, with `DEMO_REPO_TOKEN` in
+place.
 
 The tag is the trigger because it always was, implicitly:
 `bin/bootstrap.sh` pins a fresh install to the newest `v*` tag it can see
@@ -43,6 +44,18 @@ release tag rather than `main`, at an arbitrary moment. Triggering on the
 tag makes the timing match semantics that were already there
 (temperloop#1425). It also means the `fetch-depth: 0` checkout is
 load-bearing: it is what puts the tags in the tree bootstrap sorts over.
+
+**The dispatch arm overrides that pin — and only that arm**
+(temperloop#1474). Because the newest tag wins regardless of which ref was
+dispatched, a `workflow_dispatch` against `main` used to reinstall the *last
+release* and report on that, so the "pre-tag dry run" named above was
+documented but did not exist. A dispatch now sets `TEMPERLOOP_KERNEL_REF` (a
+`bootstrap.sh` override, sibling to `TEMPERLOOP_KERNEL_REPO`: `REPO` says
+which clone URL, `REF` says which ref inside it) to the checked-out commit,
+so it tests what you dispatched. A **tag-triggered** run leaves that variable
+unset, so the real release gate keeps the exact newcomer code path with no
+CI-only knob in it. Both arms print the commit the install landed on, so a
+run's log answers "what was actually tested?" on its own.
 
 Because the tag is pushed by hand (VERSIONING.md § Cutting a release step
 3), the run necessarily starts *after* the tag exists. It therefore gates
@@ -70,8 +83,13 @@ rather than reading silence as health.
    `init` nor `eject` makes a model call.
 2. **Bootstrap** the `temperloop` CLI from THIS checkout (`bin/bootstrap.sh`
    pointed at a `file://` URL of the just-checked-out tree) — the same
-   bootstrap code path a curl-pipe-sh newcomer runs, exercised against the
-   ref actually being release-gated. The **version leg** then asserts the
+   bootstrap code path a curl-pipe-sh newcomer runs. *Which ref* that lands
+   on depends on the trigger, per the dispatch-arm paragraph above: a
+   tag-triggered run resolves the newest `v*` tag exactly as a newcomer
+   would (the ref actually being release-gated), while a
+   `workflow_dispatch` is pinned to the commit it was dispatched on. The
+   step prints which, so no run leaves it ambiguous. The **version leg**
+   then asserts the
    installed CLI reports the version embedded in its shipped files (never
    `dev`), and — on a tag-triggered run only — that the tag bootstrap
    pinned to *is the tag that triggered the run*. That second assertion is
