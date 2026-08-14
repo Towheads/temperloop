@@ -16,7 +16,7 @@
 #      it even consults the spend gate — when an arm has no seam.
 #   2. THE CANARY. `$WORK/bin` is prepended to PATH for the WHOLE suite and
 #      contains a `claude` that records its own invocation to `$WORK/CANARY`.
-#      Section I asserts that file never came into existence, and section I2
+#      Section J asserts that file never came into existence, and check J2
 #      proves the canary is genuinely capable of firing. Section H MUTATES
 #      the driver's candidate-arm seam selection (in a throwaway mirror of
 #      the module) to force `--live`, and proves the canary DOES fire — so
@@ -48,7 +48,11 @@
 #      is run on the driver's own fixture output
 #   H  JUDGING — wired, resumable, and a skip is NAMED rather than silent
 #      (+ the live-arm MUTATION PROOF)
-#   I  the suite-wide no-live-call canary verdict
+#   I  INTERRUPT SEMANTICS (temperloop#1527) — a SIGTERM mid-leg STOPS the
+#      batch before the next leg begins, tears the in-flight worktree down,
+#      and dies with the signal-derived status (+ MUTATION PROOF that the
+#      pre-fix single `trap … EXIT INT TERM` cleans up and CONTINUES)
+#   J  the suite-wide no-live-call canary verdict
 #
 # Usage: bash workflows/scripts/model-comparison/tests/test_replay_batch.sh
 #
@@ -790,19 +794,156 @@ drive ""
 ok "H5 the unmutated driver, on the same input, reaches no 'claude' at all"
 
 # ═══════════════════════════════════════════════════════════════════════════
-# SECTION I — the suite-wide no-live-call verdict.
+# SECTION I — INTERRUPT SEMANTICS (temperloop#1527).
+#
+# This driver is the module's SPEND-BEARING entry point: the one thing that
+# calls `replay.sh execute` in a loop. An operator's ^C (or a supervisor's
+# `kill`) on such a loop means STOP SPENDING — so it must stop, not tear the
+# in-flight worktree down and calmly start the next leg. The pre-fix shape
+# registered ONE handler on `EXIT INT TERM`; a bash trap handler RETURNS, so
+# the signal ran the cleanup and the script RESUMED. I3 mutates the fix back
+# to exactly that shape and measures the batch continuing, so I1 is a
+# measurement rather than a restatement of the code.
+#
+# Note what this section deliberately does NOT assert away: per-leg failure
+# resilience. Section D still pins that a genuinely FAILED leg lets the batch
+# continue — only an actual signal stops it.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# mk_interrupt_stub <path> <log> <pidfile> — a recorded runner that behaves
+# exactly like mk_stub's (same canned envelope, same worktree edits, so the
+# leg it serves COMPLETES normally) and then, on its FIRST call only, sends
+# SIGTERM to the batch driver whose pid the test wrote to <pidfile>. The kill
+# therefore lands mid-batch, with legs still to go — precisely the state the
+# fix is about. It is sent AFTER the envelope is printed, so the interrupted
+# leg is a normal leg and the assertion is purely about what happens NEXT.
+mk_interrupt_stub() {
+  local p="$1" log="$2" pidfile="$3"
+  cat >"$p" <<STUBEOF
+#!/usr/bin/env bash
+set -u
+printf 'interrupt-stub %s\n' "\$1" >>"$log"
+wt="\$2"
+cp "$TRUTH_PY" "\$wt/workflows/scripts/drain/scan_stub.py"
+mkdir -p "\$wt/workflows/scripts/drain/tests"
+printf '#!/usr/bin/env bash\necho candidate-test\n' >"\$wt/workflows/scripts/drain/tests/test_scan_stub.sh"
+jq -cn '{type:"result", subtype:"success", is_error:false, duration_ms:4242,
+  modelUsage:{"recorded-interrupt-model":{inputTokens:1200, outputTokens:340,
+                     cacheReadInputTokens:9000, cacheCreationInputTokens:120,
+                     provider:"firstParty"}}}'
+if [ "\$(wc -l <"$log" | tr -d ' ')" = "1" ]; then
+  bp=""
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    bp="\$(cat "$pidfile" 2>/dev/null)" || bp=""
+    [ -n "\$bp" ] && break
+    sleep 0.2
+  done
+  [ -n "\$bp" ] && kill -TERM "\$bp" 2>/dev/null
+fi
+exit 0
+STUBEOF
+  chmod +x "$p"
+}
+
+# drive_bg <sut> <log> <pidfile> <out-dir> <state-dir> — start the driver in
+# the BACKGROUND over CORPUS_A (2 records x 2 arms = 4 legs) with the
+# interrupting stub on both arms, publish its pid for the stub to kill, and
+# wait. No `env` wrapper: the var assignments prefix `bash` directly so `$!`
+# is unambiguously the driver's own pid, which is what gets signalled.
+# Sets BG_RC (the driver's wait status), BG_STDOUT, BG_STDERR.
+BG_RC=0; BG_STDOUT=""; BG_STDERR=""
+drive_bg() {
+  local sut="$1" log="$2" pidfile="$3" odir="$4" sdir="$5" pid
+  BG_STDOUT="$WORK/bg-stdout-$(basename "$sdir").txt"
+  BG_STDERR="$WORK/bg-stderr-$(basename "$sdir").txt"
+  : >"$log"; rm -f "$pidfile"
+  BUILD_QUOTA_CACHE="$NOCACHE" \
+  MODEL_USAGE_RAW_DIR="$LAKE" \
+  PROVIDER_ALLOWLIST_TEST_SEAM=1 \
+  PROVIDER_ALLOWLIST_COMMITTED_FILE="$ALLOW" \
+  PROVIDER_ALLOWLIST_LOCAL_FILE="$NOLOCAL" \
+  PROVIDER_DISCLOSURE_LOG_FILE="$DLOG" \
+  bash "$sut" run --corpus-file "$CORPUS_A" --repo-root "$REPO" \
+       --out-dir "$odir" --state-dir "$sdir" \
+       --baseline-runner "bash $INT_STUB_FOR_RUN" \
+       --candidate-runner "bash $INT_STUB_FOR_RUN" \
+       --confirm >"$BG_STDOUT" 2>"$BG_STDERR" &
+  pid=$!
+  printf '%s\n' "$pid" >"$pidfile"
+  BG_RC=0
+  wait "$pid" || BG_RC=$?
+}
+
+# I1 — a SIGTERM mid-batch STOPS the run: the next leg never begins, no
+#      summary object is printed, and the process dies OF the signal.
+count
+INT_LOG="$WORK/interrupt-calls.log"
+INT_PIDFILE="$WORK/interrupt-batch.pid"
+INT_STUB_FOR_RUN="$WORK/stub-interrupt.sh"
+mk_interrupt_stub "$INT_STUB_FOR_RUN" "$INT_LOG" "$INT_PIDFILE"
+INT_OUT="$WORK/out-interrupt"; INT_STATE="$WORK/state-interrupt"
+drive_bg "$SUT" "$INT_LOG" "$INT_PIDFILE" "$INT_OUT" "$INT_STATE"
+int_calls="$(wc -l <"$INT_LOG" | tr -d ' ')"
+[ "$int_calls" = "1" ] \
+  || fail "I1: the TERMed batch did NOT stop — exactly 1 leg should have executed before the interrupt, got $int_calls: $(tail -c 400 "$BG_STDERR")"
+[ "$BG_RC" -eq 143 ] \
+  || fail "I1: an interrupted batch must die OF the signal (128+15=143), got exit $BG_RC: $(tail -c 400 "$BG_STDERR")"
+[ ! -s "$BG_STDOUT" ] \
+  || fail "I1: an interrupted batch printed a summary object it never earned: $(head -c 300 "$BG_STDOUT")"
+[ ! -e "$INT_OUT/baseline.jsonl" ] \
+  || fail "I1: an interrupted batch assembled arm files — it ran on past the execution loop"
+ok "I1 SIGTERM mid-leg STOPS the batch: 1 of 4 legs executed, no arm files, exit 143 (signal-derived, not an invented code)"
+
+# I2 — the interrupt path still tears the IN-FLIGHT worktree down, and names
+#      itself rather than dying mute.
+count
+[ "$(wt_count)" = "0" ] \
+  || fail "I2: the in-flight replay worktree survived the interrupt: $(ls -d "${REPO}.wt"/mc-replay-* 2>/dev/null)"
+[ "$(git -C "$REPO" worktree list | grep -c 'mc-replay')" = "0" ] \
+  || fail "I2: an interrupted batch left a replay worktree registered with git"
+grep -q 'INTERRUPTED' "$BG_STDERR" \
+  || fail "I2: the interrupt path must NAME itself on stderr, never die mute: $(tail -c 400 "$BG_STDERR")"
+ok "I2 the interrupt tears the in-flight worktree down (the pre-fix cleanup is preserved, not lost) and NAMES itself on stderr"
+
+# I3 — MUTATION PROOF. Restore the pre-fix single `trap … EXIT INT TERM` in a
+#      mirrored copy and the very same TERM cleans up and CONTINUES — which is
+#      the defect, and is what makes I1 a measurement.
+count
+MUT_I="$WORK/mut-signal"; mk_mirror "$MUT_I"
+MUT_I_SUT="$MUT_I/workflows/scripts/model-comparison/batch.sh"
+unlink_and_copy "$MUT_I_SUT"
+mutate_file "$MUT_I_SUT" \
+  "trap bd_trap_cleanup EXIT
+trap 'bd_trap_signal INT' INT
+trap 'bd_trap_signal TERM' TERM" \
+  "trap bd_trap_cleanup EXIT INT TERM"
+MUT_I_LOG="$WORK/interrupt-calls-mut.log"
+MUT_I_PIDFILE="$WORK/interrupt-batch-mut.pid"
+INT_STUB_FOR_RUN="$WORK/stub-interrupt-mut.sh"
+mk_interrupt_stub "$INT_STUB_FOR_RUN" "$MUT_I_LOG" "$MUT_I_PIDFILE"
+MUT_I_OUT="$WORK/out-mut-i"; MUT_I_STATE="$WORK/state-mut-i"
+drive_bg "$MUT_I_SUT" "$MUT_I_LOG" "$MUT_I_PIDFILE" "$MUT_I_OUT" "$MUT_I_STATE"
+mut_i_calls="$(wc -l <"$MUT_I_LOG" | tr -d ' ')"
+[ "$mut_i_calls" = "4" ] \
+  || fail "I3: the mutation proof did not fire — with the pre-fix single trap the TERMed batch should have cleaned up and CONTINUED all 4 legs, got $mut_i_calls: $(tail -c 400 "$BG_STDERR")"
+[ "$BG_RC" -ne 143 ] \
+  || fail "I3: the mutation proof did not fire — the pre-fix shape should NOT have died of the signal"
+ok "I3 MUTATION PROOF: the pre-fix single 'trap … EXIT INT TERM' runs the cleanup and CONTINUES all $mut_i_calls legs — I1's stop is load-bearing"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SECTION J — the suite-wide no-live-call verdict.
 # ═══════════════════════════════════════════════════════════════════════════
 count
 if [ -e "$CANARY" ]; then
-  fail "I1: A LIVE MODEL CALL WAS ATTEMPTED during this suite: $(cat "$CANARY")"
+  fail "J1: A LIVE MODEL CALL WAS ATTEMPTED during this suite: $(cat "$CANARY")"
 fi
-ok "I1 no test in this suite ever invoked a 'claude' binary"
+ok "J1 no test in this suite ever invoked a 'claude' binary"
 
 count
 "$WORK/bin/claude" --self-test >/dev/null 2>&1
-[ -e "$CANARY" ] || fail "I2: the canary itself does not work, so I1 proves nothing"
+[ -e "$CANARY" ] || fail "J2: the canary itself does not work, so J1 proves nothing"
 rm -f "$CANARY"
-ok "I2 the canary is genuinely capable of firing (so I1 is a measurement, not a tautology)"
+ok "J2 the canary is genuinely capable of firing (so J1 is a measurement, not a tautology)"
 
 echo
 echo "test_replay_batch.sh: $pass/$total checks passed"

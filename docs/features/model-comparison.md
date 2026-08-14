@@ -154,7 +154,7 @@ arms, judges each arm, and writes the two arm files the report producer reads.
 It orchestrates only: it derives no statistic and re-implements no scoring,
 judging, corpus selection or isolation.
 
-Four properties are worth knowing before you run one:
+Five properties are worth knowing before you run one:
 
 - **The gate runs first, and consent is explicit.** Nothing is prepared or
   executed until pre-flight has returned a non-`stop` verdict *and* you have
@@ -171,6 +171,15 @@ Four properties are worth knowing before you run one:
   i.e. one `replay.sh execute`. Re-invoking after an interruption re-spends
   no leg and no judge call that already completed. A state directory is bound
   to one corpus and refuses to resume against a different one.
+- **An interrupt stops it.** `^C` or a `kill` tears the in-flight replay
+  worktree down and **stops the batch before the next leg begins** — it does
+  not clean up and carry on spending — exiting with the conventional
+  signal-derived status (`130` for SIGINT, `143` for SIGTERM) rather than a
+  verdict of its own. That status is deliberately outside the driver's own
+  closed exit-code set, and no summary object is printed: an interrupted batch
+  never reached one. This is distinct from the failure resilience above — a
+  leg that *fails* is recorded and the batch continues; only a real signal
+  stops the run. Re-invoke to resume; nothing already terminal is re-spent.
 - **There is no implicit model call.** Each arm needs an explicit recorded
   runner (`--baseline-runner` / `--candidate-runner`) or the single explicit
   `--live` flag; with neither, the driver refuses before it even reads the

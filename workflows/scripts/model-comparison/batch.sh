@@ -91,6 +91,14 @@
 # run left behind. `replay.sh verify-clean-parent` runs after the batch and a
 # DIRTY parent is reported as a named degradation, never swallowed.
 #
+# ── AN INTERRUPT STOPS THE BATCH (temperloop#1527) ────────────────────────
+# SIGINT/SIGTERM tear the in-flight worktree down AND STOP — they do not clean
+# up and continue to the next leg. An operator's ^C on a spend-bearing loop
+# means stop spending, so the signal arms re-raise under the default
+# disposition and the process dies with the signal-derived status. This is
+# NOT a weakening of the per-leg failure resilience above: a leg that fails is
+# still recorded and the batch still continues; only a real signal stops it.
+#
 # ── Usage ─────────────────────────────────────────────────────────────────
 #   batch.sh run --corpus-file <path> --repo-root <path>
 #           ( --baseline-runner <cmd> --candidate-runner <cmd> | --live )
@@ -129,6 +137,13 @@
 #                         and the summary names every degradation — "some of
 #                         it did not work" is a different statement from
 #                         "it worked", and this file keeps them apart.
+#
+# 128+N INTERRUPTED       deliberately OUTSIDE the closed set above: the run
+#                         was signalled (^C / kill), so the process dies OF
+#                         that signal rather than reporting a verdict of its
+#                         own. No summary object is printed — an interrupted
+#                         batch never reached one. See § AN INTERRUPT STOPS
+#                         THE BATCH.
 #
 # Every setting this file reads is registered in
 # workflows/scripts/config/setting-registry.tsv and defaulted in
@@ -267,7 +282,52 @@ bd_trap_cleanup() {
     BD_LIVE_SLUG=""
   fi
 }
-trap bd_trap_cleanup EXIT INT TERM
+
+# bd_trap_signal <SIGNAL-NAME> — the INTERRUPTED path (temperloop#1527), and
+# the reason it is a SEPARATE handler from the EXIT one above.
+#
+# A bash trap handler RETURNS. On EXIT that is exactly right — the shell is
+# already leaving. On INT/TERM it is exactly wrong: bash runs the handler and
+# then RESUMES the script at the next command, so a single handler registered
+# on `EXIT INT TERM` made a ^C or a `kill` tear the in-flight worktree down
+# and then calmly start the NEXT leg. On this file — the module's
+# spend-bearing entry point, the one thing that calls `replay.sh execute` in a
+# loop — that is not cosmetic: the operator's interrupt was the operator
+# saying STOP SPENDING, and the batch kept spending.
+#
+# So the signal arms run the SAME cleanup and then re-raise under the DEFAULT
+# disposition, which is what makes the process die with the conventional
+# signal-derived status (128+N) rather than an invented exit code — a caller
+# (a shell, a supervisor, a CI harness) can then tell "the operator killed it"
+# apart from every code in this file's own closed set.
+#
+# NOTE what is deliberately NOT changed: per-leg failure resilience. A leg
+# that genuinely FAILS still records its failure and lets the batch continue
+# (the whole point of the resumable-by-leg design) — only an actual signal
+# stops the run. Every leg that already reached a terminal state is on disk,
+# so re-invoking resumes and re-spends none of them.
+bd_trap_signal() {
+  local sig="$1" signum
+  bd_trap_cleanup
+  printf 'batch.sh: INTERRUPTED (SIG%s) — the in-flight replay worktree was torn down and the batch STOPPED before the next leg; legs already in a terminal state are recorded, so re-invoking resumes without re-spending them\n' \
+    "$sig" >&2
+  # Reset to the default disposition and re-raise, so the process dies OF the
+  # signal. EXIT is cleared too: the cleanup above already ran, and letting the
+  # EXIT handler fire again during the re-raise would only re-run a no-op.
+  trap - EXIT INT TERM
+  kill -"$sig" "$$"
+  # Reached only if the signal was inherited as IGNORED (a `nohup`-style
+  # parent), where `trap -` restores "ignore" rather than "default" and the
+  # kill above is a no-op. Stopping is still the answer — with the same
+  # signal-derived status, computed rather than hard-coded.
+  signum="$(kill -l "$sig" 2>/dev/null)"
+  case "$signum" in ''|*[!0-9]*) signum=0 ;; esac
+  exit $((128 + signum))
+}
+
+trap bd_trap_cleanup EXIT
+trap 'bd_trap_signal INT' INT
+trap 'bd_trap_signal TERM' TERM
 
 cmd_schema() {
   jq -cn --arg sv "$BATCH_SUMMARY_SCHEMA_VERSION" '{
