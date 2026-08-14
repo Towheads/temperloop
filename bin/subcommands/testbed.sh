@@ -93,23 +93,52 @@
 #
 # WHY THIS `cd`s TO THE SOURCE TOPLEVEL (load-bearing, not tidiness). The
 # driver resolves `--dir` to its git toplevel and `cd`s there ONCE, then
-# passes a bare `.` to every seam call. A provider may legitimately stash
-# per-run state while enumerating its checks (mirror-from-repo stashes the
-# source dir so the check functions it names can stay parameterless, per the
-# seam contract), and any capture of that enumeration's stdout — `$(...)`,
-# a pipe, a process substitution — runs it in a SUBSHELL, where such a stash
-# is silently discarded and the checks fall back to their `.` default.
-# Making `.` genuinely BE the source checkout makes that fallback correct by
-# construction, for every provider, instead of correct only for the ones
-# that happen to be stateless.
+# folds it (alongside `--seed-dir`) into the single provider-scoped
+# `provider_dir_arg` every seam call below receives (see "PROVIDER-SCOPED
+# SOURCE ARGUMENT RESOLUTION" immediately below). A provider may legitimately
+# stash per-run state while enumerating its checks (mirror-from-repo stashes
+# the source dir so the check functions it names can stay parameterless, per
+# the seam contract), and any capture of that enumeration's stdout —
+# `$(...)`, a pipe, a process substitution — runs it in a SUBSHELL, where
+# such a stash is silently discarded and the checks fall back to their `.`
+# default. Making `.` genuinely BE the source checkout makes that fallback
+# correct by construction, for `mirror-from-repo`.
+#
+# PROVIDER-SCOPED SOURCE ARGUMENT RESOLUTION (temperloop#1356). This driver
+# holds TWO independent CLI-level directory concepts — `--dir` (resolved to
+# `.` after the cd above; mirror-from-repo's own "source repository
+# directory") and `--seed-dir` (raw, default empty; materialize-from-seed's
+# own "which seed directory") — and must hand each provider only the one
+# that is actually its own, WITHOUT ever branching on `--source-kind` to
+# decide which (see T2 in bin/subcommands/tests/test_testbed.sh, which
+# asserts structurally that this file contains no `case` on provider kind).
+# The fix routes the decision through the SEAM instead: a single call to
+# `testbed_source_dir_arg` (source.sh's fifth seam member) hands the seam
+# BOTH values and gets back ONE — the active provider's own `dir_arg()`
+# implementation (source.sh) picks whichever of the two is actually its own
+# and returns it, ignoring the other. Every seam call below then uses that
+# ONE resolved `provider_dir_arg`, restoring the seam's original
+# single-directory-argument shape. Before this, the driver threaded its raw
+# `$source_dir` (always `.` once resolved, never empty) straight into every
+# seam call regardless of kind, so it silently reached materialize-from-seed
+# too and overrode that provider's correctly-computed in-tree default from
+# any cwd, yielding a `.`-derived testbed name instead of the seed's own.
 #
 # Usage:
-#   testbed.sh [--dir DIR] [--source-kind KIND] [--owner OWNER] [--name NAME]
-#              [--yes] [--dry-run]
+#   testbed.sh [--dir DIR] [--seed-dir DIR] [--source-kind KIND]
+#              [--owner OWNER] [--name NAME] [--yes] [--dry-run]
 #
-#   --dir DIR          The source checkout to build a testbed FROM.
+#   --dir DIR          The source checkout to build a testbed FROM. Meaningful
+#                      to `mirror-from-repo` only (its describe()/produce_git/
+#                      produce_issues read a real git checkout at this path).
 #                      Default: the current directory. Resolved to its git
 #                      toplevel when it is a git working tree.
+#   --seed-dir DIR     The seed directory to materialize FROM. Meaningful to
+#                      `materialize-from-seed` only. Default: empty, which
+#                      lets the provider fall back to its own in-tree default
+#                      (workflows/scripts/demo/seed) — see "PROVIDER-SCOPED
+#                      SOURCE ARGUMENTS" below for why this is a SEPARATE flag
+#                      from --dir rather than the same one reused.
 #   --source-kind KIND The source provider (workflows/scripts/testbed/
 #                      source.sh). Default: mirror-from-repo. Passed
 #                      through to the seam verbatim; an unknown kind is
@@ -205,14 +234,19 @@ fi
 
 usage() {
   cat <<'EOF'
-usage: testbed.sh [--dir DIR] [--source-kind KIND] [--owner OWNER] [--name NAME]
-                  [--yes] [--dry-run]
+usage: testbed.sh [--dir DIR] [--seed-dir DIR] [--source-kind KIND]
+                  [--owner OWNER] [--name NAME] [--yes] [--dry-run]
        testbed.sh --teardown [--repo OWNER/NAME] [--dir DIR] [--id ID]
                   [--yes] [--dry-run]
 
 Builds a private, disposable evaluation copy of a repo — create it,
 mirror-push its history, carry its open issues across — then hands off to
 `temperloop init` inside the copy.
+
+--dir and --seed-dir are provider-scoped: --dir names the source repository
+directory for --source-kind mirror-from-repo (the default provider);
+--seed-dir names the seed directory for --source-kind materialize-from-seed.
+Only the flag matching the active provider has any effect.
 
 --teardown deletes a testbed created by a prior run and removes its entry
 from the machine-scoped artifact record (workflows/scripts/testbed/
@@ -229,6 +263,7 @@ EOF
 # CLI parsing
 # ---------------------------------------------------------------------------
 source_dir="."
+seed_dir_flag=""
 source_kind="mirror-from-repo"
 owner_flag=""
 name_flag=""
@@ -241,6 +276,7 @@ id_flag=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --dir) source_dir="${2:?--dir needs a value}"; shift 2 ;;
+    --seed-dir) seed_dir_flag="${2:?--seed-dir needs a value}"; shift 2 ;;
     --source-kind) source_kind="${2:?--source-kind needs a value}"; shift 2 ;;
     --owner) owner_flag="${2:?--owner needs a value}"; shift 2 ;;
     --name) name_flag="${2:?--name needs a value}"; shift 2 ;;
@@ -405,6 +441,20 @@ cd "$resolved_dir" || {
 }
 source_dir="."
 
+# --- provider-scoped directory argument (see "PROVIDER-SCOPED DIRECTORY
+# ARGUMENT RESOLUTION" in the header) -- resolved via the SEAM's own fifth
+# member, never by branching on kind here. Both of this driver's CLI-level
+# directory values (--dir's resolved `source_dir`, --seed-dir's raw
+# `seed_dir_flag`) are handed to the seam unconditionally; the ACTIVE
+# provider's own dir_arg() picks whichever one is actually its own and
+# returns it. Every seam call below uses this ONE resolved value, restoring
+# the seam's original single-directory-argument arity.
+# ---------------------------------------------------------------------------
+if ! provider_dir_arg="$(testbed_source_dir_arg "$source_kind" "$source_dir" "$seed_dir_flag")"; then
+  echo "cannot proceed — provider \"$source_kind\" could not resolve its own directory argument (see the line above). Nothing was created." >&2
+  exit 1
+fi
+
 echo "== temperloop testbed =="
 echo
 
@@ -414,7 +464,7 @@ echo
 # has passed and before anything exists.
 # ---------------------------------------------------------------------------
 echo "-- 1. Resolve the source (provider seam: describe) --"
-if ! source_desc="$(testbed_source_describe "$source_kind" "$source_dir")"; then
+if ! source_desc="$(testbed_source_describe "$source_kind" "$provider_dir_arg")"; then
   echo "cannot proceed — provider \"$source_kind\" could not describe the source (see the line above). Nothing was created." >&2
   exit 1
 fi
@@ -525,7 +575,7 @@ _testbed_preflight_add _testbed_check_gh_available
 # The provider's own half of the union. Its stdout is a list of zero-arg
 # function NAMES; the driver runs whatever it yields and never inspects the
 # names to decide which apply.
-if ! provider_checks="$(testbed_source_preflight_checks "$source_kind" "$source_dir")"; then
+if ! provider_checks="$(testbed_source_preflight_checks "$source_kind" "$provider_dir_arg")"; then
   echo "cannot proceed — provider \"$source_kind\" could not enumerate its pre-flight checks (see the line above). Nothing was created." >&2
   exit 1
 fi
@@ -671,7 +721,7 @@ echo
 # silent orphan.
 # ---------------------------------------------------------------------------
 echo "-- 5. Mirror the git history (provider seam: produce_git) --"
-if ! testbed_source_produce_git "$source_kind" "$testbed_url.git" "$source_dir"; then
+if ! testbed_source_produce_git "$source_kind" "$testbed_url.git" "$provider_dir_arg"; then
   echo "testbed.sh: produce_git failed — $testbed_slug exists and IS recorded ($record_id) with mirror_pushed=false, so teardown can still find and remove it." >&2
   exit 1
 fi
@@ -686,7 +736,7 @@ echo
 # simply never emits one.
 # ---------------------------------------------------------------------------
 echo "-- 6. Copy the open issues (provider seam: produce_issues) --"
-if ! testbed_source_produce_issues "$source_kind" "$testbed_slug" "$source_dir"; then
+if ! testbed_source_produce_issues "$source_kind" "$testbed_slug" "$provider_dir_arg"; then
   echo "testbed.sh: produce_issues failed — $testbed_slug exists and IS recorded ($record_id) with issues_copied=false, so teardown can still find and remove it." >&2
   exit 1
 fi
