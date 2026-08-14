@@ -343,10 +343,14 @@ count
 rc=0
 out12="$(pf env REPLAY_PREFLIGHT_BATCH_CAP=100 REPLAY_PREFLIGHT_TOKENS_PER_REPLAY=150k \
   REPLAY_PREFLIGHT_CEILING_TOKENS=1000000 MODEL_COMPARISON_MIN_SAMPLE_N=1 \
-  bash "$SUT" preflight --corpus-file "$CORPUS_5" 2>&1)" || rc=$?
+  bash "$SUT" preflight --corpus-file "$CORPUS_5" 2>"$WORK/pf-stderr.txt")" || rc=$?
 [ "$rc" -ne 0 ] || fail "12: expected non-zero exit for a non-integer REPLAY_PREFLIGHT_TOKENS_PER_REPLAY, got: $out12"
 [ "$(jq -r .outcome <<<"$out12" 2>/dev/null)" = "CANNOT_EVALUATE" ] || fail "12: expected CANNOT_EVALUATE, got: $out12"
 case "$out12" in *'"estimated_total_tokens"'*) fail "12: FAIL-OPEN — an estimate leaked out for arithmetic that could not be evaluated: $out12" ;; esac
+case "$(cat "$WORK/pf-stderr.txt")" in
+  *"CANNOT EVALUATE"*) ;;
+  *) fail "12: expected a distinct 'CANNOT EVALUATE' line on stderr, got: $(cat "$WORK/pf-stderr.txt")" ;;
+esac
 ok "12 FAIL CLOSED: a non-integer cost setting -> CANNOT_EVALUATE, non-zero, no estimate leaks out"
 
 echo "---"

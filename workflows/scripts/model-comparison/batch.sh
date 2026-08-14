@@ -150,6 +150,31 @@ JUDGE_SH="$HERE/judge.sh"
 : "${MODEL_COMPARISON_REPORT_RECORDS_DIR:=.temperloop/model-comparison}"
 : "${MODEL_COMPARISON_MIN_SAMPLE_N:=20}"
 
+# shellcheck source=../lib/cannot-evaluate.sh
+[ -f "$HERE/../lib/cannot-evaluate.sh" ] && . "$HERE/../lib/cannot-evaluate.sh"
+if ! command -v cannot_evaluate_emit >/dev/null 2>&1; then
+  # DEGRADED, never silently duplicated (temperloop#1475 review MEDIUM-3):
+  # cannot-evaluate.sh ships alongside this file in every kernel install, so
+  # reaching this branch means the checkout is structurally off — e.g. this
+  # file reached via a symlink ($HERE resolves the DIRECTORY via `cd -P`,
+  # which does not resolve a symlinked *file*, so a symlinked entry point
+  # can land here even with a normal lib/ present) — or the lib is genuinely
+  # missing. Re-typing the frozen contract's human-line shape here a second
+  # time would be exactly the silent duplication this hoist exists to
+  # eliminate, so this fallback does NOT pretend to be the real thing: it
+  # defines RC_CANNOT_EVALUATE itself (so a caller using the lib's own
+  # advertised idiom never hits an unbound-variable abort under `set -u`),
+  # still emits the machine JSON so a downstream `.outcome` reader sees
+  # CANNOT_EVALUATE, still fails CLOSED on that reserved code, but replaces
+  # the human line with an explicit degradation notice naming what's wrong.
+  RC_CANNOT_EVALUATE=2
+  cannot_evaluate_emit() {
+    jq -cn --arg e "$2" '{outcome:"CANNOT_EVALUATE",error:$e}'
+    printf '%s: CANNOT-EVALUATE-DEGRADED — workflows/scripts/lib/cannot-evaluate.sh could not be sourced (checkout is structurally off); original message: %s\n' "$1" "$2" >&2
+    return "$RC_CANNOT_EVALUATE"
+  }
+fi
+
 # ── vocabulary constants (record vocabulary, NOT operator settings) ────────
 # THE TWO ARMS this driver knows how to run, in the order it runs them. A
 # structural fact of the comparison design (replay.sh's own REPLAY_ARMS_N
@@ -181,13 +206,15 @@ EOF
 }
 
 # ── fail-closed emission ──────────────────────────────────────────────────
-# bd_cannot_evaluate <msg> — the ONE refusal path. Machine verdict on stdout,
-# the distinct human CANNOT EVALUATE line on stderr (same contract, same
-# rationale, as replay.sh's preflight_cannot_evaluate / execute_cannot_
-# evaluate). Every caller MUST follow it with `return 1` — this only prints.
+# bd_cannot_evaluate <msg> — the ONE refusal path, delegating to the shared
+# idiom in workflows/scripts/lib/cannot-evaluate.sh (temperloop#1475): the
+# machine verdict on stdout, the distinct human CANNOT EVALUATE line on
+# stderr, and now RC_CANNOT_EVALUATE (2) as ITS OWN return status — a caller
+# that forgets to branch on it fails closed rather than falling through.
+# Every existing caller already follows it with an explicit `return 1` (or
+# `return 2` on an arg-parse error), so this changes no observed behavior.
 bd_cannot_evaluate() {
-  jq -cn --arg e "$1" '{outcome:"CANNOT_EVALUATE",error:$e}'
-  printf 'batch.sh: CANNOT EVALUATE — %s\n' "$1" >&2
+  cannot_evaluate_emit "batch.sh" "$1"
 }
 
 # bd_stopped <reason> <detail> <preflight-json> — the gate refused, or the

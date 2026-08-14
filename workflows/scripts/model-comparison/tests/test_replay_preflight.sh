@@ -416,9 +416,13 @@ ok "19 preflight's disclosed MDE is byte-identical to a direct stats.sh mde call
 # ---------------------------------------------------------------------------
 count
 rc=0
-out20="$(run_pf bash "$SUT" preflight 2>&1)" || rc=$?
+out20="$(run_pf bash "$SUT" preflight 2>"$WORK/pf-stderr.txt")" || rc=$?
 [ "$rc" -ne 0 ] || fail "20: expected non-zero exit with no --corpus-file at all"
 [ "$(jq -r .outcome <<<"$out20" 2>/dev/null)" = "CANNOT_EVALUATE" ] || fail "20: expected CANNOT_EVALUATE, got: $out20"
+case "$(cat "$WORK/pf-stderr.txt")" in
+  *"CANNOT EVALUATE"*) ;;
+  *) fail "20: expected a distinct 'CANNOT EVALUATE' line on stderr, got: $(cat "$WORK/pf-stderr.txt")" ;;
+esac
 ok "20 FAIL CLOSED: no --corpus-file given -> CANNOT_EVALUATE, non-zero"
 
 # ---------------------------------------------------------------------------
@@ -426,10 +430,14 @@ ok "20 FAIL CLOSED: no --corpus-file given -> CANNOT_EVALUATE, non-zero"
 # ---------------------------------------------------------------------------
 count
 rc=0
-out21="$(run_pf bash "$SUT" preflight --corpus-file "$WORK/does-not-exist.jsonl" 2>&1)" || rc=$?
+out21="$(run_pf bash "$SUT" preflight --corpus-file "$WORK/does-not-exist.jsonl" 2>"$WORK/pf-stderr.txt")" || rc=$?
 [ "$rc" -ne 0 ] || fail "21: expected non-zero exit for a nonexistent corpus file"
 [ "$(jq -r .outcome <<<"$out21" 2>/dev/null)" = "CANNOT_EVALUATE" ] || fail "21: expected CANNOT_EVALUATE, got: $out21"
 case "$out21" in *'"eligible_n"'*) fail "21: FAIL-OPEN — a computed eligible_n leaked out for input that was never read: $out21" ;; esac
+case "$(cat "$WORK/pf-stderr.txt")" in
+  *"CANNOT EVALUATE"*) ;;
+  *) fail "21: expected a distinct 'CANNOT EVALUATE' line on stderr, got: $(cat "$WORK/pf-stderr.txt")" ;;
+esac
 ok "21 FAIL CLOSED: absent corpus file -> CANNOT_EVALUATE, non-zero, no computed eligible_n leaks out"
 
 # ---------------------------------------------------------------------------
@@ -440,9 +448,13 @@ ok "21 FAIL CLOSED: absent corpus file -> CANNOT_EVALUATE, non-zero, no computed
 count
 mkdir -p "$WORK/a-directory"
 rc=0
-out22="$(run_pf bash "$SUT" preflight --corpus-file "$WORK/a-directory" 2>&1)" || rc=$?
+out22="$(run_pf bash "$SUT" preflight --corpus-file "$WORK/a-directory" 2>"$WORK/pf-stderr.txt")" || rc=$?
 [ "$rc" -ne 0 ] || fail "22: expected non-zero exit when --corpus-file is a directory"
 [ "$(jq -r .outcome <<<"$out22" 2>/dev/null)" = "CANNOT_EVALUATE" ] || fail "22: expected CANNOT_EVALUATE, got: $out22"
+case "$(cat "$WORK/pf-stderr.txt")" in
+  *"CANNOT EVALUATE"*) ;;
+  *) fail "22: expected a distinct 'CANNOT EVALUATE' line on stderr, got: $(cat "$WORK/pf-stderr.txt")" ;;
+esac
 ok "22 FAIL CLOSED: --corpus-file is a directory (unreadable-as-a-file) -> CANNOT_EVALUATE, non-zero"
 
 # ---------------------------------------------------------------------------
@@ -452,9 +464,13 @@ count
 EMPTY_FILE="$WORK/empty.jsonl"
 : >"$EMPTY_FILE"
 rc=0
-out23="$(run_pf bash "$SUT" preflight --corpus-file "$EMPTY_FILE" 2>&1)" || rc=$?
+out23="$(run_pf bash "$SUT" preflight --corpus-file "$EMPTY_FILE" 2>"$WORK/pf-stderr.txt")" || rc=$?
 [ "$rc" -ne 0 ] || fail "23: expected non-zero exit for an empty corpus file"
 [ "$(jq -r .outcome <<<"$out23" 2>/dev/null)" = "CANNOT_EVALUATE" ] || fail "23: expected CANNOT_EVALUATE, got: $out23"
+case "$(cat "$WORK/pf-stderr.txt")" in
+  *"CANNOT EVALUATE"*) ;;
+  *) fail "23: expected a distinct 'CANNOT EVALUATE' line on stderr, got: $(cat "$WORK/pf-stderr.txt")" ;;
+esac
 ok "23 FAIL CLOSED: empty corpus file (0 records) -> CANNOT_EVALUATE, non-zero"
 
 # ---------------------------------------------------------------------------
@@ -471,10 +487,14 @@ BAD_FILE="$WORK/malformed.jsonl"
   printf 'THIS IS NOT JSON\n'
 } >"$BAD_FILE"
 rc=0
-out24="$(run_pf bash "$SUT" preflight --corpus-file "$BAD_FILE" 2>&1)" || rc=$?
+out24="$(run_pf bash "$SUT" preflight --corpus-file "$BAD_FILE" 2>"$WORK/pf-stderr.txt")" || rc=$?
 [ "$rc" -ne 0 ] || fail "24: expected non-zero exit for a malformed corpus file"
 [ "$(jq -r .outcome <<<"$out24" 2>/dev/null)" = "CANNOT_EVALUATE" ] || fail "24: expected CANNOT_EVALUATE, got: $out24"
 case "$out24" in *'"eligible_n":1'*) fail "24: FAIL-OPEN — the good record's eligible_n leaked out despite a later malformed line: $out24" ;; esac
+case "$(cat "$WORK/pf-stderr.txt")" in
+  *"CANNOT EVALUATE"*) ;;
+  *) fail "24: expected a distinct 'CANNOT EVALUATE' line on stderr, got: $(cat "$WORK/pf-stderr.txt")" ;;
+esac
 ok "24 FAIL CLOSED: a malformed line CANNOT_EVALUATEs the whole file — the good record's eligible_n never leaks out"
 
 # ---------------------------------------------------------------------------
@@ -491,10 +511,14 @@ mutate_file "$SUT" \
 rc=0
 out25="$(run_pf env REPLAY_PREFLIGHT_BATCH_CAP=100 REPLAY_PREFLIGHT_TOKENS_PER_REPLAY=1 \
   REPLAY_PREFLIGHT_CEILING_TOKENS=1000000 MODEL_COMPARISON_MIN_SAMPLE_N=1 \
-  bash "$SUT" preflight --corpus-file "$CORPUS_A" 2>&1)" || rc=$?
+  bash "$SUT" preflight --corpus-file "$CORPUS_A" 2>"$WORK/pf-stderr.txt")" || rc=$?
 cp "$WORK/replay.sh.orig-25" "$SUT"
 [ "$rc" -ne 0 ] || fail "25: expected non-zero exit when the stats.sh primitive is unreachable"
 [ "$(jq -r .outcome <<<"$out25" 2>/dev/null)" = "CANNOT_EVALUATE" ] || fail "25: expected CANNOT_EVALUATE, got: $out25"
+case "$(cat "$WORK/pf-stderr.txt")" in
+  *"CANNOT EVALUATE"*) ;;
+  *) fail "25: expected a distinct 'CANNOT EVALUATE' line on stderr, got: $(cat "$WORK/pf-stderr.txt")" ;;
+esac
 ok "25 FAIL CLOSED: the stats.sh mde primitive unreachable -> CANNOT_EVALUATE, non-zero (restored, test 19 above is green again)"
 
 # ═══════════════════════════════════════════════════════════════════════════

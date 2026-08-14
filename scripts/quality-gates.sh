@@ -484,6 +484,17 @@ KERNEL_GATES=(
   # `.message.role`). Same direct-`bash` form as the command-declared gate
   # above (kernel Makefile is generator-owned; no new target added here).
   "bash workflows/scripts/lib/tests/test_token_sum.sh"
+  # cannot-evaluate.sh (temperloop#1475, epic #1409): the ONE shared
+  # "cannot evaluate" idiom hoisted out of five independently reinvented
+  # `*_cannot_evaluate()` functions in workflows/scripts/model-comparison/
+  # {batch,judge,score,replay}.sh — both output shapes (machine JSON on
+  # stdout, distinct human line on stderr), the fail-closed return status
+  # (RC_CANNOT_EVALUATE=2, converged with the three existing sibling
+  # conventions), a mutation proof that a caller forgetting to branch now
+  # fails CLOSED where every prior local reimplementation fell through to
+  # the OK path, that all five real call sites delegate to it, and
+  # replay.sh preflight's previously-missing stderr diagnostic (finding 3).
+  "bash workflows/scripts/lib/tests/test_cannot_evaluate.sh"
   # emit-session-context.sh (temperloop#828, epic #810): the
   # realized-session-context probe's raw-lake emit — print-only one-off
   # reading vs. normal append-to-lake mode, record shape (schema_version/
