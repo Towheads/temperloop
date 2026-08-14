@@ -24,10 +24,31 @@ operator**, so it never blocks on a question — it extracts liberally and
 parks anything needing human judgment on a durable review surface instead
 of asking.
 
-Each run: acquires a cross-machine lock (multiple hosts can share the same
+Each run acquires a cross-machine lock — multiple hosts can share the same
 session-stub backlog, so the protocol is acquire → wait for the store to
 sync → elect the earliest-timestamped lock as the winner, discarding any
-lock stale past a configured window); scans each pending session stub
+lock stale past a configured window (a discard whose delete fails is
+best-effort: the lock is simply left for a later run to reap).
+
+That lock protocol has **two arms**, selected on the same operator-absent
+signal the build command uses for its own headless branch. A loop-capable
+run — an interactive session, or a walk-away run whose harness re-invokes it
+when a backgrounded wait finishes — takes the full wait-and-elect path above.
+The **nightly headless one-shot has no such re-invoke loop**, so a
+backgrounded sync wait would end the session *at* the wait and the drain
+would never resume. That run instead takes a non-blocking arm: one cheap read
+of the lock files already listed (reaping any stale one), yield as a legible
+no-op if a live peer lock is present, otherwise write its own lock and
+proceed immediately — no wait, no election — releasing it at the end like any
+other run. The residual cost is a narrow check-then-write race: the
+task-generation step's search-then-add dedup absorbs duplicate *tasks* only,
+so duplicate vault notes from two hosts draining in the very same second are
+an **accepted residual risk** on that arm — the alternative is losing every
+night's signal to a no-op drain. The nightly agent itself is not shipped by
+this repo; an overlay install supplies it, and is what sets the
+operator-absent signal.
+
+Each run then: scans each pending session stub
 through a pre-processing script that emits a compact JSON report instead of
 requiring the full transcript to be read; adjudicates the report's
 pre-matched extraction tells (lexicon hits) and skims the report's user-turn
