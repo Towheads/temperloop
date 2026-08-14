@@ -136,7 +136,7 @@ two scripts below.
 **The routing axis.** `workflows/scripts/config/reviewer-routing.tsv` is the
 single source of truth for the extension/path-glob → reviewer axis (ADR
 0008, `docs/adr/0008-reviewer-routing-tsv-extension-axis-scope.md`): `.py` →
-python-reviewer, `.sh` → shell-reviewer, `.ts`/`.js` → typescript-reviewer,
+python-reviewer, `.sh` → shell-reviewer, `.ts`/`.js`/`.mjs` → typescript-reviewer,
 `.go` → go-reviewer, `.rs` → rust-reviewer, `.java` → java-reviewer, `.swift`
 → swift-reviewer, and `docs/**` → docs-reviewer. `/build`'s 3e pre-push
 review step (`claude/commands/build.md`) consults this tsv for the
@@ -155,7 +155,7 @@ narrower than "all routing."
 catalogued reviewers whose language has material usage in the target repo
 but isn't yet active. A language counts as material once its file count —
 summed across every routing-tsv key that maps to the same reviewer, so
-`.ts` and `.js` both count toward `typescript-reviewer`'s one total — reaches
+`.ts`, `.js`, and `.mjs` all count toward `typescript-reviewer`'s one total — reaches
 `REVIEWER_SCAN_MIN_FILES` (default 3, `workflows/scripts/build/build.config.sh`),
 high enough that a single generated/vendored/example file doesn't trigger a
 false-positive offer. The scan prunes vendored/build-output directories

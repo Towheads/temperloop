@@ -33,6 +33,7 @@
 .sh	shell-reviewer	claude/agents/reviewers/shell-reviewer.md
 .ts	typescript-reviewer	claude/agents/reviewers/typescript-reviewer.md
 .js	typescript-reviewer	claude/agents/reviewers/typescript-reviewer.md
+.mjs	typescript-reviewer	claude/agents/reviewers/typescript-reviewer.md
 .go	go-reviewer	claude/agents/reviewers/go-reviewer.md
 .rs	rust-reviewer	claude/agents/reviewers/rust-reviewer.md
 .java	java-reviewer	claude/agents/reviewers/java-reviewer.md
