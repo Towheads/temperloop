@@ -479,14 +479,23 @@ if [ -z "$resolved_kind" ] || [ -z "$base_name" ]; then
   exit 1
 fi
 
-# The record's `source_repo` field. Deliberately the SEAM's OWN slug parser
-# (source.sh's `_testbed_slug_from_remote`, already sourced above), never a
-# second github-URL parser written here: a parallel copy is exactly the
-# duplication init.sh:18-32's bar forbids, and it would drift from the
-# provenance line `produce_issues` stamps with the same helper. A provider
-# that owns no upstream repository simply has no `origin`, so this resolves
-# empty and record.sh stores JSON `null` — no branch on kind required.
-source_slug="$(_testbed_slug_from_remote "$(git remote get-url origin 2>/dev/null || true)")"
+# <describe()-json> -> the resolved source_repo slug, or empty. Named
+# extraction of the record's `source_repo` field, read from `describe()`'s
+# OWN payload above — the SEAM's data, resolved from the ACTIVE provider's
+# own `provider_dir_arg`, never a bare `git remote get-url origin` read in
+# the DRIVER's cwd (temperloop#1357). The pre-fix version of this did
+# exactly that: identically for both providers, so a materialize-from-seed
+# run — which has no source repository, ever — silently captured whatever
+# UNRELATED repo the command happened to be run from (a real risk: the
+# likely case for someone trying the demo is running it from inside a real
+# clone). describe() already resolved this correctly per-provider (mirror-
+# from-repo's own `source_dir`; unconditionally null for
+# materialize-from-seed, which has no upstream to name) — this driver
+# function only reads it, never re-derives it, and never branches on kind.
+_testbed_source_identity() {
+  jq -r '.source_repo // empty' <<<"$1"
+}
+source_slug="$(_testbed_source_identity "$source_desc")"
 echo
 
 # ---------------------------------------------------------------------------
@@ -630,8 +639,19 @@ _testbed_handoff() {
   echo "    temperloop init"
   echo
   echo "next step: temperloop init — run it inside the clone above. The testbed is a"
-  echo "  throwaway: everything init proposes lands there, and your real repo"
-  echo "  ($([ -n "$source_slug" ] && printf '%s' "$source_slug" || printf '%s' "$base_name")) is never touched."
+  # Branches on whether describe() resolved a REAL source repository
+  # ($source_slug — seam DATA, per describe()'s own `source_repo` field),
+  # never on provider kind: a mirror-from-repo run with no origin configured
+  # takes the same "no repo to reassure about" leg a seed run always takes,
+  # and a seed run stays silent on "your real repo" — there is none to make
+  # a claim about (temperloop#1357).
+  if [ -n "$source_slug" ]; then
+    echo "  throwaway: everything init proposes lands there, and your real repo"
+    echo "  ($source_slug) is never touched."
+  else
+    echo "  throwaway, materialized fresh from tracked demo content — there is no"
+    echo "  real repository of yours in the loop for this run at all."
+  fi
   echo "================================================================"
 }
 
@@ -643,7 +663,7 @@ _testbed_handoff() {
 echo "-- 3. Consent (this creates a REAL private GitHub repository) --"
 echo "About to create:"
 echo "  testbed repo : $testbed_slug (private)"
-echo "  source       : ${source_slug:-(no origin remote)} via provider \"$resolved_kind\""
+echo "  source       : ${source_slug:-(no source repository)} via provider \"$resolved_kind\""
 echo "  steps        : create repo -> mirror-push git history -> copy open issues"
 echo "  provenance   : provenance_capable=$provenance_capable  promotable=$promotable"
 echo "  record       : $(testbed_record_file)"
