@@ -36,6 +36,33 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$HERE/../.." && pwd)"
 ASSEMBLER="$REPO_ROOT/scripts/assemble-changelog.sh"
 
+# ---------------------------------------------------------------------------
+# Self-scoping (temperloop#1490): this suite is scoped to a checkout that
+# actually USES the CHANGELOG.md/changelog.d/ workflow. T8 in particular
+# `cp`s $REPO_ROOT/CHANGELOG.md as its "real, non-toy fixture" leg — a
+# consumer repo that vendors this kernel as a subtree may not use the
+# changelog workflow at ITS OWN root at all (foundation: no root
+# CHANGELOG.md, zero changelog.d/ fragments), and REPO_ROOT above resolves
+# to that consumer's root (not the vendored kernel/ subtree) whenever this
+# script is reached through a compat symlink — same reasoning as
+# workflows/scripts/tests/lib/sandbox.sh's sandbox_skip_if_composed_tree,
+# reproduced narrowly here (a missing CHANGELOG.md is a strictly more
+# precise signal than "is this a composed overlay", since a composed overlay
+# repo COULD legitimately run its own changelog workflow at its own root —
+# this only skips when the file this suite depends on isn't there).
+# Must run before sourcing anything else, so a scoped-out run exits 0 fast.
+# ---------------------------------------------------------------------------
+if [ ! -f "$REPO_ROOT/CHANGELOG.md" ]; then
+  echo "SKIP: test_assemble_changelog.sh — no CHANGELOG.md at $REPO_ROOT."
+  echo "  This suite is scoped to a checkout that uses the CHANGELOG.md/"
+  echo "  changelog.d/ workflow (temperloop#1321/#1490): T8 in particular"
+  echo "  copies the repo's OWN real CHANGELOG.md as a non-toy fixture, which"
+  echo "  a checkout with no such file cannot provide. A vendoring consumer"
+  echo "  repo may not use this workflow at its own root at all."
+  echo "  Exiting 0 (legible skip, not a failure)."
+  exit 0
+fi
+
 # shellcheck source=../../workflows/scripts/lib/changelog.sh
 source "$REPO_ROOT/workflows/scripts/lib/changelog.sh"
 

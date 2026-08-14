@@ -204,7 +204,24 @@ mkmirror() {
   mkdir -p "$dest/workflows/scripts/report-producers" "$dest/workflows/scripts/config"
   cp "$PRODUCER" "$dest/workflows/scripts/report-producers/model-comparison"
   chmod +x "$dest/workflows/scripts/report-producers/model-comparison"
-  cp -R "$MC_DIR" "$dest/workflows/scripts/model-comparison"
+  # `-L` (dereference): in a composed overlay tree that vendors this kernel
+  # as a subtree, individual files under model-comparison/ can be RELATIVE
+  # symlinks into the vendored kernel/ copy (e.g. foundation: .../model-
+  # comparison/stats.sh -> ../../../kernel/workflows/scripts/model-
+  # comparison/stats.sh). A plain `cp -R` preserves a symlink AS a symlink
+  # rather than copying its target's content, so once this mirror lands in
+  # an unrelated scratch dir with no kernel/ sibling at the right relative
+  # depth, that symlink goes dangling — the mirrored stats.sh then resolves
+  # to nothing, the producer's own defensive "comparison-statistics library
+  # is missing" skip fires, and the suite's mutation assertions fail before
+  # ever reaching the mutated code (verified: reproducing this exact
+  # relative-symlink + cp -R + relocate sequence produces a dangling link;
+  # `cp -RL` copies the real content and resolves correctly regardless of
+  # relocation). `-L` is a no-op when $MC_DIR is already real files (the
+  # kernel's own checkout), so this keeps the suite's mutation coverage LIVE
+  # for a vendoring consumer instead of it silently degrading before the
+  # mutated code is ever reached (temperloop#1490).
+  cp -RL "$MC_DIR" "$dest/workflows/scripts/model-comparison"
   cp "$SCRIPTS_DIR/config/default-pricing.json" "$dest/workflows/scripts/config/default-pricing.json"
   ln -s "$SCRIPTS_DIR/build" "$dest/workflows/scripts/build"
   ln -s "$SCRIPTS_DIR/lib" "$dest/workflows/scripts/lib"

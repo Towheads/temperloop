@@ -29,8 +29,35 @@
 
 set -uo pipefail
 
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 SCRIPT="$REPO/workflows/scripts/validate-onramp-anchors.sh"
+
+# ---------------------------------------------------------------------------
+# Self-scoping (temperloop#1490) — MUST run before anything else. Case 1
+# below (and new_fixture(), which every other case builds on) copies THIS
+# repo's OWN real onramp anchor files (bin/temperloop, README.md, bin/
+# README.md, docs/features/install-cli.md) as a representative, non-toy
+# fixture base, and case 1 asserts those real files agree with the registry
+# TODAY. A repo that vendors this kernel as a subtree is not itself an
+# adopter-facing kernel product (see validate-onramp-anchors.sh's own
+# self-scoping check, which this suite's SCRIPT invocation would otherwise
+# just be exercising the SKIP path of, uselessly, case by case) — its root
+# does not carry ADR 0024's onramp narrative, so `new_fixture` has nothing
+# real to copy. Reuses the shared detection helper (workflows/scripts/tests/
+# lib/sandbox.sh's sandbox_skip_if_composed_tree, temperloop#267/#488)
+# rather than reinventing it — same shape test_install_lifecycle.sh and its
+# siblings already use.
+# shellcheck source=lib/sandbox.sh
+source "$HERE/lib/sandbox.sh"
+sandbox_skip_if_composed_tree "test_validate_onramp_anchors.sh" "$REPO" \
+  "its fixture helper (new_fixture) copies this repo's OWN real onramp anchor
+  files (bin/temperloop, README.md, bin/README.md, docs/features/install-
+  cli.md) as a representative, non-toy fixture base for every case — a
+  vendoring consumer's own root does not carry ADR 0024's kernel-product
+  onramp narrative (validate-onramp-anchors.sh self-scopes out of exactly
+  this for the same reason, temperloop#1490), so there is nothing real to
+  copy and every case would fail for a reason unrelated to anchor drift."
 
 pass=0
 fail=0

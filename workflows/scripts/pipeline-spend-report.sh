@@ -901,7 +901,23 @@ if [ -n "$by_agent_type" ]; then
   : >"$bat_allow_tsv"
   bat_agent_defs_dir="$REPO_ROOT/claude/agents"
   if [ -d "$bat_agent_defs_dir" ]; then
-    find "$bat_agent_defs_dir" -name '*.md' -print0 2>/dev/null \
+    # `-L`: in a composed overlay tree that vendors this kernel as a subtree
+    # (foundation, stageFind, ssmobile, subsetwiki), claude/agents is a
+    # compat SYMLINK into the vendored kernel/claude/agents (per CLAUDE.md's
+    # own agent-ownership convention) rather than a real directory. `[ -d ]`
+    # above dereferences that fine, but a bare `find DIR -name '*.md'`
+    # follows a symlinked STARTING-POINT ARGUMENT only on some find
+    # implementations, not others — verified: it does NOT on this repo's
+    # macOS/BSD dev shell (find silently returns zero results for a
+    # symlinked top-level dir with no -L), so every recognized_agent_
+    # definitions count silently collapsed to 0 there, which in turn
+    # nulled every BAT CORE seat assertion downstream. `-L` makes find
+    # dereference the starting point (and any symlinks it walks through)
+    # on every find implementation; it is a no-op when $bat_agent_defs_dir
+    # is already a real directory (the kernel's own checkout), so this
+    # keeps the gate LIVE for a vendoring consumer rather than self-scoping
+    # it away (temperloop#1490).
+    find -L "$bat_agent_defs_dir" -name '*.md' -print0 2>/dev/null \
       | xargs -0 -n1 basename 2>/dev/null \
       | sed 's/\.md$//' \
       | sort -u >"$bat_allow_tsv"
