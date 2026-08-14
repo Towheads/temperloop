@@ -63,6 +63,28 @@
 #                              AGENT_STALE     loaded, but its heartbeat marker
 #                                              is older than its cadence (no
 #                                              successful run within cadence)
+#                              AGENT_CHECKOUT_BEHIND:<dir>
+#                                              the plist's declared
+#                                              WorkingDirectory resolves to a
+#                                              git checkout whose HEAD is
+#                                              behind the already-fetched
+#                                              origin/<default> (#1624: a
+#                                              merged fix can close its issue,
+#                                              move its board item to Done,
+#                                              and still never reach the
+#                                              nightly that actually runs
+#                                              from a stale checkout). Reuses
+#                                              _behind_origin_default — the
+#                                              same default_branch_of ->
+#                                              merge-base --is-ancestor
+#                                              mechanism BEHIND_MAIN uses
+#                                              below, never a fetch. FAIL-OPEN:
+#                                              an absent WorkingDirectory key,
+#                                              a non-existent path, or a path
+#                                              that isn't a git checkout prints
+#                                              nothing ("can't verify") rather
+#                                              than a crash or a false BEHIND
+#                                              claim — see classify_agent_checkout.
 #                            Non-drift (informational):
 #                              EXPECTED_ELSEWHERE  declared, but this host does
 #                                              not own the agent (not installed
@@ -470,10 +492,42 @@ _pr_state_of() {
   esac
 }
 
+# ── _behind_origin_default <repo> ─────────────────────────────────────────────
+# Prints 'true' when <repo>'s current HEAD is checked out on its default
+# branch AND is a strict ancestor of the already-fetched origin/<default> —
+# i.e. genuinely behind. Prints 'false' for every other case, INCLUDING every
+# can't-tell case (not a git repo, no default branch resolvable, no
+# origin/<default> ref on disk yet, detached HEAD, HEAD on a non-default
+# branch): the caller treats 'false' as "no evidence of drift", exactly the
+# fail-open posture this block had inline (in classify_cron_checkout) before
+# it was extracted here so classify_agent_checkout could reuse the identical
+# mechanism rather than reimplementing it (#1624). NEVER fetches — compares
+# only against whatever remote-tracking ref is already on disk. Always exits
+# 0 — a print-only helper like semver_ge above; callers test the printed
+# value, never $?.
+_behind_origin_default() {
+  local repo="$1" branch default head origin_head
+  branch="$(current_branch_of "$repo")" || branch=""
+  default="$(default_branch_of "$repo")" || { printf 'false\n'; return 0; }
+  if [ -z "$branch" ] || [ "$branch" != "$default" ]; then
+    printf 'false\n'
+    return 0
+  fi
+  head="$(git -C "$repo" rev-parse HEAD 2>/dev/null)" || { printf 'false\n'; return 0; }
+  git -C "$repo" show-ref --verify --quiet "refs/remotes/origin/$default" || { printf 'false\n'; return 0; }
+  origin_head="$(git -C "$repo" rev-parse "origin/$default" 2>/dev/null)" || origin_head=""
+  if [ -n "$origin_head" ] && [ "$head" != "$origin_head" ] \
+    && git -C "$repo" merge-base --is-ancestor "$head" "origin/$default" 2>/dev/null; then
+    printf 'true\n'
+  else
+    printf 'false\n'
+  fi
+}
+
 # ── classify_cron_checkout <repo> ─────────────────────────────────────────────
 # Prints zero or more space-separated class tokens (empty = OK).
 classify_cron_checkout() {
-  local repo="$1" classes="" branch default head origin_head
+  local repo="$1" classes="" branch default
   [ -d "$repo" ] || { printf 'ABSENT'; return 0; }
   is_git_repo "$repo" || { printf 'NOT_A_REPO'; return 0; }
 
@@ -488,15 +542,8 @@ classify_cron_checkout() {
     classes="${classes}ON_BRANCH:(detached) "
   elif [ "$branch" != "$default" ]; then
     classes="${classes}ON_BRANCH:${branch} "
-  else
-    head="$(git -C "$repo" rev-parse HEAD 2>/dev/null)" || head=""
-    if [ -n "$head" ] && git -C "$repo" show-ref --verify --quiet "refs/remotes/origin/$default"; then
-      origin_head="$(git -C "$repo" rev-parse "origin/$default" 2>/dev/null)" || origin_head=""
-      if [ -n "$origin_head" ] && [ "$head" != "$origin_head" ] \
-        && git -C "$repo" merge-base --is-ancestor "$head" "origin/$default" 2>/dev/null; then
-        classes="${classes}BEHIND_MAIN "
-      fi
-    fi
+  elif [ "$(_behind_origin_default "$repo")" = "true" ]; then
+    classes="${classes}BEHIND_MAIN "
   fi
 
   printf '%s' "$classes"
@@ -697,6 +744,33 @@ _plist_extract_key() {
   ' "$plist" 2>/dev/null || true
 }
 
+# ── classify_agent_checkout <plist> ───────────────────────────────────────────
+# Prints AGENT_CHECKOUT_BEHIND:<dir> when <plist>'s declared WorkingDirectory
+# resolves to a git checkout that is behind the already-fetched
+# origin/<default> (#1624). Reuses _behind_origin_default — the exact
+# default_branch_of -> merge-base --is-ancestor mechanism classify_cron_checkout
+# uses for BEHIND_MAIN — rather than reimplementing the comparison.
+#
+# FAIL-OPEN, silently, on every uncertain case: an absent WorkingDirectory key,
+# a path that doesn't exist, or a path that isn't a git checkout each print
+# nothing ("can't verify") — never a crash, never a false BEHIND claim. This
+# mirrors classify_agent's own freshness-unknown convention for a marker-less
+# agent: silence folds into the report's OK row rather than asserting a verdict
+# on evidence we don't have.
+classify_agent_checkout() {
+  local plist="$1" wd
+  wd="$(_plist_extract_key "$plist" WorkingDirectory)"
+  [ -n "$wd" ] || { printf ''; return 0; }
+  [ -d "$wd" ] || { printf ''; return 0; }
+  is_git_repo "$wd" || { printf ''; return 0; }
+  if [ "$(_behind_origin_default "$wd")" = "true" ]; then
+    printf 'AGENT_CHECKOUT_BEHIND:%s' "$wd"
+  else
+    printf ''
+  fi
+  return 0
+}
+
 # ── Host-role ownership helpers (#531) ────────────────────────────────────────
 # _host_in_agent_hosts — true iff this host is in the explicit AGENT_HOSTS list.
 _host_in_agent_hosts() {
@@ -765,7 +839,7 @@ _this_host_owns_cron() {
 
 # ── classify_agent <plist> ────────────────────────────────────────────────────
 classify_agent() {
-  local plist="$1" label interval last_run age_s marker
+  local plist="$1" label interval last_run age_s marker classes=""
 
   label="$(_plist_extract_key "$plist" Label)"
   if [ -z "$label" ]; then
@@ -775,19 +849,29 @@ classify_agent() {
 
   # Host-role gate (#531): an agent this host does not own belongs to the agent host,
   # not here — report EXPECTED_ELSEWHERE (a non-drift class) rather than probing
-  # launchctl and false-flagging it AGENT_UNLOADED on a non-owning laptop.
+  # launchctl and false-flagging it AGENT_UNLOADED on a non-owning laptop. It also
+  # gates the checkout-currency check below: WorkingDirectory is a path on THIS
+  # host's filesystem, meaningful only when this host is the one actually running
+  # the agent from it.
   if ! _agent_owned_here "$plist"; then
     printf 'EXPECTED_ELSEWHERE:%s' "$label"
     return 0
   fi
 
+  # WorkingDirectory currency (#1624) — an axis independent of load/freshness
+  # state: a checkout can be behind whether the agent is loaded, unloaded, or
+  # stale, so this is computed unconditionally rather than nested under one of
+  # the exclusive early-returns below.
+  classes="$(classify_agent_checkout "$plist")"
+  [ -n "$classes" ] && classes="${classes} "
+
   if ! command -v launchctl >/dev/null 2>&1; then
-    printf ''   # fail-open: tool absent, no loaded-state verdict possible
+    printf '%s' "$classes"   # fail-open: tool absent, no loaded-state verdict possible
     return 0
   fi
 
   if ! _env_reconcile_launchctl list 2>/dev/null | awk '{print $3}' | grep -xF "$label" >/dev/null; then
-    printf 'AGENT_UNLOADED:%s' "$label"
+    printf '%sAGENT_UNLOADED:%s' "$classes" "$label"
     return 0
   fi
 
@@ -810,10 +894,10 @@ classify_agent() {
     # Stale once the last SUCCESSFUL run is older than one full cadence: a single
     # missed or silently-aborted cycle leaves the marker untouched and trips this.
     if [ "$age_s" -gt "$interval" ]; then
-      printf 'AGENT_STALE:%s' "$label"
+      printf '%sAGENT_STALE:%s' "$classes" "$label"
       return 0
     fi
-    printf ''
+    printf '%s' "$classes"
     return 0
   fi
 
@@ -822,8 +906,9 @@ classify_agent() {
   # from it — a false-STALE every run is noise, and the false-FRESH it used to
   # emit was the F#1170 blind spot. The loaded-state check above still catches an
   # UNLOADED agent; freshness for a marker-less agent is reported as unknown
-  # (nothing emitted) until it adopts the heartbeat. Fail-open.
-  printf ''
+  # (nothing emitted) until it adopts the heartbeat. Fail-open. $classes (e.g. an
+  # AGENT_CHECKOUT_BEHIND finding) still surfaces on its own independent axis.
+  printf '%s' "$classes"
 }
 
 # ── agent_status_by_label <label> ─────────────────────────────────────────────
@@ -1003,8 +1088,12 @@ while [ "$_i" -lt "${#LAUNCHD_DIRS[@]}" ]; do
           AGENT_LINES="${AGENT_LINES}  EXPECTED     $p  [${cls}]"$'\n'
           ;;
         *)
-          AGENT_LINES="${AGENT_LINES}  DRIFT        $p  [${cls}]"$'\n'
-          add "- ⚠️ launchd agent drift: $p — ${cls}" drift
+          # cls may carry a trailing space when classify_agent combined an
+          # AGENT_CHECKOUT_BEHIND token (its own field, always space-appended)
+          # with nothing after it — strip it (same convention as the operator-
+          # checkout emit site above) rather than print an empty trailing token.
+          AGENT_LINES="${AGENT_LINES}  DRIFT        $p  [${cls% }]"$'\n'
+          add "- ⚠️ launchd agent drift: $p — ${cls% }" drift
           ;;
       esac
     fi
