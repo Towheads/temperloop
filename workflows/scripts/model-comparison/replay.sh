@@ -1703,6 +1703,49 @@ cmd_execute() {
     return 1
   fi
 
+  # ── PRE-FLIGHT MODEL RESOLUTION (temperloop#1383) ────────────────────
+  # An explicit --model is already pinned. When it was OMITTED — the
+  # legitimate "run whatever this candidate session's own config selects"
+  # arm — the effective model must still be known BEFORE the spawn, because
+  # the envelope-derived route (`resolved_model` below, from the returned
+  # `modelUsage` block) does not exist on the failure paths this pins for:
+  # a vendor-error envelope returns before token extraction, and a
+  # candidate-timeout (SIGKILL) never produces an envelope at all. So a
+  # default-model spawn that fails either way had NO other route to a real
+  # model id — it fell back to the literal string 'unknown'.
+  #
+  # This mirrors, read-only, the CANDIDATE-SCOPED settings the spawned
+  # child actually runs under — and ONLY those. HERMETIC-SAFE by
+  # construction: it never reads the invoking host's user-global config
+  # (~/.claude/settings.json), because a test/fixture run must never have
+  # its records shaped by whoever happens to be running it (the
+  # environment-dependent-verdict class, cf. temperloop#1552 — an earlier
+  # HOME fallback here flipped test_replay_batch.sh's J2 mutation proof on
+  # any host whose personal config names a default model, while CI's clean
+  # runner passed). The sources, in the child's own precedence order:
+  #   1. the containment overlay candidate-session.sh spawns the child
+  #      under (`--settings` = ${CANDIDATE_SETTINGS:-candidate.settings.json},
+  #      same env seam, same default — a CLI-arg settings file outranks
+  #      project settings, and fixtures can pin it);
+  #   2. worktree-local, then worktree-project settings (files the
+  #      candidate worktree itself ships — part of the tree under test,
+  #      never host-personal state).
+  # A model the child would resolve ONLY from the host's user settings is
+  # deliberately left unresolved: 'unknown' stands, with the existing
+  # usage_source:unavailable disclosure, exactly like the other genuinely-
+  # unresolvable shapes. Scoped to the DEFAULT provider only: a
+  # non-default provider's model vocabulary belongs to that vendor, not
+  # this repo's claude settings, so it is left alone.
+  if [ -z "$model" ] && [ "$provider" = "$REPLAY_TRUSTED_DEFAULT_PROVIDER" ]; then
+    local _mr_src _mr_val
+    for _mr_src in "${CANDIDATE_SETTINGS:-$HERE/candidate.settings.json}" \
+                   "$wt/.claude/settings.local.json" "$wt/.claude/settings.json"; do
+      [ -n "$_mr_src" ] && [ -f "$_mr_src" ] || continue
+      _mr_val="$(jq -r '.model // empty' "$_mr_src" 2>/dev/null)"
+      if [ -n "$_mr_val" ]; then model="$_mr_val"; break; fi
+    done
+  fi
+
   # ── DISCLOSE BEFORE SENDING (ADR 0028 pairing) ───────────────────────
   # A non-default-provider send writes its disclosure-log entry FIRST, and a
   # failed disclosure refuses the send. The log may legitimately run ahead
@@ -1823,8 +1866,20 @@ cmd_execute() {
     # dropping it would understate the compatibility denominator. It is
     # attribution-only (usage_source unavailable): there are no tokens to
     # report, and emit-model-usage.sh forbids a provider value in that shape.
+    #
+    # $model is the PRE-FLIGHT-resolved value by this point (temperloop#1383)
+    # — an explicit --model, or the candidate session's resolved config
+    # default, resolved above before the spawn ever ran. `ea_model` only
+    # covers the genuinely-unresolvable remainder (a non-default provider, or
+    # no settings named a model anywhere): emit-model-usage.sh requires a
+    # non-empty --model, so the literal 'unknown' sentinel stands there,
+    # unchanged, computed as its own explicit step rather than folded into
+    # an inline default-substitution that read the same regardless of WHICH
+    # case produced it.
     if [ -x "$EMIT_MODEL_USAGE_SH" ]; then
-      local -a ea=(--seat "$REPLAY_CANDIDATE_SEAT" --model "${model:-unknown}" \
+      local ea_model="$model"
+      [ -n "$ea_model" ] || ea_model="unknown"
+      local -a ea=(--seat "$REPLAY_CANDIDATE_SEAT" --model "$ea_model" \
                    --usage-source unavailable --outcome-ref "$item_ref" --duration-ms "$measured_ms")
       [ -n "$owner_repo" ] && ea+=(--repo "$owner_repo")
       "$EMIT_MODEL_USAGE_SH" "${ea[@]}" >/dev/null 2>&1 || true
