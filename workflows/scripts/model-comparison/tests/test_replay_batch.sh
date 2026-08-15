@@ -64,6 +64,12 @@
 #      resume re-drives them; and an isolated failure below the threshold, or
 #      a run of errors whose STAGE keeps changing, still runs to completion
 #      (+ MUTATION PROOF that disarming the breaker runs the whole corpus out)
+#   M  COUNTERBALANCED ARM ORDER (temperloop#1571) — arm is no longer
+#      confounded with execution position: the baseline arm runs first on
+#      exactly half a 6-record corpus, every leg records its position, the
+#      assignment is reproducible from the recorded rule+seed alone, and no
+#      unaudited fixed-order arm loop can be reintroduced (+ MUTATION PROOF
+#      that a driver reverted to fixed order FAILS the same predicate)
 #   L  the suite-wide no-live-call canary verdict
 #
 # Usage: bash workflows/scripts/model-comparison/tests/test_replay_batch.sh
@@ -514,11 +520,15 @@ count
 MUT_C="$WORK/mut-onearm"; mk_mirror "$MUT_C"
 MUT_C_SUT="$MUT_C/workflows/scripts/model-comparison/batch.sh"
 unlink_and_copy "$MUT_C_SUT"
+# The execute loop iterates the COUNTERBALANCED pair (temperloop#1571), so
+# the one-arm mutation pins it to the baseline arm literal — the same
+# baseline-only batch this proof has always forced, expressed against the
+# loop's current shape.
 mutate_file "$MUT_C_SUT" \
-  '    for arm in "$BATCH_ARM_BASELINE" "$BATCH_ARM_CANDIDATE"; do
-      local leg_key leg_rec leg_state' \
+  '    for arm in "$arm_first" "$arm_second"; do
+      arm_pos=$((arm_pos + 1))' \
   '    for arm in "$BATCH_ARM_BASELINE"; do
-      local leg_key leg_rec leg_state'
+      arm_pos=$((arm_pos + 1))'
 MUT_C_OUT="$WORK/out-mut-c"; MUT_C_STATE="$WORK/state-mut-c"
 DRIVE_ARGS=(--corpus-file "$CORPUS_A" --repo-root "$REPO" --out-dir "$MUT_C_OUT" --state-dir "$MUT_C_STATE"
             --baseline-runner "bash $BASE_STUB" --candidate-runner "bash $CAND_STUB" --confirm)
@@ -1257,16 +1267,19 @@ drive "" MODEL_COMPARISON_BATCH_MAX_CONSECUTIVE_STAGE_ERRORS=2
   || fail "K5: a stage-blind counter would have tripped here; the breaker must key on the stage: $(jq -c .circuit_breaker <<<"$OUT")"
 [ "$(jq -r '.legs.integration_error_n' <<<"$OUT")" = "6" ] \
   || fail "K5: all 6 legs are integration errors, just not of the same stage: $(jq -c .legs <<<"$OUT")"
-# The driver runs baseline-then-candidate per record and the stub alternates on
-# its own call index, so the EXECUTED sequence really is spawn, parse, spawn,
-# parse, spawn, parse — one arm ends up holding every candidate-spawn and the
-# other every envelope-parse. Assert that shape rather than assume it: if the
-# fixture ever stopped alternating leg by leg, K5 would be a tautology.
-mx_base_stages="$(jq -r '.candidate.integration_error.stage' <"$MX_OUT/baseline.jsonl" | sort -u | tr '\n' ',')"
-mx_cand_stages="$(jq -r '.candidate.integration_error.stage' <"$MX_OUT/candidate.jsonl" | sort -u | tr '\n' ',')"
-{ [ "$mx_base_stages" = "candidate-spawn," ] && [ "$mx_cand_stages" = "envelope-parse," ]; } \
-  || fail "K5: the fixture did not actually alternate stages leg by leg, so this proves nothing: baseline=$mx_base_stages candidate=$mx_cand_stages"
-ok "K5 six CONSECUTIVE integration errors of ALTERNATING stage (${mx_base_stages}${mx_cand_stages}) never trip a threshold of 2 — the streak keys on the STAGE, which a stage-blind counter would have stopped at leg 2"
+# The stub alternates on its own call index, so the EXECUTED sequence really is
+# spawn, parse, spawn, parse, spawn, parse. Assert that shape rather than
+# assume it: if the fixture ever stopped alternating leg by leg, K5 would be a
+# tautology. The sequence is reconstructed from the records' OWN recorded
+# execution order (temperloop#1571's `execution_order.record_index` +
+# `.position`), never from the arm names — since counterbalancing the arm order
+# means "baseline" is no longer a synonym for "ran first".
+mx_seq="$(jq -s -r 'sort_by(.execution_order.record_index, .execution_order.position)
+                    | map(.candidate.integration_error.stage) | join(",")' \
+            "$MX_OUT/baseline.jsonl" "$MX_OUT/candidate.jsonl" 2>/dev/null)"
+[ "$mx_seq" = "candidate-spawn,envelope-parse,candidate-spawn,envelope-parse,candidate-spawn,envelope-parse" ] \
+  || fail "K5: the fixture did not actually alternate stages leg by leg, so this proves nothing: executed stage sequence = $mx_seq"
+ok "K5 six CONSECUTIVE integration errors of ALTERNATING stage (${mx_seq}) never trip a threshold of 2 — the streak keys on the STAGE, which a stage-blind counter would have stopped at leg 2"
 
 # K6 — MUTATION PROOF. Disarm the breaker (its own documented 0 value) and the
 #      very same unconditionally-failing runner runs the whole corpus out and
@@ -1410,6 +1423,200 @@ case "$conf_detail" in
   *) fail "S6: the confirmation line does not say the per-replay figure is unmeasured on this host: $conf_detail" ;;
 esac
 ok "S6 the operator confirmation line names where the per-replay figure came from"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SECTION M — COUNTERBALANCED ARM ORDER (temperloop#1571).
+#
+# Until this item the driver ran the arms in ONE fixed order on every record —
+# baseline first, candidate second — so ARM was perfectly confounded with
+# EXECUTION POSITION and no N could separate them. The K#1262 A/A validation
+# run, whose true arm effect is ZERO by construction, still showed a
+# consistent second-arm advantage; the mechanism is an open question, and
+# nothing here asserts one. Balancing the order removes the confound whatever
+# the cause.
+#
+# Five properties, each MEASURED over a real 6-record fixture batch:
+#   M1  the split is ~half and half, and it is a RULE rather than a coin flip:
+#       the baseline arm runs first on exactly 3 of 6 records
+#   M2  every leg carries its EXECUTION POSITION, and the baseline arm's
+#       positions are no longer all 1 — which is the confound itself, gone
+#   M3  the assignment is REPRODUCIBLE from the recorded rule + seed alone
+#       (re-derived here from those two fields), and a resume reproduces it
+#       without re-spending a leg
+#   M4  MUTATION PROOF — a driver reverted to fixed order fails the very same
+#       predicate M1/M2 pass, so those checks are a measurement rather than a
+#       restatement of what the code happens to do
+#   M5  no UNAUDITED fixed-order arm loop can be reintroduced silently
+# ═══════════════════════════════════════════════════════════════════════════
+
+# CORPUS_ORDER — 6 eligible records. Even N so a correct counterbalance is an
+# EXACT 3/3 rather than a near miss, which makes a wrong split unmissable.
+CORPUS_ORDER="$WORK/corpus-order.jsonl"
+{ mk_corpus_line 601 eligible "$BASE"
+  mk_corpus_line 602 eligible "$BASE"
+  mk_corpus_line 603 eligible "$BASE"
+  mk_corpus_line 604 eligible "$BASE"
+  mk_corpus_line 605 eligible "$BASE"
+  mk_corpus_line 606 eligible "$BASE"; } >"$CORPUS_ORDER"
+
+# assert_counterbalanced <summary-json> <out-dir> — THE predicate M1/M2 assert
+# and M4 mutates against. Returns 0 when arm order is genuinely counterbalanced
+# and every leg carries a position; non-zero, with a reason on stdout, when it
+# is not. Written as one reusable predicate on purpose: a mutation proof that
+# runs a DIFFERENT check than the passing test proves nothing about that test.
+assert_counterbalanced() {
+  local summary="$1" outdir="$2" n bf cf cb reason a
+  # `tostring`, never the `//` operator: jq treats a genuine `false` (and a
+  # genuine 0) as absent, so `// "null"` would report a driver that correctly
+  # said `counterbalanced: false` as if the field were missing — and M4's
+  # failure reason would name the wrong defect.
+  n="$(jq -r '.arm_order.records_n | tostring' <<<"$summary" 2>/dev/null)"
+  bf="$(jq -r '.arm_order.baseline_first_n | tostring' <<<"$summary" 2>/dev/null)"
+  cf="$(jq -r '.arm_order.candidate_first_n | tostring' <<<"$summary" 2>/dev/null)"
+  cb="$(jq -r '.arm_order.counterbalanced | tostring' <<<"$summary" 2>/dev/null)"
+  [ "$cb" = "true" ] || { echo "arm_order.counterbalanced is '$cb', not true"; return 1; }
+  [ "$n" = "6" ] || { echo "arm_order.records_n is '$n', not 6"; return 1; }
+  [ "$bf" = "3" ] || { echo "the baseline arm ran first on $bf of 6 records, not 3 — the split is not half and half"; return 1; }
+  [ "$cf" = "3" ] || { echo "the candidate arm ran first on $cf of 6 records, not 3"; return 1; }
+  # THE CONFOUND ITSELF: under the old fixed order every baseline leg was also
+  # a first leg. Counterbalanced, the baseline arm must hold BOTH positions.
+  for a in baseline candidate; do
+    reason="$(jq -s -r --arg arm "$a" '
+      [.[] | .execution_order.position] as $pos
+      | if ($pos | length) != 6 then "the \($arm) arm has \($pos | length) positioned leg(s), not 6"
+        elif ($pos | map(select(. == 1)) | length) != 3 then "the \($arm) arm ran FIRST on \($pos | map(select(. == 1)) | length) records, not 3 — arm is still a proxy for position"
+        elif ($pos | map(select(. == 2)) | length) != 3 then "the \($arm) arm ran SECOND on \($pos | map(select(. == 2)) | length) records, not 3"
+        else "" end' <"$outdir/$a.jsonl" 2>/dev/null)"
+    [ -z "$reason" ] || { echo "$reason"; return 1; }
+  done
+  return 0
+}
+
+ORD_OUT="$WORK/out-order"; ORD_STATE="$WORK/state-order"
+: >"$CAND_LOG"
+DRIVE_ARGS=(--corpus-file "$CORPUS_ORDER" --repo-root "$REPO" --out-dir "$ORD_OUT" --state-dir "$ORD_STATE"
+            --baseline-runner "bash $BASE_STUB" --candidate-runner "bash $CAND_STUB" --confirm)
+drive ""
+ORD_OUTPUT="$OUT"
+[ "$RC" -eq 0 ] || fail "M-setup: the 6-record counterbalance batch should exit 0, got $RC: $(head -c 600 "$WORK/last-stderr.txt")"
+
+# M1 — the split is an exact 3/3, and it is stated in the summary rather than
+#      left for a reader to infer from the leg records.
+count
+ord_reason="$(assert_counterbalanced "$ORD_OUTPUT" "$ORD_OUT")" \
+  || fail "M1: the batch was not counterbalanced: $ord_reason / $(jq -c .arm_order <<<"$ORD_OUTPUT")"
+[ "$(jq -r '.arm_order.rule' <<<"$ORD_OUTPUT")" = "counterbalanced-by-record-index-v1" ] \
+  || fail "M1: the summary must NAME the rule it counterbalanced under: $(jq -c .arm_order <<<"$ORD_OUTPUT")"
+jq -e '.arm_order.balance_detail | type == "string" and (length > 40)' <<<"$ORD_OUTPUT" >/dev/null \
+  || fail "M1: the realized balance must be STATED, never a bare flag: $(jq -c .arm_order <<<"$ORD_OUTPUT")"
+[ "$(jq -r '[.arm_order.per_record[].first_arm] | join(",")' <<<"$ORD_OUTPUT")" \
+  = "baseline,candidate,baseline,candidate,baseline,candidate" ] \
+  || fail "M1: the per-record assignment is not the alternating rule: $(jq -c '[.arm_order.per_record[].first_arm]' <<<"$ORD_OUTPUT")"
+ok "M1 over 6 records the baseline arm runs FIRST on exactly 3 and SECOND on 3 — a rule-guaranteed half-and-half split, named in the summary"
+
+# M2 — the position rides on the LEG RECORD, which is what the report producer
+#      reads. A split that never reached the records would be unmeasurable
+#      downstream, so this asserts the field travels with the measurement.
+count
+[ "$(jq -s -r 'map(.execution_order.position) | sort | join(",")' <"$ORD_OUT/baseline.jsonl")" \
+  = "1,1,1,2,2,2" ] \
+  || fail "M2: the baseline arm's recorded positions are not 3x first / 3x second: $(jq -s -c 'map(.execution_order.position)' <"$ORD_OUT/baseline.jsonl")"
+# Within EVERY record the two arms hold DIFFERENT positions, and the per-leg
+# field agrees with the summary's own per-record ledger — the two surfaces
+# cannot disagree about which arm ran first.
+ord_i=1
+while [ "$ord_i" -le 6 ]; do
+  pos_b="$(jq -r --argjson i "$ord_i" 'select(.execution_order.record_index == $i) | .execution_order.position' <"$ORD_OUT/baseline.jsonl")"
+  pos_c="$(jq -r --argjson i "$ord_i" 'select(.execution_order.record_index == $i) | .execution_order.position' <"$ORD_OUT/candidate.jsonl")"
+  led_b="$(jq -r --argjson i "$ord_i" '.arm_order.per_record[] | select(.record_index == $i) | .positions.baseline' <<<"$ORD_OUTPUT")"
+  led_c="$(jq -r --argjson i "$ord_i" '.arm_order.per_record[] | select(.record_index == $i) | .positions.candidate' <<<"$ORD_OUTPUT")"
+  [ "$pos_b" != "$pos_c" ] \
+    || fail "M2: record $ord_i has both arms at position $pos_b — the two legs of a pair cannot share a position"
+  { [ "$pos_b" = "$led_b" ] && [ "$pos_c" = "$led_c" ]; } \
+    || fail "M2: record $ord_i's legs (baseline=$pos_b candidate=$pos_c) disagree with the summary ledger (baseline=$led_b candidate=$led_c)"
+  ord_i=$((ord_i + 1))
+done
+jq -s -e 'all(.[].execution_order.basis; type == "string" and (length > 40))' <"$ORD_OUT/candidate.jsonl" >/dev/null \
+  || fail "M2: every leg record must carry a stated basis for its position, never a bare number"
+ok "M2 every leg record carries its EXECUTION POSITION, the two arms differ within each record, and the per-leg field agrees with the summary ledger"
+
+# M3 — REPRODUCIBILITY, proved two ways: the recorded rule+seed re-derive the
+#      assignment here with no reference to the driver, and a resume reproduces
+#      it without re-spending a single leg.
+count
+ord_seed="$(jq -r '.arm_order.seed' <<<"$ORD_OUTPUT")"
+case "$ord_seed" in ''|*[!0-9]*) fail "M3: the summary must record an integer seed, got '$ord_seed'" ;; esac
+ord_i=1
+while [ "$ord_i" -le 6 ]; do
+  # The published rule, re-applied by hand: baseline first iff
+  # ((record_index + seed) % 2) == 1.
+  if [ $(( (ord_i + ord_seed) % 2 )) -eq 1 ]; then expect_first=baseline; else expect_first=candidate; fi
+  got_first="$(jq -r --argjson i "$ord_i" '.arm_order.per_record[] | select(.record_index == $i) | .first_arm' <<<"$ORD_OUTPUT")"
+  [ "$got_first" = "$expect_first" ] \
+    || fail "M3: the recorded rule+seed do not reproduce the recorded assignment at record $ord_i (rule says $expect_first, summary says $got_first)"
+  ord_i=$((ord_i + 1))
+done
+ord_calls_before="$(wc -l <"$CAND_LOG" | tr -d ' ')"
+drive ""
+[ "$(wc -l <"$CAND_LOG" | tr -d ' ')" = "$ord_calls_before" ] \
+  || fail "M3: the resume re-spent legs — reproducibility must not cost a re-run"
+[ "$(jq -c '.arm_order.per_record' <<<"$OUT")" = "$(jq -c '.arm_order.per_record' <<<"$ORD_OUTPUT")" ] \
+  || fail "M3: a resume assigned a DIFFERENT arm order: $(jq -c '.arm_order.per_record' <<<"$OUT")"
+ok "M3 the recorded rule+seed re-derive the assignment independently, and a resume reproduces it byte-for-byte with 0 legs re-spent"
+
+# M4 — MUTATION PROOF. Revert the order rule to the pre-#1571 fixed order in a
+#      throwaway mirror and the SAME predicate M1/M2 pass must now FAIL —
+#      otherwise those checks assert nothing about counterbalancing.
+count
+MUT_M="$WORK/mut-order"; mk_mirror "$MUT_M"
+MUT_M_SUT="$MUT_M/workflows/scripts/model-comparison/batch.sh"
+unlink_and_copy "$MUT_M_SUT"
+mutate_file "$MUT_M_SUT" \
+  '    *) printf '"'"'%s %s'"'"' "$BATCH_ARM_CANDIDATE" "$BATCH_ARM_BASELINE" ;;' \
+  '    *) printf '"'"'%s %s'"'"' "$BATCH_ARM_BASELINE" "$BATCH_ARM_CANDIDATE" ;;'
+MUT_M_OUT="$WORK/out-mut-m"; MUT_M_STATE="$WORK/state-mut-m"
+DRIVE_ARGS=(--corpus-file "$CORPUS_ORDER" --repo-root "$REPO" --out-dir "$MUT_M_OUT" --state-dir "$MUT_M_STATE"
+            --baseline-runner "bash $BASE_STUB" --candidate-runner "bash $CAND_STUB" --confirm)
+drive "$MUT_M_SUT"
+[ "$RC" -eq 0 ] || fail "M4: the fixed-order mutant should still run to completion (that is the point — it looks fine), got $RC"
+if mut_m_reason="$(assert_counterbalanced "$OUT" "$MUT_M_OUT")"; then
+  fail "M4: the mutation proof did not fire — a FIXED-order driver passed the counterbalance predicate, so M1/M2 prove nothing: $(jq -c .arm_order <<<"$OUT")"
+fi
+[ "$(jq -r '.arm_order.baseline_first_n' <<<"$OUT")" = "6" ] \
+  || fail "M4: the fixed-order mutant should run the baseline first on all 6 records: $(jq -c .arm_order <<<"$OUT")"
+[ "$(jq -s -r 'map(.execution_order.position) | unique | join(",")' <"$MUT_M_OUT/baseline.jsonl")" = "1" ] \
+  || fail "M4: under a fixed order every baseline leg must sit at position 1 — that IS the confound"
+[ "$(jq -r '.arm_order.counterbalanced' <<<"$OUT")" = "false" ] \
+  || fail "M4: a fixed-order run must REPORT itself as not counterbalanced rather than stay silent: $(jq -c .arm_order <<<"$OUT")"
+case "$(jq -r '.arm_order.balance_detail' <<<"$OUT")" in
+  *CONFOUNDED*) : ;;
+  *) fail "M4: a fixed-order run must NAME the confound in its summary: $(jq -r '.arm_order.balance_detail' <<<"$OUT")" ;;
+esac
+ok "M4 MUTATION PROOF: reverting to fixed order FAILS the same predicate M1/M2 pass ($mut_m_reason) and the summary says CONFOUNDED — the counterbalance checks are a measurement"
+
+# M5 — no unaudited fixed-order arm loop can be reintroduced silently. Only the
+#      EXECUTE loop's order can confound a result; every other arm loop in the
+#      driver does per-arm bookkeeping over already-terminal state and carries
+#      an ARM-ORDER AUDIT comment saying so. This check is what makes that a
+#      structural property rather than a convention someone remembers.
+count
+m5_unaudited=""
+while IFS=: read -r lineno _; do
+  [ -n "$lineno" ] || continue
+  # counterbalanced execute loop → fine; otherwise an ARM-ORDER AUDIT marker
+  # must appear in the 8 lines above it.
+  if sed -n "${lineno}p" "$SUT" | grep 'arm_first' >/dev/null; then continue; fi
+  if sed -n "$(( lineno > 8 ? lineno - 8 : 1 )),$(( lineno - 1 ))p" "$SUT" | grep 'ARM-ORDER AUDIT' >/dev/null; then continue; fi
+  m5_unaudited="$m5_unaudited $lineno"
+done <<EOF
+$(grep -n '^[[:space:]]*for arm in ' "$SUT")
+EOF
+[ -z "$m5_unaudited" ] \
+  || fail "M5: fixed-order arm loop(s) at line(s)$m5_unaudited carry no ARM-ORDER AUDIT marker — every arm loop must be either the counterbalanced execute loop or explicitly audited as executing nothing"
+m5_total="$(grep -c '^[[:space:]]*for arm in ' "$SUT")"
+[ "$m5_total" -ge 4 ] \
+  || fail "M5: expected at least 4 arm loops to audit in batch.sh, found $m5_total — this check may have stopped matching"
+ok "M5 all $m5_total arm loop(s) in batch.sh are either the counterbalanced execute loop or carry an ARM-ORDER AUDIT marker"
 
 # ═══════════════════════════════════════════════════════════════════════════
 # SECTION L — the suite-wide no-live-call verdict.

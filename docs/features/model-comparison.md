@@ -154,7 +154,30 @@ arms, judges each arm, and writes the two arm files the report producer reads.
 It orchestrates only: it derives no statistic and re-implements no scoring,
 judging, corpus selection or isolation.
 
-Eight properties are worth knowing before you run one:
+Nine properties are worth knowing before you run one:
+
+- **Arm order is counterbalanced, so arm is not confounded with position.**
+  The driver used to run the arms in one fixed order on every record —
+  baseline first, candidate second — which made ARM a perfect proxy for
+  EXECUTION POSITION: every baseline leg was also a first leg, so no sample
+  size could separate "the candidate model is cheaper" from "the second leg of
+  a pair is cheaper". That is not a theoretical worry. The K#1262 validation
+  run was an **A/A** comparison — the same model in both arms, so the true arm
+  effect is zero *by construction* — and the second arm still came out ahead
+  on 6 of 7 records (cache_creation −15.9%, duration −15.2%). Something real
+  attaches to position; **what** it is remains an open question (a
+  prompt-cache TTL story is one *hypothesis*, and nothing in this module
+  asserts it), and the fix does not depend on the answer. The order is now
+  assigned by a deterministic rule — the baseline arm runs first iff
+  `((record_index + seed) % 2) == 1` — so it lands half and half, and the
+  recorded rule and seed reproduce the assignment exactly. Counterbalancing
+  rather than randomization on purpose: at tens of records a coin flip can
+  hand you seven first-legs out of seven, while alternation *guarantees*
+  balance at every N. Each leg record carries an `execution_order` block with
+  its **position** (1 or 2), and the summary carries an `arm_order` block with
+  the rule, the seed, the realized balance and the per-record assignment — so
+  the effect of position can be **estimated** rather than assumed away
+  (temperloop#1571).
 
 - **The gate runs first, and consent is explicit.** Nothing is prepared or
   executed until pre-flight has returned a non-`stop` verdict *and* you have
@@ -327,6 +350,27 @@ against a flat-rate plan like Claude Max/Pro, which has no per-call dollar
 figure at all). These are not interchangeable units, and a report that
 didn't name which one it's using would let a reader silently compare
 apples to a subscription quota.
+
+**Arm order, and the order effect.** Because the batch driver counterbalances
+which arm runs first (see Batch driver above), the report can do more than
+hope the confound away — it can measure it. An `execution_order` block states
+whether the order was counterbalanced and publishes an **order-effect
+estimate beside the arm effect**, both in the same cost-weighted token units:
+the baseline-first and candidate-first halves of the corpus give two readings
+of the same paired delta under opposite orders, so `arm = (mean_A + mean_B)/2`
+and `order = (mean_A − mean_B)/2`. When the order effect turns out to be
+**comparable in magnitude** to the arm effect — the published
+`comparable_ratio` says at what fraction that starts — the report says
+outright that **the comparison is not clean** and names no winner, with the
+reason in `comparison.winner_withheld_reason`; the same holds when every
+record ran in the same order, where the order effect is not identifiable at
+all. This is a second, independent condition on the `winner` key: it can only
+withhold a winner the sample floor already allowed, never mint one, and the
+floor and the `inconclusive` behaviour are unchanged. A corpus whose records
+carry no position at all (anything replayed before counterbalancing existed)
+is reported as **unknown** rather than as not-clean — it discloses the gap and
+withholds nothing, because inventing a position would launder exactly the
+confound this measures (temperloop#1571).
 
 **Capability limits, stated plainly.** At the sample sizes a real repo can
 realistically supply — tens of replays per window, not thousands — this

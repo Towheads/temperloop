@@ -245,6 +245,21 @@ SEAT_EXCLUSIONS='[
   {"seats":["C1","C2","C3"],"reason":"the bin/ seats capture no envelope today (--output-format text); emit-feasible only once temperloop#1264 lands"}
 ]'
 
+# ── THE ORDER-EFFECT "COMPARABLE IN MAGNITUDE" RULE (temperloop#1571) ──────
+# The fraction of the arm effect at which the ESTIMATED ORDER EFFECT is big
+# enough that this report stops presenting a bare winner and says outright
+# that the comparison is not clean. A reporting RULE, not an operator knob —
+# published verbatim in the report beside the figures it governs, exactly as
+# FEASIBLE_SEAT_ROSTER above is, so a reader can re-apply it by hand instead
+# of taking the verdict on trust.
+#
+# 0.5 is deliberately generous to the reader rather than to the result: an
+# order effect at half the arm effect is already large enough that a slightly
+# different corpus, N, or imbalance could flip which arm looks better.
+# Withholding a winner there costs one run; naming one there costs a
+# model-routing decision made on a position artifact.
+ORDER_EFFECT_COMPARABLE_RATIO=0.5
+
 # ── scratch ────────────────────────────────────────────────────────────────
 TMPROOT="$(mktemp -d "${TMPDIR:-/tmp}/mc-report.XXXXXX")" || skip "could not create a scratch directory under ${TMPDIR:-/tmp}"
 trap 'rm -rf "$TMPROOT"' EXIT
@@ -320,12 +335,21 @@ jq -n \
   --argjson w_cc "$SPEND_WEIGHT_CACHE_CREATE" \
   --argjson w_out "$SPEND_WEIGHT_OUTPUT" \
   --argjson price_table "$price_table" \
+  --argjson order_ratio "$ORDER_EFFECT_COMPARABLE_RATIO" \
   --arg tz "$DISPLAY_TIMEZONE" '
 
   def refof:
     if (.pr // null) != null then "pr:\(.pr)"
     elif (.issue // null) != null then "issue:\(.issue)"
     else null end;
+
+  # The EXECUTION POSITION of this leg within its record'"'"'s pair — 1 if it
+  # ran first, 2 if it ran second — stamped by batch.sh (temperloop#1571).
+  # null on a record written before counterbalancing existed, or by a driver
+  # that does not stamp it: an ABSENT position is reported as un-estimable
+  # below, never defaulted to a number, because guessing a position is exactly
+  # how a confound gets laundered into a clean-looking figure.
+  def posof: (((.execution_order // {}).position) // null);
 
   # The SPEND_WEIGHT_* multiply-add, byte-for-byte emit-model-usage.sh'"'"'s
   # expression. null (never 0) when the record carries no token block: a
@@ -462,8 +486,81 @@ jq -n \
   | (($base + $cand) | map((.worktree // {}).prepared_at // null) | map(select(. != null)) | sort) as $prepared
   | (($base + $cand) | map(.pr // null) | map(select(. != null))) as $prs
   | (($base + $cand) | map(.template_sha // null) | map(select(. != null)) | unique) as $templates
+
+  # ── THE ORDER EFFECT (temperloop#1571) ─────────────────────────────────
+  # batch.sh counterbalances which arm runs FIRST on each record, so the two
+  # halves of the corpus give two independent readings of the same paired
+  # delta under OPPOSITE orders. With `order` = the effect of running in
+  # position 2 rather than position 1, and `arm` = candidate minus baseline:
+  #
+  #     records where baseline ran first:  mean(delta) = arm + order
+  #     records where candidate ran first: mean(delta) = arm - order
+  #
+  # so   arm   = (mean_A + mean_B) / 2      (the order effect cancels)
+  # and  order = (mean_A - mean_B) / 2      (the arm effect cancels)
+  #
+  # BOTH halves must be non-empty. With records in only one order the two
+  # equations collapse into one and the pair is unidentifiable — the honest
+  # answer there is "still confounded", not a number.
+  | ($base | map(select(refof != null and posof != null))
+           | map({key: refof, value: posof}) | from_entries) as $bpos
+  | ($cand | map(select(refof != null and posof != null))
+           | map({key: refof, value: posof}) | from_entries) as $cpos
+  | ([$refs[] | select((($bpos[.]) != null) and (($cpos[.]) != null))]) as $orefs
+  | ([$orefs[] | select(($bpos[.]) == 1 and ($cpos[.]) == 2)]) as $refs_base_first
+  | ([$orefs[] | select(($cpos[.]) == 1 and ($bpos[.]) == 2)]) as $refs_cand_first
+  | ([$refs_base_first[] | ($cm[.] - $bm[.])]) as $dA
+  | ([$refs_cand_first[] | ($cm[.] - $bm[.])]) as $dB
+  | (if ($dA | length) > 0 then (($dA | add) / ($dA | length)) else null end) as $mA
+  | (if ($dB | length) > 0 then (($dB | add) / ($dB | length)) else null end) as $mB
+  | (if $mA != null and $mB != null then ((($mA + $mB) / 2) | round1) else null end) as $arm_effect
+  | (if $mA != null and $mB != null then ((($mA - $mB) / 2) | round1) else null end) as $order_effect
+  | (($base + $cand) | map((.execution_order // {}).rule // null)
+                     | map(select(. != null)) | unique) as $order_rules
+  | (($base + $cand) | map((.execution_order // {}).seed // null)
+                     | map(select(. != null)) | unique) as $order_seeds
+  | (($orefs | length) > 0) as $positions_present
+  | (($refs_base_first | length) > 0 and ($refs_cand_first | length) > 0) as $counterbalanced
+  | (if $order_effect == null then null
+     elif ($order_effect | fabs) == 0 then false
+     elif ($arm_effect | fabs) == 0 then true
+     else (($order_effect | fabs) >= ($order_ratio * ($arm_effect | fabs))) end) as $order_comparable
+  | (if $positions_present | not then null
+     elif $counterbalanced | not then false
+     else ($order_comparable | not) end) as $comparison_is_clean
   | {
       arms: {baseline: ($base | armblock), candidate: ($cand | armblock)},
+
+      execution_order: {
+        basis: "ARM ORDER, and what it does to the arm effect. Before temperloop#1571 batch.sh ran the two arms in one FIXED order on every record — baseline first, candidate second — so ARM was perfectly confounded with EXECUTION POSITION and no N could separate them. The K#1262 A/A validation run, whose true arm effect is ZERO by construction, still showed a consistent second-arm advantage, so something real attaches to position; what that something is remains an open question and this block asserts no mechanism. batch.sh now counterbalances the order deterministically by record index, which is what makes the estimate below possible at all.",
+        estimator: "with `order` = the effect of running SECOND rather than first, and `arm` = candidate minus baseline: records whose BASELINE ran first give mean(delta) = arm + order, and records whose CANDIDATE ran first give mean(delta) = arm - order. So arm_effect = (mean_A + mean_B)/2 and order_effect = (mean_A - mean_B)/2, each in the same cost-weighted token units as the deltas. Both halves must be non-empty: with every record in one order the two equations collapse into one and neither term is identifiable.",
+        positions_recorded: $positions_present,
+        counterbalanced: (if $positions_present then $counterbalanced else null end),
+        rules_observed: $order_rules,
+        seeds_observed: $order_seeds,
+        baseline_first_n: ($refs_base_first | length),
+        candidate_first_n: ($refs_cand_first | length),
+        positioned_pairs_n: ($orefs | length),
+        unpositioned_pairs_n: (($refs | length) - ($orefs | length)),
+        mean_delta_baseline_first: ($mA | round1),
+        mean_delta_candidate_first: ($mB | round1),
+        arm_effect: $arm_effect,
+        order_effect: $order_effect,
+        comparable_ratio: $order_ratio,
+        comparable_rule: "the order effect counts as COMPARABLE IN MAGNITUDE to the arm effect when |order_effect| >= \($order_ratio) x |arm_effect| (or when the arm effect is zero and the order effect is not). The threshold is published here so a reader can re-apply it to the two figures above by hand rather than take this verdict on trust.",
+        order_effect_comparable_to_arm_effect: $order_comparable,
+        comparison_is_clean: $comparison_is_clean,
+        statement:
+          (if ($positions_present | not) then
+             "NOT ESTIMABLE: no paired record carries an execution position, so this report cannot tell which arm ran first on any record. These records predate counterbalancing (temperloop#1571) or were produced by a driver that does not stamp a position — read the arm effect below as possibly carrying an order effect of unknown size, not as a clean arm comparison."
+           elif ($counterbalanced | not) then
+             "THE COMPARISON IS NOT CLEAN: every paired record ran its arms in the SAME order (\($refs_base_first | length) baseline-first, \($refs_cand_first | length) candidate-first), so arm is still perfectly CONFOUNDED with execution position and the order effect is not identifiable at all. Whatever difference the arm figures show is arm-plus-position; it is not evidence about either model."
+           elif $order_comparable then
+             "THE COMPARISON IS NOT CLEAN: arm order was counterbalanced (\($refs_base_first | length) records baseline-first, \($refs_cand_first | length) candidate-first) and the estimated ORDER effect (\($order_effect)) is comparable in magnitude to the estimated ARM effect (\($arm_effect)) — at least \($order_ratio) of it. Position is doing as much work as the model here, so this run does not support a bare winner however the interval falls."
+           else
+             "arm order was COUNTERBALANCED across this corpus (\($refs_base_first | length) records ran the baseline first, \($refs_cand_first | length) ran the candidate first), so arm is not confounded with execution position. The estimated ORDER effect is \($order_effect) against an estimated ARM effect of \($arm_effect), in the same cost-weighted token units — small enough relative to the arm effect that the comparison reads as clean."
+           end)
+      },
 
       pairing: {
         basis: "one delta per merged outcome present in BOTH arms as a scored, token-bearing record: candidate cost minus baseline cost, in cost-weighted token units. A NEGATIVE delta means the candidate was cheaper. An outcome missing from either arm, or missing token counts in either arm, contributes no delta rather than a substituted one",
@@ -622,6 +719,27 @@ if [ "${below_floor:-}" = "false" ]; then
   esac
 fi
 
+# ── THE ORDER-EFFECT GATE ON THE WINNER (temperloop#1571) ─────────────────
+# A SECOND, INDEPENDENT condition on the same key, and deliberately not a
+# change to the first: the sample floor above is untouched, and this cannot
+# mint a winner the floor withheld — it can only withhold one the floor
+# allowed. When the comparison is not clean (every record ran in the same
+# order, so arm and position are still confounded; or the estimated order
+# effect is comparable in magnitude to the estimated arm effect), the report
+# SAYS SO and names no winner, rather than presenting a bare winner a reader
+# would take as a model fact. An UNKNOWN cleanliness (records that carry no
+# position at all — every pre-#1571 corpus) is not a failure and withholds
+# nothing; it is disclosed in execution_order.statement instead.
+comparison_clean="$(jq -r 'if (.execution_order.comparison_is_clean | type) == "boolean"
+                           then (.execution_order.comparison_is_clean | tostring) else "" end' \
+                     "$DERIVED" 2>/dev/null)"
+winner_withheld_reason='null'
+if [ "${comparison_clean:-}" = "false" ] && [ "$winner_json" != "null" ]; then
+  winner_withheld_reason="$(jq -c '.execution_order.statement' "$DERIVED" 2>/dev/null)"
+  [ -n "$winner_withheld_reason" ] || winner_withheld_reason='"the comparison is not clean: arm order and arm are not separable in this run"'
+  winner_json='null'
+fi
+
 # ── assemble the single JSON object ───────────────────────────────────────
 generated_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
@@ -642,6 +760,7 @@ report_json="$(jq -n \
   --argjson exclusions "$SEAT_EXCLUSIONS" \
   --argjson roster "$FEASIBLE_SEAT_ROSTER" \
   --argjson winner "$winner_json" \
+  --argjson winner_withheld_reason "$winner_withheld_reason" \
   --arg mde_stddev "$stddev_used" \
   --arg price_source "$price_table_source" \
   --arg price_as_of "$price_as_of" \
@@ -674,6 +793,19 @@ report_json="$(jq -n \
   | (if $coverage != null then
        "\($coverage.coverage_pct)% (\($coverage.observed_seats) of \($coverage.feasible_seats) emit-feasible seats observed)"
      else "unavailable" end) as $coverage_phrase
+
+  # The one-line arm-order phrase for the human `notice` channel
+  # (temperloop#1571) — counterbalancing is stated on EVERY run, flattering or
+  # not, exactly like the four honesty disclosures above it.
+  | (if ($d.execution_order.positions_recorded | not) then
+       "NOT RECORDED (pre-counterbalancing records — the arm effect may carry an order effect of unknown size)"
+     elif ($d.execution_order.counterbalanced | not) then
+       "NOT COUNTERBALANCED — every paired record ran the same arm first, so arm and execution position are still confounded"
+     elif ($d.execution_order.order_effect_comparable_to_arm_effect) then
+       "counterbalanced (\($d.execution_order.baseline_first_n) baseline-first / \($d.execution_order.candidate_first_n) candidate-first), but the estimated order effect \($d.execution_order.order_effect) is COMPARABLE to the arm effect \($d.execution_order.arm_effect) — THIS COMPARISON IS NOT CLEAN"
+     else
+       "counterbalanced (\($d.execution_order.baseline_first_n) baseline-first / \($d.execution_order.candidate_first_n) candidate-first); estimated order effect \($d.execution_order.order_effect) vs arm effect \($d.execution_order.arm_effect)"
+     end) as $order_phrase
 
   | {
       schema_version: "model-comparison-report-v1",
@@ -718,6 +850,7 @@ report_json="$(jq -n \
 
       corpus_window: $d.corpus_window,
       gate_versions: $d.gate_versions,
+      execution_order: $d.execution_order,
 
       arms: {
         baseline: ($d.arms.baseline + {quality: $agg_base.quality, compatibility: $agg_base.compatibility}),
@@ -767,10 +900,26 @@ report_json="$(jq -n \
           margin_of_error_note: "the CI half-width, NOT a detectability threshold — a true effect exactly this size is detected only about half the time, which is why `mde` above (roughly 43% larger at 80% power) is the number to size a comparison against"
         },
         statistics_unavailable_reason: $stats_reason,
+        # THE ORDER-EFFECT DISCLOSURE, carried inside `comparison` beside the
+        # figures it qualifies rather than only at the top level, so a reader
+        # who reads only this block still sees whether arm and execution
+        # position were separable in this run (temperloop#1571).
+        arm_order_counterbalanced: $d.execution_order.counterbalanced,
+        arm_order_positions_recorded: $d.execution_order.positions_recorded,
+        order_effect: $d.execution_order.order_effect,
+        order_effect_vs_arm_effect: {
+          arm_effect: $d.execution_order.arm_effect,
+          order_effect: $d.execution_order.order_effect,
+          comparable_ratio: $d.execution_order.comparable_ratio,
+          comparable: $d.execution_order.order_effect_comparable_to_arm_effect
+        },
+        comparison_is_clean: $d.execution_order.comparison_is_clean,
+        order_effect_disclosure: $d.execution_order.statement,
+        winner_withheld_reason: $winner_withheld_reason,
         transferability: "a verdict from this repo'"'"'s own replay corpus does NOT transfer to another pipeline, another repo'"'"'s issue mix, or another prompt shape — it measures these seats doing this repo'"'"'s work, not either model in general"
       } | if $winner == null then . else . + {winner: $winner} end),
 
-      notice: ("model-comparison report — cost basis: cost-weighted TOKEN COUNTS (not metered dollars, not a subscription-usage share; \($staleness)); emit coverage: \($coverage_phrase); corpus: \($d.corpus_window.records_n) records, \($d.pairing.paired_outcomes_n) paired outcomes, \($d.gate_versions.distinct_n) distinct gate version(s); verdict: \(if $verdict != null then $verdict.verdict else "inconclusive" end)\(if $winner == null then " (no winner named)" else " — winner: \($winner)" end). \($mde_disclosure)")
+      notice: ("model-comparison report — cost basis: cost-weighted TOKEN COUNTS (not metered dollars, not a subscription-usage share; \($staleness)); emit coverage: \($coverage_phrase); corpus: \($d.corpus_window.records_n) records, \($d.pairing.paired_outcomes_n) paired outcomes, \($d.gate_versions.distinct_n) distinct gate version(s); arm order: \($order_phrase); verdict: \(if $verdict != null then $verdict.verdict else "inconclusive" end)\(if $winner == null then " (no winner named)" else " — winner: \($winner)" end). \($mde_disclosure)\(if $winner_withheld_reason == null then "" else " NO WINNER IS NAMED, and the sample floor is not why: \($winner_withheld_reason)" end)")
     }' 2>/dev/null)" || skip "could not assemble the comparison report object — refusing to emit a partial one"
 
 [ -n "$report_json" ] || skip "the comparison report object came back empty — refusing to emit nothing dressed as a report"

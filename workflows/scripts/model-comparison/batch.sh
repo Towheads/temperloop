@@ -147,6 +147,62 @@
 # systemically unavailable" are different statements, and this file keeps
 # them apart the same way it keeps CANNOT_EVALUATE apart from BATCH_COMPLETE.
 #
+# ── ARM ORDER IS COUNTERBALANCED, NOT FIXED (temperloop#1571) ─────────────
+# Until this item, this driver ran the two arms in ONE fixed order inside the
+# per-record loop: baseline first, candidate second, on every record. That
+# makes ARM perfectly confounded with EXECUTION POSITION — every baseline leg
+# is also a first leg and every candidate leg is also a second leg, so no
+# amount of N can separate "the candidate model is cheaper" from "the second
+# leg of a pair is cheaper". A comparison in that shape cannot answer the
+# question it exists to answer.
+#
+# It is not hypothetical. The K#1262 validation run was an A/A comparison —
+# the SAME model in both arms, so the true arm effect is zero BY
+# CONSTRUCTION — and the second arm still came out ahead on 6 of 7 records
+# (cache_creation -15.9%, duration -15.2%). Something real is attached to
+# position. WHAT that something is remains an open question: a prompt-cache
+# TTL story is one HYPOTHESIS and this file does not assert it, because the
+# fix does not depend on the mechanism. Whatever the cause, balancing the
+# order removes the confound.
+#
+# THE RULE, and why it is counterbalancing rather than randomization:
+#
+#     baseline runs FIRST on a record iff ((record_index + seed) % 2) == 1,
+#     over the 1-based selection-order record index.
+#
+# Deterministic, so a re-run of the same selection reproduces the same
+# assignment exactly; and it GUARANTEES balance at every N rather than
+# achieving it in expectation, which is what matters at the tens-of-records
+# sample sizes this module actually runs. A coin flip per record can hand you
+# 7 baseline-firsts out of 7; this cannot.
+#
+# WHAT IS RECORDED, so the effect can be ESTIMATED rather than merely hoped
+# away:
+#   * every leg record carries an `execution_order` block — its `position`
+#     (1 or 2), the `first_arm` for that record, and the `rule`/`seed` that
+#     put it there. Position is a per-LEG fact, so an order effect can be
+#     estimated per leg instead of only averaged over.
+#   * the batch summary carries an `arm_order` block: the rule, the seed, the
+#     realized balance (how many records ran baseline-first vs
+#     candidate-first) and the per-record assignment. The rule plus the seed
+#     reproduce that assignment from nothing else, so the summary is a
+#     re-runnable statement rather than a log.
+#   * workflows/scripts/report-producers/model-comparison reads those
+#     positions back and publishes an ORDER-EFFECT estimate beside the arm
+#     effect — and refuses to present a bare winner when the two are
+#     comparable in magnitude.
+#
+# ARM ORDER MATTERS IN EXACTLY ONE PHASE. Only the EXECUTE loop actually runs
+# anything, so it is the only loop whose arm order can confound a result.
+# The other arm loops in this file (the end-of-batch worktree sweep, the arm
+# file assembly, the judge pass, the reconciliation) iterate arms to do
+# per-arm bookkeeping over already-terminal state and execute no replay; each
+# carries an `ARM-ORDER AUDIT` comment saying so, and
+# tests/test_replay_batch.sh section M asserts mechanically that every `for
+# arm in` site in this file is either the counterbalanced execute loop or
+# carries that audit marker — so a future fixed-order loop cannot be added
+# silently.
+#
 # ── THE COMPLETION RATE IS RECONCILED AGAINST THE ARTIFACT (temperloop#1556)
 # Every count this driver publishes — `replay_completion_rate`, `legs.*`,
 # `arms.*.records_n` — is derived from the LEG state files, which are written
@@ -286,6 +342,18 @@ fi
 BATCH_ARM_BASELINE="baseline"
 BATCH_ARM_CANDIDATE="candidate"
 BATCH_ARMS_N=2
+# ── THE ARM-ORDER RULE (temperloop#1571) ──────────────────────────────────
+# A RULE, not a knob: the whole point is that the assignment is reproducible
+# from the recorded rule + seed alone, so it is versioned vocabulary (like the
+# arm names and the summary schema version above) rather than an operator
+# setting. The seed exists so an operator who wants the mirror-image
+# assignment for a follow-up batch can get it by recording a different one,
+# not so it can be varied per run — and it is never drawn from the wall clock
+# or $RANDOM, which would make the batch un-reproducible.
+BATCH_ARM_ORDER_RULE="counterbalanced-by-record-index-v1"
+BATCH_ARM_ORDER_SEED=0
+# shellcheck disable=SC2016  # `$RANDOM` here is PROSE naming what this rule is deliberately NOT drawn from; expanding it would replace the name with a number
+BATCH_ARM_ORDER_EXPRESSION='the baseline arm runs FIRST on a record iff ((record_index + seed) % 2) == 1, over the 1-based selection-order record index; the candidate arm runs first otherwise. Deterministic and reproducible from this rule and seed alone — never wall-clock, never $RANDOM — and it GUARANTEES a half-and-half split at every N rather than achieving one in expectation'
 # The state subdirectory, hung off the records dir so a comparison's
 # resume state sits beside the arm files it is building (both under
 # .temperloop/, which .temperloop/.gitignore already excludes from the tree).
@@ -356,6 +424,23 @@ bd_slugify() {  # <text> -> [a-z0-9-]+ (filename-safe leg key component)
   printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | sed -e 's/[^a-z0-9]/-/g'
 }
 
+# bd_arm_order <record-index> -> "<first-arm> <second-arm>" (temperloop#1571)
+#
+# THE ONE PLACE the execution order of a record's two legs is decided. It is a
+# pure function of the record index and BATCH_ARM_ORDER_SEED — no wall clock,
+# no $RANDOM, no state — so the same selection always produces the same
+# assignment, and the recorded rule+seed reproduce it without this file.
+#
+# Alternating on the index is what makes the split EXACT rather than expected:
+# over N records it yields ceil(N/2) one way and floor(N/2) the other, always.
+bd_arm_order() {
+  local i="$1"
+  case $(( (i + BATCH_ARM_ORDER_SEED) % 2 )) in
+    1) printf '%s %s' "$BATCH_ARM_BASELINE" "$BATCH_ARM_CANDIDATE" ;;
+    *) printf '%s %s' "$BATCH_ARM_CANDIDATE" "$BATCH_ARM_BASELINE" ;;
+  esac
+}
+
 # ── the interrupted-path teardown ─────────────────────────────────────────
 # BD_LIVE_SLUG holds the slug of the worktree that is prepared RIGHT NOW.
 # The trap is what makes "torn down on both success and failure" true even
@@ -423,6 +508,9 @@ cmd_schema() {
     authorized: {records_n:null, replays_n:null, pairs_n:null,
                  estimated_cost:null, cost_basis:null, batch_cap:null},
     selection: {corpus_file:null, corpus_sha256:null, selected_records_n:null, refs:[]},
+    arm_order: {basis:null, rule:null, rule_expression:null, seed:null,
+                counterbalanced:null, records_n:null,
+                baseline_first_n:null, candidate_first_n:null, per_record:[]},
     legs: {planned_n:null, completed_n:null, resumed_n:null, failed_n:null,
            scored_n:null, integration_error_n:null, not_attempted_n:null},
     circuit_breaker: {basis:null, setting:null, threshold:null, tripped:null,
@@ -711,6 +799,14 @@ cmd_run() {
   local legs_unattempted=0 records_unattempted=0
   local unattempted_file="$scratch/unattempted.jsonl"; : >"$unattempted_file"
 
+  # ── THE ARM-ORDER LEDGER (temperloop#1571) ─────────────────────────────
+  # One line per record: which arm ran first, and each arm's execution
+  # position. Written from the SAME bd_arm_order call the loop below executes
+  # under, so the ledger is a record of what actually ran rather than a
+  # second derivation that could drift from it.
+  local order_file="$scratch/arm-order.jsonl"; : >"$order_file"
+  local arm_first arm_second arm_pos
+
   # Read the selection on fd 3, NOT stdin: every `replay.sh execute` below
   # spawns a candidate runner, and the `--live` arm redirects its own stdin
   # from the prompt file — but a stubbed runner is an arbitrary operator
@@ -722,7 +818,34 @@ cmd_run() {
     # whose legs were skipped was never attempted at all in this run, which
     # is the count an operator needs to size what a resume still owes.
     local rec_skipped=0
-    for arm in "$BATCH_ARM_BASELINE" "$BATCH_ARM_CANDIDATE"; do
+    # ── COUNTERBALANCED EXECUTION ORDER (temperloop#1571) ────────────────
+    # THE loop whose arm order can confound a result, and therefore the one
+    # loop in this file that is NOT fixed-order. bd_arm_order is a pure
+    # function of the record index, so this record's assignment is the same
+    # on a resume, on a --retry-failed, and on a re-run from a fresh state
+    # dir.
+    read -r arm_first arm_second <<<"$(bd_arm_order "$sel_idx")"
+    jq -cn --argjson i "$sel_idx" --arg ref "$sel_ref" --arg first "$arm_first" \
+      --arg second "$arm_second" --arg base "$BATCH_ARM_BASELINE" \
+      --arg cand "$BATCH_ARM_CANDIDATE" \
+      '{record_index:$i, outcome_ref:$ref, first_arm:$first, second_arm:$second,
+        positions: {($base): (if $first == $base then 1 else 2 end),
+                    ($cand): (if $first == $cand then 1 else 2 end)}}' >>"$order_file"
+    arm_pos=0
+    for arm in "$arm_first" "$arm_second"; do
+      arm_pos=$((arm_pos + 1))
+      # The execution_order block stamped onto this leg's record and its state
+      # file. `position` is the per-LEG fact an order effect is estimated
+      # from; `rule`/`seed` are what make the assignment reproducible without
+      # this driver.
+      local exec_order_json
+      exec_order_json="$(jq -cn --arg rule "$BATCH_ARM_ORDER_RULE" \
+        --arg expr "$BATCH_ARM_ORDER_EXPRESSION" --argjson seed "$BATCH_ARM_ORDER_SEED" \
+        --argjson i "$sel_idx" --argjson pos "$arm_pos" --argjson arms_n "$BATCH_ARMS_N" \
+        --arg arm "$arm" --arg first "$arm_first" \
+        '{rule:$rule, rule_expression:$expr, seed:$seed, record_index:$i,
+          arm:$arm, position:$pos, arms_n:$arms_n, first_arm:$first,
+          basis:"the execution POSITION of this leg within its record'"'"'s pair (1 = ran first, 2 = ran second). Recorded per leg so an order effect can be ESTIMATED rather than assumed away — arm and position are counterbalanced across the batch, never confounded as they were before temperloop#1571"}')"
       local leg_key leg_rec leg_state
       leg_key="$(printf '%03d' "$sel_idx")-$(bd_slugify "$sel_ref")"
       leg_rec="$state_dir/legs/$arm/$leg_key.json"
@@ -769,10 +892,11 @@ cmd_run() {
       # leg gets its `not-attempted` record rather than silently vanishing.
       if [ "$cb_tripped" -eq 1 ]; then
         jq -cn --arg stage "$cb_trip_stage" --argjson n "$cb_trip_streak" \
+          --argjson eo "$exec_order_json" \
           '{state:"not-attempted",
             reason:("the circuit breaker tripped earlier in this batch after " + ($n|tostring)
                     + " consecutive \"" + $stage + "\" integration errors, so this leg was NEVER EXECUTED. This is not a claim that this record is incompatible — nothing was attempted, nothing was spent, and a resume re-drives it"),
-            stage:null}' >"$leg_state"
+            stage:null, execution_order:$eo}' >"$leg_state"
         rm -f "$leg_rec"
         legs_unattempted=$((legs_unattempted + 1))
         rec_skipped=$((rec_skipped + 1))
@@ -801,7 +925,8 @@ cmd_run() {
         # is nothing to clean up here — only to record.
         jq -cn --arg s "cannot-evaluate" \
           --arg r "worktree-prepare failed for slug $slug: $(printf '%s' "$prep_out" | head -c 400) $(head -c 400 "$scratch/prep-stderr.txt" 2>/dev/null)" \
-          '{state:$s, reason:$r}' >"$leg_state"
+          --argjson eo "$exec_order_json" \
+          '{state:$s, reason:$r, execution_order:$eo}' >"$leg_state"
         legs_failed=$((legs_failed + 1))
         jq -cn --arg a "$arm" --arg r "$sel_ref" \
           --arg reason "worktree-prepare failed: $(printf '%s' "$prep_out" | head -c 200)" \
@@ -846,8 +971,26 @@ cmd_run() {
       local have_record=0
       if [ -s "$leg_rec" ] && jq -e 'type=="object"' >/dev/null 2>&1 <"$leg_rec"; then have_record=1; fi
 
+      # ── STAMP THE EXECUTION POSITION ONTO THE RECORD (temperloop#1571) ──
+      # Onto the RECORD, not only the state file: the record is what STEP 4
+      # assembles into the arm file the report producer reads, and the order
+      # effect can only be estimated where the position travels with the
+      # measurement. Stamped for BOTH terminal record shapes (a scored record
+      # and an integration-error record), since both carry a duration and both
+      # ran in a position. A jq failure here leaves the record exactly as
+      # replay.sh wrote it rather than truncating it — an un-stamped record is
+      # reported as un-estimable downstream, never as position 1.
+      if [ "$have_record" -eq 1 ]; then
+        if jq -c --argjson eo "$exec_order_json" '. + {execution_order:$eo}' \
+             <"$leg_rec" >"$scratch/leg-stamped.json" 2>/dev/null \
+           && [ -s "$scratch/leg-stamped.json" ]; then
+          mv "$scratch/leg-stamped.json" "$leg_rec"
+        fi
+      fi
+
       if [ "$x_rc" -eq 0 ] && [ "$have_record" -eq 1 ]; then
-        jq -cn '{state:"scored", reason:null, stage:null}' >"$leg_state"
+        jq -cn --argjson eo "$exec_order_json" \
+          '{state:"scored", reason:null, stage:null, execution_order:$eo}' >"$leg_state"
         legs_done=$((legs_done + 1)); legs_scored=$((legs_scored + 1))
         # A success is the one thing that proves the spawn path is alive, so
         # it zeroes the breaker's streak outright (temperloop#1554).
@@ -861,7 +1004,8 @@ cmd_run() {
         ie_stage="$(jq -r '.candidate.integration_error.stage // ""' <"$leg_rec" 2>/dev/null)"
         [ -n "$ie_stage" ] || ie_stage="unknown"
         jq -cn --arg r "$(head -c 400 "$x_err" 2>/dev/null)" --arg s "$ie_stage" \
-          '{state:"integration-error", reason:$r, stage:$s}' >"$leg_state"
+          --argjson eo "$exec_order_json" \
+          '{state:"integration-error", reason:$r, stage:$s, execution_order:$eo}' >"$leg_state"
         legs_done=$((legs_done + 1)); legs_interr=$((legs_interr + 1))
         if [ "$ie_stage" = "$cb_stage" ]; then
           cb_streak=$((cb_streak + 1))
@@ -879,7 +1023,8 @@ cmd_run() {
         local why
         why="replay.sh execute exited $x_rc and produced no usable record: $(head -c 400 "$x_err" 2>/dev/null)"
         rm -f "$leg_rec"
-        jq -cn --arg r "$why" '{state:"cannot-evaluate", reason:$r}' >"$leg_state"
+        jq -cn --arg r "$why" --argjson eo "$exec_order_json" \
+          '{state:"cannot-evaluate", reason:$r, execution_order:$eo}' >"$leg_state"
         legs_failed=$((legs_failed + 1))
         jq -cn --arg a "$arm" --arg r "$sel_ref" --arg reason "$why" \
           '{arm:$a, outcome_ref:$r, reason:$reason, from:"this invocation"}' >>"$failures_file"
@@ -901,6 +1046,10 @@ cmd_run() {
   #    down above, and teardown of an absent worktree is a no-op).
   local swept=0 sweep_idx=1
   while [ "$sweep_idx" -le "$idx" ]; do
+    # ARM-ORDER AUDIT (temperloop#1571): executes nothing — it tests for a
+    # leaked worktree directory and tears it down. Both arms' slugs are
+    # visited unconditionally, so the iteration order cannot change what is
+    # swept, and no measurement is taken here to confound.
     for arm in "$BATCH_ARM_BASELINE" "$BATCH_ARM_CANDIDATE"; do
       local sweep_slug
       sweep_slug="mc-replay-$arm-$(printf '%03d' "$sweep_idx")"
@@ -924,6 +1073,12 @@ cmd_run() {
   # in. STEP 5's judge pass REWRITES the arm file in place, so this snapshot
   # is the only "what did we actually count" the reconciliation below (STEP
   # 5.5, temperloop#1556) can hold the rewritten file against.
+  # ARM-ORDER AUDIT (temperloop#1571): executes nothing. Each arm's file is
+  # assembled independently from already-terminal leg records, and the RECORD
+  # order inside each file is selection order regardless of which arm is
+  # assembled first — so this loop's arm order is not an execution order and
+  # cannot confound anything. Deliberately canonical (baseline, candidate) so
+  # the two arm files are written in a stable, diffable order every run.
   for arm in "$BATCH_ARM_BASELINE" "$BATCH_ARM_CANDIDATE"; do
     local tmp_arm="$scratch/$arm.jsonl"; : >"$tmp_arm"
     local census="$scratch/$arm.legs.census"; : >"$census"
@@ -966,6 +1121,11 @@ cmd_run() {
     judge_degraded=1
   else
     local per_arm_judge="$scratch/judge-arms.jsonl"; : >"$per_arm_judge"
+    # ARM-ORDER AUDIT (temperloop#1571): the judge pass runs over a WHOLE arm
+    # file at a time, after every replay in both arms has already reached a
+    # terminal state — so it has no per-record arm order to counterbalance,
+    # and no judgment it makes can move a replay's measured cost or duration.
+    # Canonical order for a stable per_arm report.
     for arm in "$BATCH_ARM_BASELINE" "$BATCH_ARM_CANDIDATE"; do
       local arm_file="$out_dir/$arm.jsonl"
       local arm_sha judged_sha judged_out j_rc=0 j_state
@@ -1041,6 +1201,9 @@ cmd_run() {
   # ═════════════════════════════════════════════════════════════════════
   local recon_file="$scratch/reconciliation.jsonl"; : >"$recon_file"
   local arms_reconciled=1
+  # ARM-ORDER AUDIT (temperloop#1571): a read-only per-arm comparison of the
+  # file on disk against this run's own census. Executes nothing, measures
+  # nothing about a model, and reaches the same verdict in either order.
   for arm in "$BATCH_ARM_BASELINE" "$BATCH_ARM_CANDIDATE"; do
     local recon_arm_file="$out_dir/$arm.jsonl"
     local census="$scratch/$arm.legs.census"
@@ -1261,6 +1424,45 @@ cmd_run() {
                then "the circuit breaker is DISABLED (threshold 0): this run would have executed every planned leg however many consecutive integration errors it hit"
                else "the circuit breaker was armed and did not fire: no run of consecutive same-stage integration errors reached the threshold, so every planned leg was attempted and this batch ended because the corpus was exhausted" end)}')"
 
+  # ── THE ARM-ORDER VERDICT (temperloop#1571) ───────────────────────────
+  # Published on EVERY run, so "the arms were counterbalanced" is a positive
+  # statement in the summary rather than something a reader has to infer from
+  # the leg records. The rule and the seed are here BECAUSE they reproduce the
+  # per-record assignment on their own: a re-run of the same selection under
+  # the same rule+seed lands every record on the same first arm.
+  local arm_order_json
+  arm_order_json="$(jq -cs \
+    --arg rule "$BATCH_ARM_ORDER_RULE" --arg expr "$BATCH_ARM_ORDER_EXPRESSION" \
+    --argjson seed "$BATCH_ARM_ORDER_SEED" \
+    --arg base "$BATCH_ARM_BASELINE" --arg cand "$BATCH_ARM_CANDIDATE" \
+    '. as $per
+     | ($per | map(select(.first_arm == $base)) | length) as $bf
+     | ($per | map(select(.first_arm == $cand)) | length) as $cf
+     | {basis: "before temperloop#1571 this driver ran the arms in one FIXED order on every record, so ARM was perfectly confounded with EXECUTION POSITION — every baseline leg was also a first leg. The K#1262 A/A validation run (true arm effect zero by construction) still showed a consistent second-arm advantage, so something real attaches to position; the mechanism is an open question and this figure does not assert one. Counterbalancing removes the confound whatever the cause, and is preferred over randomization at this module'"'"'s sample sizes because it GUARANTEES balance rather than achieving it in expectation",
+        rule: $rule, rule_expression: $expr, seed: $seed,
+        records_n: ($per | length),
+        baseline_first_n: $bf, candidate_first_n: $cf,
+        counterbalanced: (($bf > 0) and ($cf > 0)),
+        balance_detail:
+          (if ($per | length) == 0 then "no record was assigned an order — this batch selected nothing"
+           elif ($bf > 0) and ($cf > 0) then
+             ("the baseline arm ran FIRST on " + ($bf|tostring) + " of " + (($per|length)|tostring)
+              + " record(s) and SECOND on " + ($cf|tostring)
+              + " — arm and execution position are counterbalanced, so neither is a proxy for the other")
+           else
+             ("ALL " + (($per|length)|tostring) + " record(s) ran in the same arm order, so arm is still CONFOUNDED with execution position in this batch. At N=" + (($per|length)|tostring)
+              + " the alternating rule cannot split fewer than 2 records; read any arm difference here as arm-plus-position, never as arm alone")
+           end),
+        reproducibility: "the rule and the seed above reproduce per_record exactly — nothing here is drawn from the wall clock or $RANDOM, so a re-run of the same selection assigns every record the same first arm",
+        per_record: $per}' <"$order_file")"
+  if [ -z "$arm_order_json" ] || ! jq -e 'type=="object"' >/dev/null 2>&1 <<<"$arm_order_json"; then
+    arm_order_json="$(jq -cn --arg rule "$BATCH_ARM_ORDER_RULE" --argjson seed "$BATCH_ARM_ORDER_SEED" \
+      '{basis:"the per-record arm-order ledger could not be read back", rule:$rule, seed:$seed,
+        counterbalanced:null, records_n:null, baseline_first_n:null, candidate_first_n:null,
+        balance_detail:"the realized arm-order balance for this run could not be reported — stated rather than omitted, and NOT to be read as a clean counterbalance",
+        per_record:[]}')"
+  fi
+
   local degradations="$scratch/degradations.jsonl"; : >"$degradations"
   [ "$cb_tripped" -eq 1 ] && jq -cn --arg stage "$cb_trip_stage" \
     --argjson legs_na "$legs_unattempted" --argjson recs_na "$records_unattempted" \
@@ -1295,6 +1497,7 @@ cmd_run() {
     --argjson legs_scored "$legs_scored" --argjson legs_interr "$legs_interr" \
     --argjson legs_unattempted "$legs_unattempted" \
     --argjson circuit_breaker "$circuit_breaker_json" \
+    --argjson arm_order "$arm_order_json" \
     --argjson rate "$rate" \
     --slurpfile failures "$failures_file" \
     --slurpfile degradations "$degradations" \
@@ -1325,6 +1528,7 @@ cmd_run() {
         batch_cap: $cap, confirmed: true},
       selection:{corpus_file:$corpus, corpus_sha256:$csha,
                  selected_records_n:$records_n, refs:$refs},
+      arm_order: $arm_order,
       legs:{planned_n:$legs_planned, completed_n:$legs_done, resumed_n:$legs_resumed,
             failed_n:$legs_failed, scored_n:$legs_scored, integration_error_n:$legs_interr,
             not_attempted_n:$legs_unattempted},
