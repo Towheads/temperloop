@@ -408,11 +408,63 @@ _je_build_prompt() {  # <record-file> <rubric-file> <prompt-file>
     printf '## Acceptance criteria\n'
     jq -r '(.acceptance // [])[] | "  - " + .' "$record_file"
     printf '\n## Diff summary (score.diff)\n'
-    jq -c '.score.diff // {}' "$record_file"
+    printf "(per-path fields: 'changed' = the CANDIDATE touched this path; 'matches_truth' = the candidate content is byte-identical to truth. X/R paths below carry the SAME per-path attribution N does, but stay NEUTRAL/FLAGGED-ONLY in scoring — 'changed:false' on an X/R path means the candidate left it alone; never read it as a candidate edit.)\n"
+    jq -c '(.score.diff // {}) | del(.text_excerpt)' "$record_file"
+    printf '\n## Diff text (score.diff.text_excerpt)\n\n'
+    _je_render_diff_text "$record_file"
     printf '\n## Gate result (score.gate_result)\n'
     jq -c '.score.gate_result // {}' "$record_file"
     printf '\n'
   } >"$prompt_file"
+}
+
+# _je_render_diff_text <record-file> — the CANDIDATE'S REAL DIFF TEXT
+# (score.sh's `score.diff.text_excerpt`, captured while the leg's worktree
+# still existed — temperloop#1579, the record field this item consumes),
+# rendered into the judge prompt as its own bounded fenced block so the
+# four code-level rubric dimensions (correctness, test quality, portability/
+# robustness, simplicity/reuse) are answerable from the SUPPLIED INPUT — by
+# judge time the worktree is long gone (batch.sh tears it down right after
+# replay), so this field is the ONLY place the real patch text can still
+# reach the judge.
+#
+# Bounded TWICE, deliberately: score.sh's own capture-time cap
+# (`REPLAY_SCORE_DIFF_EXCERPT_MAX_BYTES`, `text_excerpt_truncated`) is
+# trusted when it says it truncated — but this function does NOT trust a
+# record's self-reported flag as the ONLY bound. It independently re-checks
+# the field's own byte length against the SAME setting and defensively
+# re-truncates if a record ever reaches here oversized without the flag set
+# (a legacy/malformed record) — the judge prompt is bounded by construction,
+# never merely by an upstream field's honesty.
+_je_render_diff_text() {
+  local record_file="$1" text bytes cap capture_truncated full_bytes render_note=""
+  cap="${REPLAY_SCORE_DIFF_EXCERPT_MAX_BYTES:-200000}"
+  text="$(jq -r '.score.diff.text_excerpt // empty' "$record_file" 2>/dev/null)"
+  if [ -z "$text" ]; then
+    printf '(no diff text was captured for this record — score any diff-dependent dimension as unverifiable from the diff, never as a defect)\n'
+    return 0
+  fi
+  capture_truncated="$(jq -r '.score.diff.text_excerpt_truncated // false' "$record_file" 2>/dev/null)"
+  full_bytes="$(jq -r '.score.diff.text_excerpt_full_bytes // empty' "$record_file" 2>/dev/null)"
+  bytes="$(printf '%s' "$text" | wc -c | awk '{print $1}')"
+
+  printf '```diff\n'
+  if [ "$capture_truncated" != "true" ] && [ "$bytes" -gt "$cap" ]; then
+    printf '%s' "$text" | head -c "$cap"
+    printf '\n[... judge.sh TRUNCATED FOR PROMPT: showing %s of %s bytes ...]\n' "$cap" "$bytes"
+    render_note="render"
+  else
+    printf '%s\n' "$text"
+  fi
+  printf '```\n'
+
+  if [ "$capture_truncated" = "true" ] || [ -n "$render_note" ]; then
+    printf '\n**TRUNCATION DISCLOSURE:** the diff text above is INCOMPLETE'
+    if [ "$capture_truncated" = "true" ] && [ -n "$full_bytes" ]; then
+      printf ' — truncated at capture time (%s of %s original bytes captured)' "$bytes" "$full_bytes"
+    fi
+    printf '. Score any dimension you cannot verify from the visible excerpt as UNVERIFIABLE FROM THE DIFF, never as a defect the candidate committed.\n'
+  fi
 }
 
 # ── response parsing — the model's text must be EXACTLY the contracted JSON
