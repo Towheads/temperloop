@@ -118,6 +118,29 @@
 # RENAME of an already-ratcheted file is never treated as a fresh
 # introduction, so renaming a file cannot be used to re-arm its own
 # bootstrap exemption and smuggle a new entry through unratcheted.
+# VENDORED-KERNEL SUBTREE ARM (temperloop#1559). In a COMPOSED OVERLAY the
+# allowlist file is a symlink resolving into the vendored kernel subtree
+# (`kernel/`, per scripts/update-kernel.sh's fixed `--prefix=kernel`), so
+# every path seam is first resolved to its PHYSICAL path (symlinks followed)
+# before the relpath/ratchet math — comparing a base-ref SYMLINK BLOB's
+# target text as if it were TSV content is never meaningful. When the repo
+# root carries `.kernel-pin` AND the resolved allowlist lands under
+# `kernel/`, rows there are upstream-owned (hand edits inside kernel/ are
+# forbidden; upstream's own CI already ran this same shrink-only ratchet
+# when a row was added there), so re-ratcheting them against the OVERLAY's
+# origin/main would false-fail every allowlist-growing vendor bump. Instead,
+# a current row passes when present at the base ref's copy OR in the
+# vendored kernel's own pulled content — the tree of the newest subtree
+# SQUASH commit reachable from HEAD (the commit `git subtree pull --squash`
+# minted, identified by its `git-subtree-dir: kernel` trailer; its tree IS
+# the kernel repo root, so the lookup path drops the `kernel/` prefix). An
+# overlay-authored row hand-edited into kernel/'s copy is in NEITHER set and
+# still fails ALLOWLIST-GREW — the shrink-only intent survives, per-row. If
+# no such squash commit is reachable (a consumer that vendored by copy, or a
+# clone too shallow to see it), the arm degrades FAIL-CLOSED to the plain
+# base-ref ratchet, and the verdict line says so. A kernel checkout (no
+# `.kernel-pin`, no `kernel/` prefix) never enters this arm — its ratchet is
+# byte-for-byte the pre-#1559 behavior.
 # UNRESOLVABLE base ref (an EXPLICIT operator override that doesn't resolve)
 # is CANNOT EVALUATE — never a silent pass, because "did it regress" is
 # undecidable without a comparison point. NO ORIGIN REMOTE AT ALL (the
@@ -565,21 +588,115 @@ _csd_ratchet_file_added() {
   printf '%s\n' "$added" | grep -Fx -- "$relpath" >/dev/null
 }
 
-# _csd_ratchet_relpath <resolved-abs-path> -> the path relative to
-# CHECK_SURFACE_GIT_REPO_ROOT on stdout, rc 1 (no output) if it is not under
-# that root at all.
+# _csd_physical_path <abs-path> -> the fully symlink-resolved (physical) form
+# on stdout: the final-component symlink chain is followed via the repo's
+# standard readlink loop (portable — no GNU readlink -f), then the containing
+# directory is physicalized with `cd -P`. A path whose parent directory does
+# not exist passes through unchanged (downstream -f/-r checks own that
+# failure). Needed by the ratchet (temperloop#1559): in a composed overlay
+# the allowlist/registry files are SYMLINKS into the vendored kernel subtree,
+# and `git show <ref>:<symlink-path>` returns the link's TARGET TEXT, not the
+# file content — so every relpath the ratchet feeds to git must be computed
+# from physical paths, never the symlink spelling.
+_csd_physical_path() {
+  local p="$1" dir
+  while [[ -L "$p" ]]; do
+    dir="$(cd -P "$(dirname "$p")" 2>/dev/null && pwd)" || { printf '%s\n' "$p"; return 0; }
+    p="$(readlink "$p")"
+    case "$p" in /*) ;; *) p="$dir/$p" ;; esac
+  done
+  dir="$(cd -P "$(dirname "$p")" 2>/dev/null && pwd)" || { printf '%s\n' "$p"; return 0; }
+  printf '%s/%s\n' "$dir" "$(basename "$p")"
+}
+
+# _csd_ratchet_relpath <resolved-abs-path> -> the PHYSICAL path relative to
+# the PHYSICAL CHECK_SURFACE_GIT_REPO_ROOT on stdout, rc 1 (no output) if it
+# is not under that root at all. Both sides are physicalized so a symlinked
+# config file (or a symlink-bearing root, e.g. macOS /var -> /private/var)
+# compares apples to apples.
 _csd_ratchet_relpath() {
-  local resolved="$1" relpath
-  relpath="${resolved#"$CHECK_SURFACE_GIT_REPO_ROOT"/}"
+  local resolved="$1" relpath root_phys
+  resolved="$(_csd_physical_path "$resolved")"
+  root_phys="$(cd -P "$CHECK_SURFACE_GIT_REPO_ROOT" 2>/dev/null && pwd)" || root_phys="$CHECK_SURFACE_GIT_REPO_ROOT"
+  relpath="${resolved#"$root_phys"/}"
   [[ "$relpath" != "$resolved" ]] || return 1
   printf '%s\n' "$relpath"
+}
+
+# _csd_kernel_squash_commit -> the newest subtree squash commit reachable
+# from HEAD carrying a `git-subtree-dir: kernel` trailer (the commit `git
+# subtree pull --prefix=kernel --squash` minted), empty + rc 1 if none. Its
+# tree is the KERNEL REPO ROOT (unprefixed), so a path inside it drops the
+# leading `kernel/`.
+_csd_kernel_squash_commit() {
+  local squash
+  squash="$(git -C "$CHECK_SURFACE_GIT_REPO_ROOT" log -1 --format=%H --grep='^git-subtree-dir: kernel$' HEAD 2>/dev/null)"
+  [[ -n "$squash" ]] || return 1
+  printf '%s\n' "$squash"
 }
 
 # --- 4a. Allowlist ratchet: surface SET may only shrink. ---
 if [[ -z "$_csd_ratchet_skip_reason" ]]; then
   allowlist_relpath="$(_csd_ratchet_relpath "$CHECK_SURFACE_ALLOWLIST_FILE")" || allowlist_relpath=""
+  # Vendored-kernel subtree arm (temperloop#1559 — see §4 header): activates
+  # only when the repo root declares a vendored kernel (.kernel-pin) AND the
+  # physically-resolved allowlist lands inside kernel/. A kernel checkout has
+  # neither, so it can never enter this arm.
+  kernel_squash=""
+  kernel_arm_note=""
+  if [[ -n "$allowlist_relpath" && -f "$CHECK_SURFACE_GIT_REPO_ROOT/.kernel-pin" ]]; then
+    case "$allowlist_relpath" in
+      kernel/*)
+        kernel_squash="$(_csd_kernel_squash_commit)" || kernel_squash=""
+        if [[ -z "$kernel_squash" ]]; then
+          kernel_arm_note=" [vendored-kernel arm unavailable: .kernel-pin present and $allowlist_relpath resolves into kernel/, but no subtree squash commit with a 'git-subtree-dir: kernel' trailer is reachable from HEAD — fell back to the plain base-ref ratchet, fail-closed]"
+        fi
+        ;;
+    esac
+  fi
   if [[ -z "$allowlist_relpath" ]]; then
     ratchet_lines+=("allowlist ratchet: SKIPPED ($CHECK_SURFACE_ALLOWLIST_FILE is not under $CHECK_SURFACE_GIT_REPO_ROOT)")
+  elif [[ -n "$kernel_squash" ]]; then
+    # Kernel arm: prev = the base ref's copy (absent -> empty, no bootstrap
+    # exemption needed — an empty prev just means every row must be
+    # upstream-blessed); upstream = the squash commit's own copy (its tree
+    # is the kernel repo root, so the path drops the kernel/ prefix). A row
+    # passes when present in EITHER; a row in neither is overlay-authored
+    # growth and fails.
+    prev_content="$(git -C "$CHECK_SURFACE_GIT_REPO_ROOT" show "${_csd_ratchet_base_ref}:${allowlist_relpath}" 2>/dev/null)" || prev_content=""
+    prev_surfaces=""
+    if [[ -n "$prev_content" ]]; then
+      while IFS=$'\x01' read -r p_surface _rest || [[ -n "${p_surface:-}" ]]; do
+        [[ -z "${p_surface:-}" ]] && continue
+        case "$p_surface" in \#*) continue ;; esac
+        prev_surfaces="$prev_surfaces$p_surface
+"
+      done < <(_csd_tsv_string "$prev_content")
+    fi
+    kernel_inner_path="${allowlist_relpath#kernel/}"
+    upstream_content="$(git -C "$CHECK_SURFACE_GIT_REPO_ROOT" show "${kernel_squash}:${kernel_inner_path}" 2>/dev/null)" || upstream_content=""
+    upstream_surfaces=""
+    if [[ -n "$upstream_content" ]]; then
+      while IFS=$'\x01' read -r u_surface _rest || [[ -n "${u_surface:-}" ]]; do
+        [[ -z "${u_surface:-}" ]] && continue
+        case "$u_surface" in \#*) continue ;; esac
+        upstream_surfaces="$upstream_surfaces$u_surface
+"
+      done < <(_csd_tsv_string "$upstream_content")
+    fi
+    if [[ -n "$allowlist_surfaces" ]]; then
+      while IFS= read -r cur_surface; do
+        [[ -z "$cur_surface" ]] && continue
+        case $'\n'"$prev_surfaces" in
+          *$'\n'"$cur_surface"$'\n'*) continue ;;
+        esac
+        case $'\n'"$upstream_surfaces" in
+          *$'\n'"$cur_surface"$'\n'*) continue ;;
+        esac
+        failures+=("ALLOWLIST-GREW  $cur_surface — present in $CHECK_SURFACE_ALLOWLIST_FILE now but neither at $_csd_ratchet_base_ref nor in the vendored kernel's own pulled content (subtree squash ${kernel_squash}); the allowlist is a shrink-only ratchet, and a row the kernel upstream never shipped is overlay-authored growth, never a place to add a newly-discovered non-compliant surface")
+      done <<<"$allowlist_surfaces"
+    fi
+    ratchet_lines+=("allowlist ratchet: checked against $_csd_ratchet_base_ref:$allowlist_relpath + vendored-kernel squash $kernel_squash (subtree-sourced rows ratchet against the kernel subtree's own pulled content)")
   elif _csd_ratchet_file_added "$allowlist_relpath"; then
     ratchet_lines+=("allowlist ratchet: SKIPPED (bootstrap — $allowlist_relpath was added in this diff, nothing to compare against)")
   else
@@ -602,7 +719,7 @@ if [[ -z "$_csd_ratchet_skip_reason" ]]; then
         esac
       done <<<"$allowlist_surfaces"
     fi
-    ratchet_lines+=("allowlist ratchet: checked against $_csd_ratchet_base_ref:$allowlist_relpath")
+    ratchet_lines+=("allowlist ratchet: checked against $_csd_ratchet_base_ref:$allowlist_relpath$kernel_arm_note")
   fi
 else
   ratchet_lines+=("allowlist ratchet: SKIPPED ($_csd_ratchet_skip_reason)")
