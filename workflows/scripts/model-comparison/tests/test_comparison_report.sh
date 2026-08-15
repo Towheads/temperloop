@@ -834,6 +834,37 @@ jq -e '.cost_basis.list_price_overlay.staleness | test("TOKEN COUNTS ONLY")' "$R
   || fail "H4: the token counts themselves must survive a missing price table"
 ok "H4 a broken kernel default price table degrades to a stated token-counts-only basis, token figures intact"
 
+count
+# A WELL-FORMED price table that simply names neither model in the run must
+# withhold the headline figure rather than let `add // 0` render a false
+# "$0.00" that reads as free (temperloop#1384). The exclusion machinery
+# (H2) already reports the excluded models correctly — this proves the
+# rendered dollar figure stops lying too.
+printf '{"claude-haiku-4-5": 1.00}\n' >"$UREPO/.temperloop/pricing.json"
+run "$UREPO"
+[ "$(jqf "$RUN_OUT" '.cost_basis.list_price_overlay.table_in_effect')" = "user" ] \
+  || fail "H5: a present, well-formed user table must still be in effect"
+[ "$(jqf "$RUN_OUT" '.cost_basis.list_price_overlay.priced_models | length')" = "0" ] \
+  || fail "H5: neither arm's model is in this table — priced_models must be empty"
+[ "$(jqf "$RUN_OUT" '.cost_basis.list_price_overlay.estimate_usd')" = "null" ] \
+  || fail "H5: with every model excluded, estimate_usd must be null, never a fabricated 0 (\"free\")"
+jq -e '.cost_basis.list_price_overlay.estimate_usd_unavailable_reason | test("claude-opus-4-8") and test("claude-sonnet-5")' "$RUN_OUT" >/dev/null 2>&1 \
+  || fail "H5: estimate_usd_unavailable_reason must name every excluded model"
+ok "H5 a price table excluding every model in the run withholds estimate_usd (null, never 0) with a stated reason naming the excluded models"
+
+count
+# MUTATION PROOF — restore the naive `add // 0` fold with nothing else
+# changed. H5 must go red, proving the withhold logic (not some other guard)
+# is what keeps the false $0.00 from rendering.
+MIRROR8="$(mkmirror "$WORK/m8")"
+perl -0pi -e 's/elif \(\$priced_models \| length\) == 0 then null\n\s*else/else/' "$MIRROR8"
+grep -F 'elif ($priced_models | length) == 0 then null' "$MIRROR8" >/dev/null \
+  && fail "H6: the withhold-branch mutation did not apply — the proof would be vacuous"
+run "$UREPO" "$MIRROR8"
+[ "$(jqf "$RUN_OUT" '.cost_basis.list_price_overlay.estimate_usd')" = "0" ] \
+  || fail "H6: removing the withhold branch should reveal the old fabricated-0.00 bug, got $(jqf "$RUN_OUT" '.cost_basis.list_price_overlay.estimate_usd')"
+ok "H6 mutation proof: removing the withhold branch resurrects the fabricated \$0.00 — H5 is load-bearing"
+
 # ═══════════════════════════════════════════════════════════════════════════
 # SECTION I — CORPUS WINDOW AND GATE VERSIONS ARE READ, NOT ASSUMED
 # ═══════════════════════════════════════════════════════════════════════════
