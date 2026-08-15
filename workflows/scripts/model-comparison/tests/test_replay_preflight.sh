@@ -46,12 +46,18 @@
 
 set -uo pipefail
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-MC_DIR="$(cd "$HERE/.." && pwd)"
-SCRIPTS_DIR="$(cd "$MC_DIR/.." && pwd)"
+# Physical derivation (`cd -P`) — dir-symlink-composition-safe (temperloop#1557).
+HERE="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MC_DIR="$(cd -P "$HERE/.." && pwd)"
+SCRIPTS_DIR="$(cd -P "$MC_DIR/.." && pwd)"
 SUT="$MC_DIR/replay.sh"
 STATS_SUT="$MC_DIR/stats.sh"
-REPO_ROOT="$(git -C "$MC_DIR" rev-parse --show-toplevel)"
+# Module-relative and physical, NOT `git rev-parse --show-toplevel`: in a
+# dir-symlink composition (temperloop#1557) the module physically lives in a
+# host repo's kernel/ SUBTREE, so rev-parse would return the HOST root — where
+# the pipeline-* files this suite reads under $REPO_ROOT do not exist. In a
+# plain kernel checkout or worktree the two derivations are identical.
+REPO_ROOT="$(cd -P "$MC_DIR/../../.." && pwd)"
 
 # shellcheck source=../../lib/portable-timeout.sh
 . "$HERE/../../lib/portable-timeout.sh"

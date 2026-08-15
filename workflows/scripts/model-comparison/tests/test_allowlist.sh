@@ -48,9 +48,19 @@
 
 set -euo pipefail
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-MC_DIR="$(cd "$HERE/.." && pwd)"
-REPO_ROOT="$(cd "$MC_DIR/../../.." && pwd)"
+# PHYSICAL derivation (`cd -P`), deliberately matching allowlist.sh and the
+# validator's own script-dir resolution (temperloop#1557): a host repo that
+# vendors this module as a DIR symlink (workflows/scripts/model-comparison ->
+# kernel/workflows/scripts/model-comparison) invokes this test through the
+# symlink, and a logical `pwd` keeps that symlink component — REPO_ROOT then
+# resolves to the HOST root, where case 2's `git ls-files --error-unmatch`
+# sees only the tracked symlink dir entry (never files "under" it) and fails
+# even though the physical kernel-subtree file IS tracked. Physical
+# resolution lands on the kernel subtree, where every repo-relative path
+# below actually exists. Case 32 pins this in a synthesized composition.
+HERE="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MC_DIR="$(cd -P "$HERE/.." && pwd)"
+REPO_ROOT="$(cd -P "$MC_DIR/../../.." && pwd)"
 ALLOWLIST_SH="$MC_DIR/allowlist.sh"
 VALIDATOR="$REPO_ROOT/workflows/scripts/validate-provider-disclosure.sh"
 
@@ -1008,6 +1018,62 @@ $vout"
 case "$vout" in *COMMITTED-NOT-TRACKED*) ;; *) fail "31: expected a COMMITTED-NOT-TRACKED line through a symlinked repo-root ancestor, got:
 $vout" ;; esac
 ok "31 validator: a symlinked ancestor between the script and its repo root does not skip the git-tracked check"
+
+# ---------------------------------------------------------------------------
+# 32. DIR-SYMLINK COMPOSITION (temperloop#1557): a host repo that vendors
+#     this module as a single DIR symlink (workflows/scripts/model-comparison
+#     -> kernel/workflows/scripts/model-comparison, the 13-to-1 consolidation
+#     foundation wants) invokes this very suite THROUGH the symlink. Pre-fix,
+#     the logical HERE derivation kept the symlink component, REPO_ROOT
+#     resolved to the HOST root, and case 2 failed "provider-allowlist.txt is
+#     not git-tracked" even though the physical kernel-subtree file IS
+#     tracked (git sees only the symlink dir entry, never files "under" it).
+#     Post-fix (`pwd -P` at the top of this file), the suite resolves the
+#     kernel subtree and passes end to end. The inner run re-executes this
+#     REAL file — not a copy of its derivation lines — so a regression of
+#     those lines fails here; the recursion guard below keeps the inner run
+#     from nesting another composition. Mirrors case 31's fabricate-your-own-
+#     symlink rationale: deterministic on any platform, no reliance on an
+#     ambient macOS /tmp symlink. `git add` only, no commit, exactly per
+#     case 31's fixture note (`git ls-files` reads the INDEX).
+# ---------------------------------------------------------------------------
+count
+if [[ -n "${PROVIDER_ALLOWLIST_COMPOSITION_INNER:-}" ]]; then
+  ok "32 skipped inside the composition fixture's inner run (recursion guard)"
+else
+  mkdir -p "$WORK/32-host"
+  HOST="$(cd -P "$WORK/32-host" && pwd)"  # physical, so the fabricated dir symlink is the ONLY symlink in play
+  mkdir -p "$HOST/kernel/workflows/scripts/model-comparison/tests" \
+           "$HOST/workflows/scripts"
+  cp "$ALLOWLIST_SH" "$HOST/kernel/workflows/scripts/model-comparison/allowlist.sh"
+  cp "$MC_DIR/provider-allowlist.txt" "$HOST/kernel/workflows/scripts/model-comparison/provider-allowlist.txt"
+  cp "$VALIDATOR" "$HOST/kernel/workflows/scripts/validate-provider-disclosure.sh"
+  cp "$HERE/test_allowlist.sh" "$HOST/kernel/workflows/scripts/model-comparison/tests/test_allowlist.sh"
+  ln -s ../../kernel/workflows/scripts/model-comparison "$HOST/workflows/scripts/model-comparison"
+  ( cd "$HOST" && git init -q && git add -A ) \
+    || fail "32: fixture setup: could not scaffold the dir-symlink host repo"
+
+  rc=0
+  out="$(env PROVIDER_ALLOWLIST_COMPOSITION_INNER=1 \
+    bash "$HOST/workflows/scripts/model-comparison/tests/test_allowlist.sh" 2>&1)" || rc=$?
+  [[ "$rc" -eq 0 ]] || fail "32: the suite should pass when invoked through the host's dir symlink (physical file IS tracked), got rc=$rc:
+$out"
+  case "$out" in
+    *"is not git-tracked"*) fail "32: the pre-fix failure fired — REPO_ROOT resolved to the host root instead of the kernel subtree:
+$out" ;;
+  esac
+  case "$out" in
+    *"PASS: 2 "*) ;;
+    *) fail "32: inner case 2 (the git-tracked check on the real committed ceiling) did not pass:
+$out" ;;
+  esac
+  case "$out" in
+    *"32/32 tests passed"*) ;;
+    *) fail "32: expected the inner run to pass all 32 cases through the symlink, got:
+$out" ;;
+  esac
+  ok "32 dir-symlink composition: the suite resolves the kernel subtree and passes through a host's dir symlink"
+fi
 
 echo "---"
 echo "$pass/$total tests passed"

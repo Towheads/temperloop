@@ -83,9 +83,10 @@
 
 set -uo pipefail
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-MC_DIR="$(cd "$HERE/.." && pwd)"
-SCRIPTS_DIR="$(cd "$MC_DIR/.." && pwd)"
+# Physical derivation (`cd -P`) — dir-symlink-composition-safe (temperloop#1557).
+HERE="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MC_DIR="$(cd -P "$HERE/.." && pwd)"
+SCRIPTS_DIR="$(cd -P "$MC_DIR/.." && pwd)"
 SUT="$MC_DIR/replay.sh"
 PRODUCER="$SCRIPTS_DIR/report-producers/model-comparison"
 

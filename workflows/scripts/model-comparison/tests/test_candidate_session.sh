@@ -60,7 +60,8 @@
 
 set -uo pipefail
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Physical derivation (`cd -P`) — dir-symlink-composition-safe (temperloop#1557).
+HERE="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SUT="$HERE/../candidate-session.sh"
 
 # The repo's bounded-subprocess shim (temperloop#256) — stock macOS ships no

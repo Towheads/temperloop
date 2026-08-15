@@ -53,8 +53,9 @@
 
 set -uo pipefail
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-MC_DIR="$(cd "$HERE/.." && pwd)"
+# Physical derivation (`cd -P`) — dir-symlink-composition-safe (temperloop#1557).
+HERE="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MC_DIR="$(cd -P "$HERE/.." && pwd)"
 REPLAY="$MC_DIR/replay.sh"
 
 pass=0

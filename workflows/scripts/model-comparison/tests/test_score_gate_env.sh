@@ -65,9 +65,10 @@
 
 set -uo pipefail
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-MC_DIR="$(cd "$HERE/.." && pwd)"
-REPO_ROOT="$(cd "$MC_DIR/../../.." && pwd)"
+# Physical derivation (`cd -P`) — dir-symlink-composition-safe (temperloop#1557).
+HERE="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MC_DIR="$(cd -P "$HERE/.." && pwd)"
+REPO_ROOT="$(cd -P "$MC_DIR/../../.." && pwd)"
 SCORE="$MC_DIR/score.sh"
 
 pass=0
