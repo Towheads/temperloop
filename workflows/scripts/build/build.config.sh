@@ -911,6 +911,30 @@ fi
 # as a layer-5 default — removed as scrub debt; see git history on this
 # line for the prior literal.)
 
+# ── Knowledge-store agent-plane render mode (temperloop#1599, kernel half of
+#    foundation#956 "CLAUDE.md flip") ───────────────────────────────────────
+# `workflows/scripts/install-claude-md.sh`'s "## Knowledge store routing"
+# section renders an "Agent-plane access rule" one-liner by MECHANICALLY
+# probing `[ -d "$root/.obsidian" ]` at compose time. That probe is correct
+# pre-cutover (an Obsidian vault = route through its MCP tools) but wrong
+# FOREVER post-cutover (foundation epic #951 Phase 3): Obsidian stays
+# installed indefinitely as a plain *viewer* onto the now markdown-canonical
+# store, so `.obsidian/` never goes away, and the probe would keep rendering
+# the retired MCP-only rule on every re-install with no way to opt out.
+#
+# This setting is the explicit override the probe was missing. Values:
+#   auto   (default) — today's unchanged behavior: probe `.obsidian` and
+#          render the MCP rule when present, the direct-access rule when not.
+#          A stranger's fresh kernel install renders byte-identical output to
+#          before this setting existed.
+#   direct — force the post-cutover rule (files canonical; agent-plane reads
+#          via `Read`/`Glob`; concept/idea search via `ks_search`; Obsidian,
+#          if present, is a viewer only) REGARDLESS of `.obsidian` presence.
+#          An operator flips this once their own store has actually migrated
+#          off the Obsidian MCP transport (knowledge_store.contract.md's own
+#          "Obsidian-mode note" documents that transition).
+: "${KNOWLEDGE_STORE_AGENT_PLANE:=auto}"   # auto|direct — see install-claude-md.sh render_knowledge_routing
+
 # ── Pipeline label provisioning (temperloop#795) ───────────────────────────────
 # BOTH pipeline labels above (`funnel-merge-pending`, `funnel-escalated`) must EXIST in
 # every repo the pipeline drives, or a silent-thrash failure results (see
@@ -1229,7 +1253,7 @@ export BUILD_QUOTA_PAUSE_PCT BUILD_QUOTA_CACHE BUILD_QUOTA_WAIT_BUFFER \
        PROSE_BUDGET_TIER1_CAP PROSE_BUDGET_TIER2_FILE_CAP \
        SPEND_WEIGHT_INPUT SPEND_WEIGHT_CACHE_READ SPEND_WEIGHT_CACHE_CREATE SPEND_WEIGHT_OUTPUT \
        SPEND_MACHINERY_MAX_CALLS SPEND_WORKER_PROFILE_MIN_CALLS SPEND_TRANSCRIPT_ROOT \
-       KNOWLEDGE_STORE_ROOT \
+       KNOWLEDGE_STORE_ROOT KNOWLEDGE_STORE_AGENT_PLANE \
        MODEL_COMPARISON_MIN_SAMPLE_N MODEL_COMPARISON_BOOTSTRAP_ITERATIONS MODEL_COMPARISON_BOOTSTRAP_SEED \
        MODEL_COMPARISON_CI_WIDTH_PCT MODEL_COMPARISON_EMIT_FEASIBLE_SEATS \
        REPLAY_CORPUS_LIMIT REPLAY_CORPUS_SAMPLE_MULTIPLIER REPLAY_NAMED_PATH_EXTENSIONS \

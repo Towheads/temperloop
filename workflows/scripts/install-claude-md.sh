@@ -45,6 +45,16 @@
 # "read real machine state at render time" move install-settings.sh already
 # makes for the local `model` field.
 #
+# That mechanical probe alone is wrong FOREVER once an operator's store has
+# actually migrated off the Obsidian MCP transport (foundation epic #951
+# Phase 3): Obsidian stays installed as a plain viewer, so `.obsidian/` never
+# goes away, and the probe would keep rendering the retired MCP-only rule on
+# every re-install. KNOWLEDGE_STORE_AGENT_PLANE (build.config.sh,
+# temperloop#1599) is the explicit override: `auto` (default) leaves the
+# probe above untouched — a stranger's fresh install renders byte-identical
+# output to before this knob existed — and `direct` forces the post-cutover
+# knowledge_store rule regardless of `.obsidian` presence.
+#
 # This script is idempotent: composing the same sources twice, on the same
 # machine, byte-for-byte reproduces the same target (no timestamps or other
 # non-deterministic content are rendered in).
@@ -173,10 +183,11 @@ render_kernel_doc() {
 # render_knowledge_routing — prints the "## Knowledge store routing" section.
 # ---------------------------------------------------------------------------
 render_knowledge_routing() {
-  local root="" backend="" access_rule=""
+  local root="" backend="" access_rule="" agent_plane=""
 
   if [ -f "$build_config" ] && [ -f "$ks_lib" ]; then
-    # Resolve KNOWLEDGE_STORE_ROOT / KNOWLEDGE_STORE_BACKEND in an isolated
+    # Resolve KNOWLEDGE_STORE_ROOT / KNOWLEDGE_STORE_BACKEND / the
+    # KNOWLEDGE_STORE_AGENT_PLANE render knob (temperloop#1599) in an isolated
     # subshell so their `:=` defaults (and build.config.sh's optional
     # gitignored build.config.local.sh) never leak into THIS script's own
     # environment or clobber a caller's exported values.
@@ -187,16 +198,30 @@ render_knowledge_routing() {
       source "$build_config"
       # shellcheck source=/dev/null
       source "$ks_lib"
-      printf '%s\n%s\n' "$(ks_root)" "$KNOWLEDGE_STORE_BACKEND"
+      printf '%s\n%s\n%s\n' "$(ks_root)" "$KNOWLEDGE_STORE_BACKEND" "$KNOWLEDGE_STORE_AGENT_PLANE"
     )" || resolved=""
     root="$(sed -n '1p' <<<"$resolved")"
     backend="$(sed -n '2p' <<<"$resolved")"
+    agent_plane="$(sed -n '3p' <<<"$resolved")"
   fi
+  [ -n "$agent_plane" ] || agent_plane="auto"   # build.config.sh's own default, if unresolved
 
+  # ── Agent-plane access rule (temperloop#1599) ────────────────────────────
+  # KNOWLEDGE_STORE_AGENT_PLANE=direct forces the post-cutover rule below
+  # regardless of `.obsidian` presence — Obsidian remains installed as a
+  # viewer forever post-cutover (foundation epic #951 Phase 3), so the
+  # mechanical `.obsidian` probe alone can never express "we've migrated off
+  # the MCP transport". The default (auto, or anything else unrecognized —
+  # fails safe to today's mechanical probe rather than silently guessing)
+  # preserves the exact pre-existing `.obsidian`-probe behavior, so a
+  # stranger's fresh kernel install renders byte-identical output to before
+  # this knob existed.
   if [ -z "$root" ]; then
     root="(unresolved — workflows/scripts/build/build.config.sh or workflows/scripts/lib/knowledge_store.sh not found under $foundation)"
     backend="(unresolved)"
     access_rule="Could not resolve the knowledge_store config at compose time — treat this section as stale and re-run \`make install-claude\` from a full foundation checkout."
+  elif [ "$agent_plane" = "direct" ]; then
+    access_rule="Post-cutover (\`KNOWLEDGE_STORE_AGENT_PLANE=direct\`): the store is plain files under \`${root}\` and the files are canonical — read agent-plane content directly with \`Read\`/\`Glob\` (\`Grep\`/\`Bash\` are fine too) on the store files, write directly with \`Write\`/\`Edit\`, and do concept/idea search via \`ks_search\` (\`workflows/scripts/vault-search.sh\`); Obsidian, if present at \`${root}\`, is a viewer only — never route through the Obsidian MCP tools. See \`workflows/scripts/lib/knowledge_store.contract.md\` § Obsidian-mode note."
   elif [ -d "${root}/.obsidian" ]; then
     access_rule="The store root is an Obsidian vault (a \`.obsidian\` directory is present at \`${root}\`) — always route through the Obsidian MCP tools (\`mcp__obsidian-builtin__*\` for read/write/patch, \`mcp__obsidian__search_vault_smart\` for semantic search); never \`Read\`/\`Bash\`/\`find\` it directly. See § Obsidian vault."
   else
