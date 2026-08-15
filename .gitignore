@@ -63,6 +63,12 @@ __pycache__/
 # caches the pinned shellcheck static binary here. Host-local, regenerated on
 # demand — never committed.
 .cache/
+# test_allowlist.sh case-19 scratch fixture (temperloop#1552): an in-repo
+# untracked-ceiling fixture that must NOT live under .temperloop/ (a path
+# there trips COMMITTED-LOCATION and shadows the COMMITTED-NOT-TRACKED
+# assertion the case pins). The suite's EXIT trap removes it; gitignored so
+# a fixture stranded by a hard kill can never be swept into a commit.
+/.allowlist-test-fixture-*/
 # write-lane-guard.sh declared-allies registry (temperloop#1028): the real,
 # per-checkout pairing a stranger sets for their own overlay. Tracked example
 # at claude/hooks/write-lane-allies.conf.example; absent by default so a
