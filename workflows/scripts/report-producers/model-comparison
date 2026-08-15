@@ -528,6 +528,13 @@ jq -n \
   | (if $positions_present | not then null
      elif $counterbalanced | not then false
      else ($order_comparable | not) end) as $comparison_is_clean
+  | (($base + $cand)
+     | map(select(.candidate.outcome == "scored" and wu != null))
+     | map(.candidate.model // "unknown") | unique) as $scored_models
+  | (if $price_table == null then []
+     else ($scored_models | map(select(($price_table[.] // null) != null))) end) as $priced_models
+  | (if $price_table == null then $scored_models
+     else ($scored_models | map(select(($price_table[.] // null) == null))) end) as $excluded_models
   | {
       arms: {baseline: ($base | armblock), candidate: ($cand | armblock)},
 
@@ -605,26 +612,20 @@ jq -n \
                             | group_by(.candidate.model // "unknown")
                             | map({key: (.[0].candidate.model // "unknown"), value: (map(wu) | add)})
                             | from_entries),
-        priced_models: (if $price_table == null then []
-                        else (($base + $cand)
-                              | map(select(.candidate.outcome == "scored" and wu != null))
-                              | map(.candidate.model // "unknown") | unique
-                              | map(select(($price_table[.] // null) != null))) end),
-        excluded_models: (if $price_table == null then
-                            (($base + $cand)
-                             | map(select(.candidate.outcome == "scored" and wu != null))
-                             | map(.candidate.model // "unknown") | unique)
-                          else (($base + $cand)
-                                | map(select(.candidate.outcome == "scored" and wu != null))
-                                | map(.candidate.model // "unknown") | unique
-                                | map(select(($price_table[.] // null) == null))) end),
+        priced_models: $priced_models,
+        excluded_models: $excluded_models,
         estimate_usd: (if $price_table == null then null
+                       elif ($priced_models | length) == 0 then null
                        else (($base + $cand)
                              | map(select(.candidate.outcome == "scored" and wu != null))
                              | map(select(($price_table[.candidate.model // "unknown"] // null) != null))
                              | map(wu * ($price_table[.candidate.model // "unknown"]) / 1000000)
                              | add // 0
-                             | ((. * 10000) | round) / 10000) end)
+                             | ((. * 10000) | round) / 10000) end),
+        estimate_usd_unavailable_reason:
+          (if $price_table != null and ($priced_models | length) == 0 and ($excluded_models | length) > 0
+           then "every model in this comparison is absent from the price table in effect — excluded by name: \($excluded_models | join(", ")) — reported as unavailable rather than as 0, which would falsely read as free"
+           else null end)
       }
     }' >"$DERIVED" 2>/dev/null \
   || skip "could not derive the per-arm figures from the two record arms — refusing to report a partial roll-up"
@@ -830,6 +831,7 @@ report_json="$(jq -n \
           as_of: (if $price_as_of == "" then null else $price_as_of end),
           staleness: $staleness,
           estimate_usd: $d.pricing_inputs.estimate_usd,
+          estimate_usd_unavailable_reason: $d.pricing_inputs.estimate_usd_unavailable_reason,
           priced_models: $d.pricing_inputs.priced_models,
           excluded_models: $d.pricing_inputs.excluded_models,
           excluded_models_note: "a model with no matching price in whichever table is in effect is EXCLUDED from the estimate by name, never back-filled from another table"
