@@ -16,7 +16,7 @@
 #      it even consults the spend gate — when an arm has no seam.
 #   2. THE CANARY. `$WORK/bin` is prepended to PATH for the WHOLE suite and
 #      contains a `claude` that records its own invocation to `$WORK/CANARY`.
-#      Section J asserts that file never came into existence, and check J2
+#      Section L asserts that file never came into existence, and check L2
 #      proves the canary is genuinely capable of firing. Section H MUTATES
 #      the driver's candidate-arm seam selection (in a throwaway mirror of
 #      the module) to force `--live`, and proves the canary DOES fire — so
@@ -57,7 +57,14 @@
 #      completion rate derived from intact legs can never sit beside an arm
 #      file that no longer holds them (+ MUTATION PROOF that restoring the
 #      pre-fix judge substitution corrupts the arm and the driver says so)
-#   K  the suite-wide no-live-call canary verdict
+#   K  THE CIRCUIT BREAKER (temperloop#1554) — a systemically unavailable
+#      spawn path STOPS the batch instead of being hammered to the end of the
+#      corpus; the stop is distinguishable from a completed-but-degraded run;
+#      the skipped legs are NOT ATTEMPTED rather than integration errors and a
+#      resume re-drives them; and an isolated failure below the threshold, or
+#      a run of errors whose STAGE keeps changing, still runs to completion
+#      (+ MUTATION PROOF that disarming the breaker runs the whole corpus out)
+#   L  the suite-wide no-live-call canary verdict
 #
 # Usage: bash workflows/scripts/model-comparison/tests/test_replay_batch.sh
 #
@@ -89,7 +96,7 @@ mkdir -p "$WORK/bin"
 cat >"$WORK/bin/claude" <<EOF
 #!/usr/bin/env bash
 # Suite canary: if anything under test invokes a bare 'claude', this records
-# it. Section I fails the whole suite if this file exists at the end.
+# it. Section L fails the whole suite if this file exists at the end.
 printf 'INVOKED %s\n' "\$*" >>"$CANARY"
 exit 0
 EOF
@@ -1046,19 +1053,255 @@ jq -e '.completion.rate_caveat | type == "string" and (length > 20)' <<<"$OUT" >
 ok "J2 MUTATION PROOF: the pre-fix judge substitution corrupts the arm file, and the driver REPORTS the mismatch instead of a clean 1.0 completion rate over it"
 
 # ═══════════════════════════════════════════════════════════════════════════
-# SECTION K — the suite-wide no-live-call verdict.
+# SECTION K — THE CIRCUIT BREAKER (temperloop#1554).
+#
+# Section D pins that ONE leg's failure does not abort the batch. This section
+# pins the opposite end of the same axis: when the SPAWN PATH itself has gone
+# systemically unavailable, continuing is the worst available response. On the
+# first live batch 14 records replayed over ~3.1h and then every remaining leg
+# fast-failed in ~4-5s — 28 consecutive `candidate-spawn` integration errors,
+# almost certainly a rate limit, hammered ~5s apart to the end of the corpus.
+#
+# Four properties, each measured rather than asserted:
+#   K1/K2  a runner that fails unconditionally STOPS the batch at the
+#          configured threshold, reports the un-attempted remainder BY COUNT,
+#          and is distinguishable from a completed-but-degraded run (its own
+#          outcome and its own exit code, not 4)
+#   K3     the skipped legs are recorded NOT ATTEMPTED, never integration
+#          errors — and a --retry-failed resume re-drives exactly them
+#   K4     isolated failures BELOW the threshold still run to completion
+#          (the continue-on-error default survives underneath the breaker)
+#   K5     the streak keys on the STAGE: six consecutive integration errors
+#          whose stage alternates never trip a threshold of 2, which a
+#          stage-blind counter would have tripped on the second leg
+#   K6     MUTATION PROOF — with the breaker disarmed the very same input runs
+#          the whole corpus out and exits 0, which is the pre-fix behaviour
+# ═══════════════════════════════════════════════════════════════════════════
+
+# CORPUS_CB — 4 eligible records (8 legs) driven at a threshold of 2, so the
+# breaker trips on the second leg and 6 legs across 3 whole records are left
+# un-attempted. The threshold is passed as the SETTING, never a flag: that is
+# what proves it is config-named rather than a literal in the driver.
+CORPUS_CB="$WORK/corpus-cb.jsonl"
+{ mk_corpus_line 401 eligible "$BASE"
+  mk_corpus_line 402 eligible "$BASE"
+  mk_corpus_line 403 eligible "$BASE"
+  mk_corpus_line 404 eligible "$BASE"; } >"$CORPUS_CB"
+
+# The systemically-unavailable runner: every call fails the same way, which
+# replay.sh execute turns into a `candidate-spawn` integration-error record.
+CB_LOG="$WORK/cb-calls.log"; : >"$CB_LOG"
+CB_STUB="$WORK/stub-cb-unavailable.sh"
+cat >"$CB_STUB" <<STUBEOF
+#!/usr/bin/env bash
+set -u
+printf 'cb %s\n' "\$1" >>"$CB_LOG"
+echo "API error 429: rate limit exceeded" >&2
+exit 1
+STUBEOF
+chmod +x "$CB_STUB"
+
+CB_OUT="$WORK/out-cb"; CB_STATE="$WORK/state-cb"
+
+# K1 — the batch STOPS at the threshold instead of running the corpus out.
+count
+: >"$CB_LOG"
+DRIVE_ARGS=(--corpus-file "$CORPUS_CB" --repo-root "$REPO" --out-dir "$CB_OUT" --state-dir "$CB_STATE"
+            --baseline-runner "bash $CB_STUB" --candidate-runner "bash $CB_STUB"
+            --judge-runner "bash $JUDGE_STUB" --confirm)
+drive "" MODEL_COMPARISON_BATCH_MAX_CONSECUTIVE_STAGE_ERRORS=2
+cb_calls="$(wc -l <"$CB_LOG" | tr -d ' ')"
+[ "$(jq -r '.legs.planned_n' <<<"$OUT")" = "8" ] || fail "K1: 4 records x 2 arms = 8 planned replays, got: $(jq -c .legs <<<"$OUT")"
+[ "$cb_calls" = "2" ] \
+  || fail "K1: the driver should have stopped after 2 consecutive same-stage integration errors, but invoked the runner $cb_calls times — it ran the corpus out"
+[ "$(jq -r '.circuit_breaker.tripped' <<<"$OUT")" = "true" ] \
+  || fail "K1: the circuit breaker must report itself tripped: $(jq -c .circuit_breaker <<<"$OUT")"
+[ "$(jq -r '.circuit_breaker.stage' <<<"$OUT")" = "candidate-spawn" ] \
+  || fail "K1: the breaker must NAME the stage that kept failing: $(jq -c .circuit_breaker <<<"$OUT")"
+[ "$(jq -r '.circuit_breaker.threshold' <<<"$OUT")" = "2" ] \
+  || fail "K1: the threshold must be the configured one: $(jq -c .circuit_breaker <<<"$OUT")"
+[ "$(jq -r '.circuit_breaker.setting' <<<"$OUT")" = "MODEL_COMPARISON_BATCH_MAX_CONSECUTIVE_STAGE_ERRORS" ] \
+  || fail "K1: the breaker must name the SETTING it reads, so the threshold is never a literal: $(jq -c .circuit_breaker <<<"$OUT")"
+[ "$(jq -r '.judge.ran' <<<"$OUT")" = "false" ] \
+  || fail "K1: the judge pass spawns through the same seam that just went unavailable and must be skipped: $(jq -c .judge <<<"$OUT")"
+grep -qi 'circuit breaker' <<<"$(jq -r '.judge.reason' <<<"$OUT")" \
+  || fail "K1: the judge skip must NAME the circuit breaker as its reason, never skip silently: $(jq -c .judge <<<"$OUT")"
+ok "K1 a systemically unavailable runner stops the batch after $cb_calls legs instead of all 8, and the judge pass is skipped with a NAMED reason"
+
+# K2 — the stop is DISTINGUISHABLE from a completed-but-degraded batch, and
+#      says how much was never attempted.
+count
+[ "$RC" -eq 5 ] \
+  || fail "K2: an early stop must have its own exit code (5), not the completed-but-degraded 4, got $RC: $(jq -c .degradations <<<"$OUT")"
+[ "$(jq -r '.outcome' <<<"$OUT")" = "BATCH_STOPPED_EARLY" ] \
+  || fail "K2: expected BATCH_STOPPED_EARLY, got: $(jq -r .outcome <<<"$OUT")"
+[ "$(jq -r '.legs.not_attempted_n' <<<"$OUT")" = "6" ] \
+  || fail "K2: 6 of the 8 planned legs were never attempted: $(jq -c .legs <<<"$OUT")"
+[ "$(jq -r '.circuit_breaker.records_not_attempted_n' <<<"$OUT")" = "3" ] \
+  || fail "K2: 3 whole corpus records were never attempted at all: $(jq -c .circuit_breaker <<<"$OUT")"
+[ "$(jq -r '.circuit_breaker.not_attempted | length' <<<"$OUT")" = "6" ] \
+  || fail "K2: every un-attempted leg must be NAMED with its arm and ref: $(jq -c .circuit_breaker <<<"$OUT")"
+[ "$(jq -r '[.degradations[] | select(.kind == "circuit_breaker_tripped")] | length' <<<"$OUT")" = "1" ] \
+  || fail "K2: the early stop must be a NAMED degradation: $(jq -c .degradations <<<"$OUT")"
+[ "$(jq -r '[.degradations[] | select(.kind == "leg_failures")] | length' <<<"$OUT")" = "0" ] \
+  || fail "K2: an un-attempted leg is not a failed leg — leg_failures must not fire: $(jq -c .degradations <<<"$OUT")"
+[ "$(jq -r '.legs.failed_n' <<<"$OUT")" = "0" ] \
+  || fail "K2: no leg FAILED here (both attempted legs produced records): $(jq -c .legs <<<"$OUT")"
+[ "$(jq -r '.legs.integration_error_n' <<<"$OUT")" = "2" ] \
+  || fail "K2: exactly the 2 attempted legs are integration errors: $(jq -c .legs <<<"$OUT")"
+ok "K2 the early stop is its own outcome (BATCH_STOPPED_EARLY / exit 5), names 6 un-attempted legs across 3 never-attempted records, and is not dressed as a degraded-but-complete run"
+
+# K3 — the skipped legs are NOT ATTEMPTED on disk, never integration errors,
+#      and a --retry-failed resume re-drives exactly them.
+count
+cb_na="$(grep -l '"not-attempted"' "$CB_STATE"/legs/*/*.state.json 2>/dev/null | wc -l | tr -d ' ')"
+cb_ie="$(grep -l '"integration-error"' "$CB_STATE"/legs/*/*.state.json 2>/dev/null | wc -l | tr -d ' ')"
+[ "$cb_na" = "6" ] || fail "K3: expected 6 not-attempted leg states on disk, got $cb_na"
+[ "$cb_ie" = "2" ] || fail "K3: expected exactly 2 integration-error leg states on disk, got $cb_ie"
+[ ! -e "$CB_STATE/legs/baseline/002-pr-402.json" ] \
+  || fail "K3: an un-attempted leg must leave NO leg record — it produced nothing"
+[ "$(lines "$CB_OUT/candidate.jsonl")" = "1" ] \
+  || fail "K3: only the one attempted candidate leg may reach the arm file: $(cat "$CB_OUT/candidate.jsonl")"
+: >"$CAND_LOG"
+DRIVE_ARGS=(--corpus-file "$CORPUS_CB" --repo-root "$REPO" --out-dir "$CB_OUT" --state-dir "$CB_STATE"
+            --baseline-runner "bash $BASE_STUB" --candidate-runner "bash $CAND_STUB"
+            --judge-runner "bash $JUDGE_STUB" --retry-failed --confirm)
+drive "" MODEL_COMPARISON_BATCH_MAX_CONSECUTIVE_STAGE_ERRORS=2
+[ "$RC" -eq 0 ] || fail "K3: the resumed batch should complete, got $RC: $(jq -c '.degradations' <<<"$OUT") $(tail -c 400 "$WORK/last-stderr.txt")"
+[ "$(wc -l <"$CAND_LOG" | tr -d ' ')" = "6" ] \
+  || fail "K3: the resume must re-drive exactly the 6 un-attempted legs, got $(wc -l <"$CAND_LOG"): $(cat "$CAND_LOG")"
+[ "$(jq -r '.legs.not_attempted_n' <<<"$OUT")" = "0" ] \
+  || fail "K3: nothing should remain un-attempted after the resume: $(jq -c .legs <<<"$OUT")"
+[ "$(jq -r '.legs.resumed_n' <<<"$OUT")" = "2" ] \
+  || fail "K3: the 2 legs that DID produce integration-error records must be resumed, not re-spent: $(jq -c .legs <<<"$OUT")"
+[ "$(jq -r '.circuit_breaker.tripped' <<<"$OUT")" = "false" ] \
+  || fail "K3: the resumed run must not inherit the previous run's tripped breaker: $(jq -c .circuit_breaker <<<"$OUT")"
+[ "$(jq -r '.outcome' <<<"$OUT")" = "BATCH_COMPLETE" ] \
+  || fail "K3: the resumed run exhausted the corpus and must say so: $(jq -r .outcome <<<"$OUT")"
+[ "$(lines "$CB_OUT/candidate.jsonl")" = "4" ] \
+  || fail "K3: all 4 records must reach the candidate arm after the resume"
+ok "K3 the breaker's skipped legs are recorded not-attempted (not integration errors), and a --retry-failed resume re-drives exactly those 6 without re-spending the 2 that produced records"
+
+# K4 — an isolated failure BELOW the threshold still runs to completion: the
+#      continue-on-error default of section D survives underneath the breaker.
+count
+CORPUS_SCATTER="$WORK/corpus-scatter.jsonl"
+{ mk_corpus_line 501 eligible "$BASE"
+  mk_corpus_line 502 eligible "$BASE"
+  mk_corpus_line 503 eligible "$BASE"; } >"$CORPUS_SCATTER"
+SCATTER_LOG="$WORK/scatter-calls.log"; : >"$SCATTER_LOG"
+SCATTER_STUB="$WORK/stub-scatter.sh"
+cat >"$SCATTER_STUB" <<STUBEOF
+#!/usr/bin/env bash
+set -u
+printf 'scatter %s\n' "\$1" >>"$SCATTER_LOG"
+n="\$(wc -l <"$SCATTER_LOG" | tr -d ' ')"
+if [ \$(( n % 2 )) -eq 1 ]; then
+  echo "API error 500: one-off upstream blip" >&2
+  exit 1
+fi
+wt="\$2"
+cp "$TRUTH_PY" "\$wt/workflows/scripts/drain/scan_stub.py"
+mkdir -p "\$wt/workflows/scripts/drain/tests"
+printf '#!/usr/bin/env bash\necho candidate-test\n' >"\$wt/workflows/scripts/drain/tests/test_scan_stub.sh"
+jq -cn '{type:"result", subtype:"success", is_error:false, duration_ms:4242,
+  modelUsage:{"recorded-scatter-model":{inputTokens:1200, outputTokens:340,
+                     cacheReadInputTokens:9000, cacheCreationInputTokens:120,
+                     provider:"firstParty"}}}'
+STUBEOF
+chmod +x "$SCATTER_STUB"
+SC_OUT="$WORK/out-scatter"; SC_STATE="$WORK/state-scatter"
+DRIVE_ARGS=(--corpus-file "$CORPUS_SCATTER" --repo-root "$REPO" --out-dir "$SC_OUT" --state-dir "$SC_STATE"
+            --baseline-runner "bash $SCATTER_STUB" --candidate-runner "bash $SCATTER_STUB" --confirm)
+drive "" MODEL_COMPARISON_BATCH_MAX_CONSECUTIVE_STAGE_ERRORS=2
+[ "$(wc -l <"$SCATTER_LOG" | tr -d ' ')" = "6" ] \
+  || fail "K4: every one of the 6 legs must still be attempted when no streak reaches the threshold, got $(wc -l <"$SCATTER_LOG")"
+[ "$(jq -r '.circuit_breaker.tripped' <<<"$OUT")" = "false" ] \
+  || fail "K4: alternating failure/success must never trip the breaker — a success resets the streak: $(jq -c .circuit_breaker <<<"$OUT")"
+[ "$(jq -r '.legs.not_attempted_n' <<<"$OUT")" = "0" ] \
+  || fail "K4: nothing may be skipped below the threshold: $(jq -c .legs <<<"$OUT")"
+[ "$(jq -r '.legs.integration_error_n' <<<"$OUT")" = "3" ] \
+  || fail "K4: the 3 isolated failures must still be recorded as integration errors: $(jq -c .legs <<<"$OUT")"
+[ "$(jq -r '.legs.completed_n' <<<"$OUT")" = "6" ] \
+  || fail "K4: the batch ran to completion, got: $(jq -c .legs <<<"$OUT")"
+[ "$RC" -eq 0 ] \
+  || fail "K4: a batch of isolated failures below the threshold is not an early stop, got $RC: $(jq -c .degradations <<<"$OUT")"
+ok "K4 isolated failures below the threshold still run the corpus to completion — a success resets the streak and the continue-on-error default is preserved"
+
+# K5 — the streak keys on the STAGE. Six CONSECUTIVE integration errors whose
+#      stage alternates (candidate-spawn / envelope-parse) never trip a
+#      threshold of 2; a stage-blind counter would have stopped at leg 2.
+count
+MIXED_LOG="$WORK/mixed-calls.log"; : >"$MIXED_LOG"
+MIXED_STUB="$WORK/stub-mixed-stage.sh"
+cat >"$MIXED_STUB" <<STUBEOF
+#!/usr/bin/env bash
+set -u
+printf 'mixed %s\n' "\$1" >>"$MIXED_LOG"
+n="\$(wc -l <"$MIXED_LOG" | tr -d ' ')"
+if [ \$(( n % 2 )) -eq 1 ]; then
+  echo "API error 429: rate limit exceeded" >&2
+  exit 1
+fi
+printf 'this is not a JSON envelope at all\n'
+exit 0
+STUBEOF
+chmod +x "$MIXED_STUB"
+MX_OUT="$WORK/out-mixed"; MX_STATE="$WORK/state-mixed"
+DRIVE_ARGS=(--corpus-file "$CORPUS_SCATTER" --repo-root "$REPO" --out-dir "$MX_OUT" --state-dir "$MX_STATE"
+            --baseline-runner "bash $MIXED_STUB" --candidate-runner "bash $MIXED_STUB" --confirm)
+drive "" MODEL_COMPARISON_BATCH_MAX_CONSECUTIVE_STAGE_ERRORS=2
+[ "$(wc -l <"$MIXED_LOG" | tr -d ' ')" = "6" ] \
+  || fail "K5: all 6 legs must run — no STAGE ever repeated consecutively, got $(wc -l <"$MIXED_LOG")"
+[ "$(jq -r '.circuit_breaker.tripped' <<<"$OUT")" = "false" ] \
+  || fail "K5: a stage-blind counter would have tripped here; the breaker must key on the stage: $(jq -c .circuit_breaker <<<"$OUT")"
+[ "$(jq -r '.legs.integration_error_n' <<<"$OUT")" = "6" ] \
+  || fail "K5: all 6 legs are integration errors, just not of the same stage: $(jq -c .legs <<<"$OUT")"
+# The driver runs baseline-then-candidate per record and the stub alternates on
+# its own call index, so the EXECUTED sequence really is spawn, parse, spawn,
+# parse, spawn, parse — one arm ends up holding every candidate-spawn and the
+# other every envelope-parse. Assert that shape rather than assume it: if the
+# fixture ever stopped alternating leg by leg, K5 would be a tautology.
+mx_base_stages="$(jq -r '.candidate.integration_error.stage' <"$MX_OUT/baseline.jsonl" | sort -u | tr '\n' ',')"
+mx_cand_stages="$(jq -r '.candidate.integration_error.stage' <"$MX_OUT/candidate.jsonl" | sort -u | tr '\n' ',')"
+{ [ "$mx_base_stages" = "candidate-spawn," ] && [ "$mx_cand_stages" = "envelope-parse," ]; } \
+  || fail "K5: the fixture did not actually alternate stages leg by leg, so this proves nothing: baseline=$mx_base_stages candidate=$mx_cand_stages"
+ok "K5 six CONSECUTIVE integration errors of ALTERNATING stage (${mx_base_stages}${mx_cand_stages}) never trip a threshold of 2 — the streak keys on the STAGE, which a stage-blind counter would have stopped at leg 2"
+
+# K6 — MUTATION PROOF. Disarm the breaker (its own documented 0 value) and the
+#      very same unconditionally-failing runner runs the whole corpus out and
+#      exits 0 — which is exactly the pre-#1554 behaviour K1/K2 exist to end.
+count
+CB0_OUT="$WORK/out-cb-disarmed"; CB0_STATE="$WORK/state-cb-disarmed"
+: >"$CB_LOG"
+DRIVE_ARGS=(--corpus-file "$CORPUS_CB" --repo-root "$REPO" --out-dir "$CB0_OUT" --state-dir "$CB0_STATE"
+            --baseline-runner "bash $CB_STUB" --candidate-runner "bash $CB_STUB" --confirm)
+drive "" MODEL_COMPARISON_BATCH_MAX_CONSECUTIVE_STAGE_ERRORS=0
+cb0_calls="$(wc -l <"$CB_LOG" | tr -d ' ')"
+[ "$cb0_calls" = "8" ] \
+  || fail "K6: the mutation proof did not fire — with the breaker disarmed all 8 legs should have been hammered, got $cb0_calls"
+[ "$(jq -r '.circuit_breaker.armed' <<<"$OUT")" = "false" ] \
+  || fail "K6: a threshold of 0 must report the breaker as DISARMED, never silently absent: $(jq -c .circuit_breaker <<<"$OUT")"
+[ "$RC" -eq 0 ] \
+  || fail "K6: the pre-fix shape reported a clean exit over 8 consecutive integration errors; got $RC"
+[ "$(jq -r '.legs.not_attempted_n' <<<"$OUT")" = "0" ] \
+  || fail "K6: a disarmed breaker skips nothing: $(jq -c .legs <<<"$OUT")"
+ok "K6 MUTATION PROOF: with the breaker disarmed the same unavailable runner is hammered for all $cb0_calls legs and the run exits 0 — K1/K2's stop is a measurement, not a restatement"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SECTION L — the suite-wide no-live-call verdict.
 # ═══════════════════════════════════════════════════════════════════════════
 count
 if [ -e "$CANARY" ]; then
-  fail "K1: A LIVE MODEL CALL WAS ATTEMPTED during this suite: $(cat "$CANARY")"
+  fail "L1: A LIVE MODEL CALL WAS ATTEMPTED during this suite: $(cat "$CANARY")"
 fi
-ok "K1 no test in this suite ever invoked a 'claude' binary"
+ok "L1 no test in this suite ever invoked a 'claude' binary"
 
 count
 "$WORK/bin/claude" --self-test >/dev/null 2>&1
-[ -e "$CANARY" ] || fail "K2: the canary itself does not work, so K1 proves nothing"
+[ -e "$CANARY" ] || fail "L2: the canary itself does not work, so L1 proves nothing"
 rm -f "$CANARY"
-ok "K2 the canary is genuinely capable of firing (so K1 is a measurement, not a tautology)"
+ok "L2 the canary is genuinely capable of firing (so L1 is a measurement, not a tautology)"
 
 echo
 echo "test_replay_batch.sh: $pass/$total checks passed"

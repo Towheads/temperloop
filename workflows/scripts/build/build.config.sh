@@ -1133,6 +1133,24 @@ fi
 # runtime state, which .temperloop/.gitignore already excludes from the tree.
 : "${MODEL_COMPARISON_REPORT_RECORDS_DIR:=.temperloop/model-comparison}"
 
+# ── Batch driver circuit breaker (temperloop#1554, epic #1225) ─────────────
+# workflows/scripts/model-comparison/batch.sh stops executing further legs
+# once this many CONSECUTIVE integration errors carrying the SAME
+# `integration_error.stage` land. The counter resets on any leg that scores
+# and re-keys (back to 1) on a different stage, so a scatter of unrelated
+# per-record incompatibilities never trips it while a systemically
+# unavailable spawn path does.
+#
+# Why 5: the first live batch replayed 14 records successfully over ~3.1h and
+# then fast-failed every remaining leg in ~4-5s — 28 consecutive
+# `candidate-spawn` errors, almost certainly a rate/usage limit, hammered to
+# the end of the corpus. With two arms per record, 5 legs is ~2.5 whole
+# records' worth of the same failure back to back: comfortably above the 1-2
+# legs a genuine single-record incompatibility produces, and far below the 28
+# that run spent re-proving the endpoint was still unavailable. Set 0 to
+# disable the breaker entirely (the pre-#1554 run-the-corpus-out behaviour).
+: "${MODEL_COMPARISON_BATCH_MAX_CONSECUTIVE_STAGE_ERRORS:=5}"
+
 export BUILD_QUOTA_PAUSE_PCT BUILD_QUOTA_CACHE BUILD_QUOTA_WAIT_BUFFER \
        BUILD_QUOTA_MAX_AGE BUILD_MERGE_GATE_WINDOW BUILD_QUEUE_TIMEOUT BUILD_QUEUE_STALL_AFTER \
        BUILD_HEADLESS_POLL_TIMEOUT \
@@ -1164,4 +1182,5 @@ export BUILD_QUOTA_PAUSE_PCT BUILD_QUOTA_CACHE BUILD_QUOTA_WAIT_BUFFER \
        REPLAY_CANDIDATE_TIMEOUT_SECS REPLAY_SCORE_GATE_RELPATH REPLAY_SCORE_GATE_TIMEOUT_SECS \
        MODEL_COMPARISON_JUDGE_MODEL MODEL_COMPARISON_JUDGE_TIMEOUT_SECS \
        MODEL_COMPARISON_JUDGE_ROTATION_ENABLED MODEL_COMPARISON_JUDGE_ROTATION_MIN_JUDGES \
-       MODEL_COMPARISON_REPORT_RECORDS_DIR
+       MODEL_COMPARISON_REPORT_RECORDS_DIR \
+       MODEL_COMPARISON_BATCH_MAX_CONSECUTIVE_STAGE_ERRORS
