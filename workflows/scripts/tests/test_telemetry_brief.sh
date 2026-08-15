@@ -276,68 +276,105 @@ assert_has "$out" "worker — · CI — · merge-group — · gate-wait — · e
 assert_has "$out" "per epic (unattributed):" "8b a record with no epic rolls up under (unattributed), not under a made-up epic"
 
 
-# ── 9. PIPELINE stream default equals the WRITER's absolute pin ─────────────
+# ── 9. PIPELINE stream default equals the WRITER's absolute pin, EXCEPT an
+#    explicitly-set TELEMETRY_RAW_DIR still wins (three-way resolution) ──────
 # (temperloop#1564, the sibling defect temperloop#1185 already fixed in
-# pipeline-retro-health.sh). pipeline-cron.sh:299 (the writer) pins the
-# pipeline stream's default to the ABSOLUTE, checkout-independent
-# $HOME/dev/foundation/meta/data/raw — deliberately, so a cron sandbox
-# checkout still writes into the MAIN checkout's lake. This renderer (the
-# reader) must fall back to that SAME absolute literal, not the
-# checkout-relative $TELEMETRY_RAW_DIR the other three per-stream dirs use —
-# otherwise, invoked with PIPELINE_RAW_DIR unset from any checkout other than
-# $HOME/dev/foundation, it silently reads an empty directory instead of the
-# writer's lake.
+# pipeline-retro-health.sh — see that fix's own tests 15-17). pipeline-cron.sh:299
+# (the writer) pins the pipeline stream's default to the ABSOLUTE,
+# checkout-independent $HOME/dev/foundation/meta/data/raw — deliberately, so a
+# cron sandbox checkout still writes into the MAIN checkout's lake. This
+# renderer (the reader) must fall back to that SAME absolute literal when
+# NEITHER PIPELINE_RAW_DIR nor an explicit TELEMETRY_RAW_DIR was given — but an
+# explicitly-set TELEMETRY_RAW_DIR is a deliberate escape hatch (e.g. a
+# sandboxed telemetry-brief run) and must still win for the pipeline stream
+# too, exactly as it does for the other three per-stream dirs.
 echo "pipeline stream root convergence (temperloop#1564):"
 
-# 9a. Literal equality: the reader's fallback literal must be byte-identical
-# to the writer's own default literal in pipeline-cron.sh:299 — never
-# re-derived from $raw_root/$TELEMETRY_RAW_DIR.
+# 9a. Literal equality: the reader's absolute-pin fallback literal must be
+# byte-identical to the writer's own default literal in pipeline-cron.sh:299
+# — never re-derived from $raw_root/$TELEMETRY_RAW_DIR. Both patterns are
+# anchored with ^ so an unrelated seam elsewhere in either file (e.g.
+# pipeline-cron.sh:194's BACKFILL_TO, which shares the identical
+# ${PIPELINE_RAW_DIR:-...} default but a different variable name) can never
+# be matched instead. This is expected to go RED if either literal is
+# reformatted — the [ -n … ] guards below still fail safe with a legible
+# cron=/brief= message rather than a false pass, so don't go hunting for a
+# behavioral divergence that isn't there; just re-sync the literals.
 CRON_SCRIPT="$REPO/workflows/scripts/build/pipeline-cron.sh"
-cron_literal="$(grep -oE 'RAW_DIR="\$\{PIPELINE_RAW_DIR:-[^}]*\}"' "$CRON_SCRIPT" \
-  | sed -E 's/^RAW_DIR="\$\{PIPELINE_RAW_DIR:-(.*)\}"$/\1/')"
-brief_literal="$(grep -oE 'pipeline_dir="\$\{PIPELINE_RAW_DIR:-[^}]*\}"' "$SCRIPT" \
-  | sed -E 's/^pipeline_dir="\$\{PIPELINE_RAW_DIR:-(.*)\}"$/\1/')"
+cron_literal="$(grep -oE '^[[:space:]]*RAW_DIR="\$\{PIPELINE_RAW_DIR:-[^}]*\}"' "$CRON_SCRIPT" \
+  | sed -E 's/^[[:space:]]*RAW_DIR="\$\{PIPELINE_RAW_DIR:-(.*)\}"$/\1/')"
+# shellcheck disable=SC2016  # intentional: single-quoted so the pattern matches the literal $HOME text, not a shell-expanded value
+brief_literal="$(grep -oE '^[[:space:]]*pipeline_dir="\$HOME/dev/foundation/meta/data/raw"' "$SCRIPT" \
+  | sed -E 's/^[[:space:]]*pipeline_dir="(.*)"$/\1/')"
 if [ -n "$cron_literal" ] && [ -n "$brief_literal" ] && [ "$cron_literal" = "$brief_literal" ]; then
   ok "pipeline-cron.sh's writer default ($cron_literal) matches telemetry-brief.sh's reader default verbatim"
 else
   fail_test "reader/writer literal equality" "cron=$cron_literal brief=$brief_literal"
 fi
 
-# 9b. Behavioral convergence: with PIPELINE_RAW_DIR unset, HOME faked to a
-# scratch dir, and TELEMETRY_RAW_DIR pointed at a DIFFERENT, empty dir (so
-# following $TELEMETRY_RAW_DIR instead of the writer's literal is
-# observable), the pipeline records the "writer" placed under
-# $HOME/dev/foundation/meta/data/raw must be the ones this renderer reads —
-# reader and writer converge on the SAME directory. This is invoked with a
-# Bash cwd inside this worktree checkout (NOT $HOME/dev/foundation), so a
-# checkout-relative resolution would land somewhere else entirely.
+# 9b. Behavioral convergence: with PIPELINE_RAW_DIR AND TELEMETRY_RAW_DIR both
+# UNSET, and HOME faked to a scratch dir, the pipeline records the "writer"
+# placed under $HOME/dev/foundation/meta/data/raw must be the ones this
+# renderer reads — reader and writer converge on the SAME directory. This is
+# invoked with a Bash cwd inside this worktree checkout (NOT
+# $HOME/dev/foundation), so a checkout-relative resolution would land
+# somewhere else entirely. The six sibling *_RAW_DIR overrides below isolate
+# the other streams; this repo's real meta/data/raw/ holds no
+# pipeline-*.jsonl, so a checkout-relative $raw_root resolution stays
+# observably distinct from $FAKE_HOME even without pinning TELEMETRY_RAW_DIR
+# to a wrong dir.
 #
-# Against the UNFIXED script (pipeline_dir="${PIPELINE_RAW_DIR:-$TELEMETRY_RAW_DIR}")
-# this diverges: pipeline_dir would resolve to the empty $wrong_telemetry_dir
-# instead, so the fixture's drive-error record would never be seen and the
-# assertions below would instead see "no data yet — pipeline stream is
-# empty" — i.e. this case FAILS against the unfixed script and PASSES only
-# once the reader's fallback matches the writer's absolute literal.
+# Against a two-way implementation (pipeline_dir="${PIPELINE_RAW_DIR:-$HOME/...}")
+# this still passes — the divergence a two-way form introduces only shows up
+# in 9c below, where an explicit TELEMETRY_RAW_DIR is set and must be honored.
 FAKE_HOME="$TMP/fakehome9"
 writer_pipeline_dir="$FAKE_HOME/dev/foundation/meta/data/raw"
 mkdir -p "$writer_pipeline_dir"
 cat > "$writer_pipeline_dir/pipeline-${month}.jsonl" <<EOF
 {"event":"drive","status":"error","date":"2026-07-16","duration_ms":100,"reason":"driver-failed","context":"boom","ts":"$now_ts"}
 EOF
-wrong_telemetry_dir="$TMP/wrong-telemetry-9"
 empty_other_streams="$TMP/other-streams-9"
-mkdir -p "$wrong_telemetry_dir" "$empty_other_streams"
+mkdir -p "$empty_other_streams"
 out9="$(
   HOME="$FAKE_HOME" \
   CMD_RUN_RAW_DIR="$empty_other_streams" ISSUE_TOUCHES_RAW_DIR="$empty_other_streams" \
   CLAIMS_RAW_DIR="$empty_other_streams" GH_CALLS_RAW_DIR="$empty_other_streams" \
   KS_SEARCH_FALLBACK_RAW_DIR="$empty_other_streams" ITEM_EFFICIENCY_RAW_DIR="$empty_other_streams" \
-  TELEMETRY_RAW_DIR="$wrong_telemetry_dir" KNOWLEDGE_READ_LOG="$TMP/absent-reads-9.log" \
+  KNOWLEDGE_READ_LOG="$TMP/absent-reads-9.log" \
     bash "$SCRIPT" 2>&1
 )"; rc9=$?
 assert_rc0 "$rc9" "exit 0 (pipeline root convergence case)"
-assert_has "$out9" "pipeline drive errors (7d): 1" "reader found the writer's fixture under \$HOME/dev/foundation/meta/data/raw with PIPELINE_RAW_DIR unset — reader and writer converged"
-assert_not_has "$out9" "no data yet — pipeline stream is empty" "pipeline stream is NOT reported empty — it did not fall back to the checkout-relative \$TELEMETRY_RAW_DIR"
+assert_has "$out9" "pipeline drive errors (7d): 1" "reader found the writer's fixture under \$HOME/dev/foundation/meta/data/raw with PIPELINE_RAW_DIR and TELEMETRY_RAW_DIR both unset — reader and writer converged"
+assert_not_has "$out9" "no data yet — pipeline stream is empty" "pipeline stream is NOT reported empty — it did not fall back to a checkout-relative guess"
+
+# 9c. A bare TELEMETRY_RAW_DIR override still wins for the PIPELINE stream too
+# (mirrors pipeline-retro-health.sh's test 17 — "a bare TELEMETRY_RAW_DIR
+# override still supplies BOTH the pipeline and retro-runs dirs"). With
+# PIPELINE_RAW_DIR unset and TELEMETRY_RAW_DIR pointed at a sandbox lake
+# holding a drive-error record, the pipeline stream must read THAT sandbox
+# lake, never $HOME/dev/foundation/meta/data/raw. This is the assertion that
+# would have caught a two-way pipeline_dir="${PIPELINE_RAW_DIR:-$HOME/...}"
+# regression (temperloop#1602): against that form, an explicitly-set
+# TELEMETRY_RAW_DIR is silently ignored for this stream and the pipeline
+# section instead reports on whatever (or whoever's) real
+# $HOME/dev/foundation/meta/data/raw happens to hold — a sandboxed run leaking
+# into a live production lake.
+sandbox_lake_9c="$TMP/sandbox-lake-9c"
+empty_other_streams_9c="$TMP/other-streams-9c"
+mkdir -p "$sandbox_lake_9c" "$empty_other_streams_9c"
+cat > "$sandbox_lake_9c/pipeline-${month}.jsonl" <<EOF
+{"event":"drive","status":"error","date":"2026-07-16","duration_ms":100,"reason":"driver-failed","context":"boom","ts":"$now_ts"}
+EOF
+out9c="$(
+  CMD_RUN_RAW_DIR="$empty_other_streams_9c" ISSUE_TOUCHES_RAW_DIR="$empty_other_streams_9c" \
+  CLAIMS_RAW_DIR="$empty_other_streams_9c" GH_CALLS_RAW_DIR="$empty_other_streams_9c" \
+  KS_SEARCH_FALLBACK_RAW_DIR="$empty_other_streams_9c" ITEM_EFFICIENCY_RAW_DIR="$empty_other_streams_9c" \
+  TELEMETRY_RAW_DIR="$sandbox_lake_9c" KNOWLEDGE_READ_LOG="$TMP/absent-reads-9c.log" \
+    bash "$SCRIPT" 2>&1
+)"; rc9c=$?
+assert_rc0 "$rc9c" "exit 0 (explicit TELEMETRY_RAW_DIR pipeline-stream override case)"
+assert_has "$out9c" "pipeline-*.jsonl @ $sandbox_lake_9c" "9c pipeline section names the sandbox lake as its source dir, not the writer's absolute pin"
+assert_has "$out9c" "pipeline drive errors (7d): 1" "9c an explicit TELEMETRY_RAW_DIR still wins for the pipeline stream — the sandbox lake's record was read"
 
 echo
 echo "test_telemetry_brief: $pass passed, $fail failed"

@@ -50,14 +50,17 @@
 #   TELEMETRY_LOOKBACK_DAYS  window for every windowed number (default 7;
 #                            the --lookback-days flag wins over the env var,
 #                            per docs/config-precedence.md layer 1 > layer 2)
-#   TELEMETRY_RAW_DIR        the raw lake dir every stream but PIPELINE falls
-#                            back to when its own emitter's *_RAW_DIR override
-#                            is unset (default: this checkout's meta/data/raw,
-#                            resolved BASH_SOURCE-relative like
-#                            emit-command-run.sh). The PIPELINE stream is the
-#                            deliberate exception — see its own comment below
-#                            (temperloop#1564) — and falls back to the
-#                            writer's absolute pin instead.
+#   TELEMETRY_RAW_DIR        the raw lake dir every stream falls back to when
+#                            its own emitter's *_RAW_DIR override is unset
+#                            (default: this checkout's meta/data/raw, resolved
+#                            BASH_SOURCE-relative like emit-command-run.sh).
+#                            The PIPELINE stream still honors an explicitly-set
+#                            TELEMETRY_RAW_DIR (the shared override must keep
+#                            winning) but falls through to the writer's own
+#                            absolute pin — not this checkout-relative default
+#                            — when NEITHER PIPELINE_RAW_DIR nor
+#                            TELEMETRY_RAW_DIR was set at all; see its own
+#                            comment below (temperloop#1564).
 #   Per-stream overrides honored first, so the reader follows the emitters
 #   wherever they were pointed: CMD_RUN_RAW_DIR, ISSUE_TOUCHES_RAW_DIR,
 #   CLAIMS_RAW_DIR, PIPELINE_RAW_DIR, GH_CALLS_RAW_DIR,
@@ -73,7 +76,20 @@
 set -uo pipefail
 
 here="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+: "${HOME:=/nonexistent}"
 raw_root="$(cd -P "$here/../.." 2>/dev/null && pwd || echo "$HOME/dev/foundation")"
+
+# Captured BEFORE the `:=` below applies this script's own checkout-relative
+# fallback, so the PIPELINE-stream default further down can tell "the
+# operator explicitly pointed the shared TELEMETRY_RAW_DIR fallback
+# somewhere" (which must still win, unchanged) from "nothing was set" (which
+# must fall through to the writer's own absolute pin, not a checkout-relative
+# guess). `+1` tests SET-ness, not emptiness, and — unlike `:-`/`:=`/`-`/`=` —
+# is not a seam operator the setting-registry lint scans for, so this probe
+# doesn't create a second, divergent-literal TELEMETRY_RAW_DIR seam. Mirrors
+# workflows/scripts/build/pipeline-retro-health.sh's identical probe.
+telemetry_raw_dir_set="${TELEMETRY_RAW_DIR+1}"
+
 : "${TELEMETRY_RAW_DIR:=$raw_root/meta/data/raw}"
 : "${TELEMETRY_LOOKBACK_DAYS:=7}"
 
@@ -93,21 +109,37 @@ esac
 cmd_run_dir="${CMD_RUN_RAW_DIR:-$TELEMETRY_RAW_DIR}"
 issue_touch_dir="${ISSUE_TOUCHES_RAW_DIR:-$TELEMETRY_RAW_DIR}"
 claims_dir="${CLAIMS_RAW_DIR:-$TELEMETRY_RAW_DIR}"
-# PIPELINE stream: NOT $TELEMETRY_RAW_DIR like the three siblings above. Its
-# writer, pipeline-cron.sh:299, pins this same stream to an ABSOLUTE,
-# checkout-independent sink on purpose — "the CANONICAL ABSOLUTE SINK...
-# deliberately NOT derived from $FOUNDATION" (that script's own comment,
-# foundation#725), because the cron sandbox checkout must still write into
-# the MAIN checkout's lake. Mirroring the checkout-relative $TELEMETRY_RAW_DIR
-# here would make this reader silently see a DIFFERENT, empty directory
-# whenever it runs from any checkout other than $HOME/dev/foundation
-# (temperloop#1564 — the sibling defect temperloop#1185 already fixed in
-# pipeline-retro-health.sh). So this default is the writer's own literal,
-# duplicated verbatim (setting-registry.tsv's PIPELINE_RAW_DIR row, owning
-# script pipeline-cron.sh — a "non-vendoring-checkout fallback" duplicate,
-# same convention as pipeline-retro-health.sh's own PIPELINE stream default),
-# never re-derived from $raw_root/$TELEMETRY_RAW_DIR.
-pipeline_dir="${PIPELINE_RAW_DIR:-$HOME/dev/foundation/meta/data/raw}"
+# PIPELINE stream: NOT unconditionally $TELEMETRY_RAW_DIR like the three
+# siblings above. Its writer, pipeline-cron.sh:299, pins this stream to an
+# ABSOLUTE, checkout-independent sink on purpose — "the CANONICAL ABSOLUTE
+# SINK... deliberately NOT derived from $FOUNDATION" (that script's own
+# comment, foundation#725), because the cron sandbox checkout must still
+# write into the MAIN checkout's lake. Mirroring the checkout-relative
+# $TELEMETRY_RAW_DIR here UNCONDITIONALLY would make this reader silently see
+# a DIFFERENT, empty directory whenever it runs from any checkout other than
+# $HOME/dev/foundation (temperloop#1564 — the sibling defect temperloop#1185
+# already fixed in pipeline-retro-health.sh). But an EXPLICITLY-set
+# TELEMETRY_RAW_DIR must still win for this stream too (the shared override
+# is an intentional escape hatch, e.g. a sandboxed telemetry-brief run) —
+# telemetry_raw_dir_set (captured above, before the `:=`) tells "explicitly
+# set" apart from "defaulted". Only when NEITHER PIPELINE_RAW_DIR nor an
+# explicit TELEMETRY_RAW_DIR was given does this fall through to the writer's
+# own literal, duplicated verbatim (setting-registry.tsv's PIPELINE_RAW_DIR
+# row, owning script pipeline-cron.sh — a "non-vendoring-checkout fallback"
+# duplicate, same convention as pipeline-retro-health.sh's own PIPELINE
+# stream default), never re-derived from $raw_root. Mirrors
+# pipeline-retro-health.sh:144-154's identical three-way resolution.
+pipeline_dir="${PIPELINE_RAW_DIR:-}"
+if [ -z "$pipeline_dir" ]; then
+  if [ -n "$telemetry_raw_dir_set" ]; then
+    pipeline_dir="$TELEMETRY_RAW_DIR"
+  else
+    # Mirrors pipeline-cron.sh:299's own PIPELINE_RAW_DIR default literal,
+    # byte-for-byte — see the header note above. Do NOT derive this from
+    # $raw_root.
+    pipeline_dir="$HOME/dev/foundation/meta/data/raw"
+  fi
+fi
 # PERMANENT legacy-prefix read (temperloop#767 confirmed this survives the
 # v0.19.0 window close, unlike the env shim and the forwarding stubs): the
 # raw lake is append-only immutable history, so a pre-rename install's
