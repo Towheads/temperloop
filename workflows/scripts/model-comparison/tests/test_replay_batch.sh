@@ -52,7 +52,12 @@
 #      batch before the next leg begins, tears the in-flight worktree down,
 #      and dies with the signal-derived status (+ MUTATION PROOF that the
 #      pre-fix single `trap … EXIT INT TERM` cleans up and CONTINUES)
-#   J  the suite-wide no-live-call canary verdict
+#   J  ARM-FILE RECONCILIATION (temperloop#1556) — the arm file the driver
+#      WROTE is checked against the leg records it COUNTED, so a healthy
+#      completion rate derived from intact legs can never sit beside an arm
+#      file that no longer holds them (+ MUTATION PROOF that restoring the
+#      pre-fix judge substitution corrupts the arm and the driver says so)
+#   K  the suite-wide no-live-call canary verdict
 #
 # Usage: bash workflows/scripts/model-comparison/tests/test_replay_batch.sh
 #
@@ -931,19 +936,129 @@ mut_i_calls="$(wc -l <"$MUT_I_LOG" | tr -d ' ')"
 ok "I3 MUTATION PROOF: the pre-fix single 'trap … EXIT INT TERM' runs the cleanup and CONTINUES all $mut_i_calls legs — I1's stop is load-bearing"
 
 # ═══════════════════════════════════════════════════════════════════════════
-# SECTION J — the suite-wide no-live-call verdict.
+# SECTION J — ARM-FILE RECONCILIATION (temperloop#1556).
+#
+# Every count this driver publishes is derived from the LEG state files,
+# which are written once and never touched again. The ARM FILE is rewritten
+# in place by the judge pass. On the first live batch that gap was
+# load-bearing: judge-batch replaced 14 of 21 records per arm with bare
+# error objects while this driver reported `replay_completion_rate: 1` and
+# 21 records per arm off the intact legs. The summary read healthy over an
+# arm file that was already destroyed, and the operator learned otherwise
+# only when the report producer refused to render.
+#
+# J1 pins the reconciled case over a batch that carries genuinely
+# UNJUDGEABLE legs (an integration-error record has no candidate model and
+# no diff, so no judge could ever score it) — the exact input the live run
+# had. J2 is the MUTATION PROOF: with the pre-fix judge substitution
+# restored in a mirrored judge.sh the arm file IS corrupted, and the driver
+# must say so rather than hand back a clean 1.0 over it.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# A candidate runner that FAILS: replay.sh execute turns a non-zero runner
+# exit into a `candidate-spawn` integration-error record — a real record, so
+# the leg COMPLETES, but one no judge can ever score.
+IE_STUB="$WORK/stub-integration-error.sh"
+cat >"$IE_STUB" <<STUBEOF
+#!/usr/bin/env bash
+set -u
+printf 'ie-stub %s\n' "\$1" >>"$CAND_LOG"
+echo "vendor connection reset" >&2
+exit 3
+STUBEOF
+chmod +x "$IE_STUB"
+
+# J1 — a batch whose candidate arm is entirely integration-error records
+#      still reconciles: every leg record this driver counted is in the arm
+#      file it wrote, the judge pass does not degrade over rows it was never
+#      able to judge, and the report producer still renders.
+count
+IE_OUT="$WORK/out-ie"; IE_STATE="$WORK/state-ie"
+DRIVE_ARGS=(--corpus-file "$CORPUS_A" --repo-root "$REPO" --out-dir "$IE_OUT" --state-dir "$IE_STATE"
+            --baseline-runner "bash $BASE_STUB" --candidate-runner "bash $IE_STUB"
+            --judge-runner "bash $JUDGE_STUB" --confirm)
+drive ""
+[ "$RC" -eq 0 ] \
+  || fail "J1: a batch whose only non-JUDGED rows were unjudgeable BY CONSTRUCTION must not be degraded, got $RC: $(jq -c '.degradations' <<<"$OUT") $(tail -c 400 "$WORK/last-stderr.txt")"
+[ "$(jq -r '.legs.integration_error_n' <<<"$OUT")" = "2" ] \
+  || fail "J1: expected 2 integration-error legs in the candidate arm, got: $(jq -c .legs <<<"$OUT")"
+[ "$(jq -r '.reconciliation.reconciled' <<<"$OUT")" = "true" ] \
+  || fail "J1: both arms should reconcile: $(jq -c .reconciliation <<<"$OUT")"
+[ "$(jq -r '[.reconciliation.per_arm[] | select(.leg_records_counted_n == .arm_records_n)] | length' <<<"$OUT")" = "2" ] \
+  || fail "J1: the arm files must carry exactly the leg records counted: $(jq -c .reconciliation <<<"$OUT")"
+[ "$(jq -r '[.reconciliation.per_arm[] | .foreign_records_n] | add' <<<"$OUT")" = "0" ] \
+  || fail "J1: no arm file line may be a non-record (foreign) object: $(jq -c .reconciliation <<<"$OUT")"
+[ "$(jq -r '.completion.rate_is_over_a_reconciled_arm' <<<"$OUT")" = "true" ] \
+  || fail "J1: the completion rate must be flagged as being over a reconciled arm: $(jq -c .completion <<<"$OUT")"
+[ "$(jq -r '.judge.degraded' <<<"$OUT")" = "false" ] \
+  || fail "J1: judge.degraded must not fire for a batch whose only failures were never-judgeable records: $(jq -c .judge <<<"$OUT")"
+[ "$(jq -s '[.[] | select(.candidate.outcome == "integration-error")] | length' <"$IE_OUT/candidate.jsonl")" = "2" ] \
+  || fail "J1: the candidate arm lost its integration-error records: $(cat "$IE_OUT/candidate.jsonl")"
+prod_ie="$(cd "$REPO" && env MODEL_COMPARISON_REPORT_RECORDS_DIR="$IE_OUT" bash "$SCRIPTS_DIR/report-producers/model-comparison" 2>&1)"
+case "$prod_ie" in
+  skipped\ --*) fail "J1: the report producer skipped over the driver's own mixed arms — the whole-report loss this item exists to fix: $prod_ie" ;;
+esac
+[ "$(jq -r '.arms.candidate.compatibility.integration_error_n' <<<"$prod_ie")" = "2" ] \
+  || fail "J1: the report must state the candidate arm's compatibility split: $(jq -c '.arms.candidate.compatibility' <<<"$prod_ie")"
+ok "J1 an unjudgeable-by-construction arm reconciles, does not degrade the judge pass, and still renders a report with its compatibility split"
+
+# J2 — MUTATION PROOF. Restore the pre-fix judge substitution in a mirrored
+#      judge.sh: the arm file IS corrupted, and the driver must REPORT the
+#      mismatch rather than hand back a clean completion rate over it.
+count
+MUT_J="$WORK/mut-reconcile"; mk_mirror "$MUT_J"
+MUT_J_SUT="$MUT_J/workflows/scripts/model-comparison/batch.sh"
+MUT_J_JUDGE="$MUT_J/workflows/scripts/model-comparison/judge.sh"
+unlink_and_copy "$MUT_J_JUDGE"
+mutate_file "$MUT_J_JUDGE" \
+  '    if _je_unjudgeable_by_construction "$row_file"; then' \
+  '    if false; then'
+mutate_file "$MUT_J_JUDGE" \
+  '    printf '"'"'%s\n'"'"' "$row_final" >>"$out_stream"
+    if [ "$row_rc" -ne 0 ]; then degraded=1; n_degraded=$((n_degraded + 1)); fi' \
+  '    printf '"'"'%s\n'"'"' "$row_out" >>"$out_stream"
+    if [ "$row_rc" -ne 0 ]; then degraded=1; n_degraded=$((n_degraded + 1)); fi'
+MUT_J_OUT="$WORK/out-mut-j"; MUT_J_STATE="$WORK/state-mut-j"
+DRIVE_ARGS=(--corpus-file "$CORPUS_A" --repo-root "$REPO" --out-dir "$MUT_J_OUT" --state-dir "$MUT_J_STATE"
+            --baseline-runner "bash $BASE_STUB" --candidate-runner "bash $IE_STUB"
+            --judge-runner "bash $JUDGE_STUB" --confirm)
+drive "$MUT_J_SUT"
+[ "$(jq -s '[.[] | select((.candidate | type) == "object")] | length' <"$MUT_J_OUT/candidate.jsonl")" = "0" ] \
+  || fail "J2: the mutation proof did not fire — the pre-fix judge should have replaced both integration-error records with bare verdict objects: $(cat "$MUT_J_OUT/candidate.jsonl")"
+[ "$RC" -eq 4 ] \
+  || fail "J2: a batch that wrote a corrupt arm file must exit degraded (4), got $RC"
+[ "$(jq -r '.reconciliation.reconciled' <<<"$OUT")" = "false" ] \
+  || fail "J2: the reconciliation must FAIL over the corrupted arm: $(jq -c .reconciliation <<<"$OUT")"
+[ "$(jq -r '[.reconciliation.per_arm[] | select(.arm == "candidate") | .foreign_records_n] | add' <<<"$OUT")" = "2" ] \
+  || fail "J2: the reconciliation must NAME the 2 non-record lines: $(jq -c .reconciliation <<<"$OUT")"
+[ "$(jq -r '[.reconciliation.per_arm[] | select(.arm == "candidate") | .missing_n] | add' <<<"$OUT")" = "2" ] \
+  || fail "J2: the reconciliation must name the 2 counted records now absent: $(jq -c .reconciliation <<<"$OUT")"
+[ "$(jq -r '[.degradations[] | select(.kind == "arm_reconciliation_mismatch")] | length' <<<"$OUT")" = "1" ] \
+  || fail "J2: the mismatch must be a NAMED degradation: $(jq -c .degradations <<<"$OUT")"
+[ "$(jq -r '.outcome' <<<"$OUT")" = "BATCH_DEGRADED" ] \
+  || fail "J2: a corrupt arm file must not report BATCH_COMPLETE, got: $(jq -r .outcome <<<"$OUT")"
+[ "$(jq -r '.completion.replay_completion_rate' <<<"$OUT")" = "1" ] \
+  || fail "J2: the leg-derived rate is still 1 (every leg produced a record) — that is precisely why the caveat is needed: $(jq -c .completion <<<"$OUT")"
+[ "$(jq -r '.completion.rate_is_over_a_reconciled_arm' <<<"$OUT")" = "false" ] \
+  || fail "J2: a 1.0 rate over a corrupt arm file must be flagged, not handed back clean: $(jq -c .completion <<<"$OUT")"
+jq -e '.completion.rate_caveat | type == "string" and (length > 20)' <<<"$OUT" >/dev/null \
+  || fail "J2: the caveat must be NAMED, never a bare flag: $(jq -c .completion <<<"$OUT")"
+ok "J2 MUTATION PROOF: the pre-fix judge substitution corrupts the arm file, and the driver REPORTS the mismatch instead of a clean 1.0 completion rate over it"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SECTION K — the suite-wide no-live-call verdict.
 # ═══════════════════════════════════════════════════════════════════════════
 count
 if [ -e "$CANARY" ]; then
-  fail "J1: A LIVE MODEL CALL WAS ATTEMPTED during this suite: $(cat "$CANARY")"
+  fail "K1: A LIVE MODEL CALL WAS ATTEMPTED during this suite: $(cat "$CANARY")"
 fi
-ok "J1 no test in this suite ever invoked a 'claude' binary"
+ok "K1 no test in this suite ever invoked a 'claude' binary"
 
 count
 "$WORK/bin/claude" --self-test >/dev/null 2>&1
-[ -e "$CANARY" ] || fail "J2: the canary itself does not work, so J1 proves nothing"
+[ -e "$CANARY" ] || fail "K2: the canary itself does not work, so K1 proves nothing"
 rm -f "$CANARY"
-ok "J2 the canary is genuinely capable of firing (so J1 is a measurement, not a tautology)"
+ok "K2 the canary is genuinely capable of firing (so K1 is a measurement, not a tautology)"
 
 echo
 echo "test_replay_batch.sh: $pass/$total checks passed"

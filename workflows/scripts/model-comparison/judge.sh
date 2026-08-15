@@ -62,11 +62,13 @@
 #           file, the rubric file, the records-file for a batch), or the
 #           record carries no `.candidate.model` to guard against. NO
 #           `judge` sub-object is emitted for a single `judge` call; for
-#           `judge-batch` this ONE row emits a bare CANNOT_EVALUATE line and
-#           the batch continues (never a silent drop — see `judge-batch`
-#           below), while an unreadable/absent/empty RECORDS FILE itself
-#           still CANNOT_EVALUATEs the whole batch (there is nothing to
-#           iterate).
+#           `judge-batch` this ONE row is emitted AS ITS ORIGINAL RECORD
+#           carrying a judgment-absent `judge` sub-object and the batch
+#           continues (never a silent drop, and — since temperloop#1556 —
+#           never a REPLACEMENT of the row either; see `judge-batch` and
+#           § THE BATCH OUTPUT IS THE INPUT, ANNOTATED below), while an
+#           unreadable/absent/empty RECORDS FILE itself still
+#           CANNOT_EVALUATEs the whole batch (there is nothing to iterate).
 #   exit 2  REFUSED — the judge≠candidate guard fired. NO judge sub-object
 #           is emitted (no call was ever made) — the bare record's `judge`
 #           key is left absent, distinguishable from a null/zero score.
@@ -101,10 +103,42 @@
 #       outcome — every INPUT line produces exactly one OUTPUT line, in
 #       order, so a judge that becomes unavailable mid-batch degrades only
 #       the affected rows rather than losing the rest of the run. Exit 0 iff
-#       every row reached JUDGED; exit 4 if at least one row degraded
-#       (REFUSED, UNAVAILABLE, or a malformed individual row) but the batch
-#       itself ran; exit 1 CANNOT_EVALUATE only when the records FILE itself
-#       is absent/unreadable/empty — nothing to iterate at all.
+#       every row either reached JUDGED or was unjudgeable BY CONSTRUCTION
+#       (see below); exit 4 if at least one row genuinely degraded (REFUSED,
+#       UNAVAILABLE, or a malformed individual row) but the batch itself
+#       ran; exit 1 CANNOT_EVALUATE only when the records FILE itself is
+#       absent/unreadable/empty — nothing to iterate at all.
+#
+# ── THE BATCH OUTPUT IS THE INPUT, ANNOTATED (temperloop#1556) ─────────────
+# `judge-batch` is an ANNOTATING transform, never a replacing one. Its output
+# stream is "the input records, judged", NEVER "the input records, with any
+# unjudgeable one swapped for an error object". Two rules make that literal:
+#
+#   1. NO INPUT RECORD IS EVER DROPPED OR OVERWRITTEN. A row the judge could
+#      not judge is emitted as ITS ORIGINAL RECORD with a judgment-absent
+#      marker attached — a `judge` sub-object carrying `scored:false`,
+#      `quality_score:null` and a NAMED `degradation_notice` (the same shape
+#      the UNAVAILABLE path already used), never `_je_one_record`'s bare
+#      `{"outcome":"CANNOT_EVALUATE",...}` / REFUSED envelope standing in for
+#      the record. (An input LINE that is not a JSON object at all cannot
+#      carry a merged field, so it is preserved verbatim in the emitted
+#      envelope's own `original_line` instead — still one output line per
+#      input line, still nothing lost.) The defect this fixes destroyed 14 of
+#      21 records per arm on the first live batch and, because a bare error
+#      object carries no `.candidate`, took `score.sh aggregate` and the
+#      whole comparison report down with it.
+#   2. UNJUDGEABLE BY CONSTRUCTION IS NOT A FAILURE. An integration-error
+#      record (replay.sh's `_exec_integration_error` shape: `.candidate
+#      .outcome == "integration-error"`, no `.candidate.model`, an empty
+#      score) is the EXPECTED shape of a failed replay leg — there is no
+#      candidate diff to judge and there never was. Such a row is passed
+#      through UNJUDGED with a top-level `unjudged` marker, spends no judge
+#      call, and contributes NO per-row failure to the degraded tally, so a
+#      batch whose only "failures" were never-judgeable rows exits 0 and
+#      `judge.degraded` stops firing on it. The marker is deliberately NOT a
+#      `judge` sub-object: the comparison report counts a record with no
+#      `judge.outcome` as unjudged, which is exactly what it is, rather than
+#      listing it as a judge degradation it never was.
 #
 #   judge.sh judge-rotate --record <file> --judges <provider:model,provider:model,...> \
 #       [--rubric <path>] ( --judge-runner <cmd> | --live ) [--model <id>] \
@@ -619,6 +653,53 @@ _je_one_record() {
   return 0
 }
 
+# ── record preservation for judge-batch (temperloop#1556) ────────────────
+# See this file's header § THE BATCH OUTPUT IS THE INPUT, ANNOTATED. These
+# three helpers exist ONLY for the batch row loop; `judge` (single record)
+# still prints `_je_one_record`'s bare verdict on stdout, which is its
+# documented one-record contract and loses nothing (the caller still holds
+# the record it passed in).
+
+# _je_unjudgeable_by_construction <record-file> — true for a row that was
+# never judgeable in the first place, as opposed to one the judge failed on.
+# The signature is replay.sh's own integration-error record: the candidate
+# spawn failed before it produced a diff, so `.candidate.outcome` is
+# "integration-error" and (the spawn having failed before a model resolved)
+# `.candidate.model` is absent. Both halves are required — a record that
+# carries a model is one the judge CAN be pointed at, and silently skipping
+# it here would be a fabricated non-judgment rather than a structural one.
+_je_unjudgeable_by_construction() {
+  jq -e '
+    type=="object"
+    and ((.candidate | type) == "object")
+    and (.candidate.outcome == "integration-error")
+    and ((.candidate.model // null) == null)
+  ' "$1" >/dev/null 2>&1
+}
+
+# _je_unjudged_marker <reason> <detail> — the top-level `unjudged` marker an
+# unjudgeable-by-construction row carries. Deliberately NOT a `judge`
+# sub-object: a record with no `judge.outcome` is counted as unjudged by the
+# comparison report, which is the honest bucket for a row no judge ever saw.
+_je_unjudged_marker() {
+  jq -cn --arg r "$1" --arg d "$2" --arg ts "$(_je_now_iso)" \
+    '{unjudged:true, reason:$r, detail:$d, judged:false, recorded_at:$ts}'
+}
+
+# _je_judgment_absent <outcome> <notice> <bare-verdict-json> — the `judge`
+# sub-object a row the judge genuinely could not complete carries. Same
+# shape as _je_unavailable's, so a consumer reads one vocabulary for every
+# non-JUDGED outcome: scored:false, quality_score:null, and a NAMED
+# degradation_notice — never a fabricated or zero score standing in.
+_je_judgment_absent() {
+  local outcome="$1" notice="$2" detail="${3:-}"
+  if ! printf '%s' "$detail" | jq -e 'type=="object"' >/dev/null 2>&1; then detail='null'; fi
+  jq -cn --arg o "$outcome" --arg n "$notice" --argjson d "$detail" --arg ts "$(_je_now_iso)" \
+    '{outcome:$o, scored:false, quality_score:null, dimensions:null,
+      rationale:null, concerns:[], degradation_notice:$n, verdict:$d,
+      evaluated_at:$ts}'
+}
+
 # ── judge (single record) ────────────────────────────────────────────────
 cmd_judge() {
   local record="" rubric="$DEFAULT_RUBRIC" provider="$JUDGE_TRUSTED_DEFAULT_PROVIDER" \
@@ -727,15 +808,57 @@ cmd_judge_batch() {
   local out_stream="$batch_tmp/out.jsonl"
   : >"$out_stream"
 
-  local degraded=0 line row_file row_out row_rc
+  local degraded=0 n_degraded=0 n_unjudgeable=0 line row_file row_out row_rc row_final
   row_file="$batch_tmp/row.json"
   while IFS= read -r line; do
     [ -n "$line" ] || continue
     printf '%s\n' "$line" >"$row_file"
+
+    # ── rule 2: unjudgeable BY CONSTRUCTION is not a failure. Checked
+    #    BEFORE _je_one_record so no judge call is spent, no stderr
+    #    degradation line is printed, and the row cannot land in the
+    #    degraded tally (temperloop#1556 — see the file header).
+    if _je_unjudgeable_by_construction "$row_file"; then
+      row_final="$(jq -c --argjson u "$(_je_unjudged_marker "unjudgeable-by-construction" \
+          "this is an integration-error record: the candidate spawn failed before it produced a diff or resolved a model, so there is nothing for a judge to score. It is passed through UNJUDGED — never replaced, and never counted as a judge failure — and the comparison report consumes it as a compatibility fact")" \
+        '. + {unjudged:$u}' "$row_file" 2>/dev/null)"
+      [ -n "$row_final" ] || row_final="$line"
+      printf '%s\n' "$row_final" >>"$out_stream"
+      n_unjudgeable=$((n_unjudgeable + 1))
+      continue
+    fi
+
     row_rc=0
     row_out="$(_je_one_record "$row_file" "$rubric" "$provider" "$model" "$runner" "$live" "" "$owner_repo")" || row_rc=$?
-    printf '%s\n' "$row_out" >>"$out_stream"
-    [ "$row_rc" -eq 0 ] || degraded=1
+
+    # ── rule 1: no input record is ever dropped OR overwritten. rc 0/4 are
+    #    already "the record, annotated" (_je_one_record merged the judge
+    #    sub-object onto it); rc 1/2 return a BARE verdict object, which is
+    #    attached to the original row rather than substituted for it.
+    case "$row_rc" in
+      0|4) row_final="$row_out" ;;
+      *)
+        local ja_outcome ja_notice ja_obj
+        ja_outcome="$(jq -r '.outcome // "CANNOT_EVALUATE"' <<<"$row_out" 2>/dev/null)"
+        [ -n "$ja_outcome" ] || ja_outcome="CANNOT_EVALUATE"
+        if [ "$row_rc" -eq 2 ]; then
+          ja_notice="judge-refused: $(jq -r '.reason // "the judge≠candidate guard refused this row"' <<<"$row_out" 2>/dev/null)"
+        else
+          ja_notice="judge-cannot-evaluate: $(jq -r '.error // "the judge could not evaluate this row"' <<<"$row_out" 2>/dev/null)"
+        fi
+        ja_obj="$(_je_judgment_absent "$ja_outcome" "$ja_notice" "$row_out")"
+        row_final="$(jq -c --argjson j "$ja_obj" '. + {judge:$j}' "$row_file" 2>/dev/null)"
+        if [ -z "$row_final" ]; then
+          # The input LINE is not a JSON object, so it cannot carry a merged
+          # field — preserve it verbatim inside the emitted envelope instead.
+          row_final="$(jq -cn --argjson j "$ja_obj" \
+            --arg raw "$line" '$j + {unjudged:true, original_line:$raw}' 2>/dev/null)"
+        fi
+        [ -n "$row_final" ] || row_final="$row_out"
+        ;;
+    esac
+    printf '%s\n' "$row_final" >>"$out_stream"
+    if [ "$row_rc" -ne 0 ]; then degraded=1; n_degraded=$((n_degraded + 1)); fi
 
     if [ "$row_rc" -eq 0 ] || [ "$row_rc" -eq 4 ]; then
       if [ -x "$EMIT_MODEL_USAGE_SH" ]; then
@@ -763,9 +886,16 @@ cmd_judge_batch() {
   cat "$out_stream"
   if [ -n "$out" ]; then cp "$out_stream" "$out" 2>/dev/null || true; fi
 
+  if [ "$n_unjudgeable" -gt 0 ]; then
+    printf 'judge.sh judge-batch: %s of %s rows were unjudgeable BY CONSTRUCTION (integration-error records with no candidate model) — each passed through UNJUDGED with its own marker, spent no judge call, and is NOT counted as a degradation\n' \
+      "$n_unjudgeable" "$n_lines" >&2
+  fi
   [ "$degraded" -eq 0 ] && return 0
+  # The tally is the loop's OWN per-row count, never a grep over the output
+  # stream: every emitted line is now the record itself, whose `.candidate
+  # .outcome` text would false-positive such a scan (temperloop#1556).
   printf 'judge.sh judge-batch: %s of %s rows did not reach JUDGED — see the per-row degradation_notice/outcome fields above\n' \
-    "$(grep -cv '"outcome":"JUDGED"' "$out_stream" 2>/dev/null || echo '?')" "$n_lines" >&2
+    "$n_degraded" "$n_lines" >&2
   return 4
 }
 

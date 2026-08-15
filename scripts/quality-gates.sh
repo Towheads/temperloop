@@ -920,8 +920,19 @@ KERNEL_GATES=(
   # obtained — distinguishable from a genuine `quality_score:0` a judge
   # actually rendered; (3) the rubric (rubric.md) flows into the judge
   # prompt as PLAIN TEXT ONLY — no `Task`/`Agent`-tool dispatch of any
-  # `claude/agents/reviewers/*.md` charter occurs at judge time. Fully
-  # HERMETIC, same shape as the test_replay_score.sh gate immediately
+  # `claude/agents/reviewers/*.md` charter occurs at judge time; and (4,
+  # temperloop#1556) judge-batch is an ANNOTATING transform, never a
+  # REPLACING one — a mixed arm of scored + integration-error records
+  # survives it with EVERY input record still present and identifiable, an
+  # unjudgeable-BY-CONSTRUCTION row (an integration-error record has no
+  # candidate model and no diff, so no judge could ever score it) passes
+  # through unjudged without spending a call or degrading the batch, and the
+  # surviving arm then rolls up under the real score.sh aggregate and
+  # renders through the REAL report producer with its compatibility split —
+  # with a mutation proof that the pre-fix substitution corrupts that same
+  # arm and takes the roll-up down with it (that defect destroyed 14 of 21
+  # records per arm on the first live batch and skipped the whole report).
+  # Fully HERMETIC, same shape as the test_replay_score.sh gate immediately
   # above: every judge call is driven through a RECORDED `--judge-runner`
   # seam, `--live` is never passed, and the suite prepends a canary
   # `claude` to PATH and asserts at the end that nothing ever invoked it,
@@ -974,7 +985,14 @@ KERNEL_GATES=(
   # RESUMABLE (a re-invocation re-spends zero replays and zero judge calls,
   # and a state dir bound to another batch is refused rather than merged);
   # every prepared worktree is torn down on BOTH the success and the failure
-  # path with verify-clean-parent CLEAN after; and — the one that matters most
+  # path with verify-clean-parent CLEAN after; the arm file the driver WROTE
+  # is RECONCILED against the leg records it COUNTED (temperloop#1556 — the
+  # judge pass rewrites the arm file in place, and on the first live batch a
+  # `replay_completion_rate: 1` derived from intact legs sat beside an arm
+  # file whose records had already been destroyed, with nothing checking the
+  # two against each other; a mutation proof restores that substitution and
+  # measures the driver reporting the mismatch instead of a clean 1.0); and
+  # — the one that matters most
   # — the REAL report producer is run on the driver's own fixture output and
   # consumes it UNCHANGED. Fully HERMETIC: both arms and the judge are driven
   # through RECORDED runner seams, `--live` is never passed, and the suite

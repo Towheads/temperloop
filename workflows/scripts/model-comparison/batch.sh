@@ -99,6 +99,27 @@
 # NOT a weakening of the per-leg failure resilience above: a leg that fails is
 # still recorded and the batch still continues; only a real signal stops it.
 #
+# ── THE COMPLETION RATE IS RECONCILED AGAINST THE ARTIFACT (temperloop#1556)
+# Every count this driver publishes — `replay_completion_rate`, `legs.*`,
+# `arms.*.records_n` — is derived from the LEG state files, which are written
+# once and never touched again. The ARM FILE is a different artifact, and the
+# judge pass REWRITES it in place. Nothing reconciled the two, and on the
+# first live batch that gap was load-bearing: `judge.sh judge-batch` replaced
+# 14 of 21 records per arm with bare error objects while this driver reported
+# `replay_completion_rate: 1` and 21 records per arm off the intact legs. The
+# summary read perfectly healthy over an arm file that was already destroyed;
+# the operator found out only when the report producer refused to render.
+#
+# So a completion rate is published only alongside a `reconciliation` block
+# that checks the arm file ON DISK against the leg records this driver
+# COUNTED — record count, per-record identity, and record SHAPE (a line that
+# is not an object carrying `.candidate` is not a replay record at all, which
+# is exactly the corruption signature). A mismatch is a NAMED degradation
+# (`arm_reconciliation_mismatch`), flips the run to BATCH_DEGRADED, and
+# stamps `completion.rate_is_over_a_reconciled_arm:false` with a named
+# caveat — the rate is still reported, because it is still a true statement
+# about the legs, but it can no longer be read as a clean run over that file.
+#
 # ── Usage ─────────────────────────────────────────────────────────────────
 #   batch.sh run --corpus-file <path> --repo-root <path>
 #           ( --baseline-runner <cmd> --candidate-runner <cmd> | --live )
@@ -132,11 +153,13 @@
 #   3  STOPPED            the gate said stop (`stop:true`) or the operator's
 #                         `--confirm` was absent. NOTHING was spent.
 #   4  BATCH_DEGRADED     the batch RAN end to end, but at least one leg
-#                         failed, or the judge degraded, or the parent
-#                         checkout was left dirty. The arm files ARE written
-#                         and the summary names every degradation — "some of
-#                         it did not work" is a different statement from
-#                         "it worked", and this file keeps them apart.
+#                         failed, or the judge degraded, or an arm file
+#                         failed to RECONCILE against the leg records this
+#                         driver counted, or the parent checkout was left
+#                         dirty. The arm files ARE written and the summary
+#                         names every degradation — "some of it did not
+#                         work" is a different statement from "it worked",
+#                         and this file keeps them apart.
 #
 # 128+N INTERRUPTED       deliberately OUTSIDE the closed set above: the run
 #                         was signalled (^C / kill), so the process dies OF
@@ -339,11 +362,13 @@ cmd_schema() {
     selection: {corpus_file:null, corpus_sha256:null, selected_records_n:null, refs:[]},
     legs: {planned_n:null, completed_n:null, resumed_n:null, failed_n:null,
            scored_n:null, integration_error_n:null},
-    completion: {basis:null, replay_completion_rate:null, per_arm:null},
+    completion: {basis:null, replay_completion_rate:null,
+                 rate_is_over_a_reconciled_arm:null, rate_caveat:null, per_arm:null},
     failures: [],
     arms: {baseline:{file:null, records_n:null}, candidate:{file:null, records_n:null}},
     pairing: {paired_outcomes_n:null, min_sample_n:null, meets_min_sample:null},
     judge: {ran:null, reason:null, per_arm:null},
+    reconciliation: {basis:null, reconciled:null, per_arm:null},
     isolation: {verify_clean_parent:null, worktrees_torn_down_n:null},
     degradations: [],
     preflight: null
@@ -715,14 +740,22 @@ cmd_run() {
   # ═════════════════════════════════════════════════════════════════════
   local base_file="$out_dir/$BATCH_ARM_BASELINE.jsonl"
   local cand_file="$out_dir/$BATCH_ARM_CANDIDATE.jsonl"
+  # The LEG-RECORD CENSUS this step assembles from is snapshotted per arm as
+  # it is written — a count plus the identity of every leg record that went
+  # in. STEP 5's judge pass REWRITES the arm file in place, so this snapshot
+  # is the only "what did we actually count" the reconciliation below (STEP
+  # 5.5, temperloop#1556) can hold the rewritten file against.
   for arm in "$BATCH_ARM_BASELINE" "$BATCH_ARM_CANDIDATE"; do
     local tmp_arm="$scratch/$arm.jsonl"; : >"$tmp_arm"
+    local census="$scratch/$arm.legs.census"; : >"$census"
     while IFS="$(printf '\t')" read -r sel_idx sel_ref sel_rec; do
       [ -n "$sel_idx" ] || continue
       local f
       f="$state_dir/legs/$arm/$(printf '%03d' "$sel_idx")-$(bd_slugify "$sel_ref").json"
       if [ -s "$f" ] && jq -e 'type=="object"' >/dev/null 2>&1 <"$f"; then
         jq -c . <"$f" >>"$tmp_arm"
+        jq -r 'if (.pr // null) != null then "pr:\(.pr)" elif (.issue // null) != null then "issue:\(.issue)" else "unref" end' \
+          <"$f" >>"$census"
       fi
     done <"$sel_tsv"
     cp "$tmp_arm" "$out_dir/$arm.jsonl"
@@ -793,6 +826,84 @@ cmd_run() {
   fi
 
   # ═════════════════════════════════════════════════════════════════════
+  # STEP 5.5 — RECONCILE the arm file this driver WROTE against the leg
+  # records it COUNTED (temperloop#1556).
+  #
+  # Every count this driver publishes — replay_completion_rate, legs.*,
+  # arms.*.records_n — is derived from the LEG state files, which are
+  # written once and never touched again. The ARM FILE, by contrast, is
+  # rewritten in place by STEP 5's judge pass. Nothing reconciled the two,
+  # and on the first live batch that gap was load-bearing: judge-batch
+  # replaced 14 of 21 records per arm with bare error objects while this
+  # driver reported `replay_completion_rate: 1` and 21 records per arm off
+  # the intact legs. The summary read healthy over an arm file that was
+  # already destroyed, and the operator learned otherwise only when the
+  # report producer refused to render.
+  #
+  # So: a completion rate is only trustworthy if the artifact it describes
+  # still holds what was counted. Three checks per arm, all against the
+  # STEP-4 census — record count, per-record identity, and SHAPE (a line
+  # that is not an object carrying `.candidate` is not a replay record at
+  # all, which is exactly the corruption signature). A mismatch is a NAMED
+  # degradation, never a silently-clean rate.
+  # ═════════════════════════════════════════════════════════════════════
+  local recon_file="$scratch/reconciliation.jsonl"; : >"$recon_file"
+  local arms_reconciled=1
+  for arm in "$BATCH_ARM_BASELINE" "$BATCH_ARM_CANDIDATE"; do
+    local recon_arm_file="$out_dir/$arm.jsonl"
+    local census="$scratch/$arm.legs.census"
+    local arm_refs="$scratch/$arm.arm.refs"
+    local legs_n=0 arm_n=0 foreign_n=0 missing_n=0 rline
+    [ -f "$census" ] || : >"$census"
+    legs_n="$(grep -c . "$census" 2>/dev/null || true)"; case "$legs_n" in ''|*[!0-9]*) legs_n=0 ;; esac
+    arm_n="$(grep -c . "$recon_arm_file" 2>/dev/null || true)"; case "$arm_n" in ''|*[!0-9]*) arm_n=0 ;; esac
+    : >"$arm_refs"
+    if [ -s "$recon_arm_file" ]; then
+      while IFS= read -r rline; do
+        [ -n "$rline" ] || continue
+        if jq -e 'type=="object" and ((.candidate | type) == "object")' >/dev/null 2>&1 <<<"$rline"; then
+          jq -r 'if (.pr // null) != null then "pr:\(.pr)" elif (.issue // null) != null then "issue:\(.issue)" else "unref" end' \
+            <<<"$rline" >>"$arm_refs"
+        else
+          foreign_n=$((foreign_n + 1))
+        fi
+      done <"$recon_arm_file"
+    fi
+    sort "$census" >"$scratch/$arm.census.sorted"
+    sort "$arm_refs" >"$scratch/$arm.arm.sorted"
+    comm -23 "$scratch/$arm.census.sorted" "$scratch/$arm.arm.sorted" >"$scratch/$arm.missing" 2>/dev/null || : >"$scratch/$arm.missing"
+    missing_n="$(grep -c . "$scratch/$arm.missing" 2>/dev/null || true)"; case "$missing_n" in ''|*[!0-9]*) missing_n=0 ;; esac
+    local missing_refs_json
+    missing_refs_json="$(jq -R -s 'split("\n") | map(select(length > 0))' <"$scratch/$arm.missing" 2>/dev/null)"
+    [ -n "$missing_refs_json" ] || missing_refs_json='[]'
+    local arm_ok=true
+    if [ "$arm_n" -ne "$legs_n" ] || [ "$foreign_n" -gt 0 ] || [ "$missing_n" -gt 0 ]; then
+      arm_ok=false
+      arms_reconciled=0
+    fi
+    jq -cn --arg a "$arm" --argjson legs "$legs_n" --argjson recs "$arm_n" \
+      --argjson foreign "$foreign_n" --argjson missing "$missing_n" \
+      --argjson missing_refs "$missing_refs_json" --argjson ok "$arm_ok" \
+      '{arm:$a, leg_records_counted_n:$legs, arm_records_n:$recs,
+        foreign_records_n:$foreign, missing_n:$missing, missing_refs:$missing_refs,
+        reconciled:$ok,
+        detail: (if $ok
+                 then "the arm file on disk carries exactly the leg records this driver counted"
+                 else ("MISMATCH: the arm file on disk does NOT carry what this driver counted — "
+                       + ($legs|tostring) + " leg record(s) assembled, " + ($recs|tostring)
+                       + " line(s) in the arm file, " + ($foreign|tostring)
+                       + " of which are not replay records at all (no .candidate), and "
+                       + ($missing|tostring)
+                       + " counted record(s) are absent from it. The completion figures below are computed off the LEG records and must NOT be read as a clean run over this arm file") end)}' \
+      >>"$recon_file"
+  done
+  local reconciliation_json recon_ok=true
+  [ "$arms_reconciled" -eq 1 ] || recon_ok=false
+  reconciliation_json="$(jq -cs --argjson ok "$recon_ok" \
+    '{basis: "the arm files this driver WROTE, checked line by line against the leg records it COUNTED (count, per-record identity, and record shape). The judge pass rewrites an arm file in place, so a healthy-looking completion rate derived from the intact leg records can otherwise sit beside an arm file that no longer holds them",
+      reconciled: $ok, per_arm: .}' <"$recon_file")"
+
+  # ═════════════════════════════════════════════════════════════════════
   # STEP 6 — the isolation backstop, then the ONE summary object.
   # ═════════════════════════════════════════════════════════════════════
   local vcp_json vcp_rc=0
@@ -818,6 +929,8 @@ cmd_run() {
     '{kind:"leg_failures", detail:("\($n) of the planned executed replays did not produce a record; each is named in failures[] with its reason")}' >>"$degradations"
   [ "$judge_degraded" -eq 1 ] && jq -cn \
     '{kind:"judge_degraded", detail:"at least one arm did not reach a clean JUDGED pass; see judge.per_arm"}' >>"$degradations"
+  [ "$arms_reconciled" -eq 0 ] && jq -cn \
+    '{kind:"arm_reconciliation_mismatch", detail:"at least one arm file on disk does not carry the leg records this driver counted — see reconciliation.per_arm. The completion figures in this summary are derived from the LEG records and must NOT be read as a clean run over that arm file"}' >>"$degradations"
   if [ "$vcp_outcome" != "CLEAN" ]; then
     jq -cn --arg o "$vcp_outcome" \
       '{kind:"parent_not_clean", detail:("replay.sh verify-clean-parent reported " + $o + " after the batch — the parent checkout carries residue that the isolated replay worktrees should have kept out of it")}' >>"$degradations"
@@ -843,6 +956,7 @@ cmd_run() {
     --argjson base_n "$base_n" --argjson cand_n "$cand_n" --argjson paired_n "$paired_n" \
     --argjson min_sample_n "$MODEL_COMPARISON_MIN_SAMPLE_N" \
     --argjson judge "$judge_json" \
+    --argjson reconciliation "$reconciliation_json" \
     --argjson vcp "$vcp_json" --arg vcp_outcome "$vcp_outcome" --argjson swept "$swept" \
     --arg base_arm "$BATCH_ARM_BASELINE" --arg cand_arm "$BATCH_ARM_CANDIDATE" \
     '{schema_version:$sv,
@@ -867,6 +981,8 @@ cmd_run() {
       completion:{
         basis: "an executed replay COMPLETED when it produced a record — a scored record OR an integration-error record, both of which the comparison report consumes (the latter as a compatibility fact, never a quality one). A leg that produced no record at all is counted as failed and named in failures[]",
         replay_completion_rate:$rate,
+        rate_is_over_a_reconciled_arm: $reconciliation.reconciled,
+        rate_caveat: (if $reconciliation.reconciled then null else "this rate is computed off the LEG records, and reconciliation[] reports that at least one arm file no longer carries them — do NOT read it as a clean run over that arm file" end),
         per_arm:{($base_arm): {records_n:$base_n}, ($cand_arm): {records_n:$cand_n}}},
       failures: $failures,
       arms:{($base_arm): {file:$base_file, records_n:$base_n},
@@ -876,6 +992,7 @@ cmd_run() {
         paired_outcomes_n:$paired_n, min_sample_n:$min_sample_n,
         meets_min_sample: ($paired_n >= $min_sample_n)},
       judge: $judge,
+      reconciliation: $reconciliation,
       isolation:{verify_clean_parent:$vcp_outcome, verify_clean_parent_detail:$vcp,
                  worktrees_swept_n:$swept},
       degradations: $degradations,
@@ -883,7 +1000,11 @@ cmd_run() {
 
   rm -rf "$scratch"
 
-  if [ "$legs_failed" -gt 0 ] || [ "$judge_degraded" -eq 1 ] || [ "$vcp_outcome" != "CLEAN" ]; then
+  if [ "$arms_reconciled" -eq 0 ]; then
+    printf 'batch.sh: ARM RECONCILIATION MISMATCH — an arm file on disk does not carry the leg records this driver counted; see reconciliation.per_arm. The completion rate below is over the LEG records, NOT over that arm file\n' >&2
+  fi
+  if [ "$legs_failed" -gt 0 ] || [ "$judge_degraded" -eq 1 ] || [ "$vcp_outcome" != "CLEAN" ] \
+     || [ "$arms_reconciled" -eq 0 ]; then
     printf 'batch.sh: BATCH DEGRADED — %s of %s executed replays produced a record; see degradations[] and failures[]\n' \
       "$legs_done" "$legs_planned" >&2
     return 4
