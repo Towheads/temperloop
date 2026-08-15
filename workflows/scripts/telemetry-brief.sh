@@ -50,10 +50,14 @@
 #   TELEMETRY_LOOKBACK_DAYS  window for every windowed number (default 7;
 #                            the --lookback-days flag wins over the env var,
 #                            per docs/config-precedence.md layer 1 > layer 2)
-#   TELEMETRY_RAW_DIR        the raw lake dir every stream falls back to when
-#                            its own emitter's *_RAW_DIR override is unset
-#                            (default: this checkout's meta/data/raw, resolved
-#                            BASH_SOURCE-relative like emit-command-run.sh)
+#   TELEMETRY_RAW_DIR        the raw lake dir every stream but PIPELINE falls
+#                            back to when its own emitter's *_RAW_DIR override
+#                            is unset (default: this checkout's meta/data/raw,
+#                            resolved BASH_SOURCE-relative like
+#                            emit-command-run.sh). The PIPELINE stream is the
+#                            deliberate exception — see its own comment below
+#                            (temperloop#1564) — and falls back to the
+#                            writer's absolute pin instead.
 #   Per-stream overrides honored first, so the reader follows the emitters
 #   wherever they were pointed: CMD_RUN_RAW_DIR, ISSUE_TOUCHES_RAW_DIR,
 #   CLAIMS_RAW_DIR, PIPELINE_RAW_DIR, GH_CALLS_RAW_DIR,
@@ -89,7 +93,21 @@ esac
 cmd_run_dir="${CMD_RUN_RAW_DIR:-$TELEMETRY_RAW_DIR}"
 issue_touch_dir="${ISSUE_TOUCHES_RAW_DIR:-$TELEMETRY_RAW_DIR}"
 claims_dir="${CLAIMS_RAW_DIR:-$TELEMETRY_RAW_DIR}"
-pipeline_dir="${PIPELINE_RAW_DIR:-$TELEMETRY_RAW_DIR}"
+# PIPELINE stream: NOT $TELEMETRY_RAW_DIR like the three siblings above. Its
+# writer, pipeline-cron.sh:299, pins this same stream to an ABSOLUTE,
+# checkout-independent sink on purpose — "the CANONICAL ABSOLUTE SINK...
+# deliberately NOT derived from $FOUNDATION" (that script's own comment,
+# foundation#725), because the cron sandbox checkout must still write into
+# the MAIN checkout's lake. Mirroring the checkout-relative $TELEMETRY_RAW_DIR
+# here would make this reader silently see a DIFFERENT, empty directory
+# whenever it runs from any checkout other than $HOME/dev/foundation
+# (temperloop#1564 — the sibling defect temperloop#1185 already fixed in
+# pipeline-retro-health.sh). So this default is the writer's own literal,
+# duplicated verbatim (setting-registry.tsv's PIPELINE_RAW_DIR row, owning
+# script pipeline-cron.sh — a "non-vendoring-checkout fallback" duplicate,
+# same convention as pipeline-retro-health.sh's own PIPELINE stream default),
+# never re-derived from $raw_root/$TELEMETRY_RAW_DIR.
+pipeline_dir="${PIPELINE_RAW_DIR:-$HOME/dev/foundation/meta/data/raw}"
 # PERMANENT legacy-prefix read (temperloop#767 confirmed this survives the
 # v0.19.0 window close, unlike the env shim and the forwarding stubs): the
 # raw lake is append-only immutable history, so a pre-rename install's

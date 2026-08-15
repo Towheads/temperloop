@@ -275,6 +275,70 @@ assert_has "$out" "overhead per merged item (7d): 1 merged item(s)" "8c torn lin
 assert_has "$out" "worker — · CI — · merge-group — · gate-wait — · end-to-end —" "8b an unmeasured wall-clock leg renders — , never a fabricated 0m"
 assert_has "$out" "per epic (unattributed):" "8b a record with no epic rolls up under (unattributed), not under a made-up epic"
 
+
+# ── 9. PIPELINE stream default equals the WRITER's absolute pin ─────────────
+# (temperloop#1564, the sibling defect temperloop#1185 already fixed in
+# pipeline-retro-health.sh). pipeline-cron.sh:299 (the writer) pins the
+# pipeline stream's default to the ABSOLUTE, checkout-independent
+# $HOME/dev/foundation/meta/data/raw — deliberately, so a cron sandbox
+# checkout still writes into the MAIN checkout's lake. This renderer (the
+# reader) must fall back to that SAME absolute literal, not the
+# checkout-relative $TELEMETRY_RAW_DIR the other three per-stream dirs use —
+# otherwise, invoked with PIPELINE_RAW_DIR unset from any checkout other than
+# $HOME/dev/foundation, it silently reads an empty directory instead of the
+# writer's lake.
+echo "pipeline stream root convergence (temperloop#1564):"
+
+# 9a. Literal equality: the reader's fallback literal must be byte-identical
+# to the writer's own default literal in pipeline-cron.sh:299 — never
+# re-derived from $raw_root/$TELEMETRY_RAW_DIR.
+CRON_SCRIPT="$REPO/workflows/scripts/build/pipeline-cron.sh"
+cron_literal="$(grep -oE 'RAW_DIR="\$\{PIPELINE_RAW_DIR:-[^}]*\}"' "$CRON_SCRIPT" \
+  | sed -E 's/^RAW_DIR="\$\{PIPELINE_RAW_DIR:-(.*)\}"$/\1/')"
+brief_literal="$(grep -oE 'pipeline_dir="\$\{PIPELINE_RAW_DIR:-[^}]*\}"' "$SCRIPT" \
+  | sed -E 's/^pipeline_dir="\$\{PIPELINE_RAW_DIR:-(.*)\}"$/\1/')"
+if [ -n "$cron_literal" ] && [ -n "$brief_literal" ] && [ "$cron_literal" = "$brief_literal" ]; then
+  ok "pipeline-cron.sh's writer default ($cron_literal) matches telemetry-brief.sh's reader default verbatim"
+else
+  fail_test "reader/writer literal equality" "cron=$cron_literal brief=$brief_literal"
+fi
+
+# 9b. Behavioral convergence: with PIPELINE_RAW_DIR unset, HOME faked to a
+# scratch dir, and TELEMETRY_RAW_DIR pointed at a DIFFERENT, empty dir (so
+# following $TELEMETRY_RAW_DIR instead of the writer's literal is
+# observable), the pipeline records the "writer" placed under
+# $HOME/dev/foundation/meta/data/raw must be the ones this renderer reads —
+# reader and writer converge on the SAME directory. This is invoked with a
+# Bash cwd inside this worktree checkout (NOT $HOME/dev/foundation), so a
+# checkout-relative resolution would land somewhere else entirely.
+#
+# Against the UNFIXED script (pipeline_dir="${PIPELINE_RAW_DIR:-$TELEMETRY_RAW_DIR}")
+# this diverges: pipeline_dir would resolve to the empty $wrong_telemetry_dir
+# instead, so the fixture's drive-error record would never be seen and the
+# assertions below would instead see "no data yet — pipeline stream is
+# empty" — i.e. this case FAILS against the unfixed script and PASSES only
+# once the reader's fallback matches the writer's absolute literal.
+FAKE_HOME="$TMP/fakehome9"
+writer_pipeline_dir="$FAKE_HOME/dev/foundation/meta/data/raw"
+mkdir -p "$writer_pipeline_dir"
+cat > "$writer_pipeline_dir/pipeline-${month}.jsonl" <<EOF
+{"event":"drive","status":"error","date":"2026-07-16","duration_ms":100,"reason":"driver-failed","context":"boom","ts":"$now_ts"}
+EOF
+wrong_telemetry_dir="$TMP/wrong-telemetry-9"
+empty_other_streams="$TMP/other-streams-9"
+mkdir -p "$wrong_telemetry_dir" "$empty_other_streams"
+out9="$(
+  HOME="$FAKE_HOME" \
+  CMD_RUN_RAW_DIR="$empty_other_streams" ISSUE_TOUCHES_RAW_DIR="$empty_other_streams" \
+  CLAIMS_RAW_DIR="$empty_other_streams" GH_CALLS_RAW_DIR="$empty_other_streams" \
+  KS_SEARCH_FALLBACK_RAW_DIR="$empty_other_streams" ITEM_EFFICIENCY_RAW_DIR="$empty_other_streams" \
+  TELEMETRY_RAW_DIR="$wrong_telemetry_dir" KNOWLEDGE_READ_LOG="$TMP/absent-reads-9.log" \
+    bash "$SCRIPT" 2>&1
+)"; rc9=$?
+assert_rc0 "$rc9" "exit 0 (pipeline root convergence case)"
+assert_has "$out9" "pipeline drive errors (7d): 1" "reader found the writer's fixture under \$HOME/dev/foundation/meta/data/raw with PIPELINE_RAW_DIR unset — reader and writer converged"
+assert_not_has "$out9" "no data yet — pipeline stream is empty" "pipeline stream is NOT reported empty — it did not fall back to the checkout-relative \$TELEMETRY_RAW_DIR"
+
 echo
 echo "test_telemetry_brief: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
