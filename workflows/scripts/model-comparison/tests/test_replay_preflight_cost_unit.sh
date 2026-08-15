@@ -173,8 +173,14 @@ NOCACHE="$WORK/no-such-quota-cache.json"
 
 # pf <env-assignments...> — preflight with the quota gate deterministically
 # "unavailable" (fail open: it can never be the reason anything here stops).
+# ...and a deterministically EMPTY attribution raw lake, so the per-replay
+# figure asserted below is always the CONFIGURED LITERAL (temperloop#1555)
+# and section 3's "is the shipped default in the weighted unit" assertion
+# stays a statement about the constant rather than about the host. The
+# derivation arm is exercised in test_replay_preflight_derive.sh.
+EMPTY_LAKE="$WORK/empty-lake"; mkdir -p "$EMPTY_LAKE"
 pf() {
-  env BUILD_QUOTA_CACHE="$NOCACHE" "$@"
+  env BUILD_QUOTA_CACHE="$NOCACHE" MODEL_USAGE_RAW_DIR="$EMPTY_LAKE" "$@"
 }
 
 # ── the report producer's fixture repo ─────────────────────────────────────

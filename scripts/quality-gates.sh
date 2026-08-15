@@ -825,6 +825,28 @@ KERNEL_GATES=(
   # replay executed. Same direct-`bash` form, no Makefile target, as the two
   # gates above.
   "bash workflows/scripts/model-comparison/tests/test_replay_preflight_cost_unit.sh"
+  # The replay spend gate's PROVENANCE (temperloop#1555, epic #1225 "model
+  # comparison harness") — the fourth suite over `preflight`, defending where
+  # the per-replay number COMES FROM. Its three siblings above pin the
+  # plumbing, the count units and the cost unit, and all three stayed green
+  # while the gate authorized batches off a figure observed data contradicted:
+  # the per-replay cost was always the n=1 configured literal, and the first
+  # live batch (14 real replays) came in 1.49x above it with a 4.8x spread the
+  # constant cannot express. Since the estimate is what the ceiling check and
+  # the operator confirmation are computed FROM, that understated every
+  # batch's projected spend by the same factor. This gate asserts both arms on
+  # real emitted JSON — a host with enough observed records derives the figure
+  # and NAMES n; a host with none falls back to the literal and says it is
+  # UNMEASURED, never presenting it as measured — plus the named threshold's
+  # boundary behaviour, the dispersion disclosure (the same batch projected at
+  # the observed p90 and maximum, with the STOP decision deliberately left on
+  # the point estimate), retune-independence of the derivation, and the
+  # fail-OPEN telemetry read (an absent lake can never stop a spend gate).
+  # Its mutation proof edits a MIRROR copy of replay.sh, not the live file, so
+  # unlike its three siblings it needs no place in the serial replay lane.
+  # Hermetic: no network, no `gh`, no replay executed. Same direct-`bash`
+  # form, no Makefile target, as the three gates above.
+  "bash workflows/scripts/model-comparison/tests/test_replay_preflight_derive.sh"
   # Live candidate tagging provenance (temperloop#1257, epic #1225 "model
   # comparison harness"): tagging.sh's three artifacts — the bounded window
   # record, the telemetry tag (a real emit-model-usage.sh raw-lake record,

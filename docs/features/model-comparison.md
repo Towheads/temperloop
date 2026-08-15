@@ -154,7 +154,7 @@ arms, judges each arm, and writes the two arm files the report producer reads.
 It orchestrates only: it derives no statistic and re-implements no scoring,
 judging, corpus selection or isolation.
 
-Six properties are worth knowing before you run one:
+Eight properties are worth knowing before you run one:
 
 - **The gate runs first, and consent is explicit.** Nothing is prepared or
   executed until pre-flight has returned a non-`stop` verdict *and* you have
@@ -163,6 +163,41 @@ Six properties are worth knowing before you run one:
   batch you authorize and the batch that runs cannot drift apart — a selection
   that disagrees with the authorization is refused rather than partly spent.
   `--preflight-only` prints the gate's verdict and executes nothing.
+- **The per-replay cost estimate is derived from what replays actually cost,
+  when there is enough evidence to derive it.** That estimate is what the
+  ceiling check and the confirmation prompt are computed *from*, so its
+  provenance is a spend-gate correctness property rather than a footnote. The
+  gate reads this host's own attribution records (seat `replay-candidate`,
+  `usage_source: cli-envelope`) out of the raw lake, re-weights each one's raw
+  token block under the `SPEND_WEIGHT_*` values in force *now* — so a weight
+  retune never silently mixes epochs — and uses their **mean** once at least
+  `REPLAY_PREFLIGHT_DERIVE_MIN_N` of them exist. Below that (a fresh host,
+  usually zero) it falls back to the `REPLAY_PREFLIGHT_TOKENS_PER_REPLAY`
+  literal. Either way `tokens_per_replay_basis` says **which mode produced the
+  number in force** — naming `n` when derived, and saying the figure is
+  UNMEASURED on this host when not. It never presents the literal as a
+  measurement. Because the observed spread is wide (4.8x on the first live
+  batch), the gate also publishes the whole observed distribution
+  (`observed_replay_cost`) and projects the *same* batch at the observed p90
+  and maximum (`estimated_total_tokens_range`), so a batch whose mean clears
+  the ceiling but whose worst case does not says so out loud. The **stop**
+  decision stays on the point estimate deliberately: a worst-case budget is a
+  different claim from an expected one, and enforcing the former would refuse
+  batches that are, in expectation, affordable (temperloop#1555, where an n=1
+  literal was found 1.49x low against 14 real replays — nothing was wrongly
+  authorized, but every margin shown was about twice as generous as the
+  truth).
+- **The projection is reconciled against the outturn.** A completed batch's
+  summary carries a `spend_reconciliation` block stating **projected vs
+  observed** total spend for the run, in the same cost-weighted unit the gate
+  authorized it in: projected is the gate's own figure, observed is the
+  `SPEND_WEIGHT_*` multiply-add over both arms' records. Past
+  `MODEL_COMPARISON_SPEND_DRIFT_ALERT_PCT` in either direction it raises
+  `drift_alert` and prints a stderr notice — so a stale estimate is caught by
+  the pipeline rather than by someone summing the lake by hand. It is
+  deliberately **not** a degradation: a wrong projection is a fact about the
+  estimate, not a defect in the batch that just ran, so it never turns a
+  `BATCH_COMPLETE` into a `BATCH_DEGRADED` (temperloop#1555).
 - **A single record's failure does not lose the run.** That record is recorded
   as failed with its reason and the batch continues; the run exits `4`
   (`BATCH_DEGRADED`) with every failure named, and the **replay completion

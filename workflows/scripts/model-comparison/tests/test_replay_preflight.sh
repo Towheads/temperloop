@@ -137,8 +137,16 @@ NOCACHE="$WORK/no-such-quota-cache.json"
 # given env (a single string passed to `env`) plus a deterministic
 # BUILD_QUOTA_CACHE pointing at a nonexistent file by default (fail-open,
 # never stops the batch) unless the caller's env string overrides it.
+# ...and a deterministically EMPTY attribution raw lake, so the per-replay
+# figure is always the configured literal here (temperloop#1555). Without
+# this the derivation would read the REAL checkout's meta/data/raw, and a
+# developer host that has executed live replays would flip this whole suite
+# into the derived arm — a suite that passes or fails depending on whose
+# machine it runs on is not a measurement. The derivation itself is
+# exercised in test_replay_preflight_derive.sh.
+EMPTY_LAKE="$WORK/empty-lake"; mkdir -p "$EMPTY_LAKE"
 run_pf() {
-  env BUILD_QUOTA_CACHE="$NOCACHE" "$@"
+  env BUILD_QUOTA_CACHE="$NOCACHE" MODEL_USAGE_RAW_DIR="$EMPTY_LAKE" "$@"
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
