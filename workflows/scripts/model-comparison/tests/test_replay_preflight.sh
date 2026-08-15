@@ -48,6 +48,7 @@ set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MC_DIR="$(cd "$HERE/.." && pwd)"
+SCRIPTS_DIR="$(cd "$MC_DIR/.." && pwd)"
 SUT="$MC_DIR/replay.sh"
 STATS_SUT="$MC_DIR/stats.sh"
 REPO_ROOT="$(git -C "$MC_DIR" rev-parse --show-toplevel)"
@@ -77,6 +78,38 @@ mutate_file() {
     die "mutate_file: old text not found-or-not-unique (count=$count)\n" unless $count == 1;
     s/\Q$o\E/$n/;
   ' "$file"
+}
+
+# mk_mirror <dest> — a throwaway, symlink-backed mirror of workflows/scripts
+# under <dest> (same helper as test_replay_score.sh's own, temperloop#1421),
+# so a mutation proof can edit ONE real copy of replay.sh without ever
+# writing into the checkout — in a vendoring overlay $SUT is a composed-tree
+# SYMLINK into kernel/, and an in-place mutation (write-temp-then-rename-
+# over-path) would replace the symlink with a forked regular file.
+# Relative resolution (HERE/../build, HERE/stats.sh, etc.) all still work
+# because the DIRECTORIES are real and only the leaves are links.
+mk_mirror() {
+  local d="$1" f b
+  mkdir -p "$d/workflows/scripts/model-comparison"
+  for f in "$SCRIPTS_DIR"/*; do
+    b="$(basename "$f")"
+    [ "$b" = "model-comparison" ] && continue
+    ln -s "$f" "$d/workflows/scripts/$b"
+  done
+  for f in "$MC_DIR"/*; do
+    ln -s "$f" "$d/workflows/scripts/model-comparison/$(basename "$f")"
+  done
+}
+
+# unlink_and_copy <mirror-path> — swap one mirrored symlink for a real,
+# editable copy of its target (same helper as test_replay_score.sh's own).
+unlink_and_copy() {
+  local p="$1" target
+  target="$(cd -P "$(dirname "$p")" && pwd)/$(basename "$p")"
+  local real; real="$(readlink "$target")"
+  rm -f "$target"
+  cp "$real" "$target"
+  chmod u+w "$target"
 }
 
 # mk_corpus <file> <status>... — one JSON-lines record per status arg.
@@ -273,19 +306,22 @@ ok "11 a batch that would exceed the ceiling STOPS at pre-flight (stop:true, non
 
 # --- mutation proof: the ceiling check never fires ------------------------
 count
-cp "$SUT" "$WORK/replay.sh.orig-12"
-mutate_file "$SUT" \
+MIRROR_12="$WORK/mirror-12"
+mk_mirror "$MIRROR_12"
+SUT_12="$MIRROR_12/workflows/scripts/model-comparison/replay.sh"
+unlink_and_copy "$SUT_12"
+mutate_file "$SUT_12" \
   '  [ "$est_tokens" -gt "$REPLAY_PREFLIGHT_CEILING_TOKENS" ] && ceiling_exceeded=true' \
   '  [ "$est_tokens" -gt "$REPLAY_PREFLIGHT_CEILING_TOKENS" ] && ceiling_exceeded=false' \
   || fail "12m: mutation apply failed"
 mut_rc=0
 mut_out="$(run_pf env REPLAY_PREFLIGHT_BATCH_CAP=10 REPLAY_PREFLIGHT_TOKENS_PER_REPLAY=100 \
   REPLAY_PREFLIGHT_CEILING_TOKENS=50 MODEL_COMPARISON_MIN_SAMPLE_N=1 \
-  bash "$SUT" preflight --corpus-file "$CORPUS_B")" || mut_rc=$?
-cp "$WORK/replay.sh.orig-12" "$SUT"
+  bash "$SUT_12" preflight --corpus-file "$CORPUS_B")" || mut_rc=$?
+rm -rf "$MIRROR_12"
 [ "$mut_rc" -eq 0 ] || fail "12m: expected the mutated (disabled-ceiling) script to exit 0 despite being over budget, got rc=$mut_rc: $mut_out"
 [ "$(jq -r .stop <<<"$mut_out")" = "false" ] || fail "12m: expected the mutated script to NOT stop an over-budget batch: $mut_out"
-ok "12m MUTATION PROOF: disabling the ceiling comparison lets an over-budget batch proceed uncaught — restored, test 11 above is green again"
+ok "12m MUTATION PROOF: disabling the ceiling comparison lets an over-budget batch proceed uncaught — mutation isolated to a \$WORK mirror copy, test 11 above (the real \$SUT) is unaffected"
 
 # ═══════════════════════════════════════════════════════════════════════════
 # SECTION E — the quota-gate.sh consult (explicit scope, temperloop#1256)
@@ -342,19 +378,22 @@ ok "15 quota-gate.sh 'unavailable' (fail open) never stops a batch — only an e
 
 # --- mutation proof: the quota-gate call is dropped (never consulted) -----
 count
-cp "$SUT" "$WORK/replay.sh.orig-16"
-mutate_file "$SUT" \
+MIRROR_16="$WORK/mirror-16"
+mk_mirror "$MIRROR_16"
+SUT_16="$MIRROR_16/workflows/scripts/model-comparison/replay.sh"
+unlink_and_copy "$SUT_16"
+mutate_file "$SUT_16" \
   '  quota_json="$(bash "$QUOTA_GATE_SH" 2>/dev/null)"' \
   '  quota_json="{\"action\":\"proceed\"}"' \
   || fail "16m: mutation apply failed"
 mut_rc=0
 mut_out="$(env BUILD_QUOTA_CACHE="$QUOTA_PAUSE" REPLAY_PREFLIGHT_BATCH_CAP=10 \
   REPLAY_PREFLIGHT_TOKENS_PER_REPLAY=1 REPLAY_PREFLIGHT_CEILING_TOKENS=1000000 \
-  MODEL_COMPARISON_MIN_SAMPLE_N=1 bash "$SUT" preflight --corpus-file "$CORPUS_B")" || mut_rc=$?
-cp "$WORK/replay.sh.orig-16" "$SUT"
+  MODEL_COMPARISON_MIN_SAMPLE_N=1 bash "$SUT_16" preflight --corpus-file "$CORPUS_B")" || mut_rc=$?
+rm -rf "$MIRROR_16"
 [ "$mut_rc" -eq 0 ] || fail "16m: expected the mutated (gate-bypassing) script to exit 0 despite a paused quota cache, got rc=$mut_rc: $mut_out"
 [ "$(jq -r .stop <<<"$mut_out")" = "false" ] || fail "16m: expected the mutated script to NOT stop despite the quota-pause fixture: $mut_out"
-ok "16m MUTATION PROOF: removing the quota-gate.sh call (hardcoding proceed) lets a quota-paused batch run uncaught — restored, test 13 above is green again"
+ok "16m MUTATION PROOF: removing the quota-gate.sh call (hardcoding proceed) lets a quota-paused batch run uncaught — mutation isolated to a \$WORK mirror copy, test 13 above (the real \$SUT) is unaffected"
 
 # ═══════════════════════════════════════════════════════════════════════════
 # SECTION F — significance reachability, genuinely consuming stats.sh's mde
@@ -503,23 +542,26 @@ ok "24 FAIL CLOSED: a malformed line CANNOT_EVALUATEs the whole file — the goo
 #     mde/reachability figure for a primitive this command couldn't reach.
 # ---------------------------------------------------------------------------
 count
-cp "$SUT" "$WORK/replay.sh.orig-25"
-mutate_file "$SUT" \
+MIRROR_25="$WORK/mirror-25"
+mk_mirror "$MIRROR_25"
+SUT_25="$MIRROR_25/workflows/scripts/model-comparison/replay.sh"
+unlink_and_copy "$SUT_25"
+mutate_file "$SUT_25" \
   'STATS_SH="$HERE/stats.sh"' \
   'STATS_SH="$HERE/stats.sh.DOES-NOT-EXIST"' \
   || fail "25: mutation apply failed"
 rc=0
 out25="$(run_pf env REPLAY_PREFLIGHT_BATCH_CAP=100 REPLAY_PREFLIGHT_TOKENS_PER_REPLAY=1 \
   REPLAY_PREFLIGHT_CEILING_TOKENS=1000000 MODEL_COMPARISON_MIN_SAMPLE_N=1 \
-  bash "$SUT" preflight --corpus-file "$CORPUS_A" 2>"$WORK/pf-stderr.txt")" || rc=$?
-cp "$WORK/replay.sh.orig-25" "$SUT"
+  bash "$SUT_25" preflight --corpus-file "$CORPUS_A" 2>"$WORK/pf-stderr.txt")" || rc=$?
+rm -rf "$MIRROR_25"
 [ "$rc" -ne 0 ] || fail "25: expected non-zero exit when the stats.sh primitive is unreachable"
 [ "$(jq -r .outcome <<<"$out25" 2>/dev/null)" = "CANNOT_EVALUATE" ] || fail "25: expected CANNOT_EVALUATE, got: $out25"
 case "$(cat "$WORK/pf-stderr.txt")" in
   *"CANNOT EVALUATE"*) ;;
   *) fail "25: expected a distinct 'CANNOT EVALUATE' line on stderr, got: $(cat "$WORK/pf-stderr.txt")" ;;
 esac
-ok "25 FAIL CLOSED: the stats.sh mde primitive unreachable -> CANNOT_EVALUATE, non-zero (restored, test 19 above is green again)"
+ok "25 FAIL CLOSED: the stats.sh mde primitive unreachable -> CANNOT_EVALUATE, non-zero (mutation isolated to a \$WORK mirror copy — test 19 above, run against the real \$SUT, is unaffected)"
 
 # ═══════════════════════════════════════════════════════════════════════════
 # SECTION H — operator-initiated only: no scheduled/cron/autonomous entry

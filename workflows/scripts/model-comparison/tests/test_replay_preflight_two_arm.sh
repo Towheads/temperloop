@@ -87,6 +87,7 @@ set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MC_DIR="$(cd "$HERE/.." && pwd)"
+SCRIPTS_DIR="$(cd "$MC_DIR/.." && pwd)"
 SUT="$MC_DIR/replay.sh"
 STATS_SUT="$MC_DIR/stats.sh"
 
@@ -113,6 +114,38 @@ mutate_file() {
     die "mutate_file: old text not found-or-not-unique (count=$count)\n" unless $count == 1;
     s/\Q$o\E/$n/;
   ' "$file"
+}
+
+# mk_mirror <dest> — a throwaway, symlink-backed mirror of workflows/scripts
+# under <dest> (same helper as test_replay_score.sh's own, temperloop#1421),
+# so a mutation proof can edit ONE real copy of replay.sh without ever
+# writing into the checkout — in a vendoring overlay $SUT is a composed-tree
+# SYMLINK into kernel/, and an in-place mutation (write-temp-then-rename-
+# over-path) would replace the symlink with a forked regular file.
+# Relative resolution (HERE/../build, HERE/stats.sh, etc.) all still work
+# because the DIRECTORIES are real and only the leaves are links.
+mk_mirror() {
+  local d="$1" f b
+  mkdir -p "$d/workflows/scripts/model-comparison"
+  for f in "$SCRIPTS_DIR"/*; do
+    b="$(basename "$f")"
+    [ "$b" = "model-comparison" ] && continue
+    ln -s "$f" "$d/workflows/scripts/$b"
+  done
+  for f in "$MC_DIR"/*; do
+    ln -s "$f" "$d/workflows/scripts/model-comparison/$(basename "$f")"
+  done
+}
+
+# unlink_and_copy <mirror-path> — swap one mirrored symlink for a real,
+# editable copy of its target (same helper as test_replay_score.sh's own).
+unlink_and_copy() {
+  local p="$1" target
+  target="$(cd -P "$(dirname "$p")" && pwd)/$(basename "$p")"
+  local real; real="$(readlink "$target")"
+  rm -f "$target"
+  cp "$real" "$target"
+  chmod u+w "$target"
 }
 
 # mk_corpus <file> <n-eligible> — n eligible corpus records, one per line,
@@ -191,20 +224,23 @@ ok "3 DEFECT A: a batch under the ceiling on ONE arm but over it on TWO is STOPP
 #     — the same over-budget batch proceeds, stop:false, exit 0 — so test 3
 #     is a measurement of that line and not a tautology.
 count
-cp "$SUT" "$WORK/replay.sh.orig-4"
-mutate_file "$SUT" \
+MIRROR_4M="$WORK/mirror-4m"
+mk_mirror "$MIRROR_4M"
+SUT_4M="$MIRROR_4M/workflows/scripts/model-comparison/replay.sh"
+unlink_and_copy "$SUT_4M"
+mutate_file "$SUT_4M" \
   'local est_tokens=$(( planned_replays * REPLAY_PREFLIGHT_TOKENS_PER_REPLAY ))' \
   'local est_tokens=$(( planned_records * REPLAY_PREFLIGHT_TOKENS_PER_REPLAY ))' \
   || fail "4m: mutation apply failed"
 mut_rc=0
 mut_out="$(pf env REPLAY_PREFLIGHT_BATCH_CAP=100 REPLAY_PREFLIGHT_TOKENS_PER_REPLAY=100 \
   REPLAY_PREFLIGHT_CEILING_TOKENS=700 MODEL_COMPARISON_MIN_SAMPLE_N=1 \
-  bash "$SUT" preflight --corpus-file "$CORPUS_5")" || mut_rc=$?
-cp "$WORK/replay.sh.orig-4" "$SUT"
+  bash "$SUT_4M" preflight --corpus-file "$CORPUS_5")" || mut_rc=$?
+rm -rf "$MIRROR_4M"
 [ "$mut_rc" -eq 0 ] || fail "4m: expected the one-arm (mutated) script to exit 0 on the over-budget batch, got rc=$mut_rc: $mut_out"
 [ "$(jq -r .estimated_total_tokens <<<"$mut_out")" = "500" ] || fail "4m: expected the one-arm estimate 500 under mutation, got: $mut_out"
 [ "$(jq -r .stop <<<"$mut_out")" = "false" ] || fail "4m: expected the one-arm script NOT to stop the (really) over-budget batch: $mut_out"
-ok "4m MUTATION PROOF: budgeting ONE arm lets a genuinely over-budget batch proceed uncaught — restored, test 3 above is green again"
+ok "4m MUTATION PROOF: budgeting ONE arm lets a genuinely over-budget batch proceed uncaught — mutation isolated to a \$WORK mirror copy, test 3 above (the real \$SUT) is unaffected"
 
 # ═══════════════════════════════════════════════════════════════════════════
 # SECTION B — DEFECT B: the significance floor is in PAIRED OUTCOMES
@@ -267,19 +303,22 @@ ok "7 the MDE disclosure is computed at the planned-PAIR n (10), byte-identical 
 
 # --- 8. MUTATION PROOF: revert the floor comparison to the record pool -----
 count
-cp "$SUT" "$WORK/replay.sh.orig-8"
-mutate_file "$SUT" \
+MIRROR_8M="$WORK/mirror-8m"
+mk_mirror "$MIRROR_8M"
+SUT_8M="$MIRROR_8M/workflows/scripts/model-comparison/replay.sh"
+unlink_and_copy "$SUT_8M"
+mutate_file "$SUT_8M" \
   '  elif [ "$planned_pairs" -ge "$MODEL_COMPARISON_MIN_SAMPLE_N" ]; then' \
   '  elif [ "$eligible_n" -ge "$MODEL_COMPARISON_MIN_SAMPLE_N" ]; then' \
   || fail "8m: mutation apply failed"
 mut_out="$(pf env REPLAY_PREFLIGHT_BATCH_CAP=10 REPLAY_PREFLIGHT_TOKENS_PER_REPLAY=1 \
   REPLAY_PREFLIGHT_CEILING_TOKENS=1000000 REPLAY_PREFLIGHT_ASSUMED_STDDEV_TOKENS=500 \
   MODEL_COMPARISON_MIN_SAMPLE_N=20 \
-  bash "$SUT" preflight --corpus-file "$CORPUS_30")"
-cp "$WORK/replay.sh.orig-8" "$SUT"
+  bash "$SUT_8M" preflight --corpus-file "$CORPUS_30")"
+rm -rf "$MIRROR_8M"
 [ "$(jq -r .significance_reachable <<<"$mut_out")" = "true" ] \
   || fail "8m: expected the pool-comparing (mutated) script to report the floor REACHABLE for a batch that cannot reach it: $mut_out"
-ok "8m MUTATION PROOF: comparing the eligible-RECORD pool instead of the planned PAIRS reports an unreachable floor as reachable — restored, test 5 above is green again"
+ok "8m MUTATION PROOF: comparing the eligible-RECORD pool instead of the planned PAIRS reports an unreachable floor as reachable — mutation isolated to a \$WORK mirror copy, test 5 above (the real \$SUT) is unaffected"
 
 # ═══════════════════════════════════════════════════════════════════════════
 # SECTION C — UNIT LEGIBILITY: a reader can tell which unit each number is in
