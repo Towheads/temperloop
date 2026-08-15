@@ -154,11 +154,18 @@ if [ -z "$pipeline_dir" ]; then
 fi
 
 # RETRO-RUNS stream: stays CHECKOUT-RELATIVE (raw_root, the now-symlink-fixed
-# checkout root) — the overlay judge (pipeline-retro-judge-spawn.sh) sets NO
-# raw-dir override and inherits whatever checkout invoked it, so pinning this
-# stream to the pipeline writer's absolute root above would make the probe
-# MISS rows the judge wrote under a DIFFERENT (e.g. cron-sandbox) checkout.
-# Do NOT converge with pipeline_dir above.
+# checkout root) — the overlay judge (pipeline-retro-judge-spawn.sh) sets no
+# RETRO-RUNS raw-dir override and inherits whatever checkout invoked it, so
+# pinning this stream to the pipeline writer's absolute root above would make
+# the probe MISS rows the judge wrote under a DIFFERENT (e.g. cron-sandbox)
+# checkout. Do NOT converge with pipeline_dir above.
+#
+# That wrapper does now pin ONE unrelated stream (temperloop#1565): it exports
+# MODEL_USAGE_RAW_DIR before spawning, so emit-model-usage.sh writes
+# model-usage-<YYYY-MM>.jsonl to the canonical absolute lake instead of a
+# vendored kernel/ stub dir. That variable is read by emit-model-usage.sh and
+# nothing else, and this script never consults it — the retro-runs resolution
+# below is unaffected BY CONSTRUCTION, and test 19 pins that.
 retro_dir="${RETRO_RUNS_RAW_DIR:-$TELEMETRY_RAW_DIR}"
 
 days=30

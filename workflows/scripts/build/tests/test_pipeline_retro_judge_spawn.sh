@@ -265,6 +265,92 @@ MODE=clean run_sut --board 6 >/dev/null
 grep -q -- '--board 6' "$REC" \
   && ok "the board reaches the /retro --pending prompt" || bad "t9.argv" "$(cat "$REC")"
 
+# ── 10-13: the model-usage lake sink is CALLER-PINNED (temperloop#1565) ───────
+# THE BUG this fixture models EXACTLY. emit-model-usage.sh derives its lake
+# root by climbing two levels from its OWN file location. The pipeline runs the
+# kernel copy VENDORED under a consuming checkout — which is precisely what
+# $TMP/checkout is here — so the climb landed on the vendored root and every
+# judge-spawn record went to <vendored>/meta/data/raw/ instead of a real lake.
+#
+# Copying the real emitter into the fixture (the sibling files above are copied
+# for the same reason) is what makes these cases exercise the production path:
+# without it model_usage_emit_from_envelope finds no executable emit script and
+# returns early, and the sink is never resolved at all.
+cp "$HERE/../../emit-model-usage.sh" "$TMP/checkout/workflows/scripts/emit-model-usage.sh"
+chmod +x "$TMP/checkout/workflows/scripts/emit-model-usage.sh"
+MU_MONTH="$(date -u +%Y-%m)"
+MU_VENDORED_LAKE="$TMP/checkout/meta/data/raw"     # where the UNFIXED climb landed
+
+echo "--- test 10: with MODEL_USAGE_RAW_DIR unset, the record lands in PIPELINE_RAW_DIR, not the vendored checkout (temperloop#1565) ---"
+MU_LAKE="$TMP/canonical-lake"
+: > "$REC"
+# BSD env(1): every -u precedes the NAME=VALUE assignments.
+MU_OUT10="$(env -u MODEL_USAGE_RAW_DIR PIPELINE_RAW_DIR="$MU_LAKE" \
+  DOUBLE_REC="$REC" NOTIFY_REC="$NOTIFY_REC" CLAUDE_BIN="$TMP/claude-double.sh" \
+  PIPELINE_NOTIFY_CMD="$TMP/notify.sh" DOUBLE_MODE=clean bash "$SUT" --board 3)" || true
+[ "$(jq -r '.status' <<<"$MU_OUT10")" = "ok" ] && ok "the judge spawn still reports ok" || bad "t10.status" "$MU_OUT10"
+[ -s "$MU_LAKE/model-usage-$MU_MONTH.jsonl" ] \
+  && ok "the model-usage record landed in the CANONICAL lake (\$PIPELINE_RAW_DIR)" \
+  || bad "t10.sink" "no record at $MU_LAKE/model-usage-$MU_MONTH.jsonl (dir: $(ls -A "$MU_LAKE" 2>/dev/null || echo MISSING))"
+grep -F '"seat":"retro-judge"' "$MU_LAKE/model-usage-$MU_MONTH.jsonl" >/dev/null 2>&1 \
+  && ok "…and it is this wrapper's own retro-judge seat record" \
+  || bad "t10.seat" "$(cat "$MU_LAKE/model-usage-$MU_MONTH.jsonl" 2>/dev/null)"
+[ ! -e "$MU_VENDORED_LAKE/model-usage-$MU_MONTH.jsonl" ] \
+  && ok "and NOTHING was written to the VENDORED checkout's own meta/data/raw (the pre-fix destination)" \
+  || bad "t10.vendored" "the vendored stub lake was written: $(cat "$MU_VENDORED_LAKE/model-usage-$MU_MONTH.jsonl" 2>/dev/null)"
+
+echo "--- test 11: RETRO-RUNS is untouched — the pin moves the model-usage stream ONLY (temperloop#1565) ---"
+# pipeline-retro-health.sh resolves the retro-runs stream CHECKOUT-RELATIVE on
+# the documented ground that THIS wrapper sets no retro-runs override. That
+# ground must survive the model-usage pin, so assert it two ways: nothing but a
+# model-usage file appears in the pinned dir, and the wrapper never names any
+# retro-runs / telemetry raw-dir variable at all.
+MU_STRAY="$(ls -A "$MU_LAKE" 2>/dev/null | grep -v "^model-usage-" || true)"
+[ -z "$MU_STRAY" ] \
+  && ok "the pinned dir holds model-usage files only — no retro-runs row was diverted into it" \
+  || bad "t11.stray" "unexpected files in the pinned lake: $MU_STRAY"
+grep -E 'RETRO_RUNS_RAW_DIR|TELEMETRY_RAW_DIR' "$SCRIPT" >/dev/null \
+  && bad "t11.vars" "the wrapper now names a retro-runs/telemetry raw-dir variable" \
+  || ok "the wrapper still names NO retro-runs or telemetry raw-dir variable (pipeline-retro-health.sh's stated premise holds)"
+
+echo "--- test 12: an explicitly-set MODEL_USAGE_RAW_DIR still wins (the pin is a default, not a clobber) ---"
+MU_OVERRIDE="$TMP/explicit-override-lake"
+: > "$REC"
+env MODEL_USAGE_RAW_DIR="$MU_OVERRIDE" PIPELINE_RAW_DIR="$TMP/decoy-lake" \
+  DOUBLE_REC="$REC" NOTIFY_REC="$NOTIFY_REC" CLAUDE_BIN="$TMP/claude-double.sh" \
+  PIPELINE_NOTIFY_CMD="$TMP/notify.sh" DOUBLE_MODE=clean bash "$SUT" --board 3 >/dev/null || true
+[ -s "$MU_OVERRIDE/model-usage-$MU_MONTH.jsonl" ] \
+  && ok "an already-set MODEL_USAGE_RAW_DIR passes through untouched (the live test seam this suite itself relies on)" \
+  || bad "t12.override" "no record at $MU_OVERRIDE"
+[ ! -e "$TMP/decoy-lake/model-usage-$MU_MONTH.jsonl" ] \
+  && ok "…and PIPELINE_RAW_DIR does NOT override it" || bad "t12.precedence" "the decoy lake was written"
+
+echo "--- test 13: the \$HOME expansion is guarded, and the literal matches pipeline-cron.sh's ---"
+# This wrapper runs under `set -u`, where a bare $HOME in the pinned default is
+# an immediate abort. With HOME unset the script already dies later, inside
+# build.config.sh (a pre-existing, unrelated condition), so assert on the
+# SHIPPED bytes of the guard block itself — that is what discriminates a
+# guarded seam from an unguarded one.
+MU_GS="$(grep -n -F 'if [ -n "${MODEL_USAGE_RAW_DIR:-}" ]' "$SCRIPT" | head -n1 | cut -d: -f1)"
+MU_GE="$((MU_GS + 2))"
+MU_GUARD="$(sed -n "${MU_GS},${MU_GE}p" "$SCRIPT")"
+[ -n "$MU_GS" ] && [ "$(sed -n "${MU_GE}p" "$SCRIPT")" = "fi" ] \
+  && ok "located the guarded pin block in the shipped script" || bad "t13.locate" "block not found at $MU_GS"
+MU_G1="$(env -u HOME -u PIPELINE_RAW_DIR -u MODEL_USAGE_RAW_DIR bash -c \
+  'set -uo pipefail; '"$MU_GUARD"'; printf "SURVIVED:%s" "${MODEL_USAGE_RAW_DIR:-<unset>}"' 2>&1)" || MU_G1="ABORTED:$MU_G1"
+[ "$MU_G1" = "SURVIVED:<unset>" ] \
+  && ok "HOME/PIPELINE_RAW_DIR/MODEL_USAGE_RAW_DIR all unset → the seam sets nothing and does not abort" \
+  || bad "t13.unset-home" "got '$MU_G1'"
+MU_G2="$(env -u PIPELINE_RAW_DIR -u MODEL_USAGE_RAW_DIR HOME="$TMP/fakehome" bash -c \
+  'set -uo pipefail; '"$MU_GUARD"'; printf "%s" "$MODEL_USAGE_RAW_DIR"' 2>&1)" || MU_G2="ABORTED:$MU_G2"
+[ "$MU_G2" = "$TMP/fakehome/dev/foundation/meta/data/raw" ] \
+  && ok "with HOME set and no overrides, the pin resolves to the canonical absolute sink" || bad "t13.home-set" "got '$MU_G2'"
+MU_CRON_LIT="$(grep -F 'RAW_DIR="${PIPELINE_RAW_DIR:-' "$HERE/../pipeline-cron.sh" | head -n1 | sed -E 's/.*\$\{PIPELINE_RAW_DIR:-(.*)\}".*/\1/')"
+MU_SUT_LIT="$(grep -F 'MODEL_USAGE_RAW_DIR:-${PIPELINE_RAW_DIR:-' "$SCRIPT" | grep -v '^[[:space:]]*#' | head -n1 | sed -E 's/.*\$\{PIPELINE_RAW_DIR:-(.*)\}\}".*/\1/')"
+[ -n "$MU_CRON_LIT" ] && [ "$MU_CRON_LIT" = "$MU_SUT_LIT" ] \
+  && ok "the pinned default ($MU_SUT_LIT) equals pipeline-cron.sh's RAW_DIR literal verbatim" \
+  || bad "t13.equal" "cron='$MU_CRON_LIT' sut='$MU_SUT_LIT'"
+
 echo
 printf 'pipeline-retro-judge-spawn: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ] || exit 1

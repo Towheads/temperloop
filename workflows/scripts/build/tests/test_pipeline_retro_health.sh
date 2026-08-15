@@ -269,6 +269,30 @@ OUT="$(HOME="$FAKE_HOME2" PIPELINE_RAW_DIR="$L" bash "$SCRIPT" --days 30)"
   && ok "retro-runs resolved against the CHECKOUT root, independent of the pipeline stream's absolute default" \
   || bad "t18.status" "$OUT"
 
+echo "--- test 19: MODEL_USAGE_RAW_DIR does not move the RETRO-RUNS stream (temperloop#1565) ---"
+# temperloop#1565 gave pipeline-retro-judge-spawn.sh a MODEL_USAGE_RAW_DIR pin
+# so emit-model-usage.sh stops writing into a vendored kernel/ stub. This
+# script's retro-runs resolution rests on the documented premise that the
+# wrapper overrides no raw dir THIS script reads, so pin the premise: point
+# MODEL_USAGE_RAW_DIR (and, belt-and-braces, a decoy lake carrying a healthy
+# retro-runs row) somewhere only a wrongly-widened resolution would ever look.
+# A defect(never-had-a-row) verdict proves retro_dir ignored it, exactly as in
+# t18 — a healthy verdict would mean the model-usage pin leaked into this
+# stream.
+DECOY19="$TMP/decoy19"
+mkdir -p "$DECOY19"
+jq -nc --arg ts "$NOW_TS" '{ts:$ts,event:"retro-run",judged:1}' \
+  > "$DECOY19/retro-runs-$NOW_MONTH.jsonl"
+L="$TMP/l19"; new_lake "$L"
+wake "$L" retro-judge
+OUT="$(MODEL_USAGE_RAW_DIR="$DECOY19" PIPELINE_RAW_DIR="$L" bash "$SCRIPT" --days 30)"
+[ "$(jq -r '.status' <<<"$OUT")" = "defect" ] && [ "$(jq -r '.defect_kind' <<<"$OUT")" = "never-had-a-row" ] \
+  && ok "retro-runs is blind to MODEL_USAGE_RAW_DIR — the model-usage sink pin cannot divert this stream" \
+  || bad "t19.status" "$OUT"
+grep -F 'MODEL_USAGE_RAW_DIR' "$SCRIPT" | grep -v '^[[:space:]]*#' >/dev/null \
+  && bad "t19.reads" "this script now reads MODEL_USAGE_RAW_DIR outside a comment" \
+  || ok "…and this script never reads MODEL_USAGE_RAW_DIR at all (structural, not incidental)"
+
 echo
 echo "pipeline-retro-health tests: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
