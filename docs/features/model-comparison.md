@@ -167,6 +167,25 @@ Five properties are worth knowing before you run one:
   as failed with its reason and the batch continues; the run exits `4`
   (`BATCH_DEGRADED`) with every failure named, and the **replay completion
   rate** falls out of the summary rather than needing hand-reconstruction.
+- **The completion rate is reconciled against the artifact it describes.**
+  Every count the driver publishes is derived from the *leg* records, which
+  are written once; the *arm file* is a separate artifact that the judge pass
+  rewrites in place. The summary therefore carries a `reconciliation` block
+  checking the arm file on disk against the leg records the driver counted —
+  record count, per-record identity, and record shape. A mismatch is a named
+  degradation (`arm_reconciliation_mismatch`) and flips the run to
+  `BATCH_DEGRADED`, so a healthy-looking rate can never sit silently beside an
+  arm file that no longer holds what was counted (temperloop#1556, where a
+  `replay_completion_rate: 1` was reported over arm files whose records the
+  judge pass had already replaced with error objects).
+- **The judge annotates; it never replaces.** `judge.sh judge-batch` emits one
+  output line per input line and each one *is* the input record, with a `judge`
+  sub-object attached. A row it could not judge keeps its record and carries a
+  named judgment-absent marker instead of being swapped for a bare error
+  object. A row that was never judgeable — an integration-error record, which
+  has no candidate model and no diff because the spawn failed — passes through
+  unjudged, spends no judge call, and does not count as a degradation; the
+  report consumes it as a compatibility fact.
 - **It is resumable.** The unit of work is a *leg* — one record in one arm,
   i.e. one `replay.sh execute`. Re-invoking after an interruption re-spends
   no leg and no judge call that already completed. A state directory is bound

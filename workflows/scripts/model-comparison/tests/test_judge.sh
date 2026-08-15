@@ -35,7 +35,13 @@
 #   F  fail-closed: absent / empty / malformed / candidate-less / rubric-less
 #      / overlay-less, everywhere
 #   G  arg hygiene (trailing flag, flag-like value) under a bounded timeout
-#   H  the suite-wide no-live-call canary verdict
+#   H  record preservation END TO END (temperloop#1556): a mixed arm of
+#      scored + integration-error records survives judge-batch with every
+#      record still present, rolls up under score.sh aggregate, and renders
+#      through the REAL report producer — with a mutation proof that the
+#      pre-fix substitution corrupts that same arm and takes the roll-up
+#      down with it
+#   I  the suite-wide no-live-call canary verdict
 #
 # Usage: bash workflows/scripts/model-comparison/tests/test_judge.sh
 #
@@ -573,10 +579,21 @@ n_out="$(grep -c . "$BATCH_OUT")"
 [ "$n_out" = "4" ] || fail "E1: expected exactly 4 output lines for 4 input lines (never a silent drop), got $n_out: $(cat "$BATCH_OUT")"
 o1="$(sed -n '1p' "$BATCH_OUT")"; o2="$(sed -n '2p' "$BATCH_OUT")"; o3="$(sed -n '3p' "$BATCH_OUT")"; o4="$(sed -n '4p' "$BATCH_OUT")"
 [ "$(jq -r '.judge.outcome' <<<"$o1")" = "JUDGED" ] || fail "E1 row1: expected JUDGED, got: $o1"
-[ "$(jq -r '.outcome' <<<"$o2")" = "REFUSED" ] || fail "E1 row2 (self-grading): expected REFUSED, got: $o2"
+# temperloop#1556: a REFUSED row is emitted as ITS OWN RECORD carrying the
+# refusal as a judgment-absent `judge` sub-object — never as the bare REFUSED
+# envelope substituted FOR the record (the substitution destroyed 14 of 21
+# records per arm on the first live batch).
+[ "$(jq -r '.judge.outcome' <<<"$o2")" = "REFUSED" ] || fail "E1 row2 (self-grading): expected .judge.outcome REFUSED, got: $o2"
+[ "$(jq -r '.issue' <<<"$o2")" = "#102" ] || fail "E1 row2: the REFUSED row must still BE its input record (issue #102), got: $o2"
+[ "$(jq -r '.judge.scored' <<<"$o2")" = "false" ] || fail "E1 row2: a refused row must be scored:false, got: $o2"
+[ "$(jq -r '.judge.quality_score' <<<"$o2")" = "null" ] || fail "E1 row2: a refused row must carry no quality_score, got: $o2"
+jq -e '.judge.degradation_notice | type == "string" and (length > 10)' <<<"$o2" >/dev/null \
+  || fail "E1 row2: a refused row must carry a NAMED degradation_notice, got: $o2"
 [ "$(jq -r '.judge.outcome' <<<"$o3")" = "UNAVAILABLE" ] || fail "E1 row3 (the judge call the runner fails at): expected UNAVAILABLE, got: $o3"
 [ "$(jq -r '.judge.outcome' <<<"$o4")" = "JUDGED" ] || fail "E1 row4 (batch continued past the degraded row): expected JUDGED, got: $o4"
-ok "E1 judge-batch: REFUSED and UNAVAILABLE rows degrade only THEMSELVES — the batch continues, every row still emits, in order"
+[ "$(jq -s -r '[.[] | .issue] | join(",")' "$BATCH_OUT")" = "#101,#102,#103,#104" ] \
+  || fail "E1: every input record must survive the judge pass, in order: $(jq -s -c '[.[].issue]' "$BATCH_OUT")"
+ok "E1 judge-batch: REFUSED and UNAVAILABLE rows degrade only THEMSELVES — the batch continues, every row still emits AS ITS OWN RECORD, in order"
 
 count
 REC5="$WORK/batch-rec5.json"; mk_record "$REC5" --issue 105
@@ -603,6 +620,10 @@ n_out="$(printf '%s\n' "$out" | grep -c .)"
 [ "$n_out" = "3" ] || fail "E3: expected exactly 3 output lines for 3 input lines (the malformed one included, never dropped), got $n_out: $out"
 row2="$(printf '%s\n' "$out" | sed -n '2p')"
 [ "$(jq -r '.outcome' <<<"$row2")" = "CANNOT_EVALUATE" ] || fail "E3: expected the malformed row's own output to be CANNOT_EVALUATE, got: $row2"
+# temperloop#1556: a line that is not a JSON object cannot carry a merged
+# field, so it is preserved VERBATIM in the envelope rather than discarded.
+[ "$(jq -r '.original_line' <<<"$row2")" = "not valid json at all" ] \
+  || fail "E3: the malformed input line must be preserved verbatim in the emitted envelope, got: $row2"
 row1="$(printf '%s\n' "$out" | sed -n '1p')"
 row3="$(printf '%s\n' "$out" | sed -n '3p')"
 [ "$(jq -r '.judge.outcome' <<<"$row1")" = "JUDGED" ] || fail "E3: the row BEFORE the malformed one should still be JUDGED, got: $row1"
@@ -741,12 +762,184 @@ rc=$?
 ok "G4 judge-batch's arg parser fails fast on a trailing flag too"
 
 # ═══════════════════════════════════════════════════════════════════════════
-# SECTION H — the suite-wide no-live-call canary verdict
+# SECTION H — RECORD PRESERVATION, END TO END (temperloop#1556).
+#
+# The defect this section pins DESTROYED DATA. judge-batch appended
+# `_je_one_record`'s BARE verdict object in place of the row it was derived
+# from, so every integration-error record — unjudgeable BY CONSTRUCTION,
+# since a failed candidate spawn resolves no model and produces no diff —
+# was replaced by `{"outcome":"CANNOT_EVALUATE","error":...}`. A bare verdict
+# carries no `.candidate`, so `score.sh aggregate` then (correctly) refused
+# the whole arm file and the comparison report emitted NOTHING: 14 of 21
+# records per arm lost, a partial degradation turned into a total one, on a
+# live run that had already been paid for.
+#
+# H1-H3 therefore drive the WHOLE downstream chain over a mixed fixture arm
+# (scored + integration-error), because the acceptance is end to end:
+# survive judge-batch -> roll up under score.sh aggregate -> render a report
+# stating the compatibility split. H4 is the MUTATION PROOF: restoring the
+# pre-fix substitution in a mirrored judge.sh corrupts that very arm file and
+# takes score.sh aggregate down with it, so H1-H3 are a measurement rather
+# than a restatement of the code.
+# ═══════════════════════════════════════════════════════════════════════════
+
+SCORE_SH="$MC_DIR/score.sh"
+REPORT_PRODUCER="$SCRIPTS_DIR/report-producers/model-comparison"
+
+# mk_arm_record <pr> <scored|integration-error> <pass|fail>
+# The two shapes replay.sh's ONE record constructor emits (see its
+# `_exec_emit_record` / `_exec_integration_error`): byte-for-byte the same
+# record shape, differing only in contents — an integration-error record
+# carries a null candidate model, no diff_ref, no tokens, and the empty
+# NOT_SCORED score object.
+mk_arm_record() {
+  jq -cn --argjson pr "$1" --arg oc "$2" --arg v "$3" \
+    '{schema_version:"replay-record-v1", pr:$pr, issue:("#" + ($pr|tostring)),
+      merge_commit:null, base:"aaaaaaa", head:"bbbbbbb",
+      title:"Fix the thing", scope:"the scope",
+      acceptance:["A named path is fixed."], notes:"", status:"eligible",
+      reject_reason:"", flags:[],
+      buckets:{N:["a/b.py"], T:["a/t.sh"], X:["CHANGELOG.md"], R:[]},
+      template_sha:"ccccccc", file_count:2,
+      worktree:{path:"/tmp/wt", branch:"br", prepared_at:"2026-08-14T00:00:00Z"},
+      candidate:(if $oc == "scored" then
+          {provider:"anthropic", model:"recorded-candidate-model", diff_ref:"deadbeef",
+           tokens:{input:1200, output:340, cache_read:9000, cache_creation:120},
+           duration_ms:4242, outcome:"scored", integration_error:null,
+           disclosed:false, prompt_sha256:"aa11"}
+        else
+          {provider:"anthropic", model:null, diff_ref:null, tokens:null,
+           duration_ms:900, outcome:"integration-error",
+           integration_error:{stage:"candidate-spawn", detail:"the candidate runner exited 3"},
+           disclosed:false, prompt_sha256:"aa11"}
+        end),
+      score:(if $oc == "scored" then
+          {outcome:"SCORED", scored:true, verdict:$v,
+           base:"aaaaaaa", truth_head:"bbbbbbb",
+           diff:{n:{total:1, changed:1, matched:(if $v == "pass" then 1 else 0 end)},
+                 t:{total:1, present:1}, x:{total:1}, r:{total:0}},
+           gate_result:{ran:true, passed:($v == "pass"),
+                        exit_code:(if $v == "pass" then 0 else 1 end),
+                        timed_out:false, gate_script:"scripts/quality-gates.sh"},
+           acceptance_results:[{criterion:"A named path is fixed.",
+                                carries_literal_numbers:false, mechanically_scored:false}],
+           components:null, contamination_flags:[]}
+        else
+          {outcome:"NOT_SCORED", scored:false, verdict:null,
+           not_scored_reason:"candidate-spawn", base:null, truth_head:null,
+           diff:null, gate_result:null, acceptance_results:null,
+           components:null, contamination_flags:[]}
+        end)}'
+}
+
+MIXED_ARM="$WORK/mixed-arm.jsonl"
+{ mk_arm_record 101 scored pass
+  mk_arm_record 102 integration-error ""
+  mk_arm_record 103 scored fail
+  mk_arm_record 104 integration-error ""; } >"$MIXED_ARM"
+
+# H1 — judge-batch over the mixed arm: every input record survives, the
+#      integration-error rows are passed through UNJUDGED (no judge call
+#      spent on them) and do NOT degrade the batch.
+count
+MIXED_OUT="$WORK/mixed-arm-judged.jsonl"
+: >"$WORK/jstub-calls"
+out="$(run_judge good judge-batch --records-file "$MIXED_ARM" \
+        --judge-runner "bash $JSTUB" --out "$MIXED_OUT")"
+rc=$?
+[ "$rc" -eq 0 ] \
+  || fail "H1: a batch whose only non-JUDGED rows were unjudgeable BY CONSTRUCTION must exit 0 (judge.degraded must not fire), got $rc: $out"
+[ "$(grep -c . "$MIXED_OUT")" = "4" ] \
+  || fail "H1: expected 4 output lines for 4 input lines, got $(grep -c . "$MIXED_OUT"): $(cat "$MIXED_OUT")"
+[ "$(jq -s -r '[.[] | .issue] | join(",")' "$MIXED_OUT")" = "#101,#102,#103,#104" ] \
+  || fail "H1: every input record must still be present AND identifiable: $(jq -s -c '[.[].issue]' "$MIXED_OUT")"
+[ "$(jq -s '[.[] | select((.candidate | type) == "object")] | length' "$MIXED_OUT")" = "4" ] \
+  || fail "H1: a line with no .candidate is a BARE verdict object standing in for a record — the exact corruption: $(cat "$MIXED_OUT")"
+[ "$(jq -s '[.[] | select(.judge.outcome == "JUDGED")] | length' "$MIXED_OUT")" = "2" ] \
+  || fail "H1: both scored records should be JUDGED: $(jq -s -c '[.[].judge.outcome]' "$MIXED_OUT")"
+[ "$(jq -s '[.[] | select(.candidate.outcome == "integration-error") | select(.unjudged.reason == "unjudgeable-by-construction")] | length' "$MIXED_OUT")" = "2" ] \
+  || fail "H1: both integration-error records must carry the unjudgeable-by-construction marker: $(cat "$MIXED_OUT")"
+[ "$(jq -s '[.[] | select(.candidate.outcome == "integration-error") | select(has("judge"))] | length' "$MIXED_OUT")" = "0" ] \
+  || fail "H1: an unjudgeable-by-construction row must carry NO judge sub-object — a row no judge saw is unjudged, not judge-degraded"
+[ "$(cat "$WORK/jstub-calls")" = "2" ] \
+  || fail "H1: exactly 2 judge calls should have been spent (the scored rows only), got $(cat "$WORK/jstub-calls")"
+# The integration-error record is preserved BYTE-FOR-BYTE apart from the
+# added marker — nothing about the input was rewritten on the way through.
+[ "$(jq -s -c '.[1] | del(.unjudged)' "$MIXED_OUT")" = "$(jq -c '.' <(sed -n '2p' "$MIXED_ARM"))" ] \
+  || fail "H1: the integration-error record was altered beyond the added marker: $(jq -s -c '.[1]' "$MIXED_OUT")"
+ok "H1 judge-batch preserves EVERY input record; an unjudgeable-by-construction row passes through unjudged, spends no judge call, and does not degrade the batch"
+
+# H2 — score.sh aggregate rolls the judged mixed arm up (the step that
+#      refused outright on the corrupt pre-fix file).
+count
+agg="$(bash "$SCORE_SH" aggregate --records-file "$MIXED_OUT" 2>&1)"
+rc=$?
+[ "$rc" -eq 0 ] || fail "H2: score.sh aggregate must roll up a judged mixed arm, got $rc: $agg"
+[ "$(jq -r '.quality.scored_n' <<<"$agg")" = "2" ] || fail "H2: expected scored_n 2, got: $agg"
+[ "$(jq -r '.compatibility.integration_error_n' <<<"$agg")" = "2" ] || fail "H2: expected integration_error_n 2, got: $agg"
+[ "$(jq -r '.compatibility.by_stage["candidate-spawn"]' <<<"$agg")" = "2" ] \
+  || fail "H2: the compatibility split must name the stage the errors came from, got: $agg"
+ok "H2 score.sh aggregate rolls the judged mixed arm up into its quality/compatibility split"
+
+# H3 — the REAL report producer renders over the judged mixed arms, stating
+#      the compatibility split, rather than taking its skip path.
+count
+RECS_DIR="$WORK/report-records"; mkdir -p "$RECS_DIR"
+cp "$MIXED_OUT" "$RECS_DIR/baseline.jsonl"
+cp "$MIXED_OUT" "$RECS_DIR/candidate.jsonl"
+prod_out="$(cd "$WORK" && env MODEL_COMPARISON_REPORT_RECORDS_DIR="$RECS_DIR" bash "$REPORT_PRODUCER" 2>&1)"
+case "$prod_out" in
+  skipped\ --*) fail "H3: the report producer SKIPPED over a judged mixed arm — the whole-report loss this item exists to fix: $prod_out" ;;
+esac
+jq -e 'type == "object"' <<<"$prod_out" >/dev/null \
+  || fail "H3: the report producer emitted no JSON report: $(printf '%s' "$prod_out" | head -c 300)"
+[ "$(jq -r '.arms.baseline.compatibility.integration_error_n' <<<"$prod_out")" = "2" ] \
+  || fail "H3: the report must state the compatibility split: $(jq -c '.arms.baseline.compatibility' <<<"$prod_out")"
+[ "$(jq -r '.arms.baseline.quality.scored_n' <<<"$prod_out")" = "2" ] \
+  || fail "H3: the report's quality block must count the scored records only: $(jq -c '.arms.baseline.quality' <<<"$prod_out")"
+[ "$(jq -r '.arms.baseline.judge_quality.judged_n' <<<"$prod_out")" = "2" ] \
+  || fail "H3: the report must read the judge annotations the scored rows carry: $(jq -c '.arms.baseline.judge_quality' <<<"$prod_out")"
+[ "$(jq -r '.arms.baseline.judge_quality.degraded_n' <<<"$prod_out")" = "0" ] \
+  || fail "H3: an unjudgeable-by-construction row must not be reported as a judge degradation: $(jq -c '.arms.baseline.judge_quality' <<<"$prod_out")"
+ok "H3 the real report producer renders over the judged mixed arm and states the compatibility split — never the skip path"
+
+# H4 — MUTATION PROOF. Restore the pre-fix behaviour in a mirrored judge.sh
+#      (skip the by-construction passthrough, then append the BARE verdict
+#      instead of the record) and the same fixture arm is corrupted: the
+#      integration-error records vanish and score.sh aggregate refuses the
+#      whole file, exactly as observed on the live run.
+count
+MUT_H="$WORK/mut-preserve"; mk_mirror "$MUT_H"
+MUT_H_JUDGE="$MUT_H/workflows/scripts/model-comparison/judge.sh"
+unlink_and_copy "$MUT_H_JUDGE"
+mutate_file "$MUT_H_JUDGE" \
+  '    if _je_unjudgeable_by_construction "$row_file"; then' \
+  '    if false; then'
+mutate_file "$MUT_H_JUDGE" \
+  '    printf '"'"'%s\n'"'"' "$row_final" >>"$out_stream"
+    if [ "$row_rc" -ne 0 ]; then degraded=1; n_degraded=$((n_degraded + 1)); fi' \
+  '    printf '"'"'%s\n'"'"' "$row_out" >>"$out_stream"
+    if [ "$row_rc" -ne 0 ]; then degraded=1; n_degraded=$((n_degraded + 1)); fi'
+MUT_H_OUT="$WORK/mixed-arm-judged-mut.jsonl"
+env JSTUB_MODE=good MODEL_USAGE_RAW_DIR="$LAKE" \
+    PROVIDER_ALLOWLIST_TEST_SEAM=1 PROVIDER_ALLOWLIST_COMMITTED_FILE="$ALLOW" \
+    PROVIDER_ALLOWLIST_LOCAL_FILE="$NOLOCAL" PROVIDER_DISCLOSURE_LOG_FILE="$DLOG" \
+    bash "$MUT_H_JUDGE" judge-batch --records-file "$MIXED_ARM" \
+    --judge-runner "bash $JSTUB" --out "$MUT_H_OUT" >/dev/null 2>&1
+[ "$(jq -s '[.[] | select((.candidate | type) == "object")] | length' "$MUT_H_OUT")" = "2" ] \
+  || fail "H4: the mutation proof did not fire — the pre-fix shape should have replaced both integration-error records with bare verdict objects, leaving 2 records: $(cat "$MUT_H_OUT")"
+bash "$SCORE_SH" aggregate --records-file "$MUT_H_OUT" >/dev/null 2>&1
+[ "$?" -ne 0 ] \
+  || fail "H4: the mutation proof did not fire — score.sh aggregate should REFUSE the corrupted arm file (that refusal is what skipped the whole report)"
+ok "H4 MUTATION PROOF: the pre-fix substitution corrupts the same fixture arm (2 of 4 records replaced by bare verdicts) and score.sh aggregate refuses it — H1-H3 measure the fix"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SECTION I — the suite-wide no-live-call canary verdict
 # ═══════════════════════════════════════════════════════════════════════════
 
 count
-[ ! -e "$CANARY" ] || fail "H1: NO LIVE MODEL CALL invariant violated — the 'claude' canary on PATH was invoked: $(cat "$CANARY")"
-ok "H1 NO LIVE MODEL CALL: the 'claude' canary on PATH was never invoked by any test in this suite"
+[ ! -e "$CANARY" ] || fail "I1: NO LIVE MODEL CALL invariant violated — the 'claude' canary on PATH was invoked: $(cat "$CANARY")"
+ok "I1 NO LIVE MODEL CALL: the 'claude' canary on PATH was never invoked by any test in this suite"
 
 count
 # ...and the canary is genuinely capable of firing (proved directly in
@@ -755,9 +948,9 @@ count
 # the canary mechanism itself works, using a NON-empty forced runner).
 env JSTUB_MODE=good bash -c 'echo hi' >/dev/null 2>&1  # no-op sanity, keeps shellcheck quiet about unused var patterns above
 "$WORK/bin/claude" --self-test-only >/dev/null 2>&1 || true
-[ -e "$CANARY" ] || fail "H2: the canary itself does not fire when invoked directly — H1 proves nothing"
+[ -e "$CANARY" ] || fail "I2: the canary itself does not fire when invoked directly — I1 proves nothing"
 rm -f "$CANARY"
-ok "H2 the canary is functional — H1 is a measurement, not a tautology"
+ok "I2 the canary is functional — I1 is a measurement, not a tautology"
 
 # ═══════════════════════════════════════════════════════════════════════════
 echo
