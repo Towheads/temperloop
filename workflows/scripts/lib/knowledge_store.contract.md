@@ -917,18 +917,40 @@ basic_memory` appears anywhere, or if any shell invocation of the
 
 ### Obsidian-mode note
 
-When `KNOWLEDGE_STORE_BACKEND=obsidian` (the sibling Obsidian document-I/O
-backend), **agent-plane** semantic search — a Claude session querying its
-own project's notes — stays on Obsidian's own `search_vault_smart` (MCP),
-per this repo's `CLAUDE.md` ("Search by idea, not keyword"). `ks_search` is
-a separate, **script-plane / headless** path: it works with no Obsidian
-app or GUI running, no MCP server, and no dependency on Claude Code's
-session context — its own `basic-memory` project is pointed at the same
-`ks_root` an Obsidian-backend store resolves to, so a script or hook can
-query the corpus without an agent in the loop at all. The two do not
-share an index; a caller inside an active Claude session with vault access
-should still prefer `search_vault_smart` for vault-aware ranking, ambient
-context, and citation-friendly results.
+Post-cutover (temperloop#1570, the kernel half of foundation epic #951
+Phase 3), the knowledge store is **markdown-canonical**: the files under
+`ks_root` are the source of truth, and Obsidian — where a store happens to
+be an Obsidian vault — is a *viewer* onto them, not the agent-plane's
+transport. **Agent-plane** access — a Claude session reading or
+concept-searching its own project's notes — no longer routes through
+Obsidian's MCP tools for those two ops:
+
+- A **read** resolves the doc's path against `ks_root` (per this contract's
+  `ks_root` / doc-id normalization above) and uses the `Read`/`Glob` file
+  tools directly, exactly as it would read any other file in a checkout.
+- A **concept/idea search** uses `ks_search` (§ `knowledge_search` above) —
+  the same script-plane / headless path a script or hook already used, now
+  also the agent-plane default. There is no longer a separate
+  `search_vault_smart` index to keep in parity with `ks_search`'s; the
+  Phase-1 parity-comparison era (both engines run, results compared) is
+  over — `ks_search` is the one path.
+
+A **write** (`vault_append` / `vault_write` / `vault_patch` / `vault_move` /
+`vault_delete`) is **unaffected by this note** and stays on the Obsidian MCP
+tools — this cutover is reads and search only; see
+`~/.claude/CLAUDE.md` § Obsidian vault for the write-side contract.
+
+**The script-plane backend choice is a separate, orthogonal axis and is
+unchanged by this note.** `KNOWLEDGE_STORE_BACKEND=plain-files` (direct
+filesystem I/O, the default) vs. `KNOWLEDGE_STORE_BACKEND=obsidian`
+(document I/O routed through the Obsidian Local REST API — see `## The
+obsidian backend` above) still governs how `ks_read`/`ks_write`/`ks_append`/
+`ks_list` themselves talk to storage; nothing above changes that matrix. The
+agent-plane posture in this note is about how a live Claude session reads
+and searches — it applies whenever the store resolves to a filesystem path
+the session can `Read`/`Glob` directly (the ordinary case for a local vault,
+`KNOWLEDGE_STORE_BACKEND` notwithstanding), independent of which backend a
+script uses to reach the same bytes over REST.
 
 ### Non-goals of this seam (search)
 

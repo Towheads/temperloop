@@ -29,7 +29,7 @@ Once CLAUDE.md has been written, create a project context placeholder in **the k
 Steps:
 1. Derive the project name from the current working directory name (e.g. `/Users/alice/dev/BusinessSearch` → `BusinessSearch`). Convert hyphenated/underscored names to title case (e.g. `my-app` → `My App`).
 2. Build a kebab-case tag slug from the project name (e.g. `My App` → `my-app`).
-3. Check whether `Context/<ProjectName>/index.md` already exists in the vault using `mcp__obsidian__get_vault_file`. If it does, skip creation. <!-- cite: IN.2 class:duplicate-project-notes -->
+3. Check whether `Context/<ProjectName>/index.md` already exists in the knowledge store using `Read` on the path resolved against the store root (`workflows/scripts/lib/knowledge_store.contract.md`). If it does, skip creation. <!-- cite: IN.2 class:duplicate-project-notes -->
 4. If it doesn't exist, use `mcp__obsidian__create_vault_file` to create `Context/<ProjectName>/index.md` with this content (substituting the actual values):
 
 ```markdown
