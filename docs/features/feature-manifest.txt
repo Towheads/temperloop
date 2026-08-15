@@ -603,3 +603,12 @@ model-comparison workflows/scripts/report-producers/model-comparison
 # reasoning.
 model-comparison workflows/scripts/lib/cannot-evaluate.sh
 model-comparison workflows/scripts/lib/tests/test_cannot_evaluate.sh
+# spawn-diagnostic.sh (temperloop#1553) is that same shape again: a shared
+# renderer for a failed spawn's failure detail, sourced by replay.sh and
+# judge.sh under workflows/scripts/model-comparison/ but living at
+# workflows/scripts/lib/, so the directory-level glob above does not reach it
+# and it needs its own exact-path claim. Its behaviour is asserted from the
+# two call sites' own suites (test_replay_score.sh section E2, test_judge.sh
+# B3b-B3e), each carrying a mutation proof, so it ships no separate
+# lib-level test file.
+model-comparison workflows/scripts/lib/spawn-diagnostic.sh
