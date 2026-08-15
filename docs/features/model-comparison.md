@@ -167,6 +167,20 @@ Five properties are worth knowing before you run one:
   as failed with its reason and the batch continues; the run exits `4`
   (`BATCH_DEGRADED`) with every failure named, and the **replay completion
   rate** falls out of the summary rather than needing hand-reconstruction.
+- **A failed spawn's reason comes from both streams, not just stderr.** A
+  candidate or judge spawn runs with stdout captured to an envelope file and
+  stderr to a scratch file. `claude -p --output-format json` reports an
+  API-level failure as a JSON object on **stdout** and writes nothing to
+  stderr, so a failure detail built from stderr alone is blank by
+  construction — the shape that produced `the candidate runner exited 1: `
+  on all 28 legs of the first live batch, with the envelope carrying the
+  actual reason deleted unread alongside the scratch dir. Both spawn sites
+  now read the envelope *before* teardown and render both streams through
+  `workflows/scripts/lib/spawn-diagnostic.sh`: the envelope's `is_error`,
+  `subtype` and `api_error_status` are named, each fragment is labelled with
+  the stream it came from, each stream is bounded at 400 bytes, and a spawn
+  silent on both streams says so explicitly rather than trailing off after a
+  colon (temperloop#1553).
 - **The completion rate is reconciled against the artifact it describes.**
   Every count the driver publishes is derived from the *leg* records, which
   are written once; the *arm file* is a separate artifact that the judge pass

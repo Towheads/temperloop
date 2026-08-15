@@ -278,6 +278,23 @@ if ! command -v run_with_timeout >/dev/null 2>&1; then
   run_with_timeout() { shift; "$@"; }
 fi
 
+# shellcheck source=../lib/spawn-diagnostic.sh
+[ -f "$HERE/../lib/spawn-diagnostic.sh" ] && . "$HERE/../lib/spawn-diagnostic.sh"
+if ! command -v spawn_failure_detail >/dev/null 2>&1; then
+  # DEGRADED, and it SAYS so — the same shape replay.sh carries. See
+  # workflows/scripts/lib/spawn-diagnostic.sh's header (temperloop#1553):
+  # this fallback deliberately does not re-implement the two-stream renderer,
+  # it only guarantees a stated reason rather than a detail that trails off
+  # after a colon.
+  spawn_failure_detail() {
+    local rc="${1:-?}" errfile="${2:-}" envfile="${3:-}" subject="${4:-the runner}"
+    printf '%s exited %s [DEGRADED: workflows/scripts/lib/spawn-diagnostic.sh is missing from this checkout, so only raw excerpts are available] stderr: %s | stdout: %s' \
+      "$subject" "$rc" \
+      "$(head -c 400 "$errfile" 2>/dev/null)" \
+      "$(head -c 400 "$envfile" 2>/dev/null)"
+  }
+fi
+
 # shellcheck source=../lib/cannot-evaluate.sh
 [ -f "$HERE/../lib/cannot-evaluate.sh" ] && . "$HERE/../lib/cannot-evaluate.sh"
 if ! command -v cannot_evaluate_emit >/dev/null 2>&1; then
@@ -577,7 +594,12 @@ _je_one_record() {
     _je_unavailable "judge-timeout: the judge call exceeded MODEL_COMPARISON_JUDGE_TIMEOUT_SECS (${MODEL_COMPARISON_JUDGE_TIMEOUT_SECS}s)" "$measured_ms"; return $?
   fi
   if [ "$run_rc" -ne 0 ]; then
-    _je_unavailable "judge-spawn: the judge runner exited $run_rc: $(head -c 400 "$scratch_dir/stderr.txt" 2>/dev/null)" "$measured_ms"; return $?
+    # BOTH streams, and the envelope read BEFORE _je_unavailable's own
+    # `rm -rf "$scratch_dir"` destroys it (temperloop#1553) — the judge spawn
+    # reported the identical blank shape ("judge-spawn: the judge runner
+    # exited 1: ") for the same reason: `claude -p --output-format json` puts
+    # an API-level failure on STDOUT, not stderr.
+    _je_unavailable "judge-spawn: $(spawn_failure_detail "$run_rc" "$scratch_dir/stderr.txt" "$envelope_file" "the judge runner")" "$measured_ms"; return $?
   fi
   if ! jq -e 'type=="object"' "$envelope_file" >/dev/null 2>&1; then
     _je_unavailable "envelope-parse: the judge runner's stdout is not a JSON object: $(head -c 400 "$envelope_file" 2>/dev/null)" "$measured_ms"; return $?

@@ -408,6 +408,25 @@ if ! command -v run_with_timeout >/dev/null 2>&1; then
   run_with_timeout() { shift; "$@"; }
 fi
 
+# shellcheck source=../lib/spawn-diagnostic.sh
+[ -f "$HERE/../lib/spawn-diagnostic.sh" ] && . "$HERE/../lib/spawn-diagnostic.sh"
+if ! command -v spawn_failure_detail >/dev/null 2>&1; then
+  # DEGRADED, and it SAYS so. spawn-diagnostic.sh ships alongside this file
+  # in every kernel install, so reaching this branch means the checkout is
+  # structurally off. Re-typing the real two-stream renderer here would be
+  # exactly the duplication the lib exists to remove, so this fallback does
+  # not pretend to be it: it still names both streams' presence (so a reader
+  # is never handed a detail that trails off after a colon — temperloop#1553)
+  # while stating plainly that the diagnostic library is missing.
+  spawn_failure_detail() {
+    local rc="${1:-?}" errfile="${2:-}" envfile="${3:-}" subject="${4:-the runner}"
+    printf '%s exited %s [DEGRADED: workflows/scripts/lib/spawn-diagnostic.sh is missing from this checkout, so only raw excerpts are available] stderr: %s | stdout: %s' \
+      "$subject" "$rc" \
+      "$(head -c 400 "$errfile" 2>/dev/null)" \
+      "$(head -c 400 "$envfile" 2>/dev/null)"
+  }
+fi
+
 # shellcheck source=../lib/cannot-evaluate.sh
 [ -f "$HERE/../lib/cannot-evaluate.sh" ] && . "$HERE/../lib/cannot-evaluate.sh"
 if ! command -v cannot_evaluate_emit >/dev/null 2>&1; then
@@ -1511,7 +1530,15 @@ cmd_execute() {
     return 4
   fi
   if [ "$run_rc" -ne 0 ]; then
-    _exec_integration_error "candidate-spawn" "the candidate runner exited $run_rc: $(head -c 400 "$scratch_dir/stderr.txt" 2>/dev/null)"
+    # BOTH streams, and the envelope read BEFORE _exec_integration_error's own
+    # `rm -rf "$scratch_dir"` destroys it (temperloop#1553). Reading stderr
+    # alone produced "the candidate runner exited 1: " on all 28 legs of the
+    # first live batch: `claude -p --output-format json` reports an API-level
+    # failure as a JSON object on STDOUT and writes nothing to stderr, so the
+    # empty stderr was the expected shape and the envelope carrying the actual
+    # reason was deleted unread.
+    _exec_integration_error "candidate-spawn" \
+      "$(spawn_failure_detail "$run_rc" "$scratch_dir/stderr.txt" "$envelope_file" "the candidate runner")"
     return 4
   fi
   if ! jq -e 'type=="object"' "$envelope_file" >/dev/null 2>&1; then

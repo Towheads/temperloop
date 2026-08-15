@@ -211,6 +211,19 @@ case "\${JSTUB_MODE:-good}" in
       '{result:("\`\`\`json\n" + \$body + "\n\`\`\`"), modelUsage:{"claude-opus-4-8":{inputTokens:5,outputTokens:5,cacheReadInputTokens:0,cacheCreationInputTokens:0}}, duration_ms:10, is_error:false}'
     ;;
   spawnfail) echo "vendor connection reset" >&2; exit 3 ;;
+  # ── the two temperloop#1553 judge-spawn shapes ─────────────────────────
+  # THE REAL ONE: claude -p --output-format json reports an API-level failure
+  # as a JSON object on STDOUT and writes NOTHING to stderr, so the judge
+  # spawn recorded "judge-spawn: the judge runner exited 1: " — the same
+  # blank shape the candidate spawn did, for the same reason.
+  spawnfail_stdout)
+    jq -cn '{type:"result", subtype:"error_during_execution", is_error:true,
+             api_error_status:529, duration_ms:640,
+             result:"API Error: 529 upstream overloaded"}'
+    exit 1
+    ;;
+  # Genuinely silent on BOTH streams — the notice must SAY there was nothing.
+  spawnfail_silent) exit 1 ;;
   badenvelope) printf 'not json at all\n'; exit 0 ;;
   vendorerror)
     jq -cn '{is_error:true, subtype:"api_error_overloaded"}'
@@ -356,6 +369,65 @@ case "$(jq -r .judge.degradation_notice <<<"$out")" in
 esac
 [ "$(jq 'has("schema_version")' <<<"$out")" = "true" ] || fail "B3: the record must still be emitted (never a silent drop), got: $out"
 ok "B3 an unreachable judge is UNAVAILABLE — record still emitted, scored=false, quality_score=null, named notice"
+
+# ── the judge-spawn DETAIL carries a reason (temperloop#1553) ──────────────
+# assert_no_trailing_colon <label> <notice> — the #1553 shape is a notice
+# that ENDS at a colon with nothing after it, so that is what is banned.
+assert_no_trailing_colon() {
+  local label="$1" d="$2" trimmed
+  trimmed="${d%"${d##*[![:space:]]}"}"
+  case "$trimmed" in
+    *:) fail "$label: the degradation_notice TRAILS OFF after a colon with no reason — the exact #1553 shape: [$d]" ;;
+  esac
+  [ -n "$trimmed" ] || fail "$label: the degradation_notice is empty"
+}
+
+count
+out="$(run_judge spawnfail_stdout judge --record "$RECORD" --judge-runner "bash $JSTUB")"
+rc=$?
+[ "$rc" -eq 4 ] || fail "B3b: expected exit 4 (UNAVAILABLE), got $rc: $out"
+notice="$(jq -r .judge.degradation_notice <<<"$out")"
+case "$notice" in *"judge-spawn"*) ;; *) fail "B3b: the notice lost its judge-spawn stage name, got: [$notice]" ;; esac
+case "$notice" in *"is_error=true"*) ;; *) fail "B3b: the notice must name the envelope's is_error, got: [$notice]" ;; esac
+case "$notice" in *"subtype=error_during_execution"*) ;; *) fail "B3b: the notice must name the envelope's subtype, got: [$notice]" ;; esac
+case "$notice" in *"api_error_status=529"*) ;; *) fail "B3b: the notice must name the envelope's api_error_status, got: [$notice]" ;; esac
+assert_no_trailing_colon "B3b" "$notice"
+[ "${#notice}" -le 1000 ] || fail "B3b: the notice is unbounded (${#notice} chars): [$notice]"
+ok "B3b a judge runner that exits non-zero with a claude-JSON error object on STDOUT and NOTHING on stderr yields a notice naming the stdout-side error — the SAME treatment the candidate spawn gets"
+
+count
+out="$(run_judge spawnfail_silent judge --record "$RECORD" --judge-runner "bash $JSTUB")"
+notice="$(jq -r .judge.degradation_notice <<<"$out")"
+case "$notice" in *"no diagnostic on either stream"*) ;; *) fail "B3c: both-streams-empty must yield the explicit no-diagnostic wording, got: [$notice]" ;; esac
+assert_no_trailing_colon "B3c" "$notice"
+ok "B3c a judge spawn silent on BOTH streams yields an explicit 'produced no diagnostic on either stream' reason, never a notice ending at a colon"
+
+# --- MUTATION PROOF: reading the envelope is load-bearing on the judge side -
+count
+MIRROR_B="$WORK/mirror-b"
+mk_mirror "$MIRROR_B"
+unlink_and_copy "$MIRROR_B/workflows/scripts/model-comparison/judge.sh"
+mutate_file "$MIRROR_B/workflows/scripts/model-comparison/judge.sh" \
+  '    _je_unavailable "judge-spawn: $(spawn_failure_detail "$run_rc" "$scratch_dir/stderr.txt" "$envelope_file" "the judge runner")" "$measured_ms"; return $?' \
+  '    _je_unavailable "judge-spawn: the judge runner exited $run_rc: $(head -c 400 "$scratch_dir/stderr.txt" 2>/dev/null)" "$measured_ms"; return $?'
+mut_out="$(env JSTUB_MODE=spawnfail_stdout MODEL_USAGE_RAW_DIR="$LAKE" \
+    PROVIDER_ALLOWLIST_TEST_SEAM=1 PROVIDER_ALLOWLIST_COMMITTED_FILE="$ALLOW" \
+    PROVIDER_ALLOWLIST_LOCAL_FILE="$NOLOCAL" PROVIDER_DISCLOSURE_LOG_FILE="$DLOG" \
+    bash "$MIRROR_B/workflows/scripts/model-comparison/judge.sh" judge \
+      --record "$RECORD" --judge-runner "bash $JSTUB")"
+mut_notice="$(jq -r .judge.degradation_notice <<<"$mut_out")"
+[ "$mut_notice" = "judge-spawn: the judge runner exited 1: " ] \
+  || fail "B3d MUTATION PROOF did not fire — restoring the stderr-only notice should reproduce the blank #1553 shape verbatim, got: [$mut_notice]"
+rm -rf "$MIRROR_B"
+ok "B3d MUTATION PROOF: restoring the stderr-only notice reproduces the exact blank 'judge-spawn: the judge runner exited 1: ' — reading the envelope is load-bearing here too"
+
+count
+out="$(run_judge spawnfail_stdout judge --record "$RECORD" --judge-runner "bash $JSTUB")"
+case "$(jq -r .judge.degradation_notice <<<"$out")" in
+  *"api_error_status=529"*) ;;
+  *) fail "B3e: RESTORED behaviour should name the reason again, got: $out" ;;
+esac
+ok "B3e RESTORED: the unmutated judge names the stdout-side reason again"
 
 count
 out="$(run_judge vendorerror judge --record "$RECORD" --judge-runner "bash $JSTUB")"

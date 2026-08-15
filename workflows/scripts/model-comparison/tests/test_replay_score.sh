@@ -268,6 +268,28 @@ case "\${STUB_MODE:-good}" in
     cp "$TRUTH_PY" "\$wt/workflows/scripts/drain/scan_stub.py"
     ;;
   spawnfail) echo "vendor connection reset" >&2; exit 3 ;;
+  # ── the three temperloop#1553 spawn-failure shapes ─────────────────────
+  # THE REAL ONE: claude -p --output-format json reports an API-level
+  # failure as a JSON object on STDOUT and writes NOTHING to stderr. This
+  # mode reproduces that exactly — an empty stderr is not an anomaly here,
+  # it is the CLI's documented shape, and it is what made all 28 legs of the
+  # first live batch record "the candidate runner exited 1: ".
+  spawnfail_stdout)
+    jq -cn '{type:"result", subtype:"error_during_execution", is_error:true,
+             api_error_status:529, duration_ms:812,
+             result:"API Error: 529 upstream overloaded"}'
+    exit 1
+    ;;
+  # Genuinely silent on BOTH streams — the only case where there is no
+  # diagnostic to report, and the detail must SAY so.
+  spawnfail_silent) exit 1 ;;
+  # Verbose on both streams — the bound has to hold.
+  spawnfail_verbose)
+    head -c 5000 /dev/zero | tr '\0' 'E' >&2
+    jq -cn --arg r "\$(head -c 5000 /dev/zero | tr '\0' 'R')" \\
+      '{type:"result", subtype:"error_during_execution", is_error:true, result:\$r}'
+    exit 1
+    ;;
   badjson)   printf 'not json at all\n'; exit 0 ;;
   vendorerror)
     jq -cn '{type:"result", is_error:true, subtype:"api_error_overloaded"}'
@@ -674,6 +696,102 @@ count
 [ "$(jq -r '.candidate.tokens' <<<"$o")" = "null" ] || fail "E6: an integration-error record must carry null tokens: $o"
 [ "$(jq -r '.score.contamination_flags | type' <<<"$o")" = "array" ] || fail "E6: the score object shape must be stable across outcomes: $o"
 ok "E6 an integration-error record is the SAME shape as a scored one, with every score figure null"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SECTION E2 — the spawn-failure DETAIL carries a reason (temperloop#1553)
+#
+# These runs deliberately do NOT feed $ERR_RECS: section F's aggregate counts
+# are pinned to the four shapes E1-E4 produced, and adding records here would
+# move a figure that has nothing to do with what this section asserts.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# detail_of <stub-mode> <label> — run execute, assert it is a candidate-spawn
+# integration error, and leave the detail string in $DET.
+#
+# NOTE: this sets a GLOBAL rather than printing, and is therefore called
+# directly, never as `$(detail_of …)`. `fail` is an `exit 1`, and an exit
+# inside a command substitution kills only the SUBSHELL — the suite would
+# sail past a failed precondition with an empty $DET and report a confusing
+# downstream failure instead of the real one.
+DET=""
+detail_of() {
+  local mode="$1" label="$2" o r
+  o="$(run_exec "$mode" --record "$RECORD" --repo-root "$REPO" --worktree "$(mk_wt)" \
+        --candidate-runner "bash $STUB")"
+  r=$?
+  [ "$r" -eq 4 ] || fail "$label: expected exit 4 (integration error), got $r: $o"
+  [ "$(jq -r '.candidate.integration_error.stage' <<<"$o")" = "candidate-spawn" ] \
+    || fail "$label: expected stage candidate-spawn, got: $o"
+  DET="$(jq -r '.candidate.integration_error.detail' <<<"$o")"
+}
+
+# assert_no_trailing_colon <label> <detail>
+assert_no_trailing_colon() {
+  local label="$1" d="$2" trimmed
+  trimmed="${d%"${d##*[![:space:]]}"}"   # right-trim whitespace
+  case "$trimmed" in
+    *:) fail "$label: the detail TRAILS OFF after a colon with no reason — this is the exact #1553 shape: [$d]" ;;
+  esac
+  [ -n "$trimmed" ] || fail "$label: the detail is empty"
+}
+
+count
+detail_of spawnfail_stdout E7; D_STDOUT="$DET"
+case "$D_STDOUT" in *"is_error=true"*) ;; *) fail "E7: detail must name the envelope's is_error, got: [$D_STDOUT]" ;; esac
+case "$D_STDOUT" in *"subtype=error_during_execution"*) ;; *) fail "E7: detail must name the envelope's subtype, got: [$D_STDOUT]" ;; esac
+case "$D_STDOUT" in *"api_error_status=529"*) ;; *) fail "E7: detail must name the envelope's api_error_status, got: [$D_STDOUT]" ;; esac
+assert_no_trailing_colon "E7" "$D_STDOUT"
+ok "E7 FIXTURE 1: a runner that exits non-zero with a claude-JSON error object on STDOUT and NOTHING on stderr yields a detail naming the stdout-side error (is_error, subtype, api_error_status)"
+
+count
+case "$D_STDOUT" in *"wrote nothing to stderr"*) ;; *) fail "E8: an empty stderr must be stated, not silently dropped, got: [$D_STDOUT]" ;; esac
+ok "E8 the empty-stderr half is stated explicitly, so a reader knows WHICH stream carried the reason"
+
+count
+detail_of spawnfail_silent E9; D_SILENT="$DET"
+case "$D_SILENT" in *"no diagnostic on either stream"*) ;; *) fail "E9: both-streams-empty must yield the explicit no-diagnostic wording, got: [$D_SILENT]" ;; esac
+assert_no_trailing_colon "E9" "$D_SILENT"
+ok "E9 FIXTURE 2: both streams empty yields an explicit 'produced no diagnostic on either stream' reason, never a detail ending at a colon"
+
+count
+detail_of spawnfail_verbose E10; D_VERBOSE="$DET"
+[ "${#D_VERBOSE}" -le 1000 ] \
+  || fail "E10: the detail is unbounded (${#D_VERBOSE} chars) — a verbose failure must not grow a record without limit"
+case "$D_VERBOSE" in *"EEEE"*) ;; *) fail "E10: the stderr half went missing entirely, got: [$D_VERBOSE]" ;; esac
+case "$D_VERBOSE" in *"RRRR"*) ;; *) fail "E10: the stdout half went missing entirely, got: [$D_VERBOSE]" ;; esac
+ok "E10 a 5000-byte stderr AND a 5000-byte envelope still produce a BOUNDED detail (<=1000 chars) that carries both halves"
+
+count
+detail_of spawnfail E11; D_STDERR="$DET"
+case "$D_STDERR" in *"vendor connection reset"*) ;; *) fail "E11: the stderr-only shape regressed, got: [$D_STDERR]" ;; esac
+assert_no_trailing_colon "E11" "$D_STDERR"
+ok "E11 the pre-existing stderr-only shape is unchanged — this widens the detail, it does not replace it"
+
+# --- MUTATION PROOF: reading the envelope is load-bearing ------------------
+count
+MIRROR_E="$WORK/mirror-e"
+mk_mirror "$MIRROR_E"
+unlink_and_copy "$MIRROR_E/workflows/scripts/model-comparison/replay.sh"
+mutate_file "$MIRROR_E/workflows/scripts/model-comparison/replay.sh" \
+  '    _exec_integration_error "candidate-spawn" \
+      "$(spawn_failure_detail "$run_rc" "$scratch_dir/stderr.txt" "$envelope_file" "the candidate runner")"' \
+  '    _exec_integration_error "candidate-spawn" "the candidate runner exited $run_rc: $(head -c 400 "$scratch_dir/stderr.txt" 2>/dev/null)"'
+mut_out="$(env STUB_MODE=spawnfail_stdout MODEL_USAGE_RAW_DIR="$LAKE" \
+    PROVIDER_ALLOWLIST_TEST_SEAM=1 PROVIDER_ALLOWLIST_COMMITTED_FILE="$ALLOW" \
+    PROVIDER_ALLOWLIST_LOCAL_FILE="$NOLOCAL" PROVIDER_DISCLOSURE_LOG_FILE="$DLOG" \
+    bash "$MIRROR_E/workflows/scripts/model-comparison/replay.sh" execute \
+      --record "$RECORD" --repo-root "$REPO" --worktree "$(mk_wt)" \
+      --candidate-runner "bash $STUB")"
+mut_detail="$(jq -r '.candidate.integration_error.detail' <<<"$mut_out")"
+[ "$mut_detail" = "the candidate runner exited 1: " ] \
+  || fail "E12 MUTATION PROOF did not fire — restoring the stderr-only detail should reproduce the blank #1553 shape verbatim, got: [$mut_detail]"
+rm -rf "$MIRROR_E"
+ok "E12 MUTATION PROOF: restoring the stderr-only detail reproduces the exact blank 'the candidate runner exited 1: ' the live batch recorded 28 times — reading the envelope is load-bearing"
+
+count
+detail_of spawnfail_stdout E13; D_RESTORED="$DET"
+case "$D_RESTORED" in *"api_error_status=529"*) ;; *) fail "E13: RESTORED behaviour should name the reason again, got: [$D_RESTORED]" ;; esac
+ok "E13 RESTORED: the unmutated execute names the stdout-side reason again"
 
 # ═══════════════════════════════════════════════════════════════════════════
 # SECTION F — aggregate: integration errors excluded from quality
