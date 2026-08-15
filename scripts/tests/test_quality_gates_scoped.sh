@@ -390,20 +390,27 @@ KC_GATES=(
 # 13. THE KERNEL'S OWN CHECKOUT (no .kernel-pin) keeps FULL coverage — every
 #     kernel-content gate still runs. A regression here would silently shrink
 #     the kernel's own gate set, which is the whole risk of adding a class.
+#
+#     Runs against a SYNTHESIZED pin-less fixture — the exact mirror of case
+#     14's pinned one — never the real repo root (temperloop#1543): a
+#     vendoring consumer structurally carries a root .kernel-pin, so the old
+#     real-root "this checkout has no pin" precondition could never hold in a
+#     composed overlay tree and false-failed there. The pin-less BRANCH of
+#     the class gating is what's under test, and a fixture whose root has no
+#     .kernel-pin exercises it wherever this suite runs.
 # --------------------------------------------------------------------------
-if [ -f "$REPO_ROOT/.kernel-pin" ]; then
-  fail "case 13 precondition: this kernel checkout unexpectedly carries a .kernel-pin"
+UNPINNED="$WORK/unpinned"
+mkdir -p "$UNPINNED/scripts"
+cp "$SRC" "$UNPINNED/scripts/quality-gates.sh"
+KC_UNPINNED="$(qg_list "$UNPINNED")"
+kc_missing=0
+for g in "${KC_GATES[@]}"; do
+  grep -qxF "[kernel]  $g" <<<"$KC_UNPINNED" || { kc_missing=$((kc_missing + 1)); echo "  missing: $g" >&2; }
+done
+if [ "$kc_missing" -eq 0 ] && ! grep -q 'kernel-content gate' <<<"$KC_UNPINNED"; then
+  pass "no .kernel-pin: all ${#KC_GATES[@]} kernel-content gates RUN (none skipped)"
 else
-  KC_UNPINNED="$(qg_list "$REPO_ROOT")"
-  kc_missing=0
-  for g in "${KC_GATES[@]}"; do
-    grep -qxF "[kernel]  $g" <<<"$KC_UNPINNED" || { kc_missing=$((kc_missing + 1)); echo "  missing: $g" >&2; }
-  done
-  if [ "$kc_missing" -eq 0 ] && ! grep -q 'kernel-content gate' <<<"$KC_UNPINNED"; then
-    pass "no .kernel-pin: all ${#KC_GATES[@]} kernel-content gates RUN (none skipped)"
-  else
-    fail "kernel checkout lost kernel-content coverage ($kc_missing missing, or a skip line was emitted)"
-  fi
+  fail "kernel checkout lost kernel-content coverage ($kc_missing missing, or a skip line was emitted)"
 fi
 
 # --------------------------------------------------------------------------

@@ -39,7 +39,23 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB_DIR="$(cd "$HERE/.." && pwd)"
 LIB="$LIB_DIR/cannot-evaluate.sh"
-MC_DIR="$(cd "$LIB_DIR/../model-comparison" && pwd)"
+
+# Case 3 reads the five REAL wrapper bodies out of workflows/scripts/
+# model-comparison/{batch,judge,score,replay}.sh — a kernel-internal
+# consistency check between KERNEL files. Resolve that directory through this
+# test file's own SYMLINK-RESOLVED location, never the invoked (root-relative)
+# path (temperloop#1543): in a composed overlay checkout this file is reached
+# through a compat symlink and the overlay root may legitimately not wire
+# model-comparison/ at all, but the wrappers under test always live next to
+# the REAL copy of this test. Portable resolution (no GNU readlink -f) — the
+# same idiom the board scripts use.
+_self="${BASH_SOURCE[0]}"
+while [ -L "$_self" ]; do
+  _dir="$(cd -P "$(dirname "$_self")" && pwd)"; _self="$(readlink "$_self")"
+  case "$_self" in /*) ;; *) _self="$_dir/$_self" ;; esac
+done
+REAL_HERE="$(cd -P "$(dirname "$_self")" && pwd)"
+MC_DIR="$(cd -P "$REAL_HERE/../../model-comparison" 2>/dev/null && pwd)" || MC_DIR=""
 
 fail() { printf 'FAIL: %s\n' "$1" >&2; exit 1; }
 
@@ -131,14 +147,24 @@ $body
   [ "$(cat "$err")" = "$expected_line" ] || fail "3: $f's $fn should print '$expected_line' on stderr, got: $(cat "$err")"
 }
 
-for pair in "batch.sh:bd_cannot_evaluate:batch.sh" \
-            "judge.sh:_je_cannot_evaluate:judge.sh" \
-            "score.sh:cannot_evaluate:score.sh" \
-            "replay.sh:preflight_cannot_evaluate:replay.sh preflight" \
-            "replay.sh:execute_cannot_evaluate:replay.sh execute"; do
-  IFS=: read -r wf wfn wprefix <<<"$pair"
-  probe_wrapper "$wf" "$wfn" "$wprefix"
-done
-echo "PASS: 3 all five wrapper functions are BEHAVIORALLY proven: each really returns RC_CANNOT_EVALUATE (2), really emits the machine JSON, and really prints its own DISTINCT stderr prefix (batch.sh / judge.sh / score.sh / replay.sh preflight / replay.sh execute) — not just textually mentions cannot_evaluate_emit"
+if [ -z "$MC_DIR" ] || [ ! -f "$MC_DIR/batch.sh" ]; then
+  # Named skip, never a silent one (temperloop#1543): the wrapper sync check
+  # is kernel-internal consistency between two kernel files — a tree that
+  # does not carry model-comparison/ next to this test's REAL location has no
+  # wrappers to probe, and re-proving the kernel's own sync downstream adds
+  # nothing over kernel CI. Cases 1-2m above (the adopter-live lib contract)
+  # already ran.
+  echo "SKIP: 3 wrapper probes — batch.sh not found at ${MC_DIR:-$REAL_HERE/../../model-comparison} (no model-comparison harness in this tree; the five wrappers are kernel-internal surfaces, temperloop#1543). Cases 1-2m ran; exiting 0."
+else
+  for pair in "batch.sh:bd_cannot_evaluate:batch.sh" \
+              "judge.sh:_je_cannot_evaluate:judge.sh" \
+              "score.sh:cannot_evaluate:score.sh" \
+              "replay.sh:preflight_cannot_evaluate:replay.sh preflight" \
+              "replay.sh:execute_cannot_evaluate:replay.sh execute"; do
+    IFS=: read -r wf wfn wprefix <<<"$pair"
+    probe_wrapper "$wf" "$wfn" "$wprefix"
+  done
+  echo "PASS: 3 all five wrapper functions are BEHAVIORALLY proven: each really returns RC_CANNOT_EVALUATE (2), really emits the machine JSON, and really prints its own DISTINCT stderr prefix (batch.sh / judge.sh / score.sh / replay.sh preflight / replay.sh execute) — not just textually mentions cannot_evaluate_emit"
+fi
 
 echo "All cannot-evaluate.sh tests passed."
