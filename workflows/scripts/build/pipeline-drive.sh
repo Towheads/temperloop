@@ -197,13 +197,35 @@ MODEL_USAGE_EMIT="$HERE/../emit-model-usage.sh"
 # emitter cannot have (which checkout is the canonical sink) is knowledge the
 # CALLER has, so the caller supplies it.
 #
-# Pinned to the same canonical sink pipeline-cron.sh:299 pins its OWN stream to,
-# byte-for-byte in the default literal, for the reason stated there: the sink is
-# fixed regardless of which checkout the cron runs from. Byte-for-byte matters
-# operationally, not just cosmetically — pipeline-cron.sh is this script's
-# parent, so an identical literal guarantees the wrapper's own `$RAW_DIR` and
-# this child's model-usage sink resolve to the same directory whether or not
-# PIPELINE_RAW_DIR is set in the environment.
+# Pinned to the same canonical sink pipeline-cron.sh's own `RAW_DIR=` assignment
+# pins its stream to, byte-for-byte in the default literal, for the reason
+# stated there: the sink is fixed regardless of which checkout the cron runs
+# from. (Cited by SYMBOL, never by line number — the number rots on every edit
+# above it, and test 58 already pins the two literals equal by grep.)
+# Byte-for-byte matters operationally, not just cosmetically — pipeline-cron.sh
+# is this script's parent, so an identical literal guarantees the wrapper's own
+# `$RAW_DIR` and this child's model-usage sink resolve to the same directory
+# whether or not PIPELINE_RAW_DIR is set in the environment.
+#
+# NOT EXPORTED — this is `_MODEL_USAGE_SINK_DIR`, private state the shared lib
+# applies as a PER-COMMAND prefix on the emitter alone
+# (`_model_usage_run_emit` in workflows/scripts/lib/model-usage-envelope.sh,
+# whose header carries the full rationale). An `export MODEL_USAGE_RAW_DIR`
+# here would be inherited by the headless `claude -p` driver this script spawns
+# below, and that session's own quality gates read the same variable — turning
+# validate-model-usage-emit.sh and validate-provider-disclosure.sh into
+# production-data gates inside an autonomous drive. Do not turn this back into
+# an export.
+#
+# THE `${PIPELINE_RAW_DIR:-…}` CHAIN IS DELIBERATE AND PROTECTIVE (operator
+# decision, reviewed). It could be dropped in favour of the bare literal, and
+# that would be worse: a harness that isolates PIPELINE_RAW_DIR to a throwaway
+# dir — which is exactly what the test suites and any fixture run do — would
+# then fall THROUGH to `$HOME/dev/foundation/meta/data/raw` and write test
+# records into the real production stream. Honouring PIPELINE_RAW_DIR keeps a
+# caller that has already redirected the pipeline's lake from silently
+# splattering this one stream somewhere else. Recorded as a trade-off, not an
+# accident.
 #
 # DUPLICATE SEAM, documented here per setting-registry.tsv's own owning-script
 # convention (the PIPELINE_OPERATOR precedent: a fallback duplicated in a
@@ -223,7 +245,7 @@ MODEL_USAGE_EMIT="$HERE/../emit-model-usage.sh"
 # the emitter on its own checkout-relative default. Telemetry never aborts a
 # drive.
 if [ -n "${MODEL_USAGE_RAW_DIR:-}" ] || [ -n "${PIPELINE_RAW_DIR:-}" ] || [ -n "${HOME:-}" ]; then
-  export MODEL_USAGE_RAW_DIR="${MODEL_USAGE_RAW_DIR:-${PIPELINE_RAW_DIR:-$HOME/dev/foundation/meta/data/raw}}"
+  _MODEL_USAGE_SINK_DIR="${MODEL_USAGE_RAW_DIR:-${PIPELINE_RAW_DIR:-$HOME/dev/foundation/meta/data/raw}}"
 fi
 
 # Attribution for the gh call-logger shim (F#988 / foundation#1265): tag every

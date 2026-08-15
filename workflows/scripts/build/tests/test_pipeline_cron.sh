@@ -897,8 +897,11 @@ mu_run_live() {  # $1=logdir $2=rawdir $3=sentinel ; extra env via the caller's 
 echo "--- wrapper 25: live drive → validator runs once, pointed at \$RAW_DIR, verdict folded into the drive record (temperloop#1565) ---"
 LOGD25="$TMP/wlog25"; RAW25="$TMP/raw25"; SENT25="$TMP/mu25.txt"
 mu_seed_lake "$RAW25"
-OUT25="$(mu_run_live "$LOGD25" "$RAW25" "$SENT25")"
-RC25=$?
+# `set -e` is in force for this suite: a bare `OUT="$(…)"` assignment ABORTS
+# the run when the command fails, so the following `RC=$?` could only ever
+# observe 0 and the fail-open assertion was unreachable. Same `&& …|| RC=$?`
+# idiom the drive suite uses for its own rc captures.
+OUT25="$(mu_run_live "$LOGD25" "$RAW25" "$SENT25")" && RC25=0 || RC25=$?
 [ "$RC25" -eq 0 ] && ok "the wake exits 0" || bad "w25.rc" "exit=$RC25"
 [ -f "$SENT25" ] && ok "the validator was invoked on a live drive" || bad "w25.invoked" "validator never ran"
 [ "$(wc -l < "$SENT25" | tr -d ' ')" = "1" ] && ok "invoked exactly once per drive wake (not once per board)" || bad "w25.count" "$(cat "$SENT25" 2>/dev/null)"
@@ -929,8 +932,8 @@ MU_REC26="$(jq -c 'select(.event=="drive") | .model_usage_lake' "$LOGD26/2026-06
 echo "--- wrapper 27: a failing validator is recorded (status+reason) and never breaks the wake ---"
 LOGD27="$TMP/wlog27"; RAW27="$TMP/raw27"; SENT27="$TMP/mu27.txt"
 mu_seed_lake "$RAW27"
-OUT27="$(MU_STUB_MODE=fail mu_run_live "$LOGD27" "$RAW27" "$SENT27")"
-RC27=$?
+# See the RC25 note above — captured so a non-zero wake is actually observed.
+OUT27="$(MU_STUB_MODE=fail mu_run_live "$LOGD27" "$RAW27" "$SENT27")" && RC27=0 || RC27=$?
 [ "$RC27" -eq 0 ] && ok "the wake still exits 0 (fail-open: report, never abort)" || bad "w27.rc" "exit=$RC27"
 [ "$(jq -r '.event' <<<"$OUT27")" = "ran" ] && ok "the wake summary is still event=ran" || bad "w27.event" "$OUT27"
 MU_REC27="$(jq -c 'select(.event=="drive") | .model_usage_lake' "$LOGD27/2026-06-25.jsonl")"
@@ -957,8 +960,8 @@ jq -e '.reason | test("CANNOT EVALUATE")' <<<"$MU_REC28" >/dev/null \
 echo "--- wrapper 29: a missing/non-executable validator → unavailable, wake still succeeds ---"
 LOGD29="$TMP/wlog29"; RAW29="$TMP/raw29"; SENT29="$TMP/mu29.txt"
 mu_seed_lake "$RAW29"
-OUT29="$(MU_BIN="$TMP/no-such-validator.sh" mu_run_live "$LOGD29" "$RAW29" "$SENT29")"
-RC29=$?
+# See the RC25 note above — captured so a non-zero wake is actually observed.
+OUT29="$(MU_BIN="$TMP/no-such-validator.sh" mu_run_live "$LOGD29" "$RAW29" "$SENT29")" && RC29=0 || RC29=$?
 [ "$RC29" -eq 0 ] && ok "the wake exits 0 with no validator present" || bad "w29.rc" "exit=$RC29"
 MU_REC29="$(jq -c 'select(.event=="drive") | .model_usage_lake' "$LOGD29/2026-06-25.jsonl")"
 [ "$(jq -r '.status' <<<"$MU_REC29")" = "unavailable" ] \

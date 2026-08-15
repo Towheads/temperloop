@@ -115,9 +115,19 @@ MODEL_USAGE_EMIT="$HERE/../emit-model-usage.sh"
 # must stay that way: pipeline-retro-health.sh resolves retro-runs
 # CHECKOUT-RELATIVE precisely because this wrapper sets no retro-runs override
 # and the overlay judge it spawns writes that stream under whatever checkout
-# invoked it. MODEL_USAGE_RAW_DIR is read by exactly one script
-# (emit-model-usage.sh, which writes model-usage-<YYYY-MM>.jsonl and nothing
-# else), so pinning it cannot move a retro-runs row.
+# invoked it.
+#
+# BE PRECISE ABOUT WHY THAT STILL HOLDS. MODEL_USAGE_RAW_DIR is NOT read by only
+# one script — besides emit-model-usage.sh it is read by
+# validate-model-usage-emit.sh, validate-provider-disclosure.sh,
+# model-comparison/replay.sh, model-comparison/tagging.sh and
+# report-producers/model-comparison. (An earlier version of this comment claimed
+# exclusivity; that was false, and the false premise is what hid a real
+# regression — see the export note below.) The retro-runs guarantee rests on the
+# narrower, true statement: every one of those readers is a model-usage
+# reader/validator, none of them touches the retro-runs stream, and
+# pipeline-retro-health.sh — the script that actually resolves retro-runs —
+# never names MODEL_USAGE_RAW_DIR at all. Its test 19 pins that structurally.
 #
 # WHY (the model-usage half): emit-model-usage.sh's own default climbs two
 # levels from its own file location, which is right for a stranger's standalone
@@ -127,15 +137,32 @@ MODEL_USAGE_EMIT="$HERE/../emit-model-usage.sh"
 # meta/data/raw/ holding only a README, invisible to both real lakes. The
 # emitter cannot know which checkout is canonical; this caller can, so it says.
 #
-# Same canonical sink as pipeline-cron.sh:299, byte-for-byte in the default
-# literal, for the reason stated there: the sink is fixed regardless of which
-# checkout the run started from. DUPLICATE SEAM, documented here per
-# setting-registry.tsv's own owning-script convention (the PIPELINE_OPERATOR
-# precedent — a fallback duplicated in a non-owning consuming script is
-# documented at each duplicate site and records NO second registry row):
-# MODEL_USAGE_RAW_DIR's row keeps naming emit-model-usage.sh as owner, with that
-# script's own literal as the registered default. This site is a consuming
-# caller's pin, never a second source of truth.
+# Same canonical sink as pipeline-cron.sh's own `RAW_DIR=` assignment,
+# byte-for-byte in the default literal, for the reason stated there: the sink is
+# fixed regardless of which checkout the run started from. (Cited by SYMBOL, not
+# line number — the number rots on every edit above it; test 13 pins the two
+# literals equal by grep.)
+#
+# NOT EXPORTED — this is `_MODEL_USAGE_SINK_DIR`, private state the shared lib
+# applies as a PER-COMMAND prefix on the emitter alone (`_model_usage_run_emit`
+# in workflows/scripts/lib/model-usage-envelope.sh, whose header carries the
+# full rationale). An `export MODEL_USAGE_RAW_DIR` here would be inherited by
+# the `claude -p` judge this wrapper spawns, and any quality gate that session
+# runs reads the same variable. Do not turn this back into an export.
+#
+# THE `${PIPELINE_RAW_DIR:-…}` CHAIN IS DELIBERATE AND PROTECTIVE (operator
+# decision, reviewed). Dropping it for the bare literal would be worse: a
+# harness that isolates PIPELINE_RAW_DIR to a throwaway dir — every fixture run
+# does — would fall THROUGH to `$HOME/dev/foundation/meta/data/raw` and write
+# test records into the real production stream. Recorded as a trade-off, not an
+# accident.
+#
+# DUPLICATE SEAM, documented here per setting-registry.tsv's own owning-script
+# convention (the PIPELINE_OPERATOR precedent — a fallback duplicated in a
+# non-owning consuming script is documented at each duplicate site and records
+# NO second registry row): MODEL_USAGE_RAW_DIR's row keeps naming
+# emit-model-usage.sh as owner, with that script's own literal as the registered
+# default. This site is a consuming caller's pin, never a second source of truth.
 #
 # `${MODEL_USAGE_RAW_DIR:-…}` — an already-set value passes through UNTOUCHED
 # and always wins (the live test seam). $HOME is guarded because this script
@@ -143,7 +170,7 @@ MODEL_USAGE_EMIT="$HERE/../emit-model-usage.sh"
 # unset there is no sink to name, so we set nothing and leave the emitter on its
 # own checkout-relative default. Telemetry never aborts a judge spawn.
 if [ -n "${MODEL_USAGE_RAW_DIR:-}" ] || [ -n "${PIPELINE_RAW_DIR:-}" ] || [ -n "${HOME:-}" ]; then
-  export MODEL_USAGE_RAW_DIR="${MODEL_USAGE_RAW_DIR:-${PIPELINE_RAW_DIR:-$HOME/dev/foundation/meta/data/raw}}"
+  _MODEL_USAGE_SINK_DIR="${MODEL_USAGE_RAW_DIR:-${PIPELINE_RAW_DIR:-$HOME/dev/foundation/meta/data/raw}}"
 fi
 
 # ── Re-derive the credential from the host config ladder ─────────────────────

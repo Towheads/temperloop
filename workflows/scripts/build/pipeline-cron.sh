@@ -560,7 +560,13 @@ if [ "${PIPELINE_DRIVE:-0}" = "1" ] && [ "${nonop:-0}" -gt 0 ]; then
   #
   # FAIL-OPEN, `|| true`-isolated like every other side emit here: a failing,
   # missing, or non-evaluable validator records a status and the wake keeps
-  # going. It NEVER aborts the run.
+  # going. It never FAILS the run — and that claim is about EXIT STATUS ONLY,
+  # which is worth saying rather than rounding off to "never aborts": this step
+  # is NOT TIME-BOUNDED. The validator slurps whole month-files into a strict
+  # parser, macOS ships no GNU `timeout`, and nothing here caps it — so a
+  # pathologically large lake can make a wake run long even though it can never
+  # make one fail. Known and accepted at today's size; if the lake ever grows
+  # enough to matter, bound it here rather than dropping the check.
   if [ "$DRY_RUN" -eq 0 ]; then
     mu_files=0
     mu_records=0

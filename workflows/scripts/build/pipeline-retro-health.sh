@@ -146,9 +146,10 @@ if [ -z "$pipeline_dir" ]; then
   if [ -n "$telemetry_raw_dir_set" ]; then
     pipeline_dir="$TELEMETRY_RAW_DIR"
   else
-    # Mirrors pipeline-cron.sh:299's own PIPELINE_RAW_DIR default literal,
-    # byte-for-byte — see the header note above. Do NOT derive this from
-    # $raw_root.
+    # Mirrors pipeline-cron.sh's own `RAW_DIR=` PIPELINE_RAW_DIR default
+    # literal, byte-for-byte — see the header note above. Do NOT derive this
+    # from $raw_root. (Cited by SYMBOL, not line number: the old `:299` ref was
+    # already stale, and test 16 pins the two literals equal by grep anyway.)
     pipeline_dir="$HOME/dev/foundation/meta/data/raw"
   fi
 fi
@@ -160,12 +161,21 @@ fi
 # the probe MISS rows the judge wrote under a DIFFERENT (e.g. cron-sandbox)
 # checkout. Do NOT converge with pipeline_dir above.
 #
-# That wrapper does now pin ONE unrelated stream (temperloop#1565): it exports
-# MODEL_USAGE_RAW_DIR before spawning, so emit-model-usage.sh writes
-# model-usage-<YYYY-MM>.jsonl to the canonical absolute lake instead of a
-# vendored kernel/ stub dir. That variable is read by emit-model-usage.sh and
-# nothing else, and this script never consults it — the retro-runs resolution
-# below is unaffected BY CONSTRUCTION, and test 19 pins that.
+# That wrapper does now pin ONE unrelated stream (temperloop#1565): it resolves
+# a model-usage sink and hands it to emit-model-usage.sh as a per-command env
+# prefix, so model-usage-<YYYY-MM>.jsonl lands in the canonical absolute lake
+# instead of a vendored kernel/ stub dir.
+#
+# WHY THAT CANNOT REACH THIS STREAM — stated precisely, because the tempting
+# short version is false. MODEL_USAGE_RAW_DIR is NOT read by emit-model-usage.sh
+# alone: validate-model-usage-emit.sh, validate-provider-disclosure.sh,
+# model-comparison/replay.sh, model-comparison/tagging.sh and
+# report-producers/model-comparison all read it too. The guarantee rests on the
+# narrower true claim instead — every one of those is a model-usage
+# reader/validator, none touches retro-runs, and THIS script never names
+# MODEL_USAGE_RAW_DIR anywhere. Test 19 pins both halves: the behavioural one (a
+# decoy MODEL_USAGE_RAW_DIR does not move the verdict) and the structural one
+# (no non-comment reference to the variable in this file).
 retro_dir="${RETRO_RUNS_RAW_DIR:-$TELEMETRY_RAW_DIR}"
 
 days=30
