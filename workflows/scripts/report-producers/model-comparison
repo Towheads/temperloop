@@ -389,12 +389,16 @@ jq -n \
         scored_n:  ($scored | length),
 
         cost: {
-          basis: "cost-weighted token units summed over this arm'"'"'s candidate.outcome==\"scored\" records; a record with no token block contributes NOTHING and is counted in uncosted_n rather than as a zero",
+          basis: "cost-weighted token units summed over this arm'"'"'s candidate.outcome==\"scored\" records; a record with no token block contributes NOTHING and is counted in uncosted_n rather than as a zero. A candidate.outcome==\"integration-error\" record (never scored) is separately counted in errored_uncosted_n below, with a stated reason, rather than being silently absent from this section",
           unit: "cost-weighted token units (SPEND_WEIGHT_* multiply-add over the input/cache_read/cache_creation/output classes, floored) — the same weighting VALUES the ADR 0026 attribution emit uses, never a second weighting implementation",
           weights: {input: $w_in, cache_read: $w_cr, cache_creation: $w_cc, output: $w_out},
           scored_n: ($scored | length),
           costed_n: ($costed | length),
           uncosted_n: (($scored | length) - ($costed | length)),
+          errored_uncosted_n: ($interr | length),
+          errored_uncosted_reason:
+            (if ($interr | length) == 0 then null
+             else "\($interr | length) integration-error record(s) in this arm (stage(s): \(($interr | map((.candidate.integration_error // {}).stage // "unknown") | unique | join(", ")))) never produced a token count and are counted here rather than left absent from the cost section — a SIGKILLed/timed-out candidate spawn produces no envelope, so partial-usage capture is structurally impossible on this path; this spend is UNMEASURED, not zero, and is excluded from every total/mean above" end),
           total_weighted_units: (if ($costed | length) == 0 then null else $units end),
           mean_weighted_units_per_costed_record:
             (if ($costed | length) == 0 then null else (($units / ($costed | length)) | round1) end),
