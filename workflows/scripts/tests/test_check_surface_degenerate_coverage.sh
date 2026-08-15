@@ -943,6 +943,147 @@ case "$out" in *"EMPTY-REGISTRY"*) ;; *) fail "23: expected an EMPTY-REGISTRY li
 $out" ;; esac
 ok "23 HIGH 1: a comment-only registry is ALSO RED — the same vacuous-pass shape, one indirection deeper"
 
+# ---------------------------------------------------------------------------
+# SECTION H — the VENDORED-KERNEL SUBTREE ARM (temperloop#1559): a composed
+# overlay whose allowlist is a symlink into the vendored kernel subtree
+# (kernel/, repo-root .kernel-pin present). A vendor bump carrying
+# upstream-grown rows must pass with NO base-ref override; an
+# overlay-authored row hand-edited into kernel/'s copy must still fail; a
+# pin-bearing tree with NO subtree squash commit falls back fail-closed to
+# the plain base-ref ratchet.
+#
+# The fixture repo mirrors real `git subtree pull --prefix=kernel --squash`
+# anatomy: the squash commit's tree is the KERNEL repo root (unprefixed) and
+# its message carries the `git-subtree-dir: kernel` / `git-subtree-split:`
+# trailers; the bump lands as a two-parent merge of the previous HEAD and
+# that squash commit, built with plumbing (hash-object/mktree/commit-tree)
+# so no network or real subtree machinery is needed.
+# ---------------------------------------------------------------------------
+V="$WORK/h-vendor"
+mkdir -p "$V/kernel" "$V/config"
+gitc -C "$V" init -q
+git -C "$V" symbolic-ref HEAD refs/heads/main
+: >"$V/old-vendored.sh"
+: >"$V/upstream-new.sh"
+: >"$V/overlay-smuggled.sh"
+printf 'old-vendored.sh\tvendored baseline entry\n' >"$V/kernel/allowlist.tsv"
+ln -s ../kernel/allowlist.tsv "$V/config/allowlist.tsv"
+printf 'tag v0.1.0\nsha 1111111111111111111111111111111111111111\n' >"$V/.kernel-pin"
+gitc -C "$V" add -A
+GIT_AUTHOR_DATE="2024-01-01T00:00:00Z" GIT_COMMITTER_DATE="2024-01-01T00:00:00Z" \
+  gitc -C "$V" commit -q -m "base: composed overlay, kernel allowlist vendored at v0.1.0"
+V_BASE="$(git -C "$V" rev-parse HEAD)"
+# The simulated vendor bump: upstream grew the allowlist by one row
+# (ratcheted by kernel CI when it landed there), and the pin moves.
+printf 'old-vendored.sh\tvendored baseline entry\nupstream-new.sh\tgrown upstream, ratcheted by kernel CI when added there\n' >"$V/kernel/allowlist.tsv"
+printf 'tag v0.2.0\nsha 2222222222222222222222222222222222222222\n' >"$V/.kernel-pin"
+gitc -C "$V" add -A
+V_NEWTREE="$(git -C "$V" write-tree)"
+V_BLOB="$(git -C "$V" hash-object -w "$V/kernel/allowlist.tsv")"
+V_KTREE="$(printf '100644 blob %s\tallowlist.tsv\n' "$V_BLOB" | git -C "$V" mktree)"
+V_SQUASH_MSG="$(printf "Squashed 'kernel/' changes from 1111111..2222222\n\ngit-subtree-dir: kernel\ngit-subtree-split: 2222222222222222222222222222222222222222")"
+V_SQUASH="$(GIT_AUTHOR_DATE="2024-02-01T00:00:00Z" GIT_COMMITTER_DATE="2024-02-01T00:00:00Z" \
+  gitc -C "$V" commit-tree "$V_KTREE" -m "$V_SQUASH_MSG")"
+V_MERGE="$(GIT_AUTHOR_DATE="2024-02-01T00:00:01Z" GIT_COMMITTER_DATE="2024-02-01T00:00:01Z" \
+  gitc -C "$V" commit-tree "$V_NEWTREE" -p "$V_BASE" -p "$V_SQUASH" -m "chore(kernel): subtree pull v0.2.0")"
+git -C "$V" update-ref refs/heads/main "$V_MERGE"
+V_REGISTRY="$WORK/h-vendor-registry.tsv"
+cat >"$V_REGISTRY" <<EOF
+$B/$FAKE_SURFACE	absent	not-applicable	-	vendor section is allowlist-only; row exists only so the registry is non-empty
+$B/$FAKE_SURFACE	unreadable	not-applicable	-	vendor section is allowlist-only; row exists only so the registry is non-empty
+$B/$FAKE_SURFACE	empty	not-applicable	-	vendor section is allowlist-only; row exists only so the registry is non-empty
+EOF
+V_QG="$WORK/h-vendor-qg.sh"
+: >"$V_QG"
+
+# ---------------------------------------------------------------------------
+# 24. VENDOR BUMP GREEN (temperloop#1559): the upstream-grown row passes with
+#     NO CHECK_SURFACE_ALLOWLIST_BASE_REF override beyond the ordinary base
+#     ref — the gate ratchets subtree-sourced rows against the vendored
+#     kernel's own pulled content (the subtree squash commit), not only the
+#     overlay's base ref. The allowlist is handed to the gate by its SYMLINK
+#     path, exercising the physical-path resolution too (git show on the
+#     symlink path would return the link target text, never TSV).
+# ---------------------------------------------------------------------------
+count
+rc=0
+out="$(run_gate "$V_REGISTRY" "$V/config/allowlist.tsv" "$V_QG" "$V" "$V_BASE" 2>&1)" || rc=$?
+[[ "$rc" -eq 0 ]] || fail "24: a vendor bump carrying an upstream-grown allowlist row should be GREEN via the vendored-kernel arm, got rc=$rc:
+$out"
+case "$out" in
+  *"allowlist ratchet: checked against $V_BASE:kernel/allowlist.tsv + vendored-kernel squash $V_SQUASH"*) ;;
+  *) fail "24: expected the ratchet verdict to name BOTH comparison points (base ref + vendored-kernel squash), got:
+$out" ;;
+esac
+ok "24 temperloop#1559: an upstream-grown row arriving via the vendored kernel subtree passes, and the verdict names the squash it ratcheted against"
+
+# ---------------------------------------------------------------------------
+# 25. OVERLAY SMUGGLE STILL RED: a row hand-edited into kernel/'s copy of the
+#     allowlist — present in NEITHER the base ref NOR the vendored kernel's
+#     pulled content — still fails ALLOWLIST-GREW, and the upstream-grown row
+#     is NOT dragged down with it. Red, then restored green.
+# ---------------------------------------------------------------------------
+count
+printf 'old-vendored.sh\tvendored baseline entry\nupstream-new.sh\tgrown upstream, ratcheted by kernel CI when added there\noverlay-smuggled.sh\thand-edited into kernel/ by the overlay, upstream never shipped it\n' >"$V/kernel/allowlist.tsv"
+rc=0
+out="$(run_gate "$V_REGISTRY" "$V/config/allowlist.tsv" "$V_QG" "$V" "$V_BASE" 2>&1)" || rc=$?
+[[ "$rc" -ne 0 ]] || fail "25: an overlay-authored row smuggled into kernel/'s allowlist should be RED, got rc=0:
+$out"
+case "$out" in
+  *"ALLOWLIST-GREW"*"overlay-smuggled.sh"*) ;;
+  *) fail "25: expected an ALLOWLIST-GREW line naming overlay-smuggled.sh, got:
+$out" ;;
+esac
+case "$out" in
+  *"ALLOWLIST-GREW  upstream-new.sh"*) fail "25: the upstream-grown row was flagged alongside the smuggled one — the kernel arm should exempt it per-row:
+$out" ;;
+esac
+# Restore the pure-vendored content and confirm green again (red-then-green).
+printf 'old-vendored.sh\tvendored baseline entry\nupstream-new.sh\tgrown upstream, ratcheted by kernel CI when added there\n' >"$V/kernel/allowlist.tsv"
+rc=0
+out="$(run_gate "$V_REGISTRY" "$V/config/allowlist.tsv" "$V_QG" "$V" "$V_BASE" 2>&1)" || rc=$?
+[[ "$rc" -eq 0 ]] || fail "25: restoring the pure-vendored allowlist should return to GREEN, got rc=$rc:
+$out"
+ok "25 temperloop#1559: an overlay-authored row in kernel/'s copy still fails ALLOWLIST-GREW (per-row — the upstream row stays exempt), and restoring goes green"
+
+# ---------------------------------------------------------------------------
+# 26. NO-SQUASH FALLBACK IS FAIL-CLOSED: a tree with .kernel-pin and a
+#     kernel/-resolving allowlist but NO subtree squash commit reachable from
+#     HEAD (vendored by copy, or history too shallow) falls back to the plain
+#     base-ref ratchet — growth still fails, and the verdict says why the
+#     vendored-kernel arm was unavailable.
+# ---------------------------------------------------------------------------
+count
+NOSQ="$WORK/h-nosquash"
+mkdir -p "$NOSQ/kernel" "$NOSQ/config"
+gitc -C "$NOSQ" init -q
+git -C "$NOSQ" symbolic-ref HEAD refs/heads/main
+: >"$NOSQ/old-vendored.sh"
+: >"$NOSQ/upstream-new.sh"
+printf 'old-vendored.sh\tvendored baseline entry\n' >"$NOSQ/kernel/allowlist.tsv"
+ln -s ../kernel/allowlist.tsv "$NOSQ/config/allowlist.tsv"
+printf 'tag v0.1.0\nsha 3333333333333333333333333333333333333333\n' >"$NOSQ/.kernel-pin"
+gitc -C "$NOSQ" add -A
+GIT_AUTHOR_DATE="2024-01-01T00:00:00Z" GIT_COMMITTER_DATE="2024-01-01T00:00:00Z" \
+  gitc -C "$NOSQ" commit -q -m "base: pin-bearing tree vendored by copy (no subtree squash history)"
+NOSQ_BASE="$(git -C "$NOSQ" rev-parse HEAD)"
+printf 'old-vendored.sh\tvendored baseline entry\nupstream-new.sh\tgrown with no squash provenance to vouch for it\n' >"$NOSQ/kernel/allowlist.tsv"
+rc=0
+out="$(run_gate "$V_REGISTRY" "$NOSQ/config/allowlist.tsv" "$V_QG" "$NOSQ" "$NOSQ_BASE" 2>&1)" || rc=$?
+[[ "$rc" -ne 0 ]] || fail "26: growth with no subtree squash commit to vouch for it should be RED (fail-closed fallback), got rc=0:
+$out"
+case "$out" in
+  *"ALLOWLIST-GREW"*"upstream-new.sh"*) ;;
+  *) fail "26: expected an ALLOWLIST-GREW line naming upstream-new.sh (plain ratchet fallback), got:
+$out" ;;
+esac
+case "$out" in
+  *"vendored-kernel arm unavailable"*) ;;
+  *) fail "26: expected the verdict to say the vendored-kernel arm was unavailable and why (MEDIUM 6c legibility), got:
+$out" ;;
+esac
+ok "26 temperloop#1559: a pin-bearing tree with no subtree squash history falls back FAIL-CLOSED to the plain base-ref ratchet, and says so"
+
 echo
 echo "$pass/$total tests passed"
 [[ "$pass" -eq "$total" ]] || exit 1
