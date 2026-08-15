@@ -439,11 +439,35 @@ fi
 #     zero agent definitions through a symlinked claude/agents (temperloop#1424)
 #     — is NOT inapplicable-by-content and must stay in the consumer's set so it
 #     keeps failing until it is fixed. Class-gating it would bury it.
+#
+#     temperloop#1516's residual-gate disposition pass (RUN 2) surfaced three
+#     more real-bug members, added below on the same principle:
+#       - temperloop#1421 — the four model-comparison mutation-proof suites
+#         mutate their SUT ($REPO_ROOT/workflows/scripts/model-comparison/
+#         replay.sh) in place; in a composed overlay that path is a symlink
+#         into kernel/, and the in-place mutate+restore silently materializes
+#         it into a 1,669-line forked copy. A live correctness bug, not a
+#         content mismatch.
+#       - temperloop#1543 — three kernel tests (this file's own case 13,
+#         test_cannot_evaluate.sh case 3, test_check_changelog_entry.sh
+#         case 35) assert against the REAL repo root for surfaces a composed
+#         overlay legitimately lacks or relocates, and false-fail there. The
+#         fix is case-level self-scoping, not class-gating — each test's
+#         other cases already pass in the overlay and would be buried too.
 # --------------------------------------------------------------------------
 NOT_CLASSED=(
   "bash scripts/lint-pipe-grep-q.sh"
   "bash scripts/tests/test_lint_pipe_grep_q.sh"
   "bash workflows/scripts/tests/test_pipeline_spend_report.sh"
+  # temperloop#1421 — symlinked-SUT mutation-proof corruption (see above)
+  "bash workflows/scripts/model-comparison/tests/test_replay_isolation.sh"
+  "bash workflows/scripts/model-comparison/tests/test_replay_preflight.sh"
+  "bash workflows/scripts/model-comparison/tests/test_replay_preflight_two_arm.sh"
+  "bash workflows/scripts/model-comparison/tests/test_replay_preflight_cost_unit.sh"
+  # temperloop#1543 — real-repo-root assertions false-failing in an overlay
+  "bash workflows/scripts/lib/tests/test_cannot_evaluate.sh"
+  "bash workflows/scripts/tests/test_check_changelog_entry.sh"
+  "bash scripts/tests/test_quality_gates_scoped.sh"
 )
 buried=0
 for g in "${NOT_CLASSED[@]}"; do
