@@ -724,8 +724,12 @@ ok "D5d with X/R attribution present, a zero-change-candidate record's judge pro
 
 count
 BIGDIFF_RECORD="$WORK/record-difftext-oversized.json"
-BIG_TEXT="$(head -c 260000 </dev/zero | tr '\0' 'a')"
-jq -cn --arg t "$BIG_TEXT" \
+# The oversized text rides --rawfile, never --arg: a 260KB argv string trips
+# Linux's per-argument limit (MAX_ARG_STRLEN, 128KB) with "Argument list too
+# long" — macOS allows it, so an --arg form passes locally but fails in CI.
+BIG_TEXT_FILE="$WORK/record-difftext-oversized.txt"
+head -c 260000 </dev/zero | tr '\0' 'a' >"$BIG_TEXT_FILE"
+jq -cn --rawfile t "$BIG_TEXT_FILE" \
   '{schema_version:"replay-record-v1", pr:999, issue:"#5005",
     title:"Fix the thing", scope:"the scope",
     acceptance:["A named path is fixed."],
