@@ -631,6 +631,125 @@ fi
 ok "D4 (structural corroboration) judge.sh's executable code carries no Task/subagent_type/reviewer-charter-path reference (comments, which legitimately discuss the absence, are excluded from this check)"
 
 # ═══════════════════════════════════════════════════════════════════════════
+# SECTION D5 — the judge sees the CANDIDATE'S REAL DIFF TEXT (temperloop#1579
+# "consume" half, split from #1382 Defect A): a bounded '## Diff text'
+# section carrying score.diff.text_excerpt, an EXPLICIT truncation
+# disclosure only when the record says it was cut at capture time (or this
+# render defensively cuts it), and the X/R per-path attribution rendering
+# so a zero-change-candidate record never reads as candidate-modified.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# $WORK/jstub-calls is a GLOBAL, cross-section counter (Section E's
+# JSTUB_FAIL_AT=3 depends on its exact value entering that section) — save
+# and restore it around this section's own run_judge calls so this
+# section's call count never leaks into a later section's fail-at-call-N
+# assertion.
+_D5_CALLS_SAVE="$(cat "$WORK/jstub-calls" 2>/dev/null || echo '')"
+
+count
+DIFFTEXT_RECORD="$WORK/record-difftext.json"
+jq -cn \
+  '{schema_version:"replay-record-v1", pr:999, issue:"#5001",
+    title:"Fix the thing", scope:"the scope",
+    acceptance:["A named path is fixed."],
+    candidate:{provider:"anthropic", model:"claude-sonnet-5", diff_ref:"deadbeef"},
+    score:{verdict:"pass",
+      diff:{n:{total:1,changed:1,files:[{path:"a.py",changed:true,matches_truth:true}]},
+            text_excerpt:"diff --git a/a.py b/a.py\n+real patch content here\n",
+            text_excerpt_truncated:false,
+            text_excerpt_full_bytes:57,
+            text_excerpt_bytes:57},
+      gate_result:{passed:true}}}' >"$DIFFTEXT_RECORD"
+run_judge good judge --record "$DIFFTEXT_RECORD" --judge-runner "bash $JSTUB" --prompt-out "$PROMPT_OUT" >/dev/null
+grep -qF '## Diff text' "$PROMPT_OUT" || fail "D5a: the judge prompt is missing a '## Diff text' section"
+grep -qF 'real patch content here' "$PROMPT_OUT" || fail "D5a: the judge prompt's Diff text section does not carry the record's actual diff text"
+ok "D5a the judge prompt's '## Diff text' section carries the record's real, persisted diff text"
+
+count
+TRUNC_RECORD="$WORK/record-difftext-truncated.json"
+jq -cn \
+  '{schema_version:"replay-record-v1", pr:999, issue:"#5002",
+    title:"Fix the thing", scope:"the scope",
+    acceptance:["A named path is fixed."],
+    candidate:{provider:"anthropic", model:"claude-sonnet-5", diff_ref:"deadbeef"},
+    score:{verdict:"pass",
+      diff:{n:{total:1,changed:1},
+            text_excerpt:"diff --git a/a.py b/a.py\n+truncated view\n[... score.sh TRUNCATED: showing 40 of 999999 bytes ...]\n",
+            text_excerpt_truncated:true,
+            text_excerpt_full_bytes:999999,
+            text_excerpt_bytes:80},
+      gate_result:{passed:true}}}' >"$TRUNC_RECORD"
+run_judge good judge --record "$TRUNC_RECORD" --judge-runner "bash $JSTUB" --prompt-out "$PROMPT_OUT" >/dev/null
+grep -qF 'TRUNCATION DISCLOSURE' "$PROMPT_OUT" || fail "D5b: a record truncated at capture time must carry an explicit truncation disclosure line in the judge prompt"
+grep -qF '999999' "$PROMPT_OUT" || fail "D5b: the truncation disclosure should surface the original (pre-truncation) byte count"
+ok "D5b a record whose diff text was truncated at capture time carries an EXPLICIT truncation disclosure line in the judge prompt"
+
+count
+NOTRUNC_RECORD="$WORK/record-difftext-not-truncated.json"
+jq -cn \
+  '{schema_version:"replay-record-v1", pr:999, issue:"#5003",
+    title:"Fix the thing", scope:"the scope",
+    acceptance:["A named path is fixed."],
+    candidate:{provider:"anthropic", model:"claude-sonnet-5", diff_ref:"deadbeef"},
+    score:{verdict:"pass",
+      diff:{n:{total:1,changed:1},
+            text_excerpt:"diff --git a/a.py b/a.py\n+small change\n",
+            text_excerpt_truncated:false,
+            text_excerpt_full_bytes:40,
+            text_excerpt_bytes:40},
+      gate_result:{passed:true}}}' >"$NOTRUNC_RECORD"
+run_judge good judge --record "$NOTRUNC_RECORD" --judge-runner "bash $JSTUB" --prompt-out "$PROMPT_OUT" >/dev/null
+grep -qF 'TRUNCATION DISCLOSURE' "$PROMPT_OUT" && fail "D5c: an UN-truncated record must NOT carry a truncation disclosure line"
+ok "D5c an un-truncated record's judge prompt carries NO truncation disclosure line (the disclosure is conditional, not boilerplate)"
+
+count
+ZEROCHANGE_RECORD="$WORK/record-zero-change-xr.json"
+jq -cn \
+  '{schema_version:"replay-record-v1", pr:999, issue:"#5004",
+    title:"Fix the thing", scope:"the scope",
+    acceptance:["A named path is fixed."],
+    candidate:{provider:"anthropic", model:"claude-sonnet-5", diff_ref:"deadbeef"},
+    score:{verdict:"pass",
+      diff:{n:{total:0,changed:0,files:[]},
+            x:{treatment:"neutral", paths:[{path:"vendor/lib.py", truth_added:3, truth_removed:0, truth_added_raw:3, truth_removed_raw:0, candidate_added:0, candidate_removed:0, changed:false, matches_truth:false, formatting_only_truth_churn:false}]},
+            r:{treatment:"flagged-only", paths:[{path:"notes.md", truth_added:1, truth_removed:0, truth_added_raw:1, truth_removed_raw:0, candidate_added:0, candidate_removed:0, changed:false, matches_truth:false, formatting_only_truth_churn:false}]},
+            text_excerpt:"", text_excerpt_truncated:false, text_excerpt_full_bytes:0, text_excerpt_bytes:0},
+      gate_result:{passed:true}}}' >"$ZEROCHANGE_RECORD"
+run_judge good judge --record "$ZEROCHANGE_RECORD" --judge-runner "bash $JSTUB" --prompt-out "$PROMPT_OUT" >/dev/null
+grep -q '"changed":true' "$PROMPT_OUT" && fail "D5d: a zero-change-candidate record's judge prompt must not render ANY path as candidate-modified (changed:true)"
+grep -qF '"path":"vendor/lib.py"' "$PROMPT_OUT" || fail "D5d: the X-bucket path's attribution did not reach the judge prompt at all"
+grep -qF '"path":"notes.md"' "$PROMPT_OUT" || fail "D5d: the R-bucket path's attribution did not reach the judge prompt at all"
+grep -qF 'never read it as a candidate edit' "$PROMPT_OUT" || fail "D5d: the prompt is missing the X/R attribution interpretation guidance"
+ok "D5d with X/R attribution present, a zero-change-candidate record's judge prompt renders NO path as candidate-modified, and carries the X/R paths' attribution + interpretation guidance"
+
+count
+BIGDIFF_RECORD="$WORK/record-difftext-oversized.json"
+# The oversized text rides --rawfile, never --arg: a 260KB argv string trips
+# Linux's per-argument limit (MAX_ARG_STRLEN, 128KB) with "Argument list too
+# long" — macOS allows it, so an --arg form passes locally but fails in CI.
+BIG_TEXT_FILE="$WORK/record-difftext-oversized.txt"
+head -c 260000 </dev/zero | tr '\0' 'a' >"$BIG_TEXT_FILE"
+jq -cn --rawfile t "$BIG_TEXT_FILE" \
+  '{schema_version:"replay-record-v1", pr:999, issue:"#5005",
+    title:"Fix the thing", scope:"the scope",
+    acceptance:["A named path is fixed."],
+    candidate:{provider:"anthropic", model:"claude-sonnet-5", diff_ref:"deadbeef"},
+    score:{verdict:"pass",
+      diff:{n:{total:1,changed:1},
+            text_excerpt:$t,
+            text_excerpt_truncated:false,
+            text_excerpt_full_bytes:($t|length),
+            text_excerpt_bytes:($t|length)},
+      gate_result:{passed:true}}}' >"$BIGDIFF_RECORD"
+run_judge good judge --record "$BIGDIFF_RECORD" --judge-runner "bash $JSTUB" --prompt-out "$PROMPT_OUT" >/dev/null
+PROMPT_BYTES="$(wc -c <"$PROMPT_OUT" | awk '{print $1}')"
+[ "$PROMPT_BYTES" -lt 230000 ] || fail "D5e: the judge prompt was not bounded — an oversized diff text NOT already truncated at capture time still grew the prompt past the render cap ($PROMPT_BYTES bytes)"
+grep -qF 'TRUNCATION DISCLOSURE' "$PROMPT_OUT" || fail "D5e: the defensive render-time cap must still carry a truncation disclosure line"
+ok "D5e an oversized diff text NOT already truncated at capture time is still defensively bounded at render time (never grows the judge prompt unbounded on trust in the record's own flag), with its own disclosure"
+
+if [ -n "$_D5_CALLS_SAVE" ]; then printf '%s' "$_D5_CALLS_SAVE" >"$WORK/jstub-calls"; else rm -f "$WORK/jstub-calls"; fi
+
+# ═══════════════════════════════════════════════════════════════════════════
 # SECTION E — judge-batch: every input line produces exactly one output line
 # ═══════════════════════════════════════════════════════════════════════════
 

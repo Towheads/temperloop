@@ -269,11 +269,17 @@ ok "A3 an EXPLICIT MODEL_COMPARISON_JUDGE_ROTATION_ENABLED=0 refuses identically
 # file's rotation edits landed), on this exact fixture record + stub, with
 # the two inherently-volatile fields (duration_ms, evaluated_at) normalized
 # to fixed placeholders. If judge.sh's single-judge path changed ANY other
-# byte, this diff catches it.
+# byte, this diff catches it. `prompt_sha256` was RE-CAPTURED once,
+# deliberately, for temperloop#1579 (split from #1382 Defect A): that item
+# added a '## Diff text' section to the judge prompt, which legitimately
+# changes the prompt's bytes (this fixture record carries no
+# `score.diff.text_excerpt`, so the new section renders its
+# no-diff-text-captured fallback line) — every OTHER field below is still
+# the untouched pre-rotation shape.
 
 count
 DLOG_B="$WORK/dlog-b.jsonl"; COUNT_B="$WORK/count-b"
-GOLDEN='{"acceptance":["A named path is fixed."],"candidate":{"diff_ref":"deadbeef","model":"claude-sonnet-5","provider":"anthropic"},"issue":"#4242","judge":{"concerns":[],"dimensions":{"acceptance_coverage":85,"correctness":85,"portability_robustness":85,"simplicity_reuse":85,"test_quality":85},"disclosed":false,"duration_ms":0,"evaluated_at":"X","guard":{"candidate_model":"claude-sonnet-5","candidate_provider":"anthropic","enforced":true,"scope":"prevents self-grading only; does NOT neutralize model-family style bias"},"judge_model":"stub-model","judge_provider":"anthropic","outcome":"JUDGED","prompt_sha256":"c08bef7b67cac9e2a34344700492f10d4dae74e904a0bdb9cd076eb88686c787","quality_score":85,"rationale":"stub rationale","scored":true,"tokens":{"cache_creation":0,"cache_read":0,"input":5,"output":5}},"pr":999,"schema_version":"replay-record-v1","scope":"the scope","score":{"diff":{"n":{"changed":1,"total":1}},"gate_result":{"passed":true},"verdict":"pass"},"title":"Fix the thing"}'
+GOLDEN='{"acceptance":["A named path is fixed."],"candidate":{"diff_ref":"deadbeef","model":"claude-sonnet-5","provider":"anthropic"},"issue":"#4242","judge":{"concerns":[],"dimensions":{"acceptance_coverage":85,"correctness":85,"portability_robustness":85,"simplicity_reuse":85,"test_quality":85},"disclosed":false,"duration_ms":0,"evaluated_at":"X","guard":{"candidate_model":"claude-sonnet-5","candidate_provider":"anthropic","enforced":true,"scope":"prevents self-grading only; does NOT neutralize model-family style bias"},"judge_model":"stub-model","judge_provider":"anthropic","outcome":"JUDGED","prompt_sha256":"4dabd321593a1edbcf8eaf48ca4457ed6c1843ebd3d996e8c564482886c01da6","quality_score":85,"rationale":"stub rationale","scored":true,"tokens":{"cache_creation":0,"cache_read":0,"input":5,"output":5}},"pr":999,"schema_version":"replay-record-v1","scope":"the scope","score":{"diff":{"n":{"changed":1,"total":1}},"gate_result":{"passed":true},"verdict":"pass"},"title":"Fix the thing"}'
 out="$(run_rotate "$ALLOW_BOTH" "$DLOG_B" "$COUNT_B" 0 "" \
       bash "$JUDGE" judge --record "$RECORD" --judge-runner "bash $JSTUB")"
 rc=$?
