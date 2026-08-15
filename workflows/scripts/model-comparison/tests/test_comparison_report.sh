@@ -29,6 +29,12 @@
 #      published CI and MDE must be byte-identical to an independent stats.sh
 #      call over the producer's own published delta array; a mutation that
 #      nudges the published bound by 5% must go red.
+#   5. ARM ORDER is disclosed and its effect ESTIMATED (temperloop#1571,
+#      section M). Arm used to be perfectly confounded with execution
+#      position; the report must now say whether the order was counterbalanced,
+#      publish the order effect beside the arm effect against a known-answer
+#      fixture, and withhold a bare winner when the two are comparable —
+#      proved by neutering that gate and watching the winner reappear.
 #
 # ── HERMETIC BY CONSTRUCTION ───────────────────────────────────────────────
 # Zero network, zero model calls, zero writes outside $TMPDIR. Section L is a
@@ -1002,6 +1008,232 @@ run "$FLAT" "$MIRROR10"
 grep -q '^skipped -- model-comparison: ' "$RUN_OUT" \
   || fail "K3: a missing scorer must render the skipped line"
 ok "K3 a missing scorer degrades rather than having its split re-derived here"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SECTION M — THE ORDER EFFECT (temperloop#1571)
+#
+# batch.sh used to run the two arms in one FIXED order on every record, so ARM
+# was perfectly confounded with EXECUTION POSITION. It now counterbalances the
+# order and stamps each leg's position onto the record; this section is the
+# READING half — the producer must state that arm order was counterbalanced,
+# estimate the ORDER effect beside the ARM effect, and refuse to present a
+# bare winner when the two are comparable in magnitude.
+#
+# THE FIXTURE IS BUILT AROUND A KNOWN ANSWER. With SPEND_WEIGHT_INPUT = 1 and
+# every other token class held identical between the arms, a delta in
+# cost-weighted units IS the delta in input tokens — so the fixture can inject
+# an exact arm effect and an exact order effect and the producer's estimates
+# are checkable against arithmetic rather than against themselves. The
+# generator models a position-2 penalty of ORD on whichever arm ran second,
+# plus a per-PAIR jitter J (identical for the two records of a pair, so the
+# baseline-first and candidate-first halves see the same jitter distribution
+# and it cancels out of the order estimate):
+#
+#   odd record  (baseline first): delta = ARM + ORD + J
+#   even record (candidate first): delta = ARM - ORD + J
+#   => arm_effect = ARM + mean(J),  order_effect = ORD
+# ═══════════════════════════════════════════════════════════════════════════
+
+# mk_stamp <record-index> <position> <arm> <mode> — stdin one record, stdout
+# the same record with batch.sh's `execution_order` block attached (unchanged
+# under `none`, which reproduces a pre-#1571 corpus).
+mk_stamp() {
+  if [ "$4" = "none" ]; then cat; return 0; fi
+  jq -c --argjson i "$1" --argjson p "$2" --arg arm "$3" \
+    '. + {execution_order:{rule:"counterbalanced-by-record-index-v1", seed:0,
+                           record_index:$i, arm:$arm, position:$p, arms_n:2,
+                           first_arm:(if $p == 1 then $arm
+                                      elif $arm == "baseline" then "candidate"
+                                      else "baseline" end),
+                           basis:"the execution POSITION of this leg within its record pair"}}'
+}
+
+# mk_ordered_pair <repo> <n> <base-input> <arm-delta> <order-delta> <mode>
+#   mode: counterbalanced | fixed | none
+mk_ordered_pair() {
+  local repo="$1" n="$2" base="$3" armd="$4" ordd="$5" mode="$6"
+  local bf="$repo/.temperloop/model-comparison/baseline.jsonl"
+  local cf="$repo/.temperloop/model-comparison/candidate.jsonl"
+  : >"$bf"; : >"$cf"
+  local i=1 pos_b pos_c inp_b inp_c true_b jit day
+  while [ "$i" -le "$n" ]; do
+    case "$mode" in
+      fixed) pos_b=1; pos_c=2 ;;
+      *) if [ $(( i % 2 )) -eq 1 ]; then pos_b=1; pos_c=2; else pos_b=2; pos_c=1; fi ;;
+    esac
+    true_b=$(( base + i * 13 ))
+    jit=$(( ((i - 1) / 2 % 3) * 10 ))
+    inp_b=$(( true_b + (pos_b == 2 ? ordd : 0) ))
+    inp_c=$(( true_b + armd + jit + (pos_c == 2 ? ordd : 0) ))
+    day="$(printf '2026-08-%02d' $(( (i % 20) + 1 )))"
+    # Output tokens held CONSTANT across both arms: anything differing between
+    # them other than the injected effects would pollute the delta.
+    record $(( 2000 + i )) claude-opus-4-8 "$inp_b" 100 pass true JUDGED 70 "$day" scored \
+      | mk_stamp "$i" "$pos_b" baseline "$mode" >>"$bf"
+    record $(( 2000 + i )) claude-sonnet-5 "$inp_c" 100 pass true JUDGED 71 "$day" scored \
+      | mk_stamp "$i" "$pos_c" candidate "$mode" >>"$cf"
+    i=$(( i + 1 ))
+  done
+}
+
+# M1 — a COUNTERBALANCED corpus whose order effect is negligible against its
+#      arm effect: the report states the counterbalance, publishes both
+#      estimates, calls the comparison CLEAN, and still names its winner.
+count
+ORD_CLEAN="$WORK/order-clean"
+mkrepo "$ORD_CLEAN"
+mk_ordered_pair "$ORD_CLEAN" 24 5000 -800 -20 counterbalanced
+lake "$ORD_CLEAN" pipeline-drive-safe retro-judge
+run "$ORD_CLEAN"
+ORD_CLEAN_OUT="$WORK/order-clean.json"; cp "$RUN_OUT" "$ORD_CLEAN_OUT"
+[ "$RUN_RC" -eq 0 ] || fail "M1: the producer must exit 0, got $RUN_RC: $(head -c 300 "$WORK/run.err")"
+[ "$(jqf "$ORD_CLEAN_OUT" '.execution_order.counterbalanced')" = "true" ] \
+  || fail "M1: the report must STATE that arm order was counterbalanced: $(jqf "$ORD_CLEAN_OUT" '.execution_order')"
+[ "$(jqf "$ORD_CLEAN_OUT" '.execution_order.baseline_first_n')" = "12" ] \
+  || fail "M1: 12 of 24 paired records ran the baseline first, got $(jqf "$ORD_CLEAN_OUT" '.execution_order.baseline_first_n')"
+[ "$(jqf "$ORD_CLEAN_OUT" '.execution_order.candidate_first_n')" = "12" ] \
+  || fail "M1: 12 of 24 paired records ran the candidate first, got $(jqf "$ORD_CLEAN_OUT" '.execution_order.candidate_first_n')"
+[ "$(jqf "$ORD_CLEAN_OUT" '.execution_order.comparison_is_clean')" = "true" ] \
+  || fail "M1: an order effect ~2.5% of the arm effect must read as clean: $(jqf "$ORD_CLEAN_OUT" '.execution_order.statement')"
+[ "$(jqf "$ORD_CLEAN_OUT" '.comparison.winner')" = "candidate" ] \
+  || fail "M1: a clean counterbalanced run must still name its winner: $(jqf "$ORD_CLEAN_OUT" '.comparison.verdict')"
+case "$(jqf "$ORD_CLEAN_OUT" '.notice')" in
+  *"arm order: counterbalanced"*) : ;;
+  *) fail "M1: the human notice must state that arm order was counterbalanced: $(jqf "$ORD_CLEAN_OUT" '.notice')" ;;
+esac
+ok "M1 a counterbalanced run STATES the counterbalance, calls the comparison clean, and still names its winner"
+
+# M2 — THE ESTIMATES ARE THE INJECTED ONES. Checked against the fixture's own
+#      arithmetic, so this is a known-answer test rather than the producer
+#      agreeing with itself.
+count
+[ "$(jqf "$ORD_CLEAN_OUT" '.execution_order.arm_effect')" = "-790" ] \
+  || fail "M2: the estimated ARM effect should be the injected -800 plus the mean jitter 10, got $(jqf "$ORD_CLEAN_OUT" '.execution_order.arm_effect')"
+[ "$(jqf "$ORD_CLEAN_OUT" '.execution_order.order_effect')" = "-20" ] \
+  || fail "M2: the estimated ORDER effect should be the injected -20, got $(jqf "$ORD_CLEAN_OUT" '.execution_order.order_effect')"
+[ "$(jqf "$ORD_CLEAN_OUT" '.comparison.order_effect')" = "-20" ] \
+  || fail "M2: the order effect must also sit inside the comparison block, beside the figures it qualifies"
+[ "$(jqf "$ORD_CLEAN_OUT" '.execution_order.order_effect_comparable_to_arm_effect')" = "false" ] \
+  || fail "M2: |-20| is ~2.5% of |-790| — well under the published ratio"
+jq -e '.execution_order.estimator | type == "string" and (length > 80)' "$ORD_CLEAN_OUT" >/dev/null \
+  || fail "M2: the estimator must be STATED, so a reader can re-derive it from the published means"
+ok "M2 known-answer: the published arm effect (-790) and order effect (-20) are exactly the ones the fixture injected"
+
+# M3 — AN ORDER EFFECT COMPARABLE TO THE ARM EFFECT. Same machinery, same N,
+#      same supported verdict — but the comparison is no longer clean, so the
+#      report SAYS SO and names NO winner rather than handing back a bare one.
+count
+ORD_DIRTY="$WORK/order-dirty"
+mkrepo "$ORD_DIRTY"
+mk_ordered_pair "$ORD_DIRTY" 24 5000 -200 -150 counterbalanced
+lake "$ORD_DIRTY" pipeline-drive-safe retro-judge
+run "$ORD_DIRTY"
+ORD_DIRTY_OUT="$WORK/order-dirty.json"; cp "$RUN_OUT" "$ORD_DIRTY_OUT"
+[ "$RUN_RC" -eq 0 ] || fail "M3: the producer must exit 0, got $RUN_RC"
+[ "$(jqf "$ORD_DIRTY_OUT" '.execution_order.arm_effect')" = "-190" ] \
+  || fail "M3: expected the injected arm effect -190, got $(jqf "$ORD_DIRTY_OUT" '.execution_order.arm_effect')"
+[ "$(jqf "$ORD_DIRTY_OUT" '.execution_order.order_effect')" = "-150" ] \
+  || fail "M3: expected the injected order effect -150, got $(jqf "$ORD_DIRTY_OUT" '.execution_order.order_effect')"
+[ "$(jqf "$ORD_DIRTY_OUT" '.execution_order.order_effect_comparable_to_arm_effect')" = "true" ] \
+  || fail "M3: |-150| is ~79% of |-190| — comparable by the published ratio"
+[ "$(jqf "$ORD_DIRTY_OUT" '.execution_order.comparison_is_clean')" = "false" ] \
+  || fail "M3: a comparable order effect must make the comparison NOT clean"
+[ "$(jqf "$ORD_DIRTY_OUT" '.comparison | has("winner")')" = "false" ] \
+  || fail "M3: a not-clean comparison must name NO winner, got $(jqf "$ORD_DIRTY_OUT" '.comparison.winner')"
+[ "$(jqf "$ORD_DIRTY_OUT" '.comparison.winner_withheld_reason | type')" = "string" ] \
+  || fail "M3: withholding a winner must be EXPLAINED, never a silent absence"
+case "$(jqf "$ORD_DIRTY_OUT" '.execution_order.statement')" in
+  *"NOT CLEAN"*) : ;;
+  *) fail "M3: the report must say the comparison is not clean in words: $(jqf "$ORD_DIRTY_OUT" '.execution_order.statement')" ;;
+esac
+case "$(jqf "$ORD_DIRTY_OUT" '.notice')" in
+  *"NOT CLEAN"*) : ;;
+  *) fail "M3: the human notice must carry the not-clean verdict: $(jqf "$ORD_DIRTY_OUT" '.notice')" ;;
+esac
+# AND the sample floor is NOT what suppressed it: the same run is above the
+# floor and stats.sh still returned a supported verdict. Without this pair of
+# checks the withholding could not be attributed to the order gate.
+[ "$(jqf "$ORD_DIRTY_OUT" '.comparison.below_min_sample')" = "false" ] \
+  || fail "M3: this run must be ABOVE the sample floor, or the withholding is not attributable to the order effect"
+[ "$(jqf "$ORD_DIRTY_OUT" '.comparison.verdict')" = "candidate_better" ] \
+  || fail "M3: stats.sh must still return a supported verdict — the winner is withheld by the ORDER gate, not by an inconclusive one: $(jqf "$ORD_DIRTY_OUT" '.comparison.verdict')"
+ok "M3 an order effect comparable to the arm effect: the report says NOT CLEAN and withholds the winner, above the floor and on a supported verdict"
+
+# M4 — A FIXED-ORDER CORPUS (the pre-#1571 driver's own output). Every record
+#      ran the same arm first, so the order effect is not identifiable at all
+#      and the arm effect is arm-plus-position. That is the worst case, and it
+#      must be the loudest — never a silently clean-looking report.
+count
+ORD_FIXED="$WORK/order-fixed"
+mkrepo "$ORD_FIXED"
+mk_ordered_pair "$ORD_FIXED" 24 5000 -200 -150 fixed
+lake "$ORD_FIXED" pipeline-drive-safe retro-judge
+run "$ORD_FIXED"
+ORD_FIXED_OUT="$WORK/order-fixed.json"; cp "$RUN_OUT" "$ORD_FIXED_OUT"
+[ "$RUN_RC" -eq 0 ] || fail "M4: the producer must exit 0, got $RUN_RC"
+[ "$(jqf "$ORD_FIXED_OUT" '.execution_order.positions_recorded')" = "true" ] \
+  || fail "M4: the positions ARE recorded here — they are just all the same"
+[ "$(jqf "$ORD_FIXED_OUT" '.execution_order.counterbalanced')" = "false" ] \
+  || fail "M4: a fixed-order corpus must report counterbalanced:false"
+[ "$(jqf "$ORD_FIXED_OUT" '.execution_order.order_effect')" = "null" ] \
+  || fail "M4: with every record in one order the order effect is UNIDENTIFIABLE and must be withheld, not estimated: $(jqf "$ORD_FIXED_OUT" '.execution_order.order_effect')"
+[ "$(jqf "$ORD_FIXED_OUT" '.execution_order.comparison_is_clean')" = "false" ] \
+  || fail "M4: a fully confounded corpus is not a clean comparison"
+[ "$(jqf "$ORD_FIXED_OUT" '.comparison | has("winner")')" = "false" ] \
+  || fail "M4: a fully confounded corpus must name no winner"
+case "$(jqf "$ORD_FIXED_OUT" '.execution_order.statement')" in
+  *CONFOUNDED*) : ;;
+  *) fail "M4: the confound must be NAMED: $(jqf "$ORD_FIXED_OUT" '.execution_order.statement')" ;;
+esac
+ok "M4 a fixed-order corpus is reported as CONFOUNDED with the order effect withheld as unidentifiable, and names no winner"
+
+# M5 — BACKWARD COMPATIBILITY. A pre-#1571 corpus carries no position at all.
+#      That is UNKNOWN, not not-clean: the producer discloses it and withholds
+#      nothing, because inventing a position would be exactly the laundering
+#      this item exists to stop.
+count
+ORD_NONE="$WORK/order-none"
+mkrepo "$ORD_NONE"
+mk_ordered_pair "$ORD_NONE" 24 5000 -800 -20 none
+lake "$ORD_NONE" pipeline-drive-safe retro-judge
+run "$ORD_NONE"
+ORD_NONE_OUT="$WORK/order-none.json"; cp "$RUN_OUT" "$ORD_NONE_OUT"
+[ "$RUN_RC" -eq 0 ] || fail "M5: the producer must exit 0, got $RUN_RC"
+[ "$(jqf "$ORD_NONE_OUT" '.execution_order.positions_recorded')" = "false" ] \
+  || fail "M5: a corpus with no execution_order must report positions_recorded:false"
+[ "$(jqf "$ORD_NONE_OUT" '.execution_order.counterbalanced')" = "null" ] \
+  || fail "M5: unknown is null, never false — the two are different statements"
+[ "$(jqf "$ORD_NONE_OUT" '.execution_order.comparison_is_clean')" = "null" ] \
+  || fail "M5: cleanliness is UNKNOWN on a positionless corpus, not decided"
+[ "$(jqf "$ORD_NONE_OUT" '.comparison.winner')" = "candidate" ] \
+  || fail "M5: an unknown order effect must withhold nothing — the pre-#1571 report is unchanged"
+case "$(jqf "$ORD_NONE_OUT" '.execution_order.statement')" in
+  *"NOT ESTIMABLE"*) : ;;
+  *) fail "M5: the unknown must be DISCLOSED: $(jqf "$ORD_NONE_OUT" '.execution_order.statement')" ;;
+esac
+ok "M5 a pre-counterbalancing corpus is disclosed as NOT ESTIMABLE and withholds nothing — unknown is not the same statement as not-clean"
+
+# M6 — MUTATION PROOF. Neuter the order-effect winner gate in a mirrored
+#      producer and M3's own fixture DOES name a winner — so M3's withholding
+#      is that gate doing work, not the sample floor and not an inconclusive
+#      verdict.
+count
+MIRROR_M="$(mkmirror "$WORK/m-order")"
+MUT_OLD='if [ "${comparison_clean:-}" = "false" ] && [ "$winner_json" != "null" ]; then' \
+MUT_NEW='if false; then' \
+perl -0777 -pi -e '
+  my $o = $ENV{MUT_OLD}; my $n = $ENV{MUT_NEW};
+  my $count = () = /\Q$o\E/g;
+  die "M6: the order-gate mutation target is not present exactly once (count=$count)\n" unless $count == 1;
+  s/\Q$o\E/$n/;
+' "$MIRROR_M" || fail "M6: the order-gate mutation did not apply — the proof would be vacuous"
+run "$ORD_DIRTY" "$MIRROR_M"
+[ "$RUN_RC" -eq 0 ] || fail "M6: the mutated producer must still exit 0, got $RUN_RC"
+[ "$(jqf "$RUN_OUT" '.comparison.winner')" = "candidate" ] \
+  || fail "M6: the mutation proof did not fire — with the order gate neutered the same fixture should have named a winner, so M3 proves nothing: $(jqf "$RUN_OUT" '.comparison.verdict')"
+[ "$(jqf "$RUN_OUT" '.execution_order.comparison_is_clean')" = "false" ] \
+  || fail "M6: the mutation must remove only the WITHHOLDING, leaving the not-clean finding intact"
+ok "M6 MUTATION PROOF: neutering the order-effect gate makes M3's fixture name a winner — the withholding is that gate, not the floor"
 
 # ═══════════════════════════════════════════════════════════════════════════
 # SECTION L — THE SUITE-WIDE NO-EGRESS VERDICT
