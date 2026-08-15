@@ -47,6 +47,26 @@
 #   R (residue) — FLAGGED only. A record whose R held unnamed CODE was
 #     already rejected at corpus time; md-only residue rides a flag.
 #
+#   X and R paths carry the SAME per-path candidate-vs-truth attribution
+#   object N does (temperloop#1579, split from #1382's Defect B) — computed
+#   by the shared `score_bucket_paths` helper — so a downstream judge (or a
+#   fixture) can mechanically tell "the candidate also touched this
+#   truth-partition path" from "the candidate left it alone" without ever
+#   crediting or penalizing X/R on that fact; only their TREATMENT (neutral /
+#   flagged-only) stays as before. This is a BREAKING record-shape change:
+#   `diff.x.paths`/`diff.r.paths` moved from bare path-string arrays to
+#   attribution objects (see changelog.d/1579-score-diff-capture-xr-attrib.changed.breaking.md).
+#
+# ── CANDIDATE DIFF TEXT (temperloop#1579) ──────────────────────────────────
+# The leg's worktree is torn down by batch.sh immediately after replay, so
+# the real patch text is captured HERE, while it still exists, into
+# `diff.text_excerpt` — never deferred to a later judge pass that would find
+# nothing left to read. Oversized diffs are excerpted at
+# REPLAY_SCORE_DIFF_EXCERPT_MAX_BYTES with an explicit truncation marker
+# appended to the field itself (`diff.text_excerpt_truncated` also says so
+# structurally); `diff.text_excerpt_full_bytes` preserves the untruncated
+# size for a reader who wants to know how much was cut.
+#
 # ── FAIL-CLOSED (temperloop#1365 class) ────────────────────────────────────
 # "I could not evaluate this" is NEVER reported as "I evaluated it and it is
 # fine". Every command below prints `{"outcome":"CANNOT_EVALUATE",...}` on
@@ -102,6 +122,7 @@ HERE="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 [ -f "$HERE/../build/build.config.sh" ] && . "$HERE/../build/build.config.sh"
 : "${REPLAY_SCORE_GATE_RELPATH:=scripts/quality-gates.sh}"
 : "${REPLAY_SCORE_GATE_TIMEOUT_SECS:=1800}"
+: "${REPLAY_SCORE_DIFF_EXCERPT_MAX_BYTES:=200000}"
 
 # shellcheck source=../lib/portable-timeout.sh
 [ -f "$HERE/../lib/portable-timeout.sh" ] && . "$HERE/../lib/portable-timeout.sh"
@@ -350,6 +371,90 @@ cmd_gates() {
 
 # ── score ─────────────────────────────────────────────────────────────────
 
+# score_bucket_paths <repo_root> <wt> <base> <head> <record_file> <bucket>
+#     <out_file> <flags_file>
+# The per-path candidate-vs-truth attribution N originally computed
+# (score.sh:422-477 pre-#1579), now shared by N, X and R alike so a
+# truth-partition path is mechanically distinguishable from a candidate edit
+# in every bucket, not just N. Reads bucket <bucket> ("N", "X" or "R") of
+# <record_file>.buckets, writes ONE attribution-object JSON line per path to
+# <out_file>, appends a `formatting-only-churn` flag line to <flags_file> for
+# any path whose truth diff is whitespace-only (trap B), and prints
+# "<total> <changed> <matched>" on stdout for the caller — bash 3.2 has no
+# namerefs, so counts travel back through stdout rather than a global.
+score_bucket_paths() {
+  local repo_root="$1" wt="$2" base="$3" head="$4" record_file="$5" bucket="$6" out_file="$7" flags_file="$8"
+  local total=0 changed_n=0 matched_n=0 p
+  : >"$out_file"
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    total=$((total + 1))
+    local tw ta tr rawa rawr ca cr changed matched fmt_only truth_sha cand_sha
+
+    tw="$(git -C "$repo_root" diff --numstat --ignore-all-space --ignore-blank-lines "$base" "$head" -- "$p" 2>/dev/null | sum_numstat)"
+    ta="${tw%% *}"; tr="${tw##* }"
+    tw="$(git -C "$repo_root" diff --numstat "$base" "$head" -- "$p" 2>/dev/null | sum_numstat)"
+    rawa="${tw%% *}"; rawr="${tw##* }"
+
+    tw="$(git -C "$wt" diff --numstat --ignore-all-space --ignore-blank-lines "$base" -- "$p" 2>/dev/null | sum_numstat)"
+    ca="${tw%% *}"; cr="${tw##* }"
+
+    if [ "$(( ca + cr ))" -gt 0 ]; then changed=true; changed_n=$((changed_n + 1)); else changed=false; fi
+
+    # Trap B — formatting-only churn in the TRUTH. Detected, never assumed
+    # absent: raw diff non-empty but whitespace-insensitive diff empty.
+    if [ "$(( rawa + rawr ))" -gt 0 ] && [ "$(( ta + tr ))" -eq 0 ]; then
+      fmt_only=true
+      printf 'formatting-only-churn\n' >>"$flags_file"
+    else
+      fmt_only=false
+    fi
+
+    # "absent" is a distinct sentinel from "the empty file's digest" — truth
+    # may DELETE a named path, and a candidate that also deleted it MATCHES,
+    # while a candidate that merely emptied it does not.
+    if git -C "$repo_root" cat-file -e "${head}:${p}" 2>/dev/null; then
+      truth_sha="$(git -C "$repo_root" show "${head}:${p}" 2>/dev/null | sha256_of_stdin)"
+    else
+      truth_sha="absent"
+    fi
+    if [ -f "$wt/$p" ]; then
+      cand_sha="$(sha256_of_stdin <"$wt/$p")"
+    else
+      cand_sha="absent"
+    fi
+    if [ "$cand_sha" = "$truth_sha" ]; then matched=true; matched_n=$((matched_n + 1)); else matched=false; fi
+
+    jq -cn --arg path "$p" \
+      --argjson truth_added "$ta" --argjson truth_removed "$tr" \
+      --argjson truth_added_raw "$rawa" --argjson truth_removed_raw "$rawr" \
+      --argjson candidate_added "$ca" --argjson candidate_removed "$cr" \
+      --argjson changed "$changed" --argjson matches_truth "$matched" \
+      --argjson formatting_only_truth_churn "$fmt_only" \
+      '{path:$path, truth_added:$truth_added, truth_removed:$truth_removed,
+        truth_added_raw:$truth_added_raw, truth_removed_raw:$truth_removed_raw,
+        candidate_added:$candidate_added, candidate_removed:$candidate_removed,
+        changed:$changed, matches_truth:$matches_truth,
+        formatting_only_truth_churn:$formatting_only_truth_churn}' >>"$out_file"
+  done < <(jq -r --arg b "$bucket" '(.buckets[$b] // [])[]' "$record_file" 2>/dev/null)
+  printf '%s %s %s\n' "$total" "$changed_n" "$matched_n"
+}
+
+# _score_candidate_diff_text <wt> <base> — the real patch text, captured
+# while the worktree still exists (batch.sh tears it down immediately after
+# replay — temperloop#1579). `git diff <base>` alone misses files the
+# candidate created but never staged, so untracked paths (the same
+# `ls-files --others --exclude-standard` set the T bucket already unions in
+# below) are appended as their own `--no-index` hunks against /dev/null.
+_score_candidate_diff_text() {
+  local wt="$1" base="$2" f
+  git -C "$wt" diff --no-color "$base" -- . 2>/dev/null
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    git -C "$wt" diff --no-color --no-index -- /dev/null "$f" 2>/dev/null
+  done < <(git -C "$wt" ls-files --others --exclude-standard 2>/dev/null)
+}
+
 cmd_score() {
   local repo_root="" wt="" record_file="" relpath="$REPLAY_SCORE_GATE_RELPATH"
   while [ $# -gt 0 ]; do
@@ -419,63 +524,42 @@ cmd_score() {
   fi
 
   # ── N: the scored solution surface ────────────────────────────────────
-  local n_tmp flags_tmp
+  local n_tmp x_tmp r_tmp flags_tmp
   n_tmp="$(scratch n.jsonl)" || { cannot_evaluate "could not create a scratch dir under ${TMPDIR:-/tmp}"; return 1; }
+  x_tmp="$(scratch x.jsonl)" || { cannot_evaluate "could not create a scratch dir under ${TMPDIR:-/tmp}"; return 1; }
+  r_tmp="$(scratch r.jsonl)" || { cannot_evaluate "could not create a scratch dir under ${TMPDIR:-/tmp}"; return 1; }
   flags_tmp="$(scratch flags.txt)" || { cannot_evaluate "could not create a scratch dir under ${TMPDIR:-/tmp}"; return 1; }
-  : >"$n_tmp"; : >"$flags_tmp"
+  : >"$n_tmp"; : >"$x_tmp"; : >"$r_tmp"; : >"$flags_tmp"
 
-  local n_total=0 n_changed=0 n_matched=0 p
-  while IFS= read -r p; do
-    [ -n "$p" ] || continue
-    n_total=$((n_total + 1))
-    local tw ta tr rawa rawr ca cr changed matched fmt_only truth_sha cand_sha
+  local n_stats n_total n_changed n_matched
+  n_stats="$(score_bucket_paths "$repo_root" "$wt" "$base" "$head" "$record_file" N "$n_tmp" "$flags_tmp")"
+  n_total="$(printf '%s\n' "$n_stats" | awk '{print $1}')"
+  n_changed="$(printf '%s\n' "$n_stats" | awk '{print $2}')"
+  n_matched="$(printf '%s\n' "$n_stats" | awk '{print $3}')"
 
-    tw="$(git -C "$repo_root" diff --numstat --ignore-all-space --ignore-blank-lines "$base" "$head" -- "$p" 2>/dev/null | sum_numstat)"
-    ta="${tw%% *}"; tr="${tw##* }"
-    tw="$(git -C "$repo_root" diff --numstat "$base" "$head" -- "$p" 2>/dev/null | sum_numstat)"
-    rawa="${tw%% *}"; rawr="${tw##* }"
+  # ── X and R: the SAME per-path candidate-vs-truth attribution N carries,
+  #    on the truth-partition buckets (temperloop#1579). Their TREATMENT
+  #    (neutral / flagged-only) is unchanged below — only the per-path detail
+  #    available to a downstream judge or fixture is new.
+  score_bucket_paths "$repo_root" "$wt" "$base" "$head" "$record_file" X "$x_tmp" "$flags_tmp" >/dev/null
+  score_bucket_paths "$repo_root" "$wt" "$base" "$head" "$record_file" R "$r_tmp" "$flags_tmp" >/dev/null
 
-    tw="$(git -C "$wt" diff --numstat --ignore-all-space --ignore-blank-lines "$base" -- "$p" 2>/dev/null | sum_numstat)"
-    ca="${tw%% *}"; cr="${tw##* }"
-
-    if [ "$(( ca + cr ))" -gt 0 ]; then changed=true; n_changed=$((n_changed + 1)); else changed=false; fi
-
-    # Trap B — formatting-only churn in the TRUTH. Detected, never assumed
-    # absent: raw diff non-empty but whitespace-insensitive diff empty.
-    if [ "$(( rawa + rawr ))" -gt 0 ] && [ "$(( ta + tr ))" -eq 0 ]; then
-      fmt_only=true
-      printf 'formatting-only-churn\n' >>"$flags_tmp"
-    else
-      fmt_only=false
-    fi
-
-    # "absent" is a distinct sentinel from "the empty file's digest" — truth
-    # may DELETE a named path, and a candidate that also deleted it MATCHES,
-    # while a candidate that merely emptied it does not.
-    if git -C "$repo_root" cat-file -e "${head}:${p}" 2>/dev/null; then
-      truth_sha="$(git -C "$repo_root" show "${head}:${p}" 2>/dev/null | sha256_of_stdin)"
-    else
-      truth_sha="absent"
-    fi
-    if [ -f "$wt/$p" ]; then
-      cand_sha="$(sha256_of_stdin <"$wt/$p")"
-    else
-      cand_sha="absent"
-    fi
-    if [ "$cand_sha" = "$truth_sha" ]; then matched=true; n_matched=$((n_matched + 1)); else matched=false; fi
-
-    jq -cn --arg path "$p" \
-      --argjson truth_added "$ta" --argjson truth_removed "$tr" \
-      --argjson truth_added_raw "$rawa" --argjson truth_removed_raw "$rawr" \
-      --argjson candidate_added "$ca" --argjson candidate_removed "$cr" \
-      --argjson changed "$changed" --argjson matches_truth "$matched" \
-      --argjson formatting_only_truth_churn "$fmt_only" \
-      '{path:$path, truth_added:$truth_added, truth_removed:$truth_removed,
-        truth_added_raw:$truth_added_raw, truth_removed_raw:$truth_removed_raw,
-        candidate_added:$candidate_added, candidate_removed:$candidate_removed,
-        changed:$changed, matches_truth:$matches_truth,
-        formatting_only_truth_churn:$formatting_only_truth_churn}' >>"$n_tmp"
-  done < <(jq -r '(.buckets.N // [])[]' "$record_file" 2>/dev/null)
+  # ── the candidate's real diff text, captured while the worktree still
+  #    exists (temperloop#1579) — excerpted at REPLAY_SCORE_DIFF_EXCERPT_MAX_BYTES
+  #    with an explicit truncation marker appended when it is cut. ─────────
+  local text_excerpt_tmp full_text full_bytes excerpt_bytes truncated=false
+  text_excerpt_tmp="$(scratch text-excerpt.txt)" || { cannot_evaluate "could not create a scratch dir under ${TMPDIR:-/tmp}"; return 1; }
+  full_text="$(_score_candidate_diff_text "$wt" "$base")"
+  full_bytes="$(printf '%s' "$full_text" | wc -c | awk '{print $1}')"
+  if [ "$full_bytes" -gt "$REPLAY_SCORE_DIFF_EXCERPT_MAX_BYTES" ]; then
+    truncated=true
+    printf '%s' "$full_text" | head -c "$REPLAY_SCORE_DIFF_EXCERPT_MAX_BYTES" >"$text_excerpt_tmp"
+    printf '\n[... score.sh TRUNCATED: showing %s of %s bytes ...]\n' \
+      "$REPLAY_SCORE_DIFF_EXCERPT_MAX_BYTES" "$full_bytes" >>"$text_excerpt_tmp"
+  else
+    printf '%s' "$full_text" >"$text_excerpt_tmp"
+  fi
+  excerpt_bytes="$(wc -c <"$text_excerpt_tmp" | awk '{print $1}')"
 
   # ── T: presence only, never bytes ─────────────────────────────────────
   local t_tmp cand_tests_tmp
@@ -559,6 +643,8 @@ cmd_score() {
 
   jq -n \
     --slurpfile n_files "$n_tmp" \
+    --slurpfile x_files "$x_tmp" \
+    --slurpfile r_files "$r_tmp" \
     --slurpfile acc "$acc_tmp" \
     --argjson gate "$gate_json" \
     --arg verdict "$verdict" \
@@ -568,10 +654,12 @@ cmd_score() {
     --argjson t_truth_n "$t_truth_n" \
     --argjson t_truth "$(jq -c '.buckets.T // []' "$record_file")" \
     --argjson t_cand "$(jq -R . <"$cand_tests_tmp" | jq -cs .)" \
-    --argjson x_paths "$(jq -c '.buckets.X // []' "$record_file")" \
-    --argjson r_paths "$(jq -c '.buckets.R // []' "$record_file")" \
     --argjson flags "$(sort -u <"$flags_tmp" | jq -R . | jq -cs 'map(select(length > 0))')" \
     --arg base "$base" --arg head "$head" \
+    --rawfile text_excerpt "$text_excerpt_tmp" \
+    --argjson text_excerpt_truncated "$truncated" \
+    --argjson text_excerpt_full_bytes "$full_bytes" \
+    --argjson text_excerpt_bytes "$excerpt_bytes" \
     '{outcome:"SCORED", scored:true, verdict:$verdict,
       base:$base, truth_head:$head,
       diff:{
@@ -579,8 +667,12 @@ cmd_score() {
            all_changed:$n_ok, files:$n_files},
         t:{scored_on:"presence+pass", required:$t_required, present:$t_present,
            truth_count:$t_truth_n, truth_paths:$t_truth, candidate_paths:$t_cand, ok:$t_ok},
-        x:{treatment:"neutral", paths:$x_paths},
-        r:{treatment:"flagged-only", paths:$r_paths}
+        x:{treatment:"neutral", paths:$x_files},
+        r:{treatment:"flagged-only", paths:$r_files},
+        text_excerpt:$text_excerpt,
+        text_excerpt_truncated:$text_excerpt_truncated,
+        text_excerpt_full_bytes:$text_excerpt_full_bytes,
+        text_excerpt_bytes:$text_excerpt_bytes
       },
       gate_result:$gate,
       acceptance_results:$acc,
