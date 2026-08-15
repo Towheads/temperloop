@@ -249,6 +249,7 @@ JUDGE_SH="$HERE/judge.sh"
 : "${MODEL_COMPARISON_REPORT_RECORDS_DIR:=.temperloop/model-comparison}"
 : "${MODEL_COMPARISON_MIN_SAMPLE_N:=20}"
 : "${MODEL_COMPARISON_BATCH_MAX_CONSECUTIVE_STAGE_ERRORS:=5}"
+: "${MODEL_COMPARISON_SPEND_DRIFT_ALERT_PCT:=25}"
 
 # shellcheck source=../lib/cannot-evaluate.sh
 [ -f "$HERE/../lib/cannot-evaluate.sh" ] && . "$HERE/../lib/cannot-evaluate.sh"
@@ -435,6 +436,14 @@ cmd_schema() {
     pairing: {paired_outcomes_n:null, min_sample_n:null, meets_min_sample:null},
     judge: {ran:null, reason:null, per_arm:null},
     reconciliation: {basis:null, reconciled:null, per_arm:null},
+    spend_reconciliation: {basis:null, unit:null, weights_resolved:null,
+                           projected_total:null, projected_per_replay:null,
+                           projected_basis_mode:null, projected_replays_n:null,
+                           observed_total:null, observed_costed_replays_n:null,
+                           observed_uncosted_replays_n:null, observed_mean_per_replay:null,
+                           coverage_complete:null, ratio_observed_over_projected:null,
+                           drift_pct:null, alert_threshold_pct:null, alert_setting:null,
+                           drift_alert:null, statement:null},
     isolation: {verify_clean_parent:null, worktrees_torn_down_n:null},
     degradations: [],
     preflight: null
@@ -555,8 +564,30 @@ cmd_run() {
     return 3
   fi
   if [ "$(jq -r '.confirmation_required' <<<"$pf_json")" = "true" ] && [ "$confirm" -eq 0 ]; then
+    # THE CONFIRMATION LINE CARRIES THE PROVENANCE AND THE DISPERSION
+    # (temperloop#1555). This is the sentence an operator actually reads
+    # before authorizing spend, so it must not hand them a bare point
+    # estimate: it names WHERE the per-replay figure came from (derived from
+    # n observed records, or the unmeasured configured literal) and, when a
+    # distribution exists, what the same batch would cost at the observed
+    # p90 and maximum. All of it is read off the gate's own JSON — this
+    # driver still computes no estimate of its own.
+    local pf_provenance pf_dispersion
+    pf_provenance="$(jq -r '
+      if .tokens_per_replay_mode == "derived-from-observed-records"
+      then "per-replay figure DERIVED from n=" + ((.observed_replay_cost.records_n // 0)|tostring)
+           + " observed replays (mean " + ((.tokens_per_replay_estimate // 0)|tostring) + ")"
+      else "per-replay figure UNMEASURED on this host — the configured literal ("
+           + ((.tokens_per_replay_estimate // 0)|tostring) + ")" end' <<<"$pf_json" 2>/dev/null)"
+    pf_dispersion="$(jq -r '
+      if (.estimated_total_tokens_range.available // false)
+      then "; at the observed p90 the same batch projects "
+           + ((.estimated_total_tokens_range.high_total_at_observed_p90 // 0)|tostring)
+           + " and at the observed maximum " + ((.estimated_total_tokens_range.high_total_at_observed_max // 0)|tostring)
+           + " (observed spread " + ((.estimated_total_tokens_range.observed_spread_ratio // 0)|tostring) + "x) — the projection is a MEAN, not a bound"
+      else "; no observed distribution exists on this host, so no range can be shown" end' <<<"$pf_json" 2>/dev/null)"
     bd_stopped "confirmation_required" \
-      "the pre-flight gate requires explicit operator confirmation of the estimate above ($(jq -r '.estimated_cost' <<<"$pf_json") $(jq -r '.cost_basis' <<<"$pf_json") over $(jq -r '.planned_replays_n' <<<"$pf_json") executed replays); re-run with --confirm to authorize it. Nothing was spent" "$pf_json"
+      "the pre-flight gate requires explicit operator confirmation of the estimate above ($(jq -r '.estimated_cost' <<<"$pf_json") $(jq -r '.cost_basis' <<<"$pf_json") over $(jq -r '.planned_replays_n' <<<"$pf_json") executed replays; ${pf_provenance}${pf_dispersion}); re-run with --confirm to authorize it. Nothing was spent" "$pf_json"
     return 3
   fi
 
@@ -1065,6 +1096,117 @@ cmd_run() {
       reconciled: $ok, per_arm: .}' <"$recon_file")"
 
   # ═════════════════════════════════════════════════════════════════════
+  # STEP 5.6 — RECONCILE THE SPEND: PROJECTED vs OBSERVED (temperloop#1555).
+  #
+  # STEP 5.5 above reconciles the COUNTS this driver published against the
+  # artifact on disk. This one reconciles the MONEY: the spend the operator
+  # AUTHORIZED at the gate against the spend the run actually INCURRED.
+  #
+  # Nothing did this before, and the gap was load-bearing. The gate's
+  # per-replay figure was an n=1 literal; the first live batch executed 14
+  # real replays that came in 1.49x above it; the projection and the outturn
+  # sat in two different places and nothing ever put them side by side, so
+  # the only way to notice was for a human to sum the raw lake by hand. A
+  # projection that is never checked against outturn cannot drift-correct,
+  # and since the projection is what the ceiling check and the operator
+  # confirmation are computed from, an uncorrected drift understates the
+  # margin on every future batch by the same factor.
+  #
+  # THE OBSERVED FIGURE IS COMPUTED FROM THE ARM RECORDS THIS RUN PRODUCED,
+  # not from the lake: the arm files are scoped to exactly this batch, carry
+  # the same `candidate.tokens` blocks the comparison report prices, and are
+  # already on disk. The weighting is the SPEND_WEIGHT_* multiply-add — the
+  # same expression, in the same unit (the gate's own `cost_basis`), as
+  # report-producers/model-comparison and emit-model-usage.sh use, so the
+  # three surfaces cannot disagree about what a "token" is.
+  #
+  # A DRIFT ALERT IS NOT A DEGRADATION. Beyond
+  # MODEL_COMPARISON_SPEND_DRIFT_ALERT_PCT in either direction this raises
+  # `drift_alert` and prints a stderr notice — but it never adds a
+  # degradation and never changes `outcome`. A wrong projection is a fact
+  # about the ESTIMATE, not a defect in the batch that just completed;
+  # turning a clean BATCH_COMPLETE into a BATCH_DEGRADED because the
+  # forecast was off would be reporting the wrong thing about the wrong
+  # artifact.
+  #
+  # A record with NO token block contributes NOTHING and is counted in
+  # `observed_uncosted_replays_n` rather than as a zero — a missing
+  # measurement is not a measurement of zero (the report producer's own
+  # rule) — and `coverage_complete` says outright whether the observed total
+  # covers every replay the projection was over, so a partial-coverage ratio
+  # can never be read as a whole-batch drift figure.
+  # ═════════════════════════════════════════════════════════════════════
+  local spend_recon_json spend_drift_alert=0
+  # A non-integer alert threshold DISABLES the alert rather than breaking the
+  # reconciliation: the figures are the point of this block, and a malformed
+  # tunable must not cost the operator the projected-vs-observed comparison
+  # itself.
+  local drift_alert_pct="${MODEL_COMPARISON_SPEND_DRIFT_ALERT_PCT:-0}"
+  case "$drift_alert_pct" in ''|*[!0-9]*) drift_alert_pct=0 ;; esac
+  spend_recon_json="$(
+    jq -n \
+      --slurpfile b "$base_file" --slurpfile c "$cand_file" \
+      --argjson pf "$pf_json" \
+      --arg w_in "${SPEND_WEIGHT_INPUT-}" --arg w_cr "${SPEND_WEIGHT_CACHE_READ-}" \
+      --arg w_cc "${SPEND_WEIGHT_CACHE_CREATE-}" --arg w_out "${SPEND_WEIGHT_OUTPUT-}" \
+      --argjson alert_pct "$drift_alert_pct" '
+      def num: (try (tonumber) catch null);
+      ($w_in | num) as $wi | ($w_cr | num) as $wcr
+      | ($w_cc | num) as $wcc | ($w_out | num) as $wo
+      | (($wi != null) and ($wcr != null) and ($wcc != null) and ($wo != null)) as $weights_ok
+      | ($b + $c) as $recs
+      | ($recs | map(select(((.candidate // {}).tokens | type) == "object"))) as $costed
+      | (if $weights_ok
+         then ($costed | map((((.candidate.tokens.input // 0) * $wi)
+                            + ((.candidate.tokens.cache_read // 0) * $wcr)
+                            + ((.candidate.tokens.cache_creation // 0) * $wcc)
+                            + ((.candidate.tokens.output // 0) * $wo)) | floor) | add // 0)
+         else null end) as $observed
+      | ($pf.estimated_cost // null) as $projected
+      | (if $observed == null or $projected == null or $projected == 0 then null
+         else ((($observed / $projected) * 1000) | round) / 1000 end) as $ratio
+      | (if $ratio == null then null else ((($ratio - 1) * 1000) | round) / 10 end) as $drift_pct
+      | (($costed | length) == ($pf.planned_replays_n // -1)) as $complete
+      | {basis: "the spend the operator AUTHORIZED at the pre-flight gate, put beside the spend this run actually INCURRED. Projected is the gate figure verbatim (this driver computes no estimate of its own). Observed is the SPEND_WEIGHT_* multiply-add over every arm record that carries a token block, both arms, in the cost_basis unit the gate published — the same expression report-producers/model-comparison prices with. A record with no token block contributes NOTHING and is counted uncosted, never as a zero",
+         unit: ($pf.cost_basis // null),
+         weights_resolved: $weights_ok,
+         projected_total: $projected,
+         projected_per_replay: ($pf.tokens_per_replay_estimate // null),
+         projected_basis_mode: ($pf.tokens_per_replay_mode // null),
+         projected_replays_n: ($pf.planned_replays_n // null),
+         observed_total: $observed,
+         observed_costed_replays_n: ($costed | length),
+         observed_uncosted_replays_n: (($recs | length) - ($costed | length)),
+         observed_mean_per_replay:
+           (if $observed == null or ($costed | length) == 0 then null
+            else (($observed / ($costed | length)) | floor) end),
+         coverage_complete: $complete,
+         ratio_observed_over_projected: $ratio,
+         drift_pct: $drift_pct,
+         alert_threshold_pct: $alert_pct,
+         alert_setting: "MODEL_COMPARISON_SPEND_DRIFT_ALERT_PCT",
+         drift_alert: (if $drift_pct == null or $alert_pct == 0 then false
+                       else (($drift_pct | fabs) > $alert_pct) end),
+         statement:
+           (if $observed == null then "the SPEND_WEIGHT_* settings did not resolve, so no observed cost could be computed in the unit the gate authorized this batch in — refusing to state a figure in an undefined unit rather than printing one"
+            elif ($costed | length) == 0 then "no arm record carries a token block, so this run produced no observed spend to reconcile the projection against"
+            elif $ratio == null then "the gate published no projected cost to reconcile against"
+            else (("this run was PROJECTED at " + ($projected|tostring) + " and OBSERVED at " + ($observed|tostring)
+                   + " (" + ($ratio|tostring) + "x, " + ($drift_pct|tostring) + "% drift), over "
+                   + (($costed | length)|tostring) + " costed of " + (($pf.planned_replays_n // 0)|tostring)
+                   + " projected executed replays")
+                  + (if $complete then "" else ". COVERAGE IS PARTIAL — the observed total does not cover every replay the projection was over, so read the ratio as a floor, not as a whole-batch drift figure" end)
+                  + (if ($drift_pct != null and $alert_pct != 0 and (($drift_pct | fabs) > $alert_pct))
+                     then ". This exceeds MODEL_COMPARISON_SPEND_DRIFT_ALERT_PCT: the per-replay estimate the gate authorizes batches with is out of date against what replays now actually cost" else "" end)) end)}
+    ' 2>/dev/null)"
+  if [ -z "$spend_recon_json" ] || ! jq -e 'type=="object"' >/dev/null 2>&1 <<<"$spend_recon_json"; then
+    spend_recon_json="$(jq -cn '{basis:"projected vs observed spend for this run", unit:null, weights_resolved:false,
+      projected_total:null, observed_total:null, drift_alert:false,
+      statement:"the projected-vs-observed spend reconciliation could not be computed — neither figure is being asserted"}')"
+  fi
+  [ "$(jq -r '.drift_alert // false' <<<"$spend_recon_json" 2>/dev/null)" = "true" ] && spend_drift_alert=1
+
+  # ═════════════════════════════════════════════════════════════════════
   # STEP 6 — the isolation backstop, then the ONE summary object.
   # ═════════════════════════════════════════════════════════════════════
   local vcp_json vcp_rc=0
@@ -1161,6 +1303,7 @@ cmd_run() {
     --argjson min_sample_n "$MODEL_COMPARISON_MIN_SAMPLE_N" \
     --argjson judge "$judge_json" \
     --argjson reconciliation "$reconciliation_json" \
+    --argjson spend_reconciliation "$spend_recon_json" \
     --argjson vcp "$vcp_json" --arg vcp_outcome "$vcp_outcome" --argjson swept "$swept" \
     --arg base_arm "$BATCH_ARM_BASELINE" --arg cand_arm "$BATCH_ARM_CANDIDATE" \
     '{schema_version:$sv,
@@ -1202,6 +1345,7 @@ cmd_run() {
         meets_min_sample: ($paired_n >= $min_sample_n)},
       judge: $judge,
       reconciliation: $reconciliation,
+      spend_reconciliation: $spend_reconciliation,
       isolation:{verify_clean_parent:$vcp_outcome, verify_clean_parent_detail:$vcp,
                  worktrees_swept_n:$swept},
       degradations: $degradations,
@@ -1211,6 +1355,13 @@ cmd_run() {
 
   if [ "$arms_reconciled" -eq 0 ]; then
     printf 'batch.sh: ARM RECONCILIATION MISMATCH — an arm file on disk does not carry the leg records this driver counted; see reconciliation.per_arm. The completion rate below is over the LEG records, NOT over that arm file\n' >&2
+  fi
+  # The spend-drift notice (temperloop#1555) — stderr, alongside the summary,
+  # NEVER a degradation and never a non-zero exit: the projection being wrong
+  # says nothing about whether this batch ran correctly.
+  if [ "$spend_drift_alert" -eq 1 ]; then
+    printf 'batch.sh: SPEND DRIFT — %s (see spend_reconciliation)\n' \
+      "$(jq -r '.statement // "projected and observed spend diverge"' <<<"$spend_recon_json" 2>/dev/null)" >&2
   fi
   # BATCH_STOPPED_EARLY takes precedence over BATCH_DEGRADED and gets its OWN
   # code: a degraded batch ran the corpus out, this one did not, and a caller

@@ -196,10 +196,39 @@
 #       TOKENS are therefore ALL denominated in that one weighted unit, and
 #       the emitted `cost_weights` names the SPEND_WEIGHT_* values the figure
 #       was computed under (weighted units are comparable only within one
-#       weight-retune epoch). The per-replay figure itself is an n=1 ESTIMATE
-#       and says so on every run, in `tokens_per_replay_basis` — it is the
-#       configured literal, never something derived from the operator's own
-#       records, and it is never presented as though it were.
+#       weight-retune epoch).
+#
+#       THE PER-REPLAY FIGURE: DERIVED WHEN IT CAN BE (temperloop#1555)
+#       The estimate is what the ceiling check and the operator confirmation
+#       are computed FROM, so where it comes from is a spend-gate correctness
+#       property. Until #1555 it was ALWAYS the configured literal — an n=1
+#       order-of-magnitude estimate that the first live batch (14 real
+#       replays) showed to be 1.49x LOW, so a batch's shown margin against
+#       the ceiling was about twice as generous as the truth while the
+#       records that said so sat unread in the attribution lake. Now:
+#         * With >= REPLAY_PREFLIGHT_DERIVE_MIN_N observed replay-candidate
+#           records on this host (emit-model-usage.sh's ADR 0026 lake, seat
+#           replay-candidate, usage_source cli-envelope), the figure is their
+#           MEAN — each record RE-WEIGHTED from its raw token block with the
+#           SPEND_WEIGHT_* values in force NOW, so the derivation survives a
+#           weight retune that the records' own stored `weighted_units` would
+#           not — and `tokens_per_replay_basis` names the derivation and its n.
+#         * With fewer (usually none), behaviour is UNCHANGED: the configured
+#           REPLAY_PREFLIGHT_TOKENS_PER_REPLAY literal, with the basis string
+#           saying the figure is UNMEASURED on this host. It NEVER presents
+#           the literal as measured — a fabricated measurement would be worse
+#           than an honest estimate.
+#       Because the observed spread is wide (4.8x on the first live batch),
+#       a bare point estimate is not the only thing published:
+#       `estimated_total_tokens_range` projects the SAME batch at the observed
+#       p90 and at the observed maximum and says whether either would breach
+#       the ceiling the point estimate cleared. The STOP decision stays the
+#       point estimate's — a worst-case budget is a different claim from an
+#       expected one, and enforcing the former would refuse batches that are
+#       in expectation affordable. `observed_replay_cost` publishes the whole
+#       distribution (n, min/p50/p90/max, stddev, spread) on every run,
+#       including the "n=0, nothing to derive from" case, so an absence is a
+#       positive statement rather than something a reader must infer.
 #
 #       A projected batch whose estimated cost exceeds
 #       REPLAY_PREFLIGHT_CEILING_TOKENS, or that lands while
@@ -318,6 +347,15 @@ SCORE_SH="$HERE/score.sh"
 CANDIDATE_SESSION_SH="$HERE/candidate-session.sh"
 ALLOWLIST_LIB="$HERE/allowlist.sh"
 EMIT_MODEL_USAGE_SH="$HERE/../emit-model-usage.sh"
+# The repo root this file sits under, used ONLY to resolve the default
+# attribution raw-lake directory the preflight DERIVATION reads
+# (temperloop#1555) when MODEL_USAGE_RAW_DIR is unset — byte-identically the
+# `${MODEL_USAGE_RAW_DIR:-<repo>/meta/data/raw}` seam emit-model-usage.sh
+# WRITES through and tagging.sh already READS through. Empty when the root
+# cannot be resolved (a relocated/symlinked entry point), which the
+# derivation treats as "no observed records" and falls back on, never as an
+# error: an unresolvable telemetry path must not stop a spend gate.
+REPLAY_LAKE_REPO_ROOT="$(cd -P "$HERE/../../.." 2>/dev/null && pwd)" || REPLAY_LAKE_REPO_ROOT=""
 
 # The ADR 0026 seat ROLE NAME this module's attribution records carry. A
 # record-vocabulary constant, not an operator-tunable setting (same
@@ -347,6 +385,12 @@ REPLAY_TRUSTED_DEFAULT_PROVIDER="anthropic"
 : "${REPLAY_PREFLIGHT_TOKENS_PER_REPLAY:=470000}"
 : "${REPLAY_PREFLIGHT_CEILING_TOKENS:=50000000}"
 : "${REPLAY_PREFLIGHT_ASSUMED_STDDEV_TOKENS:=155000}"
+# preflight DERIVATION (temperloop#1555) — the minimum number of OBSERVED
+# replay-candidate records before the per-replay figure is DERIVED from them
+# instead of read off the literal above. Same seam as the four settings
+# above: named here, valued only in build.config.sh, registered in
+# setting-registry.tsv.
+: "${REPLAY_PREFLIGHT_DERIVE_MIN_N:=5}"
 # execute (temperloop#1258) — the wall-clock bound on ONE candidate run.
 # Named symbolically here, never re-valued in prose; registered in
 # setting-registry.tsv, defaulted in build.config.sh.
@@ -916,6 +960,120 @@ preflight_cannot_evaluate() {
   cannot_evaluate_emit "replay.sh preflight" "$1"
 }
 
+# preflight_observed_cost <weights-json> — THE DERIVATION (temperloop#1555).
+#
+# Prints ONE JSON object describing the per-EXECUTED-REPLAY cost distribution
+# this host has actually OBSERVED, or an object whose `records_n` is 0 when it
+# has observed none. NEVER fails, never returns non-zero, and never stops a
+# batch: an unreadable/absent/garbled telemetry lake is "no observations",
+# which the caller falls back on explicitly and says so — the opposite of the
+# temperloop#1365 class, because here the SAFE reading is the conservative
+# one (use the configured literal and label it unmeasured), not a fabricated
+# measurement.
+#
+# THE SOURCE. workflows/scripts/emit-model-usage.sh's ADR 0026 attribution
+# raw lake — `${MODEL_USAGE_RAW_DIR:-<repo>/meta/data/raw}/model-usage-*.jsonl`
+# — filtered to records this module itself wrote: seat REPLAY_CANDIDATE_SEAT,
+# usage_source "cli-envelope" (an "unavailable" record is an attribution-only
+# row with NO token block: a missing measurement, never a measurement of
+# zero), carrying a `tokens` object. That is exactly one record per EXECUTED
+# REPLAY, which is the unit the estimate is denominated in.
+#
+# WHY IT RE-WEIGHTS RATHER THAN READING `weighted_units`. Each lake record
+# carries a `weighted_units` convenience field computed under whatever
+# SPEND_WEIGHT_* values were in force AT EMIT TIME, and carries no weight
+# vector to detect that with (emit-model-usage.sh's own documented caveat).
+# Summing those would silently mix retune epochs. The raw `tokens` block is
+# the durable, retune-independent figure, so this recomputes every record
+# with the weights in force NOW — the same multiply-add, byte-for-byte, that
+# the report producer and emit-model-usage.sh use — and the resulting
+# distribution is by construction in the one unit REPLAY_COST_BASIS_UNIT
+# names.
+#
+# A line that does not parse is SKIPPED and counted (`unparseable_lines_n`),
+# not fatal: the lake is an append-only telemetry stream several unrelated
+# writers touch, and a torn line there is no reason to refuse to price a
+# batch. The count is published so a reader can see the derivation's own
+# input was imperfect.
+preflight_observed_cost() {
+  local weights_json="$1"
+  local lake_dir
+  lake_dir="${MODEL_USAGE_RAW_DIR:-$REPLAY_LAKE_REPO_ROOT/meta/data/raw}"
+
+  local empty_out
+  empty_out="$(jq -cn --arg dir "$lake_dir" \
+    '{lake_dir:$dir, records_n:0, unparseable_lines_n:0,
+      mean:null, min:null, p50:null, p90:null, max:null, stddev:null, spread_ratio:null}')"
+
+  if [ -z "$lake_dir" ] || [ ! -d "$lake_dir" ]; then
+    printf '%s\n' "$empty_out"
+    return 0
+  fi
+
+  # bash 3.2: no `shopt -s nullglob` reliance and no mapfile — an unmatched
+  # glob expands to itself, which `[ -f ]` then rejects.
+  local f found=0
+  local cat_tmp; cat_tmp="$(mktemp "${TMPDIR:-/tmp}/replay-lake-XXXXXX")" || { printf '%s\n' "$empty_out"; return 0; }
+  for f in "$lake_dir"/model-usage-*.jsonl; do
+    [ -f "$f" ] && [ -r "$f" ] || continue
+    found=1
+    cat "$f" >>"$cat_tmp" 2>/dev/null || true
+  done
+  if [ "$found" -eq 0 ]; then
+    rm -f "$cat_tmp"
+    printf '%s\n' "$empty_out"
+    return 0
+  fi
+
+  local out
+  out="$(jq -sR --arg dir "$lake_dir" --arg seat "$REPLAY_CANDIDATE_SEAT" \
+    --argjson w "$weights_json" '
+    # The SPEND_WEIGHT_* multiply-add, byte-for-byte emit-model-usage.sh'"'"'s
+    # and report-producers/model-comparison'"'"'s own expression.
+    def wu:
+      if (.tokens | type) != "object" then null
+      else ((((.tokens.input // 0) * $w.input)
+           + ((.tokens.cache_read // 0) * $w.cache_read)
+           + ((.tokens.cache_creation // 0) * $w.cache_creation)
+           + ((.tokens.output // 0) * $w.output)) | floor)
+      end;
+    def pctile($p): . as $s | ($s | length) as $n
+      | if $n == 0 then null
+        else $s[ ([(($p * $n) | ceil) - 1, 0] | max) ] end;
+    split("\n") | map(select(length > 0))                                   as $lines
+    | ($lines | map(fromjson? // empty))                                    as $parsed
+    | (($lines | length) - ($parsed | length))                              as $unparseable
+    | ($parsed | map(select(type == "object"
+                            and .seat == $seat
+                            and .usage_source == "cli-envelope"
+                            and ((.tokens | type) == "object"))))           as $recs
+    | ($recs | map(wu) | map(select(. != null and . >= 0)) | sort)          as $u
+    | ($u | length)                                                         as $n
+    | (if $n == 0 then null else (($u | add) / $n) end)                     as $mean
+    | (if $n == 0 then null
+       else (((($u | map(. - $mean) | map(. * .) | add) / $n) | sqrt)) end)  as $sd
+    | {lake_dir: $dir,
+       records_n: $n,
+       unparseable_lines_n: $unparseable,
+       mean: (if $mean == null then null else ($mean | floor) end),
+       min:  (if $n == 0 then null else $u[0] end),
+       p50:  ($u | pctile(0.5)),
+       p90:  ($u | pctile(0.9)),
+       max:  (if $n == 0 then null else $u[$n - 1] end),
+       stddev: (if $sd == null then null else (($sd * 10 | round) / 10) end),
+       spread_ratio: (if $n == 0 or $u[0] <= 0 then null
+                      else ((($u[$n - 1] / $u[0]) * 100 | round) / 100) end)}
+    ' <"$cat_tmp" 2>/dev/null)"
+  rm -f "$cat_tmp"
+
+  if [ -z "$out" ] || ! jq -e 'type=="object" and has("records_n")' >/dev/null 2>&1 <<<"$out"; then
+    printf '%s\n' "$empty_out"
+    return 0
+  fi
+  printf '%s\n' "$out"
+  return 0
+}
+
 cmd_preflight() {
   local corpus_file=""
   while [ $# -gt 0 ]; do
@@ -972,7 +1130,8 @@ cmd_preflight() {
   # never render as "evaluated, and fine".
   local _s _v
   for _s in REPLAY_PREFLIGHT_BATCH_CAP REPLAY_PREFLIGHT_TOKENS_PER_REPLAY \
-            REPLAY_PREFLIGHT_CEILING_TOKENS MODEL_COMPARISON_MIN_SAMPLE_N; do
+            REPLAY_PREFLIGHT_CEILING_TOKENS MODEL_COMPARISON_MIN_SAMPLE_N \
+            REPLAY_PREFLIGHT_DERIVE_MIN_N; do
     _v="${!_s-}"
     case "$_v" in
       ''|*[!0-9]*)
@@ -1037,7 +1196,51 @@ cmd_preflight() {
   local planned_pairs="$planned_records"
   local eligible_pairs="$eligible_n"
 
-  local est_tokens=$(( planned_replays * REPLAY_PREFLIGHT_TOKENS_PER_REPLAY ))
+  # ── THE PER-REPLAY FIGURE: DERIVED WHEN IT CAN BE, LITERAL WHEN IT CANNOT
+  #    (temperloop#1555) ───────────────────────────────────────────────────
+  # This number is what the ceiling check below and the operator confirmation
+  # downstream are computed FROM, so its provenance is a spend-gate
+  # correctness property, not a disclosure nicety. Until #1555 it was always
+  # the configured literal — an n=1 order-of-magnitude estimate that the first
+  # live batch (14 real replays) showed to be 1.49x LOW, so a batch's shown
+  # margin against the ceiling was ~2x more generous than the truth while
+  # nothing consumed the records that said so.
+  #
+  # TWO MODES, AND THE BASIS STRING ALWAYS NAMES WHICH IS IN FORCE:
+  #   derived-from-observed-records  >= REPLAY_PREFLIGHT_DERIVE_MIN_N observed
+  #                                  replay-candidate records exist on this
+  #                                  host: the figure is their MEAN, and the
+  #                                  basis names n.
+  #   configured-literal             fewer than that (usually none): the
+  #                                  REPLAY_PREFLIGHT_TOKENS_PER_REPLAY
+  #                                  literal, with the basis saying the figure
+  #                                  is UNMEASURED on this host. It never
+  #                                  presents the literal as measured — that
+  #                                  is the one thing this must not do, since
+  #                                  a fabricated "measurement" is worse than
+  #                                  an honest estimate.
+  local observed_json
+  observed_json="$(preflight_observed_cost "$cost_weights_json")"
+  jq -e 'type=="object" and has("records_n")' >/dev/null 2>&1 <<<"$observed_json" \
+    || observed_json='{"lake_dir":null,"records_n":0,"unparseable_lines_n":0,"mean":null,"min":null,"p50":null,"p90":null,"max":null,"stddev":null,"spread_ratio":null}'
+  local observed_n observed_mean
+  observed_n="$(jq -r '.records_n // 0' <<<"$observed_json" 2>/dev/null)"
+  case "$observed_n" in ''|*[!0-9]*) observed_n=0 ;; esac
+  observed_mean="$(jq -r '.mean // ""' <<<"$observed_json" 2>/dev/null)"
+  case "$observed_mean" in ''|*[!0-9]*) observed_mean="" ;; esac
+
+  local tokens_per_replay="$REPLAY_PREFLIGHT_TOKENS_PER_REPLAY"
+  local tokens_per_replay_mode="configured-literal"
+  local derive_sufficient=false
+  if [ "$REPLAY_PREFLIGHT_DERIVE_MIN_N" -gt 0 ] \
+     && [ "$observed_n" -ge "$REPLAY_PREFLIGHT_DERIVE_MIN_N" ] \
+     && [ -n "$observed_mean" ] && [ "$observed_mean" -gt 0 ]; then
+    tokens_per_replay="$observed_mean"
+    tokens_per_replay_mode="derived-from-observed-records"
+    derive_sufficient=true
+  fi
+
+  local est_tokens=$(( planned_replays * tokens_per_replay ))
   local ceiling_exceeded=false
   [ "$est_tokens" -gt "$REPLAY_PREFLIGHT_CEILING_TOKENS" ] && ceiling_exceeded=true
 
@@ -1093,6 +1296,100 @@ cmd_preflight() {
     stop=true; stop_reason="quota_paused"
   fi
 
+  # ── THE DISPERSION SIGNAL (temperloop#1555) ───────────────────────────
+  # The observed per-replay cost spans 4.8x (309,700..1,476,744 over the
+  # first live batch's 14 replays), so a bare point estimate — mean or
+  # literal — is a materially misleading thing to authorize spend against:
+  # a corpus that happens to hold the large records can cost far more than
+  # the projection while every number on screen still says "fine". This
+  # block projects the SAME batch at the observed p90 and at the observed
+  # MAXIMUM alongside the point estimate, and states plainly whether either
+  # of those would breach the ceiling the point estimate cleared.
+  #
+  # THE STOP DECISION IS DELIBERATELY STILL THE POINT ESTIMATE'S. Stopping
+  # on a max-case projection would refuse batches that are, in expectation,
+  # affordable — a worst-case budget is not the same claim as an expected
+  # one, and conflating them is the mirror image of the defect this closed.
+  # The high projections are DISCLOSED, never enforced; an operator who
+  # wants worst-case enforcement lowers REPLAY_PREFLIGHT_CEILING_TOKENS
+  # with these figures in view.
+  local range_json
+  range_json="$(jq -cn \
+    --argjson obs "$observed_json" --argjson replays "$planned_replays" \
+    --argjson point "$est_tokens" --argjson per_replay "$tokens_per_replay" \
+    --argjson ceiling "$REPLAY_PREFLIGHT_CEILING_TOKENS" \
+    --argjson derived "$derive_sufficient" \
+    --arg unit "$REPLAY_COST_BASIS_UNIT" '
+    (if $derived and ($obs.p90 != null) then ($obs.p90 * $replays) else null end) as $hi90
+    | (if $derived and ($obs.max != null) then ($obs.max * $replays) else null end) as $himax
+    | (if $derived and ($obs.min != null) then ($obs.min * $replays) else null end) as $lo
+    | {basis: ("a single point estimate is not the only thing shown, deliberately: the observed per-executed-replay cost spans a wide range, so this projects the SAME planned batch at the observed p90 and maximum as well as at the point estimate. All figures are in " + $unit + " over " + ($replays|tostring) + " executed replays. The ceiling check and the operator confirmation are computed from the POINT figure only — the high figures are a disclosure, never an enforcement"),
+       available: $derived,
+       unavailable_reason: (if $derived then null
+                            else "no observed per-replay distribution exists on this host, so no dispersion can be stated — the point figure is the configured literal and carries no variance at all (one hand-transcribed constant cannot express a range). See observed_replay_cost.insufficient_reason" end),
+       point_total: $point, point_per_replay: $per_replay,
+       low_total_at_observed_min: $lo, low_per_replay: (if $derived then $obs.min else null end),
+       high_total_at_observed_p90: $hi90, high_per_replay_p90: (if $derived then $obs.p90 else null end),
+       high_total_at_observed_max: $himax, high_per_replay_max: (if $derived then $obs.max else null end),
+       observed_spread_ratio: (if $derived then $obs.spread_ratio else null end),
+       ceiling_tokens: $ceiling,
+       exceeds_ceiling_at_point: ($point > $ceiling),
+       exceeds_ceiling_at_p90: (if $hi90 == null then null else ($hi90 > $ceiling) end),
+       exceeds_ceiling_at_max: (if $himax == null then null else ($himax > $ceiling) end),
+       statement:
+         (if ($derived | not) then "no dispersion available — see unavailable_reason"
+          elif ($hi90 != null and $hi90 > $ceiling and $point <= $ceiling)
+            then ("HEADROOM IS THINNER THAN THE POINT ESTIMATE SUGGESTS: this batch clears the ceiling at the projected mean (" + ($point|tostring) + " of " + ($ceiling|tostring) + ") but would BREACH it at the observed p90 per-replay cost (" + ($hi90|tostring) + "). A corpus weighted toward large records can cost well above the projection")
+          elif ($himax != null and $himax > $ceiling and $point <= $ceiling)
+            then ("this batch clears the ceiling at the projected mean and at the observed p90, but a worst case at the observed MAXIMUM per-replay cost (" + ($himax|tostring) + ") would exceed it (" + ($ceiling|tostring) + ")")
+          else ("the projection clears the ceiling across the whole observed range: worst case at the observed maximum per-replay cost is " + ($himax|tostring) + " against a ceiling of " + ($ceiling|tostring)) end)}
+    ' 2>/dev/null)"
+  [ -n "$range_json" ] || range_json='null'
+
+  # THE OBSERVED-DISTRIBUTION DISCLOSURE — published on EVERY run, whether it
+  # was sufficient to derive from or not, so "no observations" is a positive
+  # statement in the output rather than an absence a reader has to infer.
+  local observed_block_json
+  observed_block_json="$(jq -cn \
+    --argjson obs "$observed_json" --argjson min_n "$REPLAY_PREFLIGHT_DERIVE_MIN_N" \
+    --argjson derived "$derive_sufficient" --arg seat "$REPLAY_CANDIDATE_SEAT" \
+    --arg unit "$REPLAY_COST_BASIS_UNIT" --argjson literal "$REPLAY_PREFLIGHT_TOKENS_PER_REPLAY" '
+    $obs + {
+      basis: ("the per-EXECUTED-REPLAY cost this host has actually observed: every record in the emit-model-usage.sh attribution raw lake with seat \"" + $seat + "\" and usage_source \"cli-envelope\", RE-WEIGHTED from its own raw token block with the SPEND_WEIGHT_* values in force now (never the stored weighted_units field, which was computed under whatever weights were in force at emit time and carries no weight vector to detect a retune with). One such record is one executed replay, which is exactly the unit the estimate is denominated in: " + $unit),
+      seat: $seat,
+      usage_source: "cli-envelope",
+      min_n_to_derive: $min_n,
+      min_n_setting: "REPLAY_PREFLIGHT_DERIVE_MIN_N",
+      sufficient_to_derive: $derived,
+      configured_literal: $literal,
+      insufficient_reason:
+        (if $derived then null
+         elif $min_n == 0 then "REPLAY_PREFLIGHT_DERIVE_MIN_N is 0, which forces the configured literal regardless of how many records exist"
+         elif $obs.records_n == 0 then ("no observed replay-candidate records were found under " + ($obs.lake_dir // "the attribution raw lake") + " — this host has never executed a replay whose token usage was captured, so there is nothing to derive from")
+         else (($obs.records_n|tostring) + " observed record(s) is below REPLAY_PREFLIGHT_DERIVE_MIN_N (" + ($min_n|tostring) + ") — too few for a mean worth authorizing spend against, given the width of the observed spread") end)}
+    ' 2>/dev/null)"
+  [ -n "$observed_block_json" ] || observed_block_json="$observed_json"
+
+  # THE BASIS STRING — the one field that must never lie about where the
+  # number in force came from.
+  local basis_str
+  if [ "$derive_sufficient" = "true" ]; then
+    basis_str="$(jq -rn --argjson obs "$observed_json" --argjson per "$tokens_per_replay" \
+      --argjson literal "$REPLAY_PREFLIGHT_TOKENS_PER_REPLAY" --arg unit "$REPLAY_COST_BASIS_UNIT" '
+      "DERIVED from this host'"'"'s own observed records (n=" + ($obs.records_n|tostring) + "), NOT the configured literal. "
+      + "The figure in force, " + ($per|tostring) + " " + $unit + " per executed replay, is the MEAN over those "
+      + ($obs.records_n|tostring) + " replay-candidate model-usage records, each re-weighted from its raw token block "
+      + "with the SPEND_WEIGHT_* values in force now (so the derivation is retune-independent). "
+      + "It is a MEAN, not a bound: the observed range is " + ($obs.min|tostring) + ".." + ($obs.max|tostring)
+      + " (" + (($obs.spread_ratio // 0)|tostring) + "x spread, p90 " + ($obs.p90|tostring) + ", stddev "
+      + (($obs.stddev // 0)|tostring) + "), so a corpus weighted toward large records can cost well above this "
+      + "projection — estimated_total_tokens_range projects the same batch at the observed p90 and maximum for exactly that reason. "
+      + "The configured REPLAY_PREFLIGHT_TOKENS_PER_REPLAY literal (" + ($literal|tostring) + ") was NOT used."' 2>/dev/null)"
+  fi
+  if [ -z "${basis_str:-}" ]; then
+    basis_str="UNMEASURED ON THIS HOST — $(jq -r '.insufficient_reason // "no observed records"' <<<"$observed_block_json" 2>/dev/null). Falling back to the configured REPLAY_PREFLIGHT_TOKENS_PER_REPLAY literal, an ESTIMATE grounded in a SINGLE observed live replay (n=1, temperloop#1380: raw 2,506,371 / cost-weighted 466,530 under the default weights, rounded up), NOT derived from this corpus, NOT derived from any record on this machine, and NOT a fitted average — one sample carries no variance, so treat it as order-of-magnitude, and note that the one live batch since (14 replays) came in ~1.49x ABOVE it. This field states the mode in force on every run: it is saying the number is UNMEASURED here, never presenting the literal as though it were measured."
+  fi
+
   jq -cn \
     --argjson eligible_n "$eligible_n" --argjson planned_n "$planned_records" \
     --argjson planned_records_n "$planned_records" --argjson planned_replays_n "$planned_replays" \
@@ -1101,7 +1398,12 @@ cmd_preflight() {
     --argjson batch_cap "$REPLAY_PREFLIGHT_BATCH_CAP" --argjson batch_cap_applied "$batch_cap_applied" \
     --arg cost_basis "$REPLAY_COST_BASIS_UNIT" \
     --argjson cost_weights "$cost_weights_json" \
-    --argjson tokens_per_replay "$REPLAY_PREFLIGHT_TOKENS_PER_REPLAY" \
+    --argjson tokens_per_replay "$tokens_per_replay" \
+    --arg tokens_per_replay_mode "$tokens_per_replay_mode" \
+    --arg tokens_per_replay_basis "$basis_str" \
+    --argjson configured_tokens_per_replay "$REPLAY_PREFLIGHT_TOKENS_PER_REPLAY" \
+    --argjson observed_replay_cost "$observed_block_json" \
+    --argjson estimated_range "$range_json" \
     --argjson estimated_total_tokens "$est_tokens" \
     --argjson ceiling_tokens "$REPLAY_PREFLIGHT_CEILING_TOKENS" --argjson ceiling_exceeded "$ceiling_exceeded" \
     --argjson min_sample_n "$MODEL_COMPARISON_MIN_SAMPLE_N" --argjson significance_reachable "$reachable" \
@@ -1117,6 +1419,8 @@ cmd_preflight() {
         batch_cap: "corpus_records",
         estimated_total_tokens: $cost_basis,
         tokens_per_replay_estimate: ($cost_basis + " per executed_replay"),
+        observed_replay_cost: ($cost_basis + " per executed_replay (records_n is a COUNT of observed executed replays, not a cost)"),
+        estimated_total_tokens_range: $cost_basis,
         ceiling_tokens: $cost_basis,
         assumed_stddev_tokens: $cost_basis,
         min_sample_n: "paired_outcomes", mde_n: "paired_outcomes"},
@@ -1129,7 +1433,11 @@ cmd_preflight() {
       cost_weights:$cost_weights,
       cost_basis_statement: ("This batch estimate is denominated in " + $cost_basis + " — the SPEND_WEIGHT_* multiply-add over the raw input/cache_read/cache_creation/output classes, NOT a raw token sum, and NOT metered dollars (no vendor cost figure exists at pre-flight) and NOT a subscription-usage share. It is BYTE-IDENTICALLY the unit workflows/scripts/report-producers/model-comparison publishes as its own cost_basis.unit, so the batch an operator authorizes here and the figure that report hands back are the same unit and can be reconciled directly (temperloop#1380 — before it, this side reported a RAW sum under the same word \"token\", ~5.4x apart at the observed mix). Cost-weighted figures are comparable only WITHIN one SPEND_WEIGHT_* retune epoch; cost_weights above names the values in force for this run."),
       tokens_per_replay_estimate:$tokens_per_replay,
-      tokens_per_replay_basis: ("the configured REPLAY_PREFLIGHT_TOKENS_PER_REPLAY literal, an ESTIMATE grounded in a SINGLE observed live replay (n=1, temperloop#1380: raw 2,506,371 / cost-weighted 466,530 under the default weights, rounded up), NOT derived from this corpus, NOT derived from any record on this machine, and NOT a fitted average — one sample carries no variance, so treat it as order-of-magnitude. If it is re-derived from observed records in future, this field must say so; a derivation that found no observed data must say THAT rather than silently fall back to the literal and present it as measured."),
+      tokens_per_replay_mode:$tokens_per_replay_mode,
+      tokens_per_replay_basis:$tokens_per_replay_basis,
+      configured_tokens_per_replay:$configured_tokens_per_replay,
+      observed_replay_cost:$observed_replay_cost,
+      estimated_total_tokens_range:$estimated_range,
       estimated_total_tokens:$estimated_total_tokens, estimated_cost:$estimated_total_tokens,
       ceiling_tokens:$ceiling_tokens, ceiling_exceeded:$ceiling_exceeded,
       min_sample_n:$min_sample_n, significance_reachable:$significance_reachable,

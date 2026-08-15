@@ -1289,6 +1289,129 @@ cb0_calls="$(wc -l <"$CB_LOG" | tr -d ' ')"
 ok "K6 MUTATION PROOF: with the breaker disarmed the same unavailable runner is hammered for all $cb0_calls legs and the run exits 0 — K1/K2's stop is a measurement, not a restatement"
 
 # ═══════════════════════════════════════════════════════════════════════════
+# SECTION S — PROJECTED vs OBSERVED SPEND (temperloop#1555).
+#
+# The gate PROJECTS a batch's cost from a per-replay estimate; the batch then
+# INCURS a real one. Until #1555 nothing ever put the two side by side, so a
+# projection that was 1.49x low across a whole live run could only be caught
+# by a human summing the raw attribution lake by hand. This section drives a
+# real batch and asserts the summary reconciles the two — and, just as
+# importantly, that a wrong PROJECTION never degrades a batch that ran fine.
+#
+# The lake is pinned EMPTY for this section so the gate is deterministically
+# on its configured-literal arm: earlier sections have been spending into
+# $LAKE, and a derivation that had picked those records up would make the
+# drift here a function of test ordering rather than of the fixture.
+# ═══════════════════════════════════════════════════════════════════════════
+SPEND_LAKE="$WORK/lake-spend-section"; mkdir -p "$SPEND_LAKE"
+SPEND_OUT="$WORK/out-spend"; SPEND_STATE="$WORK/state-spend"
+: >"$CAND_LOG"
+DRIVE_ARGS=(--corpus-file "$CORPUS_A" --repo-root "$REPO" --out-dir "$SPEND_OUT" --state-dir "$SPEND_STATE"
+            --baseline-runner "bash $BASE_STUB" --candidate-runner "bash $CAND_STUB" --confirm)
+drive "" MODEL_USAGE_RAW_DIR="$SPEND_LAKE"
+[ "$RC" -eq 0 ] || fail "S0: the spend-reconciliation batch should exit 0, got $RC: $OUT / $(head -c 600 "$WORK/last-stderr.txt")"
+SPEND_OUTPUT="$OUT"
+
+# S1 — the summary STATES projected vs observed for this run, in the gate's
+#      own unit, and the projected side is the gate's own figure (this driver
+#      still computes no estimate of its own).
+count
+sr() { jq -r ".spend_reconciliation.$1" <<<"$SPEND_OUTPUT"; }
+[ "$(jq -r 'has("spend_reconciliation")' <<<"$SPEND_OUTPUT")" = "true" ] \
+  || fail "S1: the batch summary carries no spend_reconciliation block at all: $SPEND_OUTPUT"
+[ "$(sr projected_total)" = "$(jq -r '.preflight.estimated_cost' <<<"$SPEND_OUTPUT")" ] \
+  || fail "S1: projected_total is not the gate's own estimate: $(jq -c .spend_reconciliation <<<"$SPEND_OUTPUT")"
+[ "$(sr unit)" = "$(jq -r '.preflight.cost_basis' <<<"$SPEND_OUTPUT")" ] \
+  || fail "S1: the reconciliation is not denominated in the unit the gate authorized the batch in: $(jq -c .spend_reconciliation <<<"$SPEND_OUTPUT")"
+[ "$(sr unit)" = "cost-weighted-token-units" ] \
+  || fail "S1: expected the shared cost-weighted unit, got $(sr unit)"
+case "$(sr observed_total)" in ''|null|*[!0-9]*) fail "S1: observed_total is not an integer: $(jq -c .spend_reconciliation <<<"$SPEND_OUTPUT")" ;; esac
+ok "S1 the batch summary states PROJECTED vs OBSERVED total spend for the run, in the gate's own unit"
+
+# S2 — the OBSERVED figure is a real measurement of these records, not a
+#      restatement of the projection. The recorded envelope every stub replays
+#      is input 1200 / output 340 / cache_read 9000 / cache_creation 120,
+#      which under the SPEND_WEIGHT_* defaults (1 / 5 / 0.1 / 1.25) is
+#      1200 + 1700 + 900 + 150 = 3950 cost-weighted units per executed replay.
+#      Pinning that number pins the weighting EXPRESSION, which is the thing
+#      that has to stay byte-identical across the gate, this driver and the
+#      report producer.
+count
+[ "$(sr observed_costed_replays_n)" = "4" ] \
+  || fail "S2: expected 4 costed executed replays (2 records x 2 arms), got $(sr observed_costed_replays_n)"
+[ "$(sr observed_uncosted_replays_n)" = "0" ] \
+  || fail "S2: no fixture record is missing a token block, so uncosted should be 0, got $(sr observed_uncosted_replays_n)"
+[ "$(sr observed_mean_per_replay)" = "3950" ] \
+  || fail "S2: the observed per-replay cost is not the SPEND_WEIGHT_* multiply-add over the recorded envelope (expected 3950), got $(sr observed_mean_per_replay)"
+[ "$(sr observed_total)" = "15800" ] \
+  || fail "S2: observed_total should be 4 x 3950 = 15800, got $(sr observed_total)"
+[ "$(sr coverage_complete)" = "true" ] \
+  || fail "S2: every projected replay produced a costed record, so coverage should be complete: $(jq -c .spend_reconciliation <<<"$SPEND_OUTPUT")"
+ok "S2 the OBSERVED total is measured off this run's own records (4 x 3950 = 15800), not copied from the projection"
+
+# S3 — the drift is quantified AND flagged. With the gate on its literal arm
+#      the projection is orders of magnitude above what these recorded stubs
+#      actually cost, so this is exactly the "the estimate is stale" signal
+#      the alert exists to raise.
+count
+[ "$(sr drift_alert)" = "true" ] \
+  || fail "S3: a projection this far from outturn must raise drift_alert: $(jq -c .spend_reconciliation <<<"$SPEND_OUTPUT")"
+[ "$(sr alert_setting)" = "MODEL_COMPARISON_SPEND_DRIFT_ALERT_PCT" ] \
+  || fail "S3: the alert threshold must be a NAMED setting, got $(sr alert_setting)"
+case "$(sr drift_pct)" in ''|null) fail "S3: drift_pct was not computed: $(jq -c .spend_reconciliation <<<"$SPEND_OUTPUT")" ;; esac
+case "$(sr ratio_observed_over_projected)" in ''|null) fail "S3: the observed/projected ratio was not computed" ;; esac
+grep -q 'SPEND DRIFT' "$WORK/last-stderr.txt" \
+  || fail "S3: the drift was flagged in the summary but never surfaced on stderr: $(tail -c 400 "$WORK/last-stderr.txt")"
+ok "S3 the projected-vs-observed drift is quantified, flagged, and surfaced on stderr"
+
+# S4 — AND YET THE BATCH IS NOT DEGRADED. A wrong projection is a fact about
+#      the ESTIMATE, not a defect in the run that just completed; turning a
+#      clean BATCH_COMPLETE into a BATCH_DEGRADED over a stale forecast would
+#      report the wrong thing about the wrong artifact. This is the assertion
+#      that keeps the alert from being quietly promoted into a gate.
+count
+[ "$(jq -r '.outcome' <<<"$SPEND_OUTPUT")" = "BATCH_COMPLETE" ] \
+  || fail "S4: a spend-drift alert must not degrade an otherwise clean batch, got $(jq -r '.outcome' <<<"$SPEND_OUTPUT")"
+[ "$(jq -r '[.degradations[].kind] | map(select(test("spend"))) | length' <<<"$SPEND_OUTPUT")" = "0" ] \
+  || fail "S4: the drift was recorded as a degradation: $(jq -c .degradations <<<"$SPEND_OUTPUT")"
+ok "S4 a spend-drift alert is reported without degrading an otherwise clean batch"
+
+# S5 — MUTATION PROOF for the threshold: at a threshold of 0 the alert is
+#      DISABLED (its own documented disable value) while every reconciliation
+#      figure is still published — so S3's alert is a measurement of the
+#      threshold, not something the block raises unconditionally.
+count
+SPEND0_LAKE="$WORK/lake-spend-disabled"; mkdir -p "$SPEND0_LAKE"
+SPEND0_OUT="$WORK/out-spend-off"; SPEND0_STATE="$WORK/state-spend-off"
+: >"$CAND_LOG"
+DRIVE_ARGS=(--corpus-file "$CORPUS_A" --repo-root "$REPO" --out-dir "$SPEND0_OUT" --state-dir "$SPEND0_STATE"
+            --baseline-runner "bash $BASE_STUB" --candidate-runner "bash $CAND_STUB" --confirm)
+drive "" MODEL_USAGE_RAW_DIR="$SPEND0_LAKE" MODEL_COMPARISON_SPEND_DRIFT_ALERT_PCT=0
+[ "$RC" -eq 0 ] || fail "S5: the threshold-0 batch should exit 0, got $RC: $OUT"
+[ "$(jq -r '.spend_reconciliation.drift_alert' <<<"$OUT")" = "false" ] \
+  || fail "S5: the mutation proof did not fire — a threshold of 0 must disable the alert: $(jq -c .spend_reconciliation <<<"$OUT")"
+[ "$(jq -r '.spend_reconciliation.observed_total' <<<"$OUT")" = "15800" ] \
+  || fail "S5: disabling the ALERT must not suppress the reconciliation FIGURES: $(jq -c .spend_reconciliation <<<"$OUT")"
+ok "S5 MUTATION PROOF: a threshold of 0 disables the alert and keeps every figure — S3's alert is threshold-driven, not unconditional"
+
+# S6 — the operator CONFIRMATION line carries the provenance of the number it
+#      is asking about. This is the sentence a human actually reads before
+#      authorizing spend, and a bare point estimate is exactly what #1555
+#      found to be misleading.
+count
+CONF_OUT="$WORK/out-conf"; CONF_STATE="$WORK/state-conf"
+DRIVE_ARGS=(--corpus-file "$CORPUS_A" --repo-root "$REPO" --out-dir "$CONF_OUT" --state-dir "$CONF_STATE"
+            --baseline-runner "bash $BASE_STUB" --candidate-runner "bash $CAND_STUB")
+drive "" MODEL_USAGE_RAW_DIR="$SPEND_LAKE"
+[ "$RC" -eq 3 ] || fail "S6: an unconfirmed batch should stop with exit 3, got $RC: $OUT"
+conf_detail="$(jq -r '.detail' <<<"$OUT")"
+case "$conf_detail" in
+  *UNMEASURED*) : ;;
+  *) fail "S6: the confirmation line does not say the per-replay figure is unmeasured on this host: $conf_detail" ;;
+esac
+ok "S6 the operator confirmation line names where the per-replay figure came from"
+
+# ═══════════════════════════════════════════════════════════════════════════
 # SECTION L — the suite-wide no-live-call verdict.
 # ═══════════════════════════════════════════════════════════════════════════
 count

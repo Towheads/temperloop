@@ -1039,7 +1039,35 @@ fi
 # `preflight` publishes the same provenance on every run in its
 # `tokens_per_replay_basis` field rather than presenting the literal as
 # though it were derived from the operator's own records.
+#
+# THE FALLBACK, NOT THE DEFAULT PATH (temperloop#1555). Since #1555 this
+# literal is what `preflight` uses when the host carries FEWER than
+# REPLAY_PREFLIGHT_DERIVE_MIN_N observed replay-candidate records — a host
+# with enough of them derives the figure from those records instead and says
+# so. The first live batch measured n=14 at a mean of 699,963 weighted units
+# (range 309,700..1,476,744, a 4.8x spread), i.e. this literal is ~1.49x LOW
+# against real outturn; it is deliberately NOT retuned to that mean, because
+# a second hand-transcribed n=14 constant would rot exactly the way the n=1
+# one did. The derivation is the fix; this stays the honest unmeasured-host
+# fallback.
 : "${REPLAY_PREFLIGHT_TOKENS_PER_REPLAY:=470000}"
+# The minimum number of OBSERVED replay-candidate model-usage records
+# (workflows/scripts/emit-model-usage.sh's raw lake, seat "replay-candidate",
+# usage_source "cli-envelope") `preflight` requires before it DERIVES the
+# per-replay figure from them instead of using the literal above.
+#
+# Why 5: the estimate authorizes spend, so the derivation has to be worth
+# more than the literal it replaces, and a mean over one or two records is
+# not — the observed distribution has a 4.8x spread, so at n=2 the mean can
+# sit anywhere in a factor-of-two band depending on which two records ran. By
+# n=5 the mean is stable enough to beat a 1.49x-low constant, and preflight
+# publishes the n, the spread and the p90 alongside it so an operator is
+# never handed a bare point estimate to trust. Below the threshold the
+# literal is used and the basis string says the figure is UNMEASURED on this
+# host — never that it was derived. Set 0 to force the literal always (a host
+# that deliberately wants the configured constant, e.g. a fresh SPEND_WEIGHT_*
+# retune epoch whose historical records are no longer comparable).
+: "${REPLAY_PREFLIGHT_DERIVE_MIN_N:=5}"
 # Per-comparison (i.e. per preflight invocation's planned batch) ceiling, in
 # COST-WEIGHTED TOKEN UNITS. A projected batch whose estimated cost exceeds
 # this STOPS at preflight — never partway through a later execution step.
@@ -1151,6 +1179,28 @@ fi
 # disable the breaker entirely (the pre-#1554 run-the-corpus-out behaviour).
 : "${MODEL_COMPARISON_BATCH_MAX_CONSECUTIVE_STAGE_ERRORS:=5}"
 
+# ── Post-run spend reconciliation (temperloop#1555, epic #1225) ────────────
+# workflows/scripts/model-comparison/batch.sh compares the spend the operator
+# AUTHORIZED at the gate against the spend the run actually INCURRED (summed
+# over both arms' records from their own token blocks, in the same
+# cost-weighted unit) and raises `spend_reconciliation.drift_alert` once the
+# observed total deviates from the projected total by more than this
+# PERCENTAGE in either direction.
+#
+# It is an ALERT FLAG, never a degradation: a projection being wrong is a fact
+# about the ESTIMATE, not a defect in the batch that just completed, so it
+# must not turn a BATCH_COMPLETE into a BATCH_DEGRADED. What it buys is that
+# the drift is caught by the pipeline — on the summary and on stderr — instead
+# of by someone summing the raw lake by hand, which is how the n=1 literal
+# stayed 1.49x low across a whole live run.
+#
+# Why 25: the observed per-replay spread is 4.8x, so a batch-level total can
+# legitimately land some way off a mean-based projection through record mix
+# alone; 25% is wide enough that ordinary mix variance on a floor-sized batch
+# does not cry wolf, and tight enough to catch the ~49% miss the n=1 literal
+# actually produced. Set 0 to disable the alert.
+: "${MODEL_COMPARISON_SPEND_DRIFT_ALERT_PCT:=25}"
+
 export BUILD_QUOTA_PAUSE_PCT BUILD_QUOTA_CACHE BUILD_QUOTA_WAIT_BUFFER \
        BUILD_QUOTA_MAX_AGE BUILD_MERGE_GATE_WINDOW BUILD_QUEUE_TIMEOUT BUILD_QUEUE_STALL_AFTER \
        BUILD_HEADLESS_POLL_TIMEOUT \
@@ -1178,9 +1228,11 @@ export BUILD_QUOTA_PAUSE_PCT BUILD_QUOTA_CACHE BUILD_QUOTA_WAIT_BUFFER \
        REPLAY_CORPUS_LIMIT REPLAY_CORPUS_SAMPLE_MULTIPLIER REPLAY_NAMED_PATH_EXTENSIONS \
        REPLAY_PUSH_DISABLE_SENTINEL \
        REPLAY_PREFLIGHT_BATCH_CAP REPLAY_PREFLIGHT_TOKENS_PER_REPLAY \
+       REPLAY_PREFLIGHT_DERIVE_MIN_N \
        REPLAY_PREFLIGHT_CEILING_TOKENS REPLAY_PREFLIGHT_ASSUMED_STDDEV_TOKENS \
        REPLAY_CANDIDATE_TIMEOUT_SECS REPLAY_SCORE_GATE_RELPATH REPLAY_SCORE_GATE_TIMEOUT_SECS \
        MODEL_COMPARISON_JUDGE_MODEL MODEL_COMPARISON_JUDGE_TIMEOUT_SECS \
        MODEL_COMPARISON_JUDGE_ROTATION_ENABLED MODEL_COMPARISON_JUDGE_ROTATION_MIN_JUDGES \
        MODEL_COMPARISON_REPORT_RECORDS_DIR \
-       MODEL_COMPARISON_BATCH_MAX_CONSECUTIVE_STAGE_ERRORS
+       MODEL_COMPARISON_BATCH_MAX_CONSECUTIVE_STAGE_ERRORS \
+       MODEL_COMPARISON_SPEND_DRIFT_ALERT_PCT

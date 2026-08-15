@@ -164,8 +164,14 @@ NOCACHE="$WORK/no-such-quota-cache.json"
 # pf <env-assignments...> -- runs preflight against a corpus file with the
 # quota gate deterministically "unavailable" (fail open — it can never be the
 # reason anything below stops).
+# ...and a deterministically EMPTY attribution raw lake, so the per-replay
+# figure is always the configured literal here (temperloop#1555) rather than
+# whatever the host running this suite happens to have observed. See
+# test_replay_preflight.sh's own note; the derivation is exercised in
+# test_replay_preflight_derive.sh.
+EMPTY_LAKE="$WORK/empty-lake"; mkdir -p "$EMPTY_LAKE"
 pf() {
-  env BUILD_QUOTA_CACHE="$NOCACHE" "$@"
+  env BUILD_QUOTA_CACHE="$NOCACHE" MODEL_USAGE_RAW_DIR="$EMPTY_LAKE" "$@"
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -228,9 +234,13 @@ MIRROR_4M="$WORK/mirror-4m"
 mk_mirror "$MIRROR_4M"
 SUT_4M="$MIRROR_4M/workflows/scripts/model-comparison/replay.sh"
 unlink_and_copy "$SUT_4M"
+# NOTE (temperloop#1555): the anchor is the per-replay VARIABLE, not the
+# setting name — the multiplicand became `tokens_per_replay` when the figure
+# gained a derived mode. The mutation is still exactly the one-arm/two-arm
+# revert this proof is about; only the symbol it multiplies changed name.
 mutate_file "$SUT_4M" \
-  'local est_tokens=$(( planned_replays * REPLAY_PREFLIGHT_TOKENS_PER_REPLAY ))' \
-  'local est_tokens=$(( planned_records * REPLAY_PREFLIGHT_TOKENS_PER_REPLAY ))' \
+  'local est_tokens=$(( planned_replays * tokens_per_replay ))' \
+  'local est_tokens=$(( planned_records * tokens_per_replay ))' \
   || fail "4m: mutation apply failed"
 mut_rc=0
 mut_out="$(pf env REPLAY_PREFLIGHT_BATCH_CAP=100 REPLAY_PREFLIGHT_TOKENS_PER_REPLAY=100 \
