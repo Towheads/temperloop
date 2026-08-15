@@ -57,11 +57,26 @@ VALIDATOR="$REPO_ROOT/workflows/scripts/validate-provider-disclosure.sh"
 fail() { echo "FAIL: $1" >&2; exit 1; }
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/test-allowlist-XXXXXX")"
-# An in-repo scratch dir, needed by the two fixtures whose property is about
+# Two in-repo scratch dirs, needed by the fixtures whose property is about
 # the path being INSIDE the repo (git-tracked-ness, and the .temperloop/
-# location ban). Lives under the already-gitignored .temperloop/model-comparison/
-# so it can never be swept into a commit.
-REPO_SCRATCH="$REPO_ROOT/.temperloop/model-comparison/test-fixture-$$"
+# location ban). Both resolve through the PHYSICAL repo root (`cd -P`),
+# matching how the validator resolves its own repo root: under a symlinked
+# $TMPDIR (macOS: /var -> /private/var, exactly the shape of a detached
+# `git worktree add --detach "$(mktemp -d)"` checkout) a logically-resolved
+# fixture path does not prefix-match the validator's physical repo root, so
+# its git-tracked check is silently skipped and COMMITTED-NOT-TRACKED never
+# fires (temperloop#1552).
+REPO_ROOT_PHYS="$(cd -P "$REPO_ROOT" && pwd)"
+# Test 19's fixture: in-repo and untracked but deliberately NOT under
+# .temperloop/ — its property is git-tracked-ness alone, and a path under
+# .temperloop/ trips COMMITTED-LOCATION too, shadowing the
+# COMMITTED-NOT-TRACKED assertion the test exists to pin (temperloop#1552).
+# Gitignored via the root .gitignore's /.allowlist-test-fixture-* entry so a
+# stranded fixture can never be swept into a commit.
+REPO_SCRATCH="$REPO_ROOT_PHYS/.allowlist-test-fixture-$$"
+# Test 20's fixture: under the already-gitignored .temperloop/model-comparison/
+# on purpose — its property IS the .temperloop/ location ban.
+REPO_SCRATCH_TL="$REPO_ROOT_PHYS/.temperloop/model-comparison/test-fixture-$$"
 # chmod back up before rm: a fixture that deliberately chmod 000s a file must
 # never leave an unreadable path behind, even when the suite exits on a
 # failing assertion mid-fixture.
@@ -70,6 +85,8 @@ cleanup() {
   rm -rf "$WORK"
   chmod -R u+rwX "$REPO_SCRATCH" 2>/dev/null || true
   rm -rf "$REPO_SCRATCH"
+  chmod -R u+rwX "$REPO_SCRATCH_TL" 2>/dev/null || true
+  rm -rf "$REPO_SCRATCH_TL"
 }
 trap cleanup EXIT
 
@@ -573,11 +590,19 @@ ok "18 validator: an absent committed ceiling is COMMITTED-MISSING"
 # ---------------------------------------------------------------------------
 # 19. Validator: COMMITTED-NOT-TRACKED for an in-repo ceiling that exists on
 #     disk but carries no commit history. This is the VALIDATOR asserting the
-#     property, not the suite re-running `git ls-files` itself.
+#     property, not the suite re-running `git ls-files` itself. The fixture
+#     sits in-repo but OUTSIDE .temperloop/ so COMMITTED-LOCATION stays quiet
+#     and cannot shadow this assertion (temperloop#1552 — under a detached
+#     $TMPDIR worktree the old .temperloop/ fixture produced ONLY the
+#     location line, and this case failed for a reason unrelated to the
+#     property it pins).
 # ---------------------------------------------------------------------------
 count
 mkdir -p "$REPO_SCRATCH"
 c19="$REPO_SCRATCH/untracked-allowlist.txt"
+case "$c19" in
+  */.temperloop/*) fail "19: fixture setup: $c19 must NOT sit under .temperloop/ (that is test 20's property)" ;;
+esac
 printf 'anthropic\n' >"$c19"
 vrc=0
 vout="$(run_validator_at "$c19" "$WORK/19-local.txt" "$WORK/19-log.jsonl" 2>&1)" || vrc=$?
@@ -585,18 +610,28 @@ vout="$(run_validator_at "$c19" "$WORK/19-local.txt" "$WORK/19-log.jsonl" 2>&1)"
 $vout"
 case "$vout" in *COMMITTED-NOT-TRACKED*) ;; *) fail "19: expected a COMMITTED-NOT-TRACKED line, got:
 $vout" ;; esac
+case "$vout" in *COMMITTED-LOCATION*) fail "19: fixture is not isolating — COMMITTED-LOCATION also fired:
+$vout" ;; esac
 ok "19 validator: an untracked in-repo ceiling is COMMITTED-NOT-TRACKED"
 
 # ---------------------------------------------------------------------------
 # 20. Validator: COMMITTED-LOCATION for a ceiling under the gitignored
 #     .temperloop/ runtime dir (ADR 0028 decision 1 — the ceiling is never
-#     runtime state).
+#     runtime state). Its own fixture — no longer piggybacking on test 19's,
+#     whose path deliberately avoids .temperloop/ (temperloop#1552).
 # ---------------------------------------------------------------------------
 count
-case "$c19" in
+mkdir -p "$REPO_SCRATCH_TL"
+c20="$REPO_SCRATCH_TL/untracked-allowlist.txt"
+printf 'anthropic\n' >"$c20"
+case "$c20" in
   */.temperloop/*) ;;
-  *) fail "20: fixture setup: $c19 was expected to sit under .temperloop/" ;;
+  *) fail "20: fixture setup: $c20 was expected to sit under .temperloop/" ;;
 esac
+vrc=0
+vout="$(run_validator_at "$c20" "$WORK/20-local.txt" "$WORK/20-log.jsonl" 2>&1)" || vrc=$?
+[[ "$vrc" -ne 0 ]] || fail "20: validator should FAIL on a ceiling under .temperloop/:
+$vout"
 case "$vout" in *COMMITTED-LOCATION*) ;; *) fail "20: expected a COMMITTED-LOCATION line for a ceiling under .temperloop/, got:
 $vout" ;; esac
 ok "20 validator: a ceiling under .temperloop/ is COMMITTED-LOCATION"
