@@ -1703,6 +1703,38 @@ cmd_execute() {
     return 1
   fi
 
+  # ── PRE-FLIGHT MODEL RESOLUTION (temperloop#1383) ────────────────────
+  # An explicit --model is already pinned. When it was OMITTED — the
+  # legitimate "run whatever this candidate session's own config selects"
+  # arm — the effective model must still be known BEFORE the spawn, because
+  # the envelope-derived route (`resolved_model` below, from the returned
+  # `modelUsage` block) does not exist on the failure paths this pins for:
+  # a vendor-error envelope returns before token extraction, and a
+  # candidate-timeout (SIGKILL) never produces an envelope at all. So a
+  # default-model spawn that fails either way had NO other route to a real
+  # model id — it fell back to the literal string 'unknown'.
+  #
+  # This mirrors, read-only, the SAME settings Claude Code itself would
+  # consult for an unspecified --model: worktree-local, then worktree-
+  # project settings (a project this repo's own candidate worktree may
+  # ship), then the HOME settings.json the candidate's `env -i` HOME
+  # passthrough (candidate-session.sh's own allowlist) actually hands the
+  # child — precedence local > project > user, most-specific wins, same
+  # order --setting-sources documents. Scoped to the DEFAULT provider only:
+  # a non-default provider's model vocabulary belongs to that vendor, not
+  # this host's claude settings, so it is left alone (genuinely
+  # unresolvable pre-flight, per this item's acceptance — 'unknown' stands,
+  # unchanged, with usage_source:unavailable).
+  if [ -z "$model" ] && [ "$provider" = "$REPLAY_TRUSTED_DEFAULT_PROVIDER" ]; then
+    local _mr_src _mr_val
+    for _mr_src in "$wt/.claude/settings.local.json" "$wt/.claude/settings.json" \
+                   "${HOME:-}/.claude/settings.json"; do
+      [ -n "$_mr_src" ] && [ -f "$_mr_src" ] || continue
+      _mr_val="$(jq -r '.model // empty' "$_mr_src" 2>/dev/null)"
+      if [ -n "$_mr_val" ]; then model="$_mr_val"; break; fi
+    done
+  fi
+
   # ── DISCLOSE BEFORE SENDING (ADR 0028 pairing) ───────────────────────
   # A non-default-provider send writes its disclosure-log entry FIRST, and a
   # failed disclosure refuses the send. The log may legitimately run ahead
@@ -1823,8 +1855,20 @@ cmd_execute() {
     # dropping it would understate the compatibility denominator. It is
     # attribution-only (usage_source unavailable): there are no tokens to
     # report, and emit-model-usage.sh forbids a provider value in that shape.
+    #
+    # $model is the PRE-FLIGHT-resolved value by this point (temperloop#1383)
+    # — an explicit --model, or the candidate session's resolved config
+    # default, resolved above before the spawn ever ran. `ea_model` only
+    # covers the genuinely-unresolvable remainder (a non-default provider, or
+    # no settings named a model anywhere): emit-model-usage.sh requires a
+    # non-empty --model, so the literal 'unknown' sentinel stands there,
+    # unchanged, computed as its own explicit step rather than folded into
+    # an inline default-substitution that read the same regardless of WHICH
+    # case produced it.
     if [ -x "$EMIT_MODEL_USAGE_SH" ]; then
-      local -a ea=(--seat "$REPLAY_CANDIDATE_SEAT" --model "${model:-unknown}" \
+      local ea_model="$model"
+      [ -n "$ea_model" ] || ea_model="unknown"
+      local -a ea=(--seat "$REPLAY_CANDIDATE_SEAT" --model "$ea_model" \
                    --usage-source unavailable --outcome-ref "$item_ref" --duration-ms "$measured_ms")
       [ -n "$owner_repo" ] && ea+=(--repo "$owner_repo")
       "$EMIT_MODEL_USAGE_SH" "${ea[@]}" >/dev/null 2>&1 || true

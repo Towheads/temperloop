@@ -862,6 +862,76 @@ case "$D_RESTORED" in *"api_error_status=529"*) ;; *) fail "E13: RESTORED behavi
 ok "E13 RESTORED: the unmutated execute names the stdout-side reason again"
 
 # ═══════════════════════════════════════════════════════════════════════════
+# SECTION E3 — pre-flight model resolution (temperloop#1383)
+#
+# The whole point: a default-model (--model omitted) integration error has
+# NO envelope to resolve a model from (a vendor-error returns before token
+# extraction; a candidate-timeout produces no envelope at all), so the model
+# must be known BEFORE the spawn — mirrored, read-only, from the same
+# settings a real `claude` child would consult: worktree-local, then
+# worktree-project, then the HOME settings.json candidate-session.sh's own
+# env passthrough hands the child. Every run below still uses the recorded
+# STUB runner (never --live) — this is a plain file read, not a model call.
+# ═══════════════════════════════════════════════════════════════════════════
+
+count
+WT_E14="$(mk_wt)"
+mkdir -p "$WT_E14/.claude"
+printf '{"model":"stub-resolved-project"}\n' >"$WT_E14/.claude/settings.json"
+printf '{"model":"stub-resolved-local"}\n' >"$WT_E14/.claude/settings.local.json"
+FAKEHOME_E14="$WORK/fakehome-e14"
+mkdir -p "$FAKEHOME_E14/.claude"
+printf '{"model":"stub-resolved-home-should-lose"}\n' >"$FAKEHOME_E14/.claude/settings.json"
+out="$(HOME="$FAKEHOME_E14" run_exec spawnfail --record "$RECORD" --repo-root "$REPO" --worktree "$WT_E14" \
+        --candidate-runner "bash $STUB")"
+rc=$?
+[ "$rc" -eq 4 ] || fail "E14: expected exit 4 (integration error), got $rc: $out"
+[ "$(jq -r '.candidate.integration_error.stage' <<<"$out")" = "candidate-spawn" ] || fail "E14: stage wrong: $out"
+[ "$(jq -r '.candidate.model' <<<"$out")" = "stub-resolved-local" ] \
+  || fail "E14: a default-model integration error must carry the PRE-FLIGHT-resolved model (worktree settings.local.json outranking settings.json and HOME), got: $out"
+ok "E14 a default-model (--model omitted) integration error resolves the model pre-flight from worktree settings, settings.local.json taking precedence over settings.json and HOME"
+
+count
+lake_line_e14="$(cat "$LAKE"/model-usage-*.jsonl | jq -c 'select(.seat == "replay-candidate" and .usage_source == "unavailable")' | tail -1)"
+[ "$(jq -r '.model' <<<"$lake_line_e14")" = "stub-resolved-local" ] \
+  || fail "E14b: the attribution-lake record must carry the SAME pre-flight-resolved model, got: $lake_line_e14"
+ok "E14b the raw-lake attribution record (usage_source:unavailable) carries the resolved model too, not 'unknown'"
+
+count
+WT_E15="$(mk_wt)"
+FAKEHOME_E15="$WORK/fakehome-e15"
+mkdir -p "$FAKEHOME_E15/.claude"
+printf '{"model":"stub-resolved-home"}\n' >"$FAKEHOME_E15/.claude/settings.json"
+out="$(HOME="$FAKEHOME_E15" run_exec spawnfail --record "$RECORD" --repo-root "$REPO" --worktree "$WT_E15" \
+        --candidate-runner "bash $STUB")"
+[ "$(jq -r '.candidate.model' <<<"$out")" = "stub-resolved-home" ] \
+  || fail "E15: with no worktree-level settings at all, resolution must fall back to the HOME settings.json the candidate's env passthrough actually hands the child, got: $out"
+ok "E15 with no worktree-level settings, pre-flight resolution falls back to HOME settings.json"
+
+count
+WT_E16="$(mk_wt)"
+FAKEHOME_E16="$WORK/fakehome-e16-empty"
+mkdir -p "$FAKEHOME_E16"
+out="$(HOME="$FAKEHOME_E16" run_exec spawnfail --record "$RECORD" --repo-root "$REPO" --worktree "$WT_E16" \
+        --candidate-runner "bash $STUB")"
+[ "$(jq -r '.candidate.model' <<<"$out")" = "null" ] \
+  || fail "E16: with NO settings anywhere (worktree or HOME), pre-flight resolution has nothing to resolve — 'unknown' must stand, got: $out"
+lake_line_e16="$(cat "$LAKE"/model-usage-*.jsonl | jq -c 'select(.seat == "replay-candidate" and .usage_source == "unavailable")' | tail -1)"
+[ "$(jq -r '.model' <<<"$lake_line_e16")" = "unknown" ] \
+  || fail "E16b: with resolution genuinely impossible, the lake record must still fall back to the literal 'unknown', got: $lake_line_e16"
+ok "E16 'unknown' remains ONLY where pre-flight resolution is genuinely impossible (no settings anywhere), usage_source:unavailable unchanged"
+
+count
+WT_E17="$(mk_wt)"
+mkdir -p "$WT_E17/.claude"
+printf '{"model":"stub-resolved-project-e17"}\n' >"$WT_E17/.claude/settings.json"
+out="$(run_exec spawnfail --record "$RECORD" --repo-root "$REPO" --worktree "$WT_E17" \
+        --provider openai --candidate-runner "bash $STUB")"
+[ "$(jq -r '.candidate.model' <<<"$out")" = "null" ] \
+  || fail "E17: a non-default provider's model vocabulary is NOT this host's claude settings — resolution must be skipped even though the worktree carries a 'model' key, got: $out"
+ok "E17 pre-flight resolution is scoped to the default provider only; a non-default provider stays 'unknown' rather than borrowing an unrelated host model id"
+
+# ═══════════════════════════════════════════════════════════════════════════
 # SECTION F — aggregate: integration errors excluded from quality
 # ═══════════════════════════════════════════════════════════════════════════
 
