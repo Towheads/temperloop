@@ -995,6 +995,156 @@ env PIPELINE_NOW_HOUR=14 PIPELINE_NOW_DATE=2026-06-25 PIPELINE_SCHEDULE_FILE="$F
 [ "$(jq -r 'select(.event=="drive") | has("model_usage_lake")' "$LOGD30B/2026-06-25.jsonl" 2>/dev/null | tail -1)" != "true" ] \
   && ok "…and no model_usage_lake key is folded into a dry-run drive record" || bad "w30.key" "$(jq -c 'select(.event=="drive")' "$LOGD30B/2026-06-25.jsonl" 2>/dev/null)"
 
+# ╭──────────────────────────────────────────────────────────────────────────╮
+# │ temperloop#1592 — Step 4.5 is TIME-BOUNDED. The exit-status isolation     │
+# │ #1565 shipped was only half a guarantee: a validator that never RETURNS  │
+# │ cannot fail a wake, but it blocks one forever (the validator reads a     │
+# │ whole month file into a bash array, so an NFS-mounted or pathological    │
+# │ lake is the realistic hang). Both wrappers hang the validator far longer │
+# │ than the bound and assert the wake comes back anyway, saying so.         │
+# ╰──────────────────────────────────────────────────────────────────────────╯
+
+# A validator that HANGS. Its `sleep` is a forked CHILD on purpose: the real
+# validator is a shell script that runs python3, and a surviving grandchild is
+# precisely what makes a naively-bounded call still stall — see wrapper 32.
+MU_HANG="$TMP/mu-validate-hang.sh"
+printf '%s\n' '#!/usr/bin/env bash' \
+  'printf "%s\n" "${MODEL_USAGE_RAW_DIR:-<unset>}" >> "$MU_SENTINEL"' \
+  'sleep 30' \
+  'echo "validate-model-usage-emit: OK"' > "$MU_HANG"
+chmod +x "$MU_HANG"
+
+MU_HANG_SECS=2    # the bound under test — small, so the suite stays fast
+MU_HANG_MAX=15    # ceiling for "the bound fired": the stub hangs 30s, so any
+                  # wake under this returned because it was KILLED, not because
+                  # the sleep expired. Unbounded, both wrappers take 30s+.
+
+# ── WRAPPER 31: a HUNG validator no longer stalls the wake ────────────────────
+echo "--- wrapper 31: a hung validator is killed at the bound; the wake returns and reports the timeout (temperloop#1592) ---"
+LOGD31="$TMP/wlog31"; RAW31="$TMP/raw31"; SENT31="$TMP/mu31.txt"
+mu_seed_lake "$RAW31"
+W31_START=$SECONDS
+# See the RC25 note above — `set -e` makes a bare assignment abort the suite.
+OUT31="$(MODEL_USAGE_VALIDATE_TIMEOUT_SECS="$MU_HANG_SECS" MU_BIN="$MU_HANG" \
+  mu_run_live "$LOGD31" "$RAW31" "$SENT31")" && RC31=0 || RC31=$?
+W31_EL=$((SECONDS - W31_START))
+[ "$RC31" -eq 0 ] && ok "the wake exits 0 (a timeout is fail-open, like every other Step 4.5 outcome)" || bad "w31.rc" "exit=$RC31"
+[ "$(jq -r '.event' <<<"$OUT31")" = "ran" ] && ok "the wake summary is still event=ran (the timeout never aborts the run)" || bad "w31.event" "$OUT31"
+[ -f "$SENT31" ] && ok "the hanging validator really was invoked (the bound is what ended it, not a skip)" || bad "w31.invoked" "validator never ran"
+[ "$W31_EL" -lt "$MU_HANG_MAX" ] \
+  && ok "the wake returned in ${W31_EL}s against a 30s hang — THE BOUND HELD" \
+  || bad "w31.stalled" "wake took ${W31_EL}s; the ${MU_HANG_SECS}s bound did not fire"
+MU_REC31="$(jq -c 'select(.event=="drive") | .model_usage_lake' "$LOGD31/2026-06-25.jsonl")"
+[ "$(jq -r '.status' <<<"$MU_REC31")" = "unavailable" ] \
+  && ok "a timeout reports status=unavailable — never a schema 'fail' (it reached no verdict about the data)" || bad "w31.status" "$MU_REC31"
+[ "$(jq -r '.status' <<<"$MU_REC31")" != "ok" ] \
+  && ok "…and emphatically never 'ok', which would recreate the unverified-clean-state defect #1565 closed" || bad "w31.notok" "$MU_REC31"
+jq -e '.timed_out == true' <<<"$MU_REC31" >/dev/null \
+  && ok "timed_out:true tells 'the check ran out of time' apart from 'the lake is unreadable'" || bad "w31.timedout" "$MU_REC31"
+jq -e '.reason | test("bound")' <<<"$MU_REC31" >/dev/null \
+  && ok "…and the reason names the bound that fired" || bad "w31.reason" "$MU_REC31"
+# The discriminator claim, asserted from BOTH sides: the key exists ONLY on the
+# timeout path, so its presence alone separates a timeout from a clean run and
+# from the OTHER thing that reports 'unavailable'.
+jq -e 'has("timed_out") | not' <<<"$MU_REC25" >/dev/null \
+  && ok "a clean run (w25) omits timed_out entirely — presence alone is the discriminator" || bad "w31.okkey" "$MU_REC25"
+jq -e 'has("timed_out") | not' <<<"$MU_REC29" >/dev/null \
+  && ok "a plain 'unavailable' (w29, missing validator) omits it too — the two unavailables stay tellable apart" || bad "w31.unavailkey" "$MU_REC29"
+
+# ── WRAPPER 32: the bound holds with NO GNU timeout/gtimeout on PATH ──────────
+echo "--- wrapper 32: the same bound holds on a stock macOS — neither timeout(1) nor gtimeout present (temperloop#1592) ---"
+# THE TRAP THIS WRAPPER EXISTS TO CATCH. temperloop is the kernel repo, and a
+# stranger's stock macOS ships neither GNU binary, so portable-timeout.sh's
+# dependency-free THIRD tier is the only one that ever runs there. That tier
+# kills the validator process but cannot reap a child it forked — and an
+# orphaned grandchild holds a command substitution's pipe write-end OPEN, so
+# the natural `out="$(run_with_timeout …)"` port returns its 137 on time while
+# the wake still blocks for the FULL hang (measured: 21s against a 2s bound).
+# Step 4.5 redirects the validator to a FILE for exactly this reason. Under GNU
+# `timeout` BOTH shapes bound correctly — which is why this wrapper must strip
+# the binaries rather than trust whatever the dev machine happens to have, or
+# the leak would be invisible on any box with coreutils installed.
+MU_NOGNU_BIN="$TMP/nognu-bin"
+mkdir -p "$MU_NOGNU_BIN"
+for _t in bash sh env jq date wc tr grep sed awk head tail cat cut sort uniq \
+          rm mkdir mv cp ln touch chmod sleep kill mktemp dirname basename \
+          true false uname id git python3; do
+  _p="$(command -v "$_t" 2>/dev/null || true)"
+  [ -n "$_p" ] && ln -sf "$_p" "$MU_NOGNU_BIN/$_t"
+done
+if ( PATH="$MU_NOGNU_BIN"; command -v timeout >/dev/null 2>&1 || command -v gtimeout >/dev/null 2>&1 ); then
+  bad "w32.precondition" "timeout/gtimeout still resolve on the stripped PATH — tier 3 was NOT exercised, so this wrapper proves nothing"
+else
+  ok "precondition: neither timeout nor gtimeout resolves on the stripped PATH (the dependency-free tier is what runs)"
+fi
+LOGD32="$TMP/wlog32"; RAW32="$TMP/raw32"; SENT32="$TMP/mu32.txt"
+mu_seed_lake "$RAW32"
+W32_START=$SECONDS
+OUT32="$(PATH="$MU_NOGNU_BIN" MODEL_USAGE_VALIDATE_TIMEOUT_SECS="$MU_HANG_SECS" MU_BIN="$MU_HANG" \
+  mu_run_live "$LOGD32" "$RAW32" "$SENT32")" && RC32=0 || RC32=$?
+W32_EL=$((SECONDS - W32_START))
+[ "$RC32" -eq 0 ] && ok "the wake exits 0 with no GNU timeout available" || bad "w32.rc" "exit=$RC32"
+[ "$(jq -r '.event' <<<"$OUT32")" = "ran" ] && ok "the wake summary is still event=ran" || bad "w32.event" "$OUT32"
+[ "$W32_EL" -lt "$MU_HANG_MAX" ] \
+  && ok "the wake returned in ${W32_EL}s on the dependency-free tier — the bound does NOT depend on a GNU binary" \
+  || bad "w32.stalled" "wake took ${W32_EL}s with no timeout(1) present; the bound silently vanished (or the pipe leak stalled it)"
+MU_REC32="$(jq -c 'select(.event=="drive") | .model_usage_lake' "$LOGD32/2026-06-25.jsonl")"
+jq -e '.timed_out == true and .status == "unavailable"' <<<"$MU_REC32" >/dev/null \
+  && ok "…and it reports the identical outcome shape the GNU tier does (backend-independent verdict)" || bad "w32.shape" "$MU_REC32"
+
+# ── WRAPPER 33: a `0` bound is REJECTED, not honored ─────────────────────────
+echo "--- wrapper 33: MODEL_USAGE_VALIDATE_TIMEOUT_SECS=0 falls back to the default and says so (temperloop#1592) ---"
+# Neither backend validates this argument, so `0` is one character of config
+# away from destroying the guarantee: on the GNU tier `timeout 0` means NO
+# TIMEOUT (a 30s hang returns rc=0 after the full 30s), so Step 4.5 would
+# report a clean `ok` for a completely unbounded validator — this issue's own
+# defect, reintroduced through a typo. On the watchdog tier the same `0` makes
+# `sleep 0` return instantly and kills a perfectly HEALTHY validator. Both
+# readings are wrong, so `0` is rejected back to the default either way.
+LOGD33="$TMP/wlog33"; RAW33="$TMP/raw33"; SENT33="$TMP/mu33.txt"
+mu_seed_lake "$RAW33"
+OUT33="$(MODEL_USAGE_VALIDATE_TIMEOUT_SECS=0 mu_run_live "$LOGD33" "$RAW33" "$SENT33")" && RC33=0 || RC33=$?
+[ "$RC33" -eq 0 ] && ok "the wake exits 0" || bad "w33.rc" "exit=$RC33"
+MU_REC33="$(jq -c 'select(.event=="drive") | .model_usage_lake' "$LOGD33/2026-06-25.jsonl")"
+[ "$(jq -r '.status' <<<"$MU_REC33")" = "ok" ] \
+  && ok "a HEALTHY validator still reports ok — the 0 was not honored as an instant kill" || bad "w33.status" "$MU_REC33"
+[ "$(jq -r '.timeout_config_invalid' <<<"$MU_REC33")" = "0" ] \
+  && ok "…and the rejected value is REPORTED in the record, not silently corrected" || bad "w33.reported" "$MU_REC33"
+jq -e 'has("timed_out") | not' <<<"$MU_REC33" >/dev/null \
+  && ok "…with no timed_out key (a rejected config is not a timeout)" || bad "w33.timedout" "$MU_REC33"
+# The same on the dependency-free tier, where an honored `0` would kill the
+# healthy validator outright rather than merely leaving it unbounded.
+LOGD33B="$TMP/wlog33b"; RAW33B="$TMP/raw33b"; SENT33B="$TMP/mu33b.txt"
+mu_seed_lake "$RAW33B"
+OUT33B="$(PATH="$MU_NOGNU_BIN" MODEL_USAGE_VALIDATE_TIMEOUT_SECS=0 \
+  mu_run_live "$LOGD33B" "$RAW33B" "$SENT33B")" && RC33B=0 || RC33B=$?
+MU_REC33B="$(jq -c 'select(.event=="drive") | .model_usage_lake' "$LOGD33B/2026-06-25.jsonl")"
+[ "$RC33B" -eq 0 ] && [ "$(jq -r '.status' <<<"$MU_REC33B")" = "ok" ] \
+  && ok "…and on the watchdog tier too, where an honored 0 would have killed a healthy validator" || bad "w33b.status" "rc=$RC33B $MU_REC33B"
+
+# ── WRAPPER 34: a NON-NUMERIC bound never renders as a schema failure ─────────
+echo "--- wrapper 34: a non-numeric bound is rejected, and is never reported as a corrupt lake (temperloop#1592) ---"
+# The sharpest reason to sanitize: a non-numeric value is wrong DIFFERENTLY per
+# platform. The watchdog tier fires at 0s (every wake "times out"), but GNU
+# `timeout` exits 125 ("invalid time interval"), which matches neither CANNOT
+# EVALUATE nor ^FAIL and so falls through to the schema-`fail` arm — so the
+# same typo would read as "the lake is CORRUPT" on Linux CI and "the lake is
+# slow" on macOS, sending an operator hunting corruption nobody observed.
+LOGD34="$TMP/wlog34"; RAW34="$TMP/raw34"; SENT34="$TMP/mu34.txt"
+mu_seed_lake "$RAW34"
+OUT34="$(MODEL_USAGE_VALIDATE_TIMEOUT_SECS=abc mu_run_live "$LOGD34" "$RAW34" "$SENT34")" && RC34=0 || RC34=$?
+[ "$RC34" -eq 0 ] && ok "the wake exits 0" || bad "w34.rc" "exit=$RC34"
+MU_REC34="$(jq -c 'select(.event=="drive") | .model_usage_lake' "$LOGD34/2026-06-25.jsonl")"
+[ "$(jq -r '.status' <<<"$MU_REC34")" != "fail" ] \
+  && ok "a config typo is NEVER reported as a schema fail (no operator sent hunting corruption)" || bad "w34.notfail" "$MU_REC34"
+[ "$(jq -r '.status' <<<"$MU_REC34")" = "ok" ] \
+  && ok "…the validator ran normally under the fallback bound" || bad "w34.status" "$MU_REC34"
+[ "$(jq -r '.timeout_config_invalid' <<<"$MU_REC34")" = "abc" ] \
+  && ok "…and the rejected value is named in the record" || bad "w34.reported" "$MU_REC34"
+# A VALID bound must not pick up the key, or every record would carry it.
+jq -e 'has("timeout_config_invalid") | not' <<<"$MU_REC25" >/dev/null \
+  && ok "a valid (default) bound carries no timeout_config_invalid key at all" || bad "w34.cleankey" "$MU_REC25"
+
 # ── summary ──────────────────────────────────────────────────────────────────
 echo
 echo "pipeline-cron tests: $pass passed, $fail failed"
