@@ -1092,6 +1092,59 @@ MU_REC32="$(jq -c 'select(.event=="drive") | .model_usage_lake' "$LOGD32/2026-06
 jq -e '.timed_out == true and .status == "unavailable"' <<<"$MU_REC32" >/dev/null \
   && ok "…and it reports the identical outcome shape the GNU tier does (backend-independent verdict)" || bad "w32.shape" "$MU_REC32"
 
+# ── WRAPPER 33: a `0` bound is REJECTED, not honored ─────────────────────────
+echo "--- wrapper 33: MODEL_USAGE_VALIDATE_TIMEOUT_SECS=0 falls back to the default and says so (temperloop#1592) ---"
+# Neither backend validates this argument, so `0` is one character of config
+# away from destroying the guarantee: on the GNU tier `timeout 0` means NO
+# TIMEOUT (a 30s hang returns rc=0 after the full 30s), so Step 4.5 would
+# report a clean `ok` for a completely unbounded validator — this issue's own
+# defect, reintroduced through a typo. On the watchdog tier the same `0` makes
+# `sleep 0` return instantly and kills a perfectly HEALTHY validator. Both
+# readings are wrong, so `0` is rejected back to the default either way.
+LOGD33="$TMP/wlog33"; RAW33="$TMP/raw33"; SENT33="$TMP/mu33.txt"
+mu_seed_lake "$RAW33"
+OUT33="$(MODEL_USAGE_VALIDATE_TIMEOUT_SECS=0 mu_run_live "$LOGD33" "$RAW33" "$SENT33")" && RC33=0 || RC33=$?
+[ "$RC33" -eq 0 ] && ok "the wake exits 0" || bad "w33.rc" "exit=$RC33"
+MU_REC33="$(jq -c 'select(.event=="drive") | .model_usage_lake' "$LOGD33/2026-06-25.jsonl")"
+[ "$(jq -r '.status' <<<"$MU_REC33")" = "ok" ] \
+  && ok "a HEALTHY validator still reports ok — the 0 was not honored as an instant kill" || bad "w33.status" "$MU_REC33"
+[ "$(jq -r '.timeout_config_invalid' <<<"$MU_REC33")" = "0" ] \
+  && ok "…and the rejected value is REPORTED in the record, not silently corrected" || bad "w33.reported" "$MU_REC33"
+jq -e 'has("timed_out") | not' <<<"$MU_REC33" >/dev/null \
+  && ok "…with no timed_out key (a rejected config is not a timeout)" || bad "w33.timedout" "$MU_REC33"
+# The same on the dependency-free tier, where an honored `0` would kill the
+# healthy validator outright rather than merely leaving it unbounded.
+LOGD33B="$TMP/wlog33b"; RAW33B="$TMP/raw33b"; SENT33B="$TMP/mu33b.txt"
+mu_seed_lake "$RAW33B"
+OUT33B="$(PATH="$MU_NOGNU_BIN" MODEL_USAGE_VALIDATE_TIMEOUT_SECS=0 \
+  mu_run_live "$LOGD33B" "$RAW33B" "$SENT33B")" && RC33B=0 || RC33B=$?
+MU_REC33B="$(jq -c 'select(.event=="drive") | .model_usage_lake' "$LOGD33B/2026-06-25.jsonl")"
+[ "$RC33B" -eq 0 ] && [ "$(jq -r '.status' <<<"$MU_REC33B")" = "ok" ] \
+  && ok "…and on the watchdog tier too, where an honored 0 would have killed a healthy validator" || bad "w33b.status" "rc=$RC33B $MU_REC33B"
+
+# ── WRAPPER 34: a NON-NUMERIC bound never renders as a schema failure ─────────
+echo "--- wrapper 34: a non-numeric bound is rejected, and is never reported as a corrupt lake (temperloop#1592) ---"
+# The sharpest reason to sanitize: a non-numeric value is wrong DIFFERENTLY per
+# platform. The watchdog tier fires at 0s (every wake "times out"), but GNU
+# `timeout` exits 125 ("invalid time interval"), which matches neither CANNOT
+# EVALUATE nor ^FAIL and so falls through to the schema-`fail` arm — so the
+# same typo would read as "the lake is CORRUPT" on Linux CI and "the lake is
+# slow" on macOS, sending an operator hunting corruption nobody observed.
+LOGD34="$TMP/wlog34"; RAW34="$TMP/raw34"; SENT34="$TMP/mu34.txt"
+mu_seed_lake "$RAW34"
+OUT34="$(MODEL_USAGE_VALIDATE_TIMEOUT_SECS=abc mu_run_live "$LOGD34" "$RAW34" "$SENT34")" && RC34=0 || RC34=$?
+[ "$RC34" -eq 0 ] && ok "the wake exits 0" || bad "w34.rc" "exit=$RC34"
+MU_REC34="$(jq -c 'select(.event=="drive") | .model_usage_lake' "$LOGD34/2026-06-25.jsonl")"
+[ "$(jq -r '.status' <<<"$MU_REC34")" != "fail" ] \
+  && ok "a config typo is NEVER reported as a schema fail (no operator sent hunting corruption)" || bad "w34.notfail" "$MU_REC34"
+[ "$(jq -r '.status' <<<"$MU_REC34")" = "ok" ] \
+  && ok "…the validator ran normally under the fallback bound" || bad "w34.status" "$MU_REC34"
+[ "$(jq -r '.timeout_config_invalid' <<<"$MU_REC34")" = "abc" ] \
+  && ok "…and the rejected value is named in the record" || bad "w34.reported" "$MU_REC34"
+# A VALID bound must not pick up the key, or every record would carry it.
+jq -e 'has("timeout_config_invalid") | not' <<<"$MU_REC25" >/dev/null \
+  && ok "a valid (default) bound carries no timeout_config_invalid key at all" || bad "w34.cleankey" "$MU_REC25"
+
 # ── summary ──────────────────────────────────────────────────────────────────
 echo
 echo "pipeline-cron tests: $pass passed, $fail failed"

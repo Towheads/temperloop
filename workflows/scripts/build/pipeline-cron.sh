@@ -55,7 +55,10 @@
 #                         validator call (temperloop#1592). A validator that
 #                         outlives it is killed and reported as
 #                         status:"unavailable" + timed_out:true — never as `ok`,
-#                         and never as a schema `fail`
+#                         and never as a schema `fail`. Must be a POSITIVE
+#                         integer: anything else (0, non-numeric) is rejected
+#                         back to the default and reported in the record as
+#                         `timeout_config_invalid`, never silently honored
 #   PIPELINE_SCHEDULE_FILE  the gate's vault schedule note (see pipeline-schedule-gate.sh)
 #   PIPELINE_NOW_HOUR       test seam: override "now" hour, passed to the gate
 #   PIPELINE_ENABLED_BOARDS default board set when the schedule's `boards:` is empty
@@ -107,6 +110,41 @@ REWORK_SNAPSHOT="${REWORK_SNAPSHOT_BIN:-$HERE/../rework-snapshot.sh}"
 MODEL_USAGE_VALIDATE="${MODEL_USAGE_VALIDATE_BIN:-$HERE/../validate-model-usage-emit.sh}"
 # Wall-clock bound on that validator call (temperloop#1592) — see Step 4.5.
 : "${MODEL_USAGE_VALIDATE_TIMEOUT_SECS:=60}"
+# SANITIZED, in the same spirit as Step 4.5's own `case … *[!0-9]*` guard on
+# the record counts — because NEITHER backend validates this argument, so an
+# unsanitized value is one character of config away from destroying the very
+# guarantee the setting exists to impose:
+#   `0`   — on the GNU tier `timeout 0` means NO TIMEOUT (measured: a 30s hang
+#           returns rc=0 after the full 30s), so the validator would run
+#           completely unbounded and Step 4.5 would report a clean `ok` — this
+#           issue's own defect, reintroduced through a config typo. On the
+#           watchdog tier the same `0` makes `sleep 0` return at once and kills
+#           a perfectly HEALTHY validator.
+#   `abc` — worse, because it is wrong DIFFERENTLY per platform: the watchdog
+#           fires at 0s (every wake reports a timeout), while GNU `timeout`
+#           exits 125 ("invalid time interval"), which matches neither CANNOT
+#           EVALUATE nor ^FAIL and so lands in the schema-`fail` arm below.
+#           The same typo would read as "the lake is CORRUPT" on Linux CI and
+#           "the lake is slow" on macOS — precisely the send-an-operator-
+#           hunting-corruption-nobody-observed outcome the 137 branch avoids.
+# So: anything that is not a positive integer falls back to the default, and
+# the REJECTED value is reported in the record (`timeout_config_invalid`)
+# rather than silently swallowed — sanitizing in silence would only trade one
+# invisible wrong for another, and an operator who fat-fingered this setting
+# needs to see it, not to have it quietly corrected forever.
+mu_timeout_invalid=""
+mu_timeout_ok=0
+case "$MODEL_USAGE_VALIDATE_TIMEOUT_SECS" in
+  ''|*[!0-9]*) mu_timeout_ok=0 ;;
+  # Digits-only by here, so `-ge` is safe; the 2>/dev/null arm still catches a
+  # value too large for the shell's own integer conversion.
+  *) if [ "$MODEL_USAGE_VALIDATE_TIMEOUT_SECS" -ge 1 ] 2>/dev/null; then mu_timeout_ok=1; else mu_timeout_ok=0; fi ;;
+esac
+if [ "$mu_timeout_ok" -eq 0 ]; then
+  mu_timeout_invalid="$MODEL_USAGE_VALIDATE_TIMEOUT_SECS"
+  unset MODEL_USAGE_VALIDATE_TIMEOUT_SECS
+  : "${MODEL_USAGE_VALIDATE_TIMEOUT_SECS:=60}"
+fi
 
 # run_with_timeout SECS cmd... — the ONE shared bounded-subprocess watchdog
 # (temperloop#256), sourced rather than re-derived. Its three-tier backend
@@ -115,8 +153,20 @@ MODEL_USAGE_VALIDATE="${MODEL_USAGE_VALIDATE_BIN:-$HERE/../validate-model-usage-
 # GNU binary — a bound that quietly evaporates where coreutils is absent
 # would be a surface asserting a guarantee it never verified, the same defect
 # class Step 4.5 itself exists to close.
+#
+# `|| true` ON THE SOURCE, not just the `-f` test. The missing-file case is
+# already safe (the `&&` short-circuits), but a file that is PRESENT and
+# unreadable — or present with a syntax error — makes `.` return non-zero, and
+# as the last command of an AND-OR list under `set -e` that ABORTS the wrapper.
+# This line runs before `mkdir -p "$PIPELINE_LOG_DIR"` and before any record is
+# emitted, so that abort would produce a cron wake that exits non-zero having
+# written NO log record at all — the one code path added to make Step 4.5
+# fail-open becoming the one path that fails the whole wake closed. Step 4.5's
+# `command -v run_with_timeout` guard already handles the resulting
+# undefined-function case, and reports it honestly instead of silently
+# dropping the bound.
 # shellcheck source=workflows/scripts/lib/portable-timeout.sh
-[ -f "$HERE/../lib/portable-timeout.sh" ] && . "$HERE/../lib/portable-timeout.sh"
+[ -f "$HERE/../lib/portable-timeout.sh" ] && { . "$HERE/../lib/portable-timeout.sh" || true; }
 
 : "${PIPELINE_ENABLED_BOARDS:=3}"
 : "${PIPELINE_LOG_DIR:=$HOME/.claude/funnel/log}"
@@ -623,6 +673,14 @@ if [ "${PIPELINE_DRIVE:-0}" = "1" ] && [ "${nonop:-0}" -gt 0 ]; then
       # caught here and can never propagate to abort the wake — and the shim
       # normalizes ANY backend's timeout onto 137, so the timed-out case stays
       # distinguishable from the validator's own non-zero verdicts.
+      #
+      # SCOPE OF THE GUARANTEE: this bounds the WAKE, not necessarily the WORK.
+      # On the watchdog tier the shim kills the validator process itself, but a
+      # child it forked is reparented and keeps running (and keeps reading the
+      # lake) after this returns — so a genuinely slow lake on a stock macOS can
+      # leave one surviving reader per wake. The wake is protected either way;
+      # process-group teardown belongs in the shared shim, not here, and is
+      # tracked separately.
       mu_out_file="$PIPELINE_LOG_DIR/.mu-out.$$"
       mu_rc=0
       run_with_timeout "$MODEL_USAGE_VALIDATE_TIMEOUT_SECS" \
@@ -662,11 +720,18 @@ if [ "${PIPELINE_DRIVE:-0}" = "1" ] && [ "${nonop:-0}" -gt 0 ]; then
         [ -n "$mu_reason" ] || mu_reason="validator exited non-zero with no FAIL line"
       fi
     fi
+    # `timeout_config_invalid` carries the REJECTED value (see the sanitizer at
+    # the top of this file) on EVERY status, not just a timeout: a fat-fingered
+    # bound most often produces a perfectly ordinary-looking `ok`, which is
+    # exactly when the operator would never learn their setting is being
+    # ignored. Absent whenever the configured value was usable.
     mu_note="$(jq -nc --arg s "$mu_status" --arg d "$RAW_DIR" --arg why "$mu_reason" \
       --argjson f "$mu_files" --argjson r "$mu_records" --argjson to "$mu_timed_out" \
+      --arg tbad "$mu_timeout_invalid" --argjson tok "$mu_timeout_ok" \
       '{status:$s,dir:$d,files:$f,records:$r}
        + (if $why == "" then {} else {reason:$why} end)
-       + (if $to == 1 then {timed_out:true} else {} end)' 2>/dev/null || true)"
+       + (if $to == 1 then {timed_out:true} else {} end)
+       + (if $tok == 0 then {timeout_config_invalid:$tbad} else {} end)' 2>/dev/null || true)"
     if [ -n "$mu_note" ]; then
       mu_merged="$(jq -c --argjson mu "$mu_note" '. + {model_usage_lake:$mu}' <<<"$drive_rec" 2>/dev/null || true)"
       if [ -n "$mu_merged" ]; then drive_rec="$mu_merged"; fi
