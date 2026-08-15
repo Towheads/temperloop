@@ -867,11 +867,16 @@ ok "E13 RESTORED: the unmutated execute names the stdout-side reason again"
 # The whole point: a default-model (--model omitted) integration error has
 # NO envelope to resolve a model from (a vendor-error returns before token
 # extraction; a candidate-timeout produces no envelope at all), so the model
-# must be known BEFORE the spawn — mirrored, read-only, from the same
-# settings a real `claude` child would consult: worktree-local, then
-# worktree-project, then the HOME settings.json candidate-session.sh's own
-# env passthrough hands the child. Every run below still uses the recorded
-# STUB runner (never --live) — this is a plain file read, not a model call.
+# must be known BEFORE the spawn — mirrored, read-only, from the
+# CANDIDATE-SCOPED settings only: the containment overlay the child is
+# spawned under (${CANDIDATE_SETTINGS:-candidate.settings.json}), then
+# worktree-local, then worktree-project settings. NEVER the invoking host's
+# user-global ~/.claude/settings.json — a hermetic fixture run must never
+# have its records shaped by the operator's personal config (the
+# environment-dependent-verdict class, temperloop#1552; a HOME fallback
+# here flipped test_replay_batch.sh J2 on hosts with a configured default
+# model). Every run below still uses the recorded STUB runner (never
+# --live) — this is a plain file read, not a model call.
 # ═══════════════════════════════════════════════════════════════════════════
 
 count
@@ -898,15 +903,35 @@ lake_line_e14="$(cat "$LAKE"/model-usage-*.jsonl | jq -c 'select(.seat == "repla
 ok "E14b the raw-lake attribution record (usage_source:unavailable) carries the resolved model too, not 'unknown'"
 
 count
+# E15 — HERMETICITY PIN: the user-global config is NEVER consulted. A HOME
+# whose settings.json names a model, with no candidate-scoped settings
+# anywhere, must resolve NOTHING — this is exactly the host-config leak
+# that made test_replay_batch.sh J2 environment-dependent before the fix.
 WT_E15="$(mk_wt)"
 FAKEHOME_E15="$WORK/fakehome-e15"
 mkdir -p "$FAKEHOME_E15/.claude"
-printf '{"model":"stub-resolved-home"}\n' >"$FAKEHOME_E15/.claude/settings.json"
+printf '{"model":"host-personal-model-must-not-leak"}\n' >"$FAKEHOME_E15/.claude/settings.json"
 out="$(HOME="$FAKEHOME_E15" run_exec spawnfail --record "$RECORD" --repo-root "$REPO" --worktree "$WT_E15" \
         --candidate-runner "bash $STUB")"
-[ "$(jq -r '.candidate.model' <<<"$out")" = "stub-resolved-home" ] \
-  || fail "E15: with no worktree-level settings at all, resolution must fall back to the HOME settings.json the candidate's env passthrough actually hands the child, got: $out"
-ok "E15 with no worktree-level settings, pre-flight resolution falls back to HOME settings.json"
+[ "$(jq -r '.candidate.model' <<<"$out")" = "null" ] \
+  || fail "E15: the invoking host's user-global settings.json must NEVER shape a record — expected null model, got: $out"
+ok "E15 HERMETICITY: a model named only in HOME settings.json is NOT resolved — host personal config never leaks into records"
+
+count
+# E15b — the candidate containment overlay IS a resolution source: it is the
+# `--settings` file the child actually runs under (CLI-arg settings outrank
+# project settings), and CANDIDATE_SETTINGS is the same env seam
+# candidate-session.sh itself honours. Built from the real overlay (so the
+# resolve/preflight containment checks still pass) plus a model key.
+WT_E15B="$(mk_wt)"
+OVERLAY_E15B="$WORK/candidate-settings-e15b.json"
+jq '. + {model:"stub-resolved-overlay"}' "$MC_DIR/candidate.settings.json" >"$OVERLAY_E15B"
+out="$(HOME="$FAKEHOME_E15" CANDIDATE_SETTINGS="$OVERLAY_E15B" \
+        run_exec spawnfail --record "$RECORD" --repo-root "$REPO" --worktree "$WT_E15B" \
+        --candidate-runner "bash $STUB")"
+[ "$(jq -r '.candidate.model' <<<"$out")" = "stub-resolved-overlay" ] \
+  || fail "E15b: with no worktree-level settings, resolution must fall back to the candidate containment overlay's own model key (the --settings file the child is spawned under), got: $out"
+ok "E15b with no worktree-level settings, pre-flight resolution reads the candidate containment overlay (CANDIDATE_SETTINGS) — candidate-scoped, never host-scoped"
 
 count
 WT_E16="$(mk_wt)"
