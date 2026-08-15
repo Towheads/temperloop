@@ -129,20 +129,53 @@ one defensible answer: the runner uses `git merge-base $MC^1 $MC^2` (the
 fork point) as its rule, but of three plausible base-resolution strategies
 the spike compared, they disagreed on **21 of 60** real merged PRs — meaning
 the choice of base is not a formality, it measurably changes what "the
-candidate's diff" is scored against. This is why the replay corpus is
-described here as a **~52% yield**, not "the corpus," and why a comparison
-report states its corpus window and gate versions rather than implying the
-whole history was usable.
+candidate's diff" is scored against.
+
+**The yield is not a fixed constant — it drops on more recent history.**
+The 52% figure above held for the spike's own 60-issue window
+(temperloop#1247). A later, larger measurement (temperloop#1400, taken for
+the temperloop#1262 validation run) built the corpus with `replay.sh corpus
+--repo Towheads/temperloop` at two window sizes and found materially lower
+yield on both, worsening as the window narrows toward the present:
+
+| corpus | PRs sampled | single-issue | eligible | yield |
+|---|---|---|---|---|
+| spike (temperloop#1247) | 60 | 46 | 24 | 52% |
+| deep sweep (this repo, 220) | 220 | 191 | 64 | **33%** |
+| recent window (this repo, 80) | 80 | 72 | 18 | **25%** |
+
+On the deep sweep, Tier-C `unnamed-code-residue` rejections rose to **65%
+of all rejections** (spike: 48%) — 125 of 154 total rejections, against 29
+`multi-or-zero-issue-pr` and 2 `post-cut-issue-body-edit`. The likely cause
+is **corpus drift, not a scoring defect**: recent history is dominated by
+broad multi-file changes (config + tests + docs + changelog fragment
+landing in one PR — this epic's own pattern among them), which trip the
+diff-scope rule's Tier C by construction. That means the rule is working
+as designed against a corpus that has genuinely gotten harder to replay —
+a real property of this repo's recent commit shape, not a bug in the
+runner or a regression to fix. This is why the replay corpus is described
+here as yielding **33% over the deep 220-PR window, 25% over the most
+recent 80** — not a single "~52%" — and why a comparison report states its
+corpus window and gate versions rather than implying yield is stable
+across windows.
 
 **Low-volume guidance.** Below roughly the module's configured sample
-threshold — and given the ~52% yield above, a repo that closed 60 issues in
-a window supplies on the order of 30 usable replays, not 60 — statistical
-significance is very likely unreachable. Treat a report generated from a
-low-N window as directional at best, or skip running the comparison until
-enough history has accumulated to say something with a straight face. The
-report itself enforces this rather than leaving it to the reader's
-judgment: a run below the configured threshold returns an explicit
-`inconclusive` verdict and never returns a winner.
+threshold, statistical significance is very likely unreachable — and the
+measured yields above change how much headroom that requires. A rule of
+thumb of "budget ~2x your target replay count" was implied by the spike's
+52%; at the deep-sweep 33% an operator instead needs roughly **3x**, and at
+the recent-window 25% roughly **4x** — so **budget ~3-4x your target**, not
+2x, and weight toward 4x when the corpus window skews recent. Concretely,
+the recent-80 window yielded only 18 eligible pairs against the module's
+`MODEL_COMPARISON_MIN_SAMPLE_N` floor of 20: pre-flight correctly returned
+`significance_reachable: false`, and reaching 40 eligible pairs required
+sweeping 220 PRs, not the ~80 a 2x rule of thumb would have implied. Treat
+a report generated from a low-N window as directional at best, or skip
+running the comparison until enough history has accumulated to say
+something with a straight face. The report itself enforces this rather
+than leaving it to the reader's judgment: a run below the configured
+threshold returns an explicit `inconclusive` verdict and never returns a
+winner.
 
 ### Batch driver
 
