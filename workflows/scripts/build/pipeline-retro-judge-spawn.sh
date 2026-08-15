@@ -110,6 +110,69 @@ HERE="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 [ -f "$HERE/../lib/model-usage-envelope.sh" ] && . "$HERE/../lib/model-usage-envelope.sh"
 MODEL_USAGE_EMIT="$HERE/../emit-model-usage.sh"
 
+# ── model-usage lake SINK — THE CALLER PINS IT (temperloop#1565) ──────────────
+# THIS PINS THE MODEL-USAGE STREAM ONLY. The retro-runs stream is untouched and
+# must stay that way: pipeline-retro-health.sh resolves retro-runs
+# CHECKOUT-RELATIVE precisely because this wrapper sets no retro-runs override
+# and the overlay judge it spawns writes that stream under whatever checkout
+# invoked it.
+#
+# BE PRECISE ABOUT WHY THAT STILL HOLDS. MODEL_USAGE_RAW_DIR is NOT read by only
+# one script — besides emit-model-usage.sh it is read by
+# validate-model-usage-emit.sh, validate-provider-disclosure.sh,
+# model-comparison/replay.sh, model-comparison/tagging.sh and
+# report-producers/model-comparison. (An earlier version of this comment claimed
+# exclusivity; that was false, and the false premise is what hid a real
+# regression — see the export note below.) The retro-runs guarantee rests on the
+# narrower, true statement: every one of those readers is a model-usage
+# reader/validator, none of them touches the retro-runs stream, and
+# pipeline-retro-health.sh — the script that actually resolves retro-runs —
+# never names MODEL_USAGE_RAW_DIR at all. Its test 19 pins that structurally.
+#
+# WHY (the model-usage half): emit-model-usage.sh's own default climbs two
+# levels from its own file location, which is right for a stranger's standalone
+# kernel checkout and wrong here — the pipeline runs the kernel copy VENDORED
+# under a consuming checkout (…/foundation.cron/kernel/), so the climb landed on
+# the vendored kernel's own root and every judge-spawn record went to a stub
+# meta/data/raw/ holding only a README, invisible to both real lakes. The
+# emitter cannot know which checkout is canonical; this caller can, so it says.
+#
+# Same canonical sink as pipeline-cron.sh's own `RAW_DIR=` assignment,
+# byte-for-byte in the default literal, for the reason stated there: the sink is
+# fixed regardless of which checkout the run started from. (Cited by SYMBOL, not
+# line number — the number rots on every edit above it; test 13 pins the two
+# literals equal by grep.)
+#
+# NOT EXPORTED — this is `_MODEL_USAGE_SINK_DIR`, private state the shared lib
+# applies as a PER-COMMAND prefix on the emitter alone (`_model_usage_run_emit`
+# in workflows/scripts/lib/model-usage-envelope.sh, whose header carries the
+# full rationale). An `export MODEL_USAGE_RAW_DIR` here would be inherited by
+# the `claude -p` judge this wrapper spawns, and any quality gate that session
+# runs reads the same variable. Do not turn this back into an export.
+#
+# THE `${PIPELINE_RAW_DIR:-…}` CHAIN IS DELIBERATE AND PROTECTIVE (operator
+# decision, reviewed). Dropping it for the bare literal would be worse: a
+# harness that isolates PIPELINE_RAW_DIR to a throwaway dir — every fixture run
+# does — would fall THROUGH to `$HOME/dev/foundation/meta/data/raw` and write
+# test records into the real production stream. Recorded as a trade-off, not an
+# accident.
+#
+# DUPLICATE SEAM, documented here per setting-registry.tsv's own owning-script
+# convention (the PIPELINE_OPERATOR precedent — a fallback duplicated in a
+# non-owning consuming script is documented at each duplicate site and records
+# NO second registry row): MODEL_USAGE_RAW_DIR's row keeps naming
+# emit-model-usage.sh as owner, with that script's own literal as the registered
+# default. This site is a consuming caller's pin, never a second source of truth.
+#
+# `${MODEL_USAGE_RAW_DIR:-…}` — an already-set value passes through UNTOUCHED
+# and always wins (the live test seam). $HOME is guarded because this script
+# runs under `set -u`: with MODEL_USAGE_RAW_DIR, PIPELINE_RAW_DIR and HOME ALL
+# unset there is no sink to name, so we set nothing and leave the emitter on its
+# own checkout-relative default. Telemetry never aborts a judge spawn.
+if [ -n "${MODEL_USAGE_RAW_DIR:-}" ] || [ -n "${PIPELINE_RAW_DIR:-}" ] || [ -n "${HOME:-}" ]; then
+  _MODEL_USAGE_SINK_DIR="${MODEL_USAGE_RAW_DIR:-${PIPELINE_RAW_DIR:-$HOME/dev/foundation/meta/data/raw}}"
+fi
+
 # ── Re-derive the credential from the host config ladder ─────────────────────
 # THE WHOLE POINT OF THIS SCRIPT. build.config.sh sources the machine conf and
 # the gitignored build.config.local.sh, so a host credential lands in THIS

@@ -46,6 +46,11 @@
 #   REWORK_SNAPSHOT_BIN   test seam: override the rework-events snapshot binary
 #                         invoked at Step 2.5 (default: ../rework-snapshot.sh,
 #                         foundation #731)
+#   MODEL_USAGE_VALIDATE_BIN  test seam: override the model-usage lake validator
+#                         run at Step 4.5 against the PRODUCTION lake after a
+#                         live drive (default: ../validate-model-usage-emit.sh,
+#                         temperloop#1565). Its verdict rides the drive record
+#                         as `model_usage_lake`; a failure never breaks the wake
 #   PIPELINE_SCHEDULE_FILE  the gate's vault schedule note (see pipeline-schedule-gate.sh)
 #   PIPELINE_NOW_HOUR       test seam: override "now" hour, passed to the gate
 #   PIPELINE_ENABLED_BOARDS default board set when the schedule's `boards:` is empty
@@ -92,6 +97,9 @@ DRIVE="${PIPELINE_DRIVE_BIN:-$HERE/pipeline-drive.sh}"
 # workflows/scripts/build/, where the other three siblings live) — see #732.
 ISSUE_META="${PIPELINE_ISSUE_META_BIN:-$HERE/../issue-meta-snapshot.sh}"
 REWORK_SNAPSHOT="${REWORK_SNAPSHOT_BIN:-$HERE/../rework-snapshot.sh}"
+# The model-usage stream's schema validator, run against the PRODUCTION lake at
+# Step 4.5 (temperloop#1565). Same test-double seam shape as its siblings above.
+MODEL_USAGE_VALIDATE="${MODEL_USAGE_VALIDATE_BIN:-$HERE/../validate-model-usage-emit.sh}"
 
 : "${PIPELINE_ENABLED_BOARDS:=3}"
 : "${PIPELINE_LOG_DIR:=$HOME/.claude/funnel/log}"
@@ -519,6 +527,88 @@ if [ "${PIPELINE_DRIVE:-0}" = "1" ] && [ "${nonop:-0}" -gt 0 ]; then
   rm -f "$drive_err_file"
   drive_rec="$(jq -c --arg d "$log_date" --argjson ms "$(_dur_ms "$drive_start_s")" \
     '. + {date:$d, duration_ms:$ms}' <<<"$drive_rec" 2>/dev/null || printf '%s' "$drive_rec")"
+
+  # ── Step 4.5: validate the PRODUCTION model-usage lake (temperloop#1565) ────
+  # validate-model-usage-emit.sh is a correct schema validator that, until now,
+  # nothing ever ran against the real lake — only the repo-scoped quality gate
+  # ran it, over a checkout that has no production records in it. A validator
+  # nobody points at production cannot detect a corrupt or absent production
+  # stream, which is the same defect class as the sink bug itself: a surface
+  # reporting a clean state it never verified.
+  #
+  # WHY HERE. A drive is the ONLY thing in this wrapper that writes the
+  # model-usage stream (pipeline-drive.sh's A7/A8 spawns, and the retro-judge
+  # wrapper it hands off to), so a drive-wake is the one moment per wake when
+  # that stream just changed — and the check runs immediately after the writes
+  # it validates. Gating on the drive is also the cost answer: the validator
+  # strict-parses the whole stream with python3, and an hourly wake that
+  # skipped, no-op'd, or ran with PIPELINE_DRIVE off never reaches this block at
+  # all, so a frequently-running surface pays nothing for a lake nothing wrote.
+  # Skipped under --dry-run for the same reason Step 2.5 is: a dry-run drive
+  # spawns no claude, appends no record, and the check would be pure cost.
+  #
+  # POINTED AT $RAW_DIR — this wrapper's own canonical sink, the same
+  # `${PIPELINE_RAW_DIR:-…}` resolution pipeline-drive.sh now pins
+  # MODEL_USAGE_RAW_DIR to byte-for-byte, so reader and writer cannot drift.
+  #
+  # LEGIBLE, not silent: the verdict rides the DRIVE record as
+  # `model_usage_lake`, folded in exactly the way Step 2.5 folds
+  # `rework_snapshot` into the wake record, and carries the RESOLVED dir plus
+  # observed file/record counts beside the status — so a stream still writing
+  # somewhere else reads as `records:0` right next to the drive that should
+  # have written one, instead of an unqualified "ok".
+  #
+  # FAIL-OPEN, `|| true`-isolated like every other side emit here: a failing,
+  # missing, or non-evaluable validator records a status and the wake keeps
+  # going. It never FAILS the run — and that claim is about EXIT STATUS ONLY,
+  # which is worth saying rather than rounding off to "never aborts": this step
+  # is NOT TIME-BOUNDED. The validator slurps whole month-files into a strict
+  # parser, macOS ships no GNU `timeout`, and nothing here caps it — so a
+  # pathologically large lake can make a wake run long even though it can never
+  # make one fail. Known and accepted at today's size; if the lake ever grows
+  # enough to matter, bound it here rather than dropping the check.
+  if [ "$DRY_RUN" -eq 0 ]; then
+    mu_files=0
+    mu_records=0
+    for mu_f in "$RAW_DIR"/model-usage-*.jsonl; do
+      [ -e "$mu_f" ] || continue
+      mu_files=$((mu_files + 1))
+      mu_n="$(wc -l < "$mu_f" 2>/dev/null | tr -d ' ')" || mu_n=0
+      case "$mu_n" in ''|*[!0-9]*) mu_n=0 ;; esac
+      mu_records=$((mu_records + mu_n))
+    done
+    mu_status="unavailable"
+    mu_reason="validator missing or not executable at $MODEL_USAGE_VALIDATE"
+    if [ -x "$MODEL_USAGE_VALIDATE" ]; then
+      # Same `&& ok=1 || ok=0` isolation as Step 2.5: a non-zero exit is caught
+      # here, never propagated to abort the wake.
+      mu_out="$(MODEL_USAGE_RAW_DIR="$RAW_DIR" "$MODEL_USAGE_VALIDATE" 2>&1)" && mu_ok=1 || mu_ok=0
+      if [ "$mu_ok" -eq 1 ]; then
+        mu_status="ok"
+        mu_reason=""
+      else
+        # The validator's own two failure modes are distinct and must stay so:
+        # a real schema verdict (FAIL) vs an inability to evaluate at all
+        # (CANNOT EVALUATE — no python3/jq, an unreadable file). Collapsing
+        # them would report a tooling gap as corrupt data.
+        mu_reason="$(printf '%s\n' "$mu_out" | grep -E 'CANNOT EVALUATE|^FAIL' | head -n 1)" || mu_reason=""
+        case "$mu_reason" in
+          *"CANNOT EVALUATE"*) mu_status="unavailable" ;;
+          *) mu_status="fail" ;;
+        esac
+        [ -n "$mu_reason" ] || mu_reason="validator exited non-zero with no FAIL line"
+      fi
+    fi
+    mu_note="$(jq -nc --arg s "$mu_status" --arg d "$RAW_DIR" --arg why "$mu_reason" \
+      --argjson f "$mu_files" --argjson r "$mu_records" \
+      '{status:$s,dir:$d,files:$f,records:$r}
+       + (if $why == "" then {} else {reason:$why} end)' 2>/dev/null || true)"
+    if [ -n "$mu_note" ]; then
+      mu_merged="$(jq -c --argjson mu "$mu_note" '. + {model_usage_lake:$mu}' <<<"$drive_rec" 2>/dev/null || true)"
+      if [ -n "$mu_merged" ]; then drive_rec="$mu_merged"; fi
+    fi
+  fi
+
   emit_record "$drive_rec" >/dev/null
   drive_status="$(jq -r '.status // "error"' <<<"$drive_rec" 2>/dev/null || echo error)"
 fi

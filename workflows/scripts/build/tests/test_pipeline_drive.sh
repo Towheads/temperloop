@@ -1375,6 +1375,179 @@ OUT54D="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D54D" PIPELINE_GH_BIN="$G54D" 
 [ "$(jq -r '.reclaimed' <<<"$OUT54D")" = "0" ] && ok "reclaimed=0 (a closed issue is not stranded — the cascade takes it to Done)" || bad "t54d.reclaimed" "got $(jq -r '.reclaimed' <<<"$OUT54D")"
 [ ! -f "$C54D/unclaim-calls.txt" ] && ok "unclaim.sh NOT called for a closed issue" || bad "t54d.unclaim" "unclaim was called: $(cat "$C54D/unclaim-calls.txt")"
 
+# ── 55: the model-usage lake sink is CALLER-PINNED (temperloop#1565) ──────────
+# THE BUG. emit-model-usage.sh derives its lake root by climbing two levels
+# from its OWN file location. The pipeline runs the kernel copy VENDORED under
+# a consuming checkout, so that climb landed on the vendored kernel's own root
+# and every record this driver emitted went to <checkout>/kernel/meta/data/raw/
+# — a stub dir holding nothing but a README. Both real lakes held zero
+# model-usage records while the driver reported clean runs.
+#
+# THE FIX under test: this driver (the caller, which knows the canonical sink
+# the emitter cannot) exports MODEL_USAGE_RAW_DIR before invoking the emitter,
+# pinned to the same ${PIPELINE_RAW_DIR:-…} literal pipeline-cron.sh pins its
+# own stream to. These cases are DISCRIMINATING — before the fix the record
+# landed in this checkout's own meta/data/raw/ and $PIPELINE_RAW_DIR stayed
+# empty, so t55 fails against the unfixed script.
+#
+# NOTE the `env -u MODEL_USAGE_RAW_DIR`: the suite exports that variable
+# globally at the top (test-run isolation), which is exactly the override this
+# fix must keep honoring — so the default path can only be exercised by
+# unsetting it for these cases.
+echo "--- test 55: with MODEL_USAGE_RAW_DIR unset, the record lands in PIPELINE_RAW_DIR, not the checkout (temperloop#1565) ---"
+MU_MONTH="$(date -u +%Y-%m)"
+# The checkout-relative dir the UNFIXED code wrote to: emit-model-usage.sh
+# lives at workflows/scripts/, and climbs two levels to the repo root.
+MU_CHECKOUT_LAKE="$(cd "$HERE/../../../.." && pwd)/meta/data/raw"
+mu_checkout_lines() {  # total lines across the checkout lake's model-usage files
+  local t=0 f n
+  for f in "$MU_CHECKOUT_LAKE"/model-usage-*.jsonl; do
+    [ -e "$f" ] || continue
+    n="$(wc -l < "$f" 2>/dev/null | tr -d ' ')" || n=0
+    case "$n" in ''|*[!0-9]*) n=0 ;; esac
+    t=$((t + n))
+  done
+  printf '%s' "$t"
+}
+MU_BEFORE="$(mu_checkout_lines)"
+MU_LAKE="$TMP/canonical-lake"
+MU_PLAN='[{"tick":"done","actions":[
+  {"phase":"drain","action":"drain-answer","board":"3","repo":"Towheads/stageFind","issue":42,"chosen":"timed"}
+]}]'
+OUT55="$(printf '%s' "$MU_PLAN" | env -u MODEL_USAGE_RAW_DIR PIPELINE_RAW_DIR="$MU_LAKE" \
+          CLAUDE_BIN="$CAP_DOUBLE" CAP_DIR="$TMP/cap55" PIPELINE_DRIVE_MODEL="claude-test" bash "$DRIVE")"
+[ "$(jq -r '.status' <<<"$OUT55")" = "ran" ] && ok "the drive still ran" || bad "t55.status" "$OUT55"
+[ -s "$MU_LAKE/model-usage-$MU_MONTH.jsonl" ] \
+  && ok "the model-usage record landed in the CANONICAL lake (\$PIPELINE_RAW_DIR), not a vendored-checkout stub" \
+  || bad "t55.sink" "no record at $MU_LAKE/model-usage-$MU_MONTH.jsonl (dir: $(ls -A "$MU_LAKE" 2>/dev/null || echo MISSING))"
+jq -e -r 'select(.seat=="pipeline-drive-safe") | .outcome_ref' < "$MU_LAKE/model-usage-$MU_MONTH.jsonl" >/dev/null 2>&1 \
+  && ok "…and it is this driver's own safe-tier record" \
+  || bad "t55.seat" "$(cat "$MU_LAKE/model-usage-$MU_MONTH.jsonl" 2>/dev/null)"
+[ "$(mu_checkout_lines)" = "$MU_BEFORE" ] \
+  && ok "and NOTHING was appended to this checkout's own meta/data/raw (the pre-fix destination)" \
+  || bad "t55.leak" "the checkout lake grew from $MU_BEFORE to $(mu_checkout_lines)"
+
+echo "--- test 56: an explicitly-set MODEL_USAGE_RAW_DIR still wins (the pin is a default, not a clobber) ---"
+MU_OVERRIDE="$TMP/explicit-override-lake"
+OUT56="$(printf '%s' "$MU_PLAN" | env MODEL_USAGE_RAW_DIR="$MU_OVERRIDE" PIPELINE_RAW_DIR="$TMP/decoy-lake" \
+          CLAUDE_BIN="$CAP_DOUBLE" CAP_DIR="$TMP/cap56" PIPELINE_DRIVE_MODEL="claude-test" bash "$DRIVE")"
+[ "$(jq -r '.status' <<<"$OUT56")" = "ran" ] && ok "the drive still ran" || bad "t56.status" "$OUT56"
+[ -s "$MU_OVERRIDE/model-usage-$MU_MONTH.jsonl" ] \
+  && ok "an already-set MODEL_USAGE_RAW_DIR passes through untouched (the live test seam this suite itself relies on)" \
+  || bad "t56.override" "no record at $MU_OVERRIDE"
+[ ! -e "$TMP/decoy-lake/model-usage-$MU_MONTH.jsonl" ] \
+  && ok "…and PIPELINE_RAW_DIR does NOT override it" || bad "t56.precedence" "the decoy lake was written"
+
+echo "--- test 57: the \$HOME expansion is guarded — an unset HOME never aborts the seam (temperloop#1565) ---"
+# pipeline-drive.sh runs under `set -u`, where a bare $HOME in the pinned
+# default is an immediate abort. Assert on the SHIPPED bytes of the guard
+# itself rather than the whole script: with HOME unset the script already dies
+# earlier, inside build.config.sh (a pre-existing, unrelated condition), so a
+# whole-script run cannot tell a guarded seam from an unguarded one. Extracting
+# and evaluating the exact three-line block does.
+MU_GUARD_START="$(grep -n -F 'if [ -n "${MODEL_USAGE_RAW_DIR:-}" ]' "$DRIVE" | head -n1 | cut -d: -f1)"
+MU_GUARD_END="$((MU_GUARD_START + 2))"
+MU_GUARD="$(sed -n "${MU_GUARD_START},${MU_GUARD_END}p" "$DRIVE")"
+[ -n "$MU_GUARD_START" ] && [ "$(sed -n "${MU_GUARD_END}p" "$DRIVE")" = "fi" ] \
+  && ok "located the guarded pin block in the shipped script" || bad "t57.locate" "block not found at $MU_GUARD_START"
+MU_G1="$(env -u HOME -u PIPELINE_RAW_DIR -u MODEL_USAGE_RAW_DIR bash -c \
+  'set -uo pipefail; '"$MU_GUARD"'; printf "SURVIVED:%s" "${_MODEL_USAGE_SINK_DIR:-<unset>}"' 2>&1)" || MU_G1="ABORTED:$MU_G1"
+[ "$MU_G1" = "SURVIVED:<unset>" ] \
+  && ok "HOME/PIPELINE_RAW_DIR/MODEL_USAGE_RAW_DIR all unset → the seam sets nothing and does not abort (the emitter keeps its own default)" \
+  || bad "t57.unset-home" "got '$MU_G1'"
+# BSD env(1): every -u must precede the NAME=VALUE assignments (a trailing
+# -u is parsed as a command name and fails "No such file or directory").
+MU_G2="$(env -u PIPELINE_RAW_DIR -u MODEL_USAGE_RAW_DIR HOME="$TMP/fakehome" bash -c \
+  'set -uo pipefail; '"$MU_GUARD"'; printf "%s" "$_MODEL_USAGE_SINK_DIR"' 2>&1)" || MU_G2="ABORTED:$MU_G2"
+[ "$MU_G2" = "$TMP/fakehome/dev/foundation/meta/data/raw" ] \
+  && ok "with HOME set and no overrides, the pin resolves to the canonical absolute sink" || bad "t57.home-set" "got '$MU_G2'"
+MU_G3="$(env -u HOME -u MODEL_USAGE_RAW_DIR PIPELINE_RAW_DIR="$TMP/pin-lake" bash -c \
+  'set -uo pipefail; '"$MU_GUARD"'; printf "%s" "$_MODEL_USAGE_SINK_DIR"' 2>&1)" || MU_G3="ABORTED:$MU_G3"
+[ "$MU_G3" = "$TMP/pin-lake" ] \
+  && ok "PIPELINE_RAW_DIR alone is enough — HOME is never expanded when it is not needed" || bad "t57.pipeline-only" "got '$MU_G3'"
+
+echo "--- test 58: the pinned literal matches pipeline-cron.sh's own RAW_DIR literal, byte-for-byte ---"
+# The wrapper is this script's PARENT. If the two literals ever drift, the
+# cron's own stream and this driver's model-usage stream resolve to different
+# directories whenever PIPELINE_RAW_DIR is unset — reintroducing #1565 by a
+# different route. Compare the shipped text, not a resolved path.
+MU_CRON_LIT="$(grep -F 'RAW_DIR="${PIPELINE_RAW_DIR:-' "$(cd "$HERE/.." && pwd)/pipeline-cron.sh" | head -n1 | sed -E 's/.*\$\{PIPELINE_RAW_DIR:-(.*)\}".*/\1/')"
+MU_DRIVE_LIT="$(grep -F 'MODEL_USAGE_RAW_DIR:-${PIPELINE_RAW_DIR:-' "$DRIVE" | grep -v '^[[:space:]]*#' | head -n1 | sed -E 's/.*\$\{PIPELINE_RAW_DIR:-(.*)\}\}".*/\1/')"
+[ -n "$MU_CRON_LIT" ] && [ "$MU_CRON_LIT" = "$MU_DRIVE_LIT" ] \
+  && ok "pipeline-drive.sh's pinned default ($MU_DRIVE_LIT) equals pipeline-cron.sh's RAW_DIR literal verbatim" \
+  || bad "t58.equal" "cron='$MU_CRON_LIT' drive='$MU_DRIVE_LIT'"
+
+# ── 59: the spawned driver must not inherit the sink pin (temperloop#1565) ────
+# THE REGRESSION THIS GUARDS, and why it is not cosmetic. Handing the emitter
+# its sink via `export MODEL_USAGE_RAW_DIR` at the top of this script works for
+# the emitter and breaks everything downstream: an export is process-wide and
+# INHERITED, and _spawn_in_checkout launches a headless `claude -p` with the
+# full inherited environment. That session runs /pipeline-drive → /build →
+# scripts/quality-gates.sh, and MODEL_USAGE_RAW_DIR is read by more than the
+# emitter — validate-model-usage-emit.sh and validate-provider-disclosure.sh
+# both consult it. An exported pin therefore silently converts two REPO-SCOPED
+# gates into PRODUCTION-DATA gates inside an autonomous drive: the emit
+# validator strict-parses a long-lived append-only stream written by several
+# emitter versions, and the disclosure gate joins production sends against the
+# WORKTREE's disclosure log. That is #1565's own defect class inverted.
+#
+# So the pin is applied as a per-command prefix on the emitter alone, and the
+# spawned child must see NOTHING. This case fails against the exported version.
+echo "--- test 59: the spawned driver's environment carries NO sink pin (temperloop#1565 review) ---"
+ENV_DOUBLE="$TMP/claude-env-probe.sh"
+cat > "$ENV_DOUBLE" <<'ENVDOUBLE'
+#!/usr/bin/env bash
+# Record what THIS CHILD sees, then behave like the ordinary capture double.
+printf '%s\n' "${MODEL_USAGE_RAW_DIR:-<unset>}" >> "$ENV_REC"
+echo '{"driver":"pipeline-drive","layer":"5b","executed":1,"failed":0,"refused":0,"results":[]}'
+ENVDOUBLE
+chmod +x "$ENV_DOUBLE"
+ENV_REC59="$TMP/env59.txt"
+MU_LAKE59="$TMP/lake59"
+OUT59="$(printf '%s' "$MU_PLAN" | env -u MODEL_USAGE_RAW_DIR PIPELINE_RAW_DIR="$MU_LAKE59" \
+          CLAUDE_BIN="$ENV_DOUBLE" ENV_REC="$ENV_REC59" PIPELINE_DRIVE_MODEL="claude-test" bash "$DRIVE")"
+[ "$(jq -r '.status' <<<"$OUT59")" = "ran" ] && ok "the drive ran" || bad "t59.status" "$OUT59"
+[ -s "$ENV_REC59" ] && ok "the headless driver double was spawned" || bad "t59.spawned" "no spawn recorded"
+[ "$(head -n1 "$ENV_REC59")" = "<unset>" ] \
+  && ok "the spawned driver inherits NO MODEL_USAGE_RAW_DIR — its quality gates keep reading their own checkout" \
+  || bad "t59.inherited" "the child inherited MODEL_USAGE_RAW_DIR=$(head -n1 "$ENV_REC59")"
+[ -s "$MU_LAKE59/model-usage-$MU_MONTH.jsonl" ] \
+  && ok "…while the emitter still wrote to the pinned canonical lake (the pin works, it just does not leak)" \
+  || bad "t59.emit" "no record at $MU_LAKE59"
+
+echo "--- test 60: an operator-exported MODEL_USAGE_RAW_DIR still reaches the child unchanged ---"
+# The complement, so t59 cannot be satisfied by scrubbing the variable on the
+# way out: if the OPERATOR's environment exports it, that is their call and this
+# script neither injects nor strips. t59 proves we add no leak; this proves we
+# do not silently remove an inherited one.
+ENV_REC60="$TMP/env60.txt"
+OUT60="$(printf '%s' "$MU_PLAN" | env MODEL_USAGE_RAW_DIR="$TMP/lake60" \
+          CLAUDE_BIN="$ENV_DOUBLE" ENV_REC="$ENV_REC60" PIPELINE_DRIVE_MODEL="claude-test" bash "$DRIVE")"
+[ "$(jq -r '.status' <<<"$OUT60")" = "ran" ] && ok "the drive ran" || bad "t60.status" "$OUT60"
+[ "$(head -n1 "$ENV_REC60")" = "$TMP/lake60" ] \
+  && ok "an operator-exported value reaches the child untouched" || bad "t60.passthrough" "got $(head -n1 "$ENV_REC60")"
+
+# ── 61: the pin is applied at the EMIT call, not the process (structural) ─────
+echo "--- test 61: neither caller exports MODEL_USAGE_RAW_DIR (structural anti-regression) ---"
+# A behavioural test can only catch the leak on the paths it exercises; this
+# catches it wherever it is reintroduced, and names the correct mechanism.
+for f in "$DRIVE" "$(cd "$HERE/.." && pwd)/pipeline-retro-judge-spawn.sh"; do
+  if grep -v '^[[:space:]]*#' "$f" | grep -E 'export[[:space:]]+MODEL_USAGE_RAW_DIR' >/dev/null; then
+    bad "t61.export" "$(basename "$f") exports MODEL_USAGE_RAW_DIR — use the scoped _MODEL_USAGE_SINK_DIR pin instead"
+  else
+    ok "$(basename "$f") does not export MODEL_USAGE_RAW_DIR"
+  fi
+  if grep -v '^[[:space:]]*#' "$f" | grep -F '_MODEL_USAGE_SINK_DIR=' >/dev/null; then
+    ok "$(basename "$f") sets the scoped, non-exported _MODEL_USAGE_SINK_DIR pin"
+  else
+    bad "t61.pin" "$(basename "$f") no longer sets _MODEL_USAGE_SINK_DIR"
+  fi
+done
+MU_LIB="$(cd "$HERE/../.." && pwd)/lib/model-usage-envelope.sh"
+grep -F 'MODEL_USAGE_RAW_DIR="$_MODEL_USAGE_SINK_DIR" "$emit_script"' "$MU_LIB" >/dev/null \
+  && ok "the shared lib applies the sink as a PER-COMMAND prefix on the emitter alone" \
+  || bad "t61.lib" "model-usage-envelope.sh no longer applies the sink as a per-command prefix"
+
 # ── summary ──────────────────────────────────────────────────────────────────
 echo
 echo "pipeline-drive tests: $pass passed, $fail failed"

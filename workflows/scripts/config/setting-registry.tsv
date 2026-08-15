@@ -38,6 +38,23 @@
 #                where one exists) rather than one row per duplicate site,
 #                since the literals are identical and a future equality
 #                lint gains nothing from redundant rows.
+#                  A SECOND, differently-shaped duplicate exists and follows
+#                the same one-row rule for a different reason: a CONSUMING
+#                CALLER that PINS a registered setting to a value the owning
+#                script cannot know, before invoking that owner. The live case
+#                is MODEL_USAGE_RAW_DIR (temperloop#1565): its owner,
+#                emit-model-usage.sh, correctly defaults to a checkout-relative
+#                path and deliberately refuses to guess a foreign one, so its
+#                two pipeline callers (pipeline-drive.sh, pipeline-retro-judge-
+#                spawn.sh) each export the canonical absolute sink themselves.
+#                Those literals DIFFER from the owner's on purpose, so — unlike
+#                the byte-identical case above — a second row would be WRONG
+#                twice over: it would assert a default the owner does not have,
+#                and the equality check walks EVERY seam for a name in a row's
+#                owning-script, so the callers' own `${NAME:-}` set-ness guard
+#                would fail it. One row, owner's literal, and each caller
+#                documents its pin in its own comment. The unregistered sweep is
+#                name-only by design, which is what keeps a caller pin legal.
 # doc            one-line description of what the setting controls.
 #
 # ── type (closed set) ───────────────────────────────────────────────────
@@ -249,6 +266,7 @@ PIPELINE_TICK_BIN	$HERE/pipeline-tick.sh	path	kernel	workflows/scripts/build/pip
 PIPELINE_DRIVE_BIN	$HERE/pipeline-drive.sh	path	kernel	workflows/scripts/build/pipeline-cron.sh	Test-double seam for the drive sub-script
 PIPELINE_ISSUE_META_BIN	$HERE/../issue-meta-snapshot.sh	path	kernel	workflows/scripts/build/pipeline-cron.sh	Test-double seam for the issue-meta-snapshot sub-script
 REWORK_SNAPSHOT_BIN	$HERE/../rework-snapshot.sh	path	kernel	workflows/scripts/build/pipeline-cron.sh	Test-double seam for the rework-snapshot sub-script
+MODEL_USAGE_VALIDATE_BIN	$HERE/../validate-model-usage-emit.sh	path	kernel	workflows/scripts/build/pipeline-cron.sh	Test-double seam for the model-usage lake validator pipeline-cron.sh Step 4.5 runs against the PRODUCTION lake ($RAW_DIR) after a live drive (temperloop#1565) — the verdict is folded into the drive record as model_usage_lake {status,dir,files,records[,reason]}; fail-open, a bad or missing validator never breaks the wake
 PIPELINE_ENABLED_BOARDS	3	string	kernel	workflows/scripts/build/pipeline-cron.sh	Space-separated board ids the pipeline ticks
 PIPELINE_LOG_DIR	$HOME/.claude/funnel/log	path	kernel	workflows/scripts/build/pipeline-cron.sh	Local (non-git-archived) pipeline wake-record log dir
 PIPELINE_CRON_SELF_UPDATE	0	bool	kernel	workflows/scripts/build/pipeline-cron.sh	Opt-in: fetch+hard-reset the checkout to origin/main and re-exec before ticking
@@ -293,7 +311,7 @@ CMD_RUN_RAW_DIR	$raw_root/meta/data/raw	path	kernel	workflows/scripts/emit-comma
 DIAGNOSE_QUEUE_RAW_DIR	$raw_root/meta/data/raw	path	kernel	workflows/scripts/emit-diagnose-queue.sh	Sink dir for the gate.sh diagnose-queue verdict stream (temperloop#1192) — same same-file $VAR-indirection convention as CMD_RUN_RAW_DIR/SESSION_CONTEXT_RAW_DIR, recorded verbatim per this file’s own "never pre-resolved" rule
 SESSION_CONTEXT_RAW_DIR	$raw_root/meta/data/raw	path	kernel	workflows/scripts/emit-session-context.sh	Sink dir for the realized-session-context-probe raw-lake stream (temperloop#828) — same same-file $VAR-indirection convention as CMD_RUN_RAW_DIR/GH_PERF_RAW_DIR above, recorded verbatim
 ITEM_EFFICIENCY_RAW_DIR	$raw_root/meta/data/raw	path	kernel	workflows/scripts/emit-item-efficiency.sh	Sink dir for the per-merged-item efficiency raw-lake stream (temperloop#943) — same same-file $VAR-indirection convention as CMD_RUN_RAW_DIR/SESSION_CONTEXT_RAW_DIR above, recorded verbatim
-MODEL_USAGE_RAW_DIR	$raw_root/meta/data/raw	path	kernel	workflows/scripts/emit-model-usage.sh	Sink dir for the per-spawned-seat model-usage attribution raw-lake stream (temperloop#1253, epic #1225, ADR 0026) — same same-file $VAR-indirection convention as CMD_RUN_RAW_DIR/ITEM_EFFICIENCY_RAW_DIR above, recorded verbatim
+MODEL_USAGE_RAW_DIR	$raw_root/meta/data/raw	path	kernel	workflows/scripts/emit-model-usage.sh	Sink dir for the per-spawned-seat model-usage attribution raw-lake stream (temperloop#1253, epic #1225, ADR 0026) — same same-file $VAR-indirection convention as CMD_RUN_RAW_DIR/ITEM_EFFICIENCY_RAW_DIR above, recorded verbatim. CALLER-PINNED at two consuming sites (temperloop#1565 — see this file's own owning-script note on caller pins): pipeline-drive.sh and pipeline-retro-judge-spawn.sh each resolve the canonical absolute sink ${PIPELINE_RAW_DIR:-$HOME/dev/foundation/meta/data/raw}, byte-for-byte pipeline-cron.sh's own RAW_DIR literal, and hand it to the emitter as a PER-COMMAND env prefix — because the pipeline runs the kernel copy VENDORED under a consuming checkout, where the owner's two-level climb lands on the vendored kernel's stub meta/data/raw/ instead of a real lake. NEVER an export: this name is ALSO read by validate-model-usage-emit.sh, validate-provider-disclosure.sh, model-comparison/replay.sh, model-comparison/tagging.sh and report-producers/model-comparison, so an exported pin is inherited by the headless claude those drivers spawn and silently turns that session's two repo-scoped quality gates into production-data gates. The ${PIPELINE_RAW_DIR:-...} chain inside the pin is a DELIBERATE, reviewed operator decision rather than incidental: without it a harness that isolates PIPELINE_RAW_DIR to a throwaway dir would fall THROUGH to the literal $HOME/dev/foundation lake and write test records into the real production stream. Those pins are DELIBERATELY not registry rows; the owner's own literal below stays the registered default
 GH_PERF_RAW_DIR	$raw_root/meta/data/raw	path	kernel	workflows/scripts/emit-gh-perf.sh	Sink dir for the gh-performance raw-lake stream (registry-maintenance fix, registry-config-lints — the seam's own default is a same-file $VAR indirection, recorded verbatim per this file's own "never pre-resolved" rule)
 TELEMETRY_RAW_DIR	$raw_root/meta/data/raw	path	kernel	workflows/scripts/telemetry-brief.sh	Raw-lake dir the kernel telemetry-brief reader falls back to for any stream whose own emitter *_RAW_DIR override is unset, and — when explicitly set — still wins for the PIPELINE stream too (temperloop#1564); only when NEITHER PIPELINE_RAW_DIR nor an explicit TELEMETRY_RAW_DIR is given does the PIPELINE stream instead fall through to the writer's own absolute pin, $HOME/dev/foundation/meta/data/raw, matching pipeline-retro-health.sh's identical three-way resolution (temperloop#431 — the seam's own default is a same-file $VAR indirection, recorded verbatim per this file's own "never pre-resolved" rule)
 TELEMETRY_LOOKBACK_DAYS	7	int	kernel	workflows/scripts/telemetry-brief.sh	Lookback window (days) for every windowed number in the kernel telemetry brief; the --lookback-days flag wins over the env var (temperloop#431)

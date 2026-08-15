@@ -839,6 +839,162 @@ RC24=$?
 [ "$(jq -r '.rework_snapshot["3"] | has("reason")' "$LOGD24/latest.json")" = "true" ] \
   && ok "the recorded failure carries a reason" || bad "w24.reason" "$(jq -c '.rework_snapshot["3"]' "$LOGD24/latest.json")"
 
+# ╭──────────────────────────────────────────────────────────────────────────╮
+# │ temperloop#1565 — Step 4.5: run the model-usage schema validator against    │
+# │ the PRODUCTION lake. validate-model-usage-emit.sh was correct but had no    │
+# │ caller pointed at production, so a corrupt or absent production stream was  │
+# │ never detected. Gated to a LIVE drive (the only thing that writes that      │
+# │ stream), folded into the drive record as `model_usage_lake`, fail-open.     │
+# ╰──────────────────────────────────────────────────────────────────────────╯
+
+# Tick stub that emits a REAL action, so nonop > 0 and Step 4 (drive) fires —
+# TICK_NOOP above deliberately emits none, which would skip the drive entirely.
+TICK_DRIVE="$TMP/tick-drive.sh"
+printf '%s\n' '#!/usr/bin/env bash' \
+  'echo "{\"tick\":\"done\",\"actions\":[{\"phase\":\"drain\",\"action\":\"drain-answer\",\"board\":\"3\",\"repo\":\"o/r\",\"issue\":42}]}"' > "$TICK_DRIVE"
+chmod +x "$TICK_DRIVE"
+
+# Drive stub: consumes the piped plan, emits a well-formed drive record.
+DRIVE_OK="$TMP/drive-ok.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'cat >/dev/null' \
+  'echo "{\"event\":\"drive\",\"status\":\"ran\",\"driven\":1}"' > "$DRIVE_OK"
+chmod +x "$DRIVE_OK"
+
+# Validator double: records the MODEL_USAGE_RAW_DIR it was handed (the property
+# that matters — a validator pointed at the wrong dir is the very defect this
+# step exists to catch), then behaves as MU_STUB_MODE asks.
+MU_STUB="$TMP/mu-validate-stub.sh"
+printf '%s\n' '#!/usr/bin/env bash' \
+  'printf "%s\n" "${MODEL_USAGE_RAW_DIR:-<unset>}" >> "$MU_SENTINEL"' \
+  'case "${MU_STUB_MODE:-ok}" in' \
+  '  fail) echo "FAIL  record 3: unknown field host (schema is CLOSED)"; exit 1 ;;' \
+  '  cannot) echo "validate-model-usage-emit: CANNOT EVALUATE — python3 not found" >&2; exit 1 ;;' \
+  '  silent) exit 1 ;;' \
+  '  *) echo "validate-model-usage-emit: OK"; exit 0 ;;' \
+  'esac' > "$MU_STUB"
+chmod +x "$MU_STUB"
+
+# A seeded PRODUCTION lake: two model-usage rows across one month file, so the
+# recorded counts are asserted against a known truth rather than "some number".
+mu_seed_lake() {  # $1 = dir
+  mkdir -p "$1"
+  printf '%s\n%s\n' '{"seat":"pipeline-drive-safe"}' '{"seat":"retro-judge"}' \
+    > "$1/model-usage-2026-06.jsonl"
+}
+
+mu_run_live() {  # $1=logdir $2=rawdir $3=sentinel ; extra env via the caller's env
+  env PIPELINE_NOW_HOUR=14 PIPELINE_NOW_DATE=2026-06-25 PIPELINE_SCHEDULE_FILE="$F" \
+    PIPELINE_TICK_BIN="$TICK_DRIVE" PIPELINE_DRIVE_BIN="$DRIVE_OK" PIPELINE_DRIVE=1 \
+    PIPELINE_LOG_DIR="$1" PIPELINE_RAW_DIR="$2" PIPELINE_NOTIFY_CMD="true" \
+    PIPELINE_OPERATOR="@testops" PIPELINE_ISSUE_META_BIN="/usr/bin/true" \
+    REWORK_SNAPSHOT_BIN="/usr/bin/true" REWORK_SENTINEL="$TMP/unused-rework.txt" \
+    MU_SENTINEL="$3" MU_STUB_MODE="${MU_STUB_MODE:-ok}" \
+    MODEL_USAGE_VALIDATE_BIN="${MU_BIN:-$MU_STUB}" \
+    bash "$CRON"
+}
+
+# ── WRAPPER 25: a live drive runs the validator against the PRODUCTION lake ───
+echo "--- wrapper 25: live drive → validator runs once, pointed at \$RAW_DIR, verdict folded into the drive record (temperloop#1565) ---"
+LOGD25="$TMP/wlog25"; RAW25="$TMP/raw25"; SENT25="$TMP/mu25.txt"
+mu_seed_lake "$RAW25"
+# `set -e` is in force for this suite: a bare `OUT="$(…)"` assignment ABORTS
+# the run when the command fails, so the following `RC=$?` could only ever
+# observe 0 and the fail-open assertion was unreachable. Same `&& …|| RC=$?`
+# idiom the drive suite uses for its own rc captures.
+OUT25="$(mu_run_live "$LOGD25" "$RAW25" "$SENT25")" && RC25=0 || RC25=$?
+[ "$RC25" -eq 0 ] && ok "the wake exits 0" || bad "w25.rc" "exit=$RC25"
+[ -f "$SENT25" ] && ok "the validator was invoked on a live drive" || bad "w25.invoked" "validator never ran"
+[ "$(wc -l < "$SENT25" | tr -d ' ')" = "1" ] && ok "invoked exactly once per drive wake (not once per board)" || bad "w25.count" "$(cat "$SENT25" 2>/dev/null)"
+[ "$(head -n1 "$SENT25")" = "$RAW25" ] \
+  && ok "it was pointed at the PRODUCTION lake (\$RAW_DIR), not the checkout's own meta/data/raw" \
+  || bad "w25.dir" "got $(head -n1 "$SENT25"), want $RAW25"
+MU_REC25="$(jq -c 'select(.event=="drive") | .model_usage_lake' "$LOGD25/2026-06-25.jsonl")"
+[ "$(jq -r '.status' <<<"$MU_REC25")" = "ok" ] && ok "the drive record carries model_usage_lake.status=ok" || bad "w25.status" "$MU_REC25"
+[ "$(jq -r '.dir' <<<"$MU_REC25")" = "$RAW25" ] && ok "…naming the RESOLVED dir it checked (legible, not an unqualified 'ok')" || bad "w25.recdir" "$MU_REC25"
+[ "$(jq -r '.files' <<<"$MU_REC25")" = "1" ] && ok "…with the observed month-file count" || bad "w25.files" "$MU_REC25"
+[ "$(jq -r '.records' <<<"$MU_REC25")" = "2" ] && ok "…and the observed record count (the seeded 2 rows)" || bad "w25.records" "$MU_REC25"
+[ "$(jq -r 'select(.event=="drive") | .status' "$LOGD25/2026-06-25.jsonl")" = "ran" ] \
+  && ok "the drive record's own status is untouched by the fold" || bad "w25.drivestatus" "$(cat "$LOGD25/2026-06-25.jsonl")"
+
+# ── WRAPPER 26: an EMPTY production lake is legible, not silently "clean" ─────
+echo "--- wrapper 26: an empty production stream reads as records:0 beside the drive that should have written one ---"
+# THE DEFECT CLASS temperloop#1565 is about: the validator's own contract makes
+# an empty/absent lake LEGAL, so a status of "ok" alone would report a clean
+# state nobody verified. The counts are what make the emptiness visible.
+LOGD26="$TMP/wlog26"; RAW26="$TMP/raw26"; SENT26="$TMP/mu26.txt"
+OUT26="$(mu_run_live "$LOGD26" "$RAW26" "$SENT26")"
+MU_REC26="$(jq -c 'select(.event=="drive") | .model_usage_lake' "$LOGD26/2026-06-25.jsonl")"
+[ "$(jq -r '.status' <<<"$MU_REC26")" = "ok" ] && ok "an empty lake is still a passing schema verdict (the validator's own contract)" || bad "w26.status" "$MU_REC26"
+[ "$(jq -r '.files' <<<"$MU_REC26")" = "0" ] && [ "$(jq -r '.records' <<<"$MU_REC26")" = "0" ] \
+  && ok "…but files:0/records:0 makes the empty stream VISIBLE next to a drive that ran" || bad "w26.counts" "$MU_REC26"
+
+# ── WRAPPER 27: a schema FAIL is recorded with its reason, and is fail-open ───
+echo "--- wrapper 27: a failing validator is recorded (status+reason) and never breaks the wake ---"
+LOGD27="$TMP/wlog27"; RAW27="$TMP/raw27"; SENT27="$TMP/mu27.txt"
+mu_seed_lake "$RAW27"
+# See the RC25 note above — captured so a non-zero wake is actually observed.
+OUT27="$(MU_STUB_MODE=fail mu_run_live "$LOGD27" "$RAW27" "$SENT27")" && RC27=0 || RC27=$?
+[ "$RC27" -eq 0 ] && ok "the wake still exits 0 (fail-open: report, never abort)" || bad "w27.rc" "exit=$RC27"
+[ "$(jq -r '.event' <<<"$OUT27")" = "ran" ] && ok "the wake summary is still event=ran" || bad "w27.event" "$OUT27"
+MU_REC27="$(jq -c 'select(.event=="drive") | .model_usage_lake' "$LOGD27/2026-06-25.jsonl")"
+[ "$(jq -r '.status' <<<"$MU_REC27")" = "fail" ] && ok "model_usage_lake.status=fail (recorded, not dropped)" || bad "w27.status" "$MU_REC27"
+jq -e '.reason | test("unknown field host")' <<<"$MU_REC27" >/dev/null \
+  && ok "…carrying the validator's own FAIL line as the reason" || bad "w27.reason" "$MU_REC27"
+
+# ── WRAPPER 28: CANNOT EVALUATE is NOT reported as corrupt data ───────────────
+echo "--- wrapper 28: a non-evaluable validator is 'unavailable', never 'fail' ---"
+# The validator's two failure modes are distinct: a schema verdict vs an
+# inability to evaluate (no python3/jq, unreadable file). Collapsing them would
+# report a tooling gap as a corrupt lake and send the operator hunting a bug
+# that isn't there.
+LOGD28="$TMP/wlog28"; RAW28="$TMP/raw28"; SENT28="$TMP/mu28.txt"
+mu_seed_lake "$RAW28"
+OUT28="$(MU_STUB_MODE=cannot mu_run_live "$LOGD28" "$RAW28" "$SENT28")"
+MU_REC28="$(jq -c 'select(.event=="drive") | .model_usage_lake' "$LOGD28/2026-06-25.jsonl")"
+[ "$(jq -r '.status' <<<"$MU_REC28")" = "unavailable" ] \
+  && ok "CANNOT EVALUATE → status=unavailable (distinct from a schema fail)" || bad "w28.status" "$MU_REC28"
+jq -e '.reason | test("CANNOT EVALUATE")' <<<"$MU_REC28" >/dev/null \
+  && ok "…and the reason names it" || bad "w28.reason" "$MU_REC28"
+
+# ── WRAPPER 29: a MISSING validator is 'unavailable', wake unaffected ─────────
+echo "--- wrapper 29: a missing/non-executable validator → unavailable, wake still succeeds ---"
+LOGD29="$TMP/wlog29"; RAW29="$TMP/raw29"; SENT29="$TMP/mu29.txt"
+mu_seed_lake "$RAW29"
+# See the RC25 note above — captured so a non-zero wake is actually observed.
+OUT29="$(MU_BIN="$TMP/no-such-validator.sh" mu_run_live "$LOGD29" "$RAW29" "$SENT29")" && RC29=0 || RC29=$?
+[ "$RC29" -eq 0 ] && ok "the wake exits 0 with no validator present" || bad "w29.rc" "exit=$RC29"
+MU_REC29="$(jq -c 'select(.event=="drive") | .model_usage_lake' "$LOGD29/2026-06-25.jsonl")"
+[ "$(jq -r '.status' <<<"$MU_REC29")" = "unavailable" ] \
+  && ok "a missing validator is reported, not silently skipped" || bad "w29.status" "$MU_REC29"
+[ "$(jq -r '.records' <<<"$MU_REC29")" = "2" ] \
+  && ok "…and the lake counts are still reported (the cheap half never depends on the validator)" || bad "w29.records" "$MU_REC29"
+
+# ── WRAPPER 30: the COST GATE — no drive, no check ───────────────────────────
+echo "--- wrapper 30: the validator never runs on a wake that drove nothing, or on --dry-run ---"
+# The cost answer: an hourly wake that skipped, no-op'd, or ran with
+# PIPELINE_DRIVE off must not pay to strict-parse a lake nothing wrote.
+LOGD30="$TMP/wlog30"; RAW30="$TMP/raw30"; SENT30="$TMP/mu30.txt"
+mu_seed_lake "$RAW30"
+env PIPELINE_NOW_HOUR=14 PIPELINE_NOW_DATE=2026-06-25 PIPELINE_SCHEDULE_FILE="$F" \
+  PIPELINE_TICK_BIN="$TICK_NOOP" PIPELINE_DRIVE_BIN="$DRIVE_OK" PIPELINE_DRIVE=1 \
+  PIPELINE_LOG_DIR="$LOGD30" PIPELINE_RAW_DIR="$RAW30" PIPELINE_NOTIFY_CMD="true" \
+  PIPELINE_OPERATOR="@testops" PIPELINE_ISSUE_META_BIN="/usr/bin/true" \
+  REWORK_SNAPSHOT_BIN="/usr/bin/true" REWORK_SENTINEL="$TMP/unused-rework.txt" \
+  MU_SENTINEL="$SENT30" MODEL_USAGE_VALIDATE_BIN="$MU_STUB" \
+  bash "$CRON" >/dev/null
+[ ! -f "$SENT30" ] && ok "a no-op tick (no drive) never invokes the validator" || bad "w30.noop" "$(cat "$SENT30" 2>/dev/null)"
+LOGD30B="$TMP/wlog30b"; RAW30B="$TMP/raw30b"; SENT30B="$TMP/mu30b.txt"
+FX30="$TMP/wfx30"; mk_fixture "$FX30"
+mu_seed_lake "$RAW30B"
+env PIPELINE_NOW_HOUR=14 PIPELINE_NOW_DATE=2026-06-25 PIPELINE_SCHEDULE_FILE="$F" \
+  PIPELINE_DRIVE=1 CLAUDE_BIN="/usr/bin/true" \
+  PIPELINE_LOG_DIR="$LOGD30B" PIPELINE_RAW_DIR="$RAW30B" PIPELINE_NOTIFY_CMD="true" \
+  MU_SENTINEL="$SENT30B" MODEL_USAGE_VALIDATE_BIN="$MU_STUB" \
+  bash "$CRON" --dry-run --fixture "$FX30" >/dev/null
+[ ! -f "$SENT30B" ] && ok "a --dry-run wake never invokes the validator (no records written, no cost paid)" || bad "w30.dryrun" "$(cat "$SENT30B" 2>/dev/null)"
+[ "$(jq -r 'select(.event=="drive") | has("model_usage_lake")' "$LOGD30B/2026-06-25.jsonl" 2>/dev/null | tail -1)" != "true" ] \
+  && ok "…and no model_usage_lake key is folded into a dry-run drive record" || bad "w30.key" "$(jq -c 'select(.event=="drive")' "$LOGD30B/2026-06-25.jsonl" 2>/dev/null)"
+
 # ── summary ──────────────────────────────────────────────────────────────────
 echo
 echo "pipeline-cron tests: $pass passed, $fail failed"

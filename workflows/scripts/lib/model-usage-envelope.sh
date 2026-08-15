@@ -91,6 +91,49 @@
 # Kept bash-3.2-friendly (macOS dev shell + Linux CI) — no mapfile, no
 # associative arrays.
 
+# _model_usage_run_emit <emit-script> [args…] — run the emitter with the
+# caller's resolved sink applied as a PER-COMMAND env prefix, never an export.
+#
+# WHY A PREFIX AND NOT AN EXPORT (temperloop#1565, review follow-up). The
+# callers know the canonical lake dir the emitter cannot derive for itself, and
+# the obvious way to hand it over is `export MODEL_USAGE_RAW_DIR` at the top of
+# the caller. That is WRONG, and the failure is not hypothetical: an export is
+# process-wide and INHERITED, and pipeline-drive.sh spawns a headless
+# `claude -p` driver with the full inherited environment. That session runs
+# /pipeline-drive → /build → scripts/quality-gates.sh, and MODEL_USAGE_RAW_DIR
+# is read by more than the emitter — validate-model-usage-emit.sh and
+# validate-provider-disclosure.sh both consult it, as do the model-comparison
+# readers (replay.sh, tagging.sh, report-producers/model-comparison). An
+# exported pin therefore silently converts two REPO-SCOPED quality gates into
+# PRODUCTION-DATA gates inside an autonomous drive: the emit validator starts
+# strict-parsing a long-lived append-only stream written by multiple emitter
+# versions (observed: a legacy record fails the CLOSED schema), and the
+# disclosure gate joins production sends against the WORKTREE's disclosure log,
+# so every non-default-provider production send reads as SEND-WITHOUT-DISCLOSURE
+# and a single non-JSON line anywhere in the lake hard-aborts it. That is
+# temperloop#1565's own defect class inverted — a check reading the wrong lake.
+#
+# The prefix binds the variable for the emitter process ALONE. `_`-prefixed
+# because it is private implementation state shared between this lib and its
+# callers, not an operator-tunable setting (the setting-registry sweep excludes
+# `_`-prefixed names for exactly this category). Empty/unset ⇒ no prefix at
+# all, so the emitter keeps its own checkout-relative default.
+#
+# Stdout is silenced here, once, for every path — see this file's own STDOUT
+# DISCIPLINE note above: all three callers must put exactly one JSON object on
+# their own stdout, and emit-model-usage.sh unconditionally echoes the record it
+# appended.
+_model_usage_run_emit() {
+  local emit_script="$1"
+  shift
+  if [ -n "${_MODEL_USAGE_SINK_DIR:-}" ]; then
+    MODEL_USAGE_RAW_DIR="$_MODEL_USAGE_SINK_DIR" "$emit_script" "$@" >/dev/null || true
+  else
+    "$emit_script" "$@" >/dev/null || true
+  fi
+  return 0
+}
+
 model_usage_emit_from_envelope() {
   local seat="$1" req_model="$2" outcome_ref="$3" repo="$4" emit_script="$5"
   local blob
@@ -106,7 +149,7 @@ model_usage_emit_from_envelope() {
   if ! command -v jq >/dev/null 2>&1; then
     local args=(--seat "$seat" --model "$req_model" --usage-source unavailable --outcome-ref "$outcome_ref")
     [ -n "$repo" ] && args+=(--repo "$repo")
-    "$emit_script" "${args[@]}" >/dev/null || true
+    _model_usage_run_emit "$emit_script" "${args[@]}"
     return 0
   fi
 
@@ -148,7 +191,7 @@ model_usage_emit_from_envelope() {
       args+=(--model "$resolved_model" --usage-source cli-envelope --provider anthropic \
              --input-tokens "$input" --output-tokens "$output" \
              --cache-read-tokens "$cache_read" --cache-creation-tokens "$cache_creation")
-      "$emit_script" "${args[@]}" >/dev/null || true
+      _model_usage_run_emit "$emit_script" "${args[@]}"
       return 0
     fi
   fi
@@ -157,6 +200,6 @@ model_usage_emit_from_envelope() {
   # to a clean non-negative integer) — attribution-only record. seat/model/
   # outcome-ref is still recorded; only usage_source degrades.
   args+=(--model "$req_model" --usage-source unavailable)
-  "$emit_script" "${args[@]}" >/dev/null || true
+  _model_usage_run_emit "$emit_script" "${args[@]}"
   return 0
 }

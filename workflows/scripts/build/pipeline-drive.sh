@@ -183,6 +183,71 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 [ -f "$HERE/../lib/model-usage-envelope.sh" ] && . "$HERE/../lib/model-usage-envelope.sh"
 MODEL_USAGE_EMIT="$HERE/../emit-model-usage.sh"
 
+# ── model-usage lake SINK — THE CALLER PINS IT (temperloop#1565) ──────────────
+# emit-model-usage.sh's OWN default is deliberately left alone: it climbs two
+# levels from its own file location (workflows/scripts/../.. == the root of
+# whatever checkout vendors it) and its comment block explicitly refuses to
+# guess a foreign path, which is exactly right for a stranger's STANDALONE
+# kernel checkout. It is wrong only for THIS caller, because the pipeline runs
+# the kernel copy VENDORED under a consuming checkout (…/foundation.cron/
+# kernel/) — a real directory, no symlink anywhere in the chain — so that climb
+# lands on the VENDORED kernel's own root and every record this driver emitted
+# went to <checkout>/kernel/meta/data/raw/, a stub dir holding nothing but a
+# README. Both real lakes held zero model-usage records. The knowledge the
+# emitter cannot have (which checkout is the canonical sink) is knowledge the
+# CALLER has, so the caller supplies it.
+#
+# Pinned to the same canonical sink pipeline-cron.sh's own `RAW_DIR=` assignment
+# pins its stream to, byte-for-byte in the default literal, for the reason
+# stated there: the sink is fixed regardless of which checkout the cron runs
+# from. (Cited by SYMBOL, never by line number — the number rots on every edit
+# above it, and test 58 already pins the two literals equal by grep.)
+# Byte-for-byte matters operationally, not just cosmetically — pipeline-cron.sh
+# is this script's parent, so an identical literal guarantees the wrapper's own
+# `$RAW_DIR` and this child's model-usage sink resolve to the same directory
+# whether or not PIPELINE_RAW_DIR is set in the environment.
+#
+# NOT EXPORTED — this is `_MODEL_USAGE_SINK_DIR`, private state the shared lib
+# applies as a PER-COMMAND prefix on the emitter alone
+# (`_model_usage_run_emit` in workflows/scripts/lib/model-usage-envelope.sh,
+# whose header carries the full rationale). An `export MODEL_USAGE_RAW_DIR`
+# here would be inherited by the headless `claude -p` driver this script spawns
+# below, and that session's own quality gates read the same variable — turning
+# validate-model-usage-emit.sh and validate-provider-disclosure.sh into
+# production-data gates inside an autonomous drive. Do not turn this back into
+# an export.
+#
+# THE `${PIPELINE_RAW_DIR:-…}` CHAIN IS DELIBERATE AND PROTECTIVE (operator
+# decision, reviewed). It could be dropped in favour of the bare literal, and
+# that would be worse: a harness that isolates PIPELINE_RAW_DIR to a throwaway
+# dir — which is exactly what the test suites and any fixture run do — would
+# then fall THROUGH to `$HOME/dev/foundation/meta/data/raw` and write test
+# records into the real production stream. Honouring PIPELINE_RAW_DIR keeps a
+# caller that has already redirected the pipeline's lake from silently
+# splattering this one stream somewhere else. Recorded as a trade-off, not an
+# accident.
+#
+# DUPLICATE SEAM, documented here per setting-registry.tsv's own owning-script
+# convention (the PIPELINE_OPERATOR precedent: a fallback duplicated in a
+# non-owning consuming script is documented in each duplicate site's own
+# comment and records NO second registry row). MODEL_USAGE_RAW_DIR's registry
+# row keeps naming emit-model-usage.sh as its owning script and that script's
+# own literal as the registered default; this site is a consuming caller's pin,
+# never a second source of truth. The registry lint's unregistered sweep is
+# name-only by design, so this seam is legal there; the equality check pins the
+# literal in the OWNING script only, which is untouched.
+#
+# `${MODEL_USAGE_RAW_DIR:-…}` — an already-set value passes through UNTOUCHED
+# and always wins; it is a live test seam (tests/test_pipeline_drive.sh points
+# the whole suite at a throwaway dir this way). $HOME is guarded because this
+# script runs under `set -u`: with MODEL_USAGE_RAW_DIR, PIPELINE_RAW_DIR and
+# HOME ALL unset there is no sink to name, so we set nothing at all and leave
+# the emitter on its own checkout-relative default. Telemetry never aborts a
+# drive.
+if [ -n "${MODEL_USAGE_RAW_DIR:-}" ] || [ -n "${PIPELINE_RAW_DIR:-}" ] || [ -n "${HOME:-}" ]; then
+  _MODEL_USAGE_SINK_DIR="${MODEL_USAGE_RAW_DIR:-${PIPELINE_RAW_DIR:-$HOME/dev/foundation/meta/data/raw}}"
+fi
+
 # Attribution for the gh call-logger shim (F#988 / foundation#1265): tag every
 # gh call this command makes with its outermost context. `:-` preserves an
 # already-set (outer) value, so a nested command's context isn't clobbered.

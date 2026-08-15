@@ -75,6 +75,22 @@ else
   printf 'apikey_present=0\n' >> "$rec"
 fi
 printf 'argv=%s\n' "$*" >> "$rec"
+# temperloop#1565 (review follow-up): record what THIS CHILD's environment says
+# about the model-usage sink. The parent resolves a pin for the emitter; if it
+# ever exports it instead of scoping it to the emit command, the pin lands here
+# — and the real child (a `claude -p` session) runs quality gates that read this
+# same variable. <unset> is the correct answer.
+printf 'mu_raw_dir=%s\n' "${MODEL_USAGE_RAW_DIR:-<unset>}" >> "$rec"
+# …and, when a case asks for it, ACT on that environment the way any child that
+# resolves a lake dir does: write a row into ${MODEL_USAGE_RAW_DIR:-<own default>}.
+# This is what gives t11's "nothing but model-usage files in the pinned dir"
+# assertion something real to catch — an exported pin diverts this write into
+# the pinned lake, a scoped one leaves it in the child's own dir.
+if [ -n "${RETRO_RUNS_PROBE_FALLBACK:-}" ]; then
+  probe_dir="${MODEL_USAGE_RAW_DIR:-$RETRO_RUNS_PROBE_FALLBACK}"
+  mkdir -p "$probe_dir" 2>/dev/null || true
+  printf '{"event":"retro-run","judged":1}\n' >> "$probe_dir/retro-runs-probe.jsonl"
+fi
 case "${DOUBLE_MODE:-clean}" in
   clean)      printf '{"type":"result","is_error":false,"result":"judged 2 trackers"}\n'; exit 0 ;;
   auth-zero)  printf '{"type":"result","is_error":true,"result":"Invalid API key - please run /login"}\n'; exit 0 ;;
@@ -264,6 +280,141 @@ set -e
 MODE=clean run_sut --board 6 >/dev/null
 grep -q -- '--board 6' "$REC" \
   && ok "the board reaches the /retro --pending prompt" || bad "t9.argv" "$(cat "$REC")"
+
+# ── 10-13: the model-usage lake sink is CALLER-PINNED (temperloop#1565) ───────
+# THE BUG this fixture models EXACTLY. emit-model-usage.sh derives its lake
+# root by climbing two levels from its OWN file location. The pipeline runs the
+# kernel copy VENDORED under a consuming checkout — which is precisely what
+# $TMP/checkout is here — so the climb landed on the vendored root and every
+# judge-spawn record went to <vendored>/meta/data/raw/ instead of a real lake.
+#
+# Copying the real emitter into the fixture (the sibling files above are copied
+# for the same reason) is what makes these cases exercise the production path:
+# without it model_usage_emit_from_envelope finds no executable emit script and
+# returns early, and the sink is never resolved at all.
+cp "$HERE/../../emit-model-usage.sh" "$TMP/checkout/workflows/scripts/emit-model-usage.sh"
+chmod +x "$TMP/checkout/workflows/scripts/emit-model-usage.sh"
+MU_MONTH="$(date -u +%Y-%m)"
+MU_VENDORED_LAKE="$TMP/checkout/meta/data/raw"     # where the UNFIXED climb landed
+
+echo "--- test 10: with MODEL_USAGE_RAW_DIR unset, the record lands in PIPELINE_RAW_DIR, not the vendored checkout (temperloop#1565) ---"
+MU_LAKE="$TMP/canonical-lake"
+: > "$REC"
+# BSD env(1): every -u precedes the NAME=VALUE assignments.
+MU_OUT10="$(env -u MODEL_USAGE_RAW_DIR PIPELINE_RAW_DIR="$MU_LAKE" \
+  DOUBLE_REC="$REC" NOTIFY_REC="$NOTIFY_REC" CLAUDE_BIN="$TMP/claude-double.sh" \
+  PIPELINE_NOTIFY_CMD="$TMP/notify.sh" DOUBLE_MODE=clean bash "$SUT" --board 3)" || true
+[ "$(jq -r '.status' <<<"$MU_OUT10")" = "ok" ] && ok "the judge spawn still reports ok" || bad "t10.status" "$MU_OUT10"
+[ -s "$MU_LAKE/model-usage-$MU_MONTH.jsonl" ] \
+  && ok "the model-usage record landed in the CANONICAL lake (\$PIPELINE_RAW_DIR)" \
+  || bad "t10.sink" "no record at $MU_LAKE/model-usage-$MU_MONTH.jsonl (dir: $(ls -A "$MU_LAKE" 2>/dev/null || echo MISSING))"
+grep -F '"seat":"retro-judge"' "$MU_LAKE/model-usage-$MU_MONTH.jsonl" >/dev/null 2>&1 \
+  && ok "…and it is this wrapper's own retro-judge seat record" \
+  || bad "t10.seat" "$(cat "$MU_LAKE/model-usage-$MU_MONTH.jsonl" 2>/dev/null)"
+[ ! -e "$MU_VENDORED_LAKE/model-usage-$MU_MONTH.jsonl" ] \
+  && ok "and NOTHING was written to the VENDORED checkout's own meta/data/raw (the pre-fix destination)" \
+  || bad "t10.vendored" "the vendored stub lake was written: $(cat "$MU_VENDORED_LAKE/model-usage-$MU_MONTH.jsonl" 2>/dev/null)"
+
+echo "--- test 11: RETRO-RUNS is untouched — the pin moves the model-usage stream ONLY (temperloop#1565) ---"
+# pipeline-retro-health.sh resolves the retro-runs stream CHECKOUT-RELATIVE on
+# the documented ground that THIS wrapper sets no retro-runs override. That
+# ground must survive the model-usage pin.
+#
+# The first half of this test used to be vacuous: it listed the pinned dir and
+# asserted no non-model-usage file was there, but nothing in the fixture ever
+# wrote a second stream, so it passed in every possible world — including one
+# where the property is violated. Fix it by giving it something real to catch:
+# RETRO_RUNS_PROBE_FALLBACK makes the CLAUDE_BIN double write a retro-runs row
+# into `${MODEL_USAGE_RAW_DIR:-<its own dir>}`, i.e. it behaves like any child
+# that resolves a lake dir out of its inherited environment. With the pin
+# correctly scoped to the emit command the row lands in the child's own dir;
+# with the pin exported it is diverted into the pinned lake and this fails.
+MU_PROBE_HOME="$TMP/child-own-lake"
+: > "$REC"
+env -u MODEL_USAGE_RAW_DIR PIPELINE_RAW_DIR="$MU_LAKE" \
+  RETRO_RUNS_PROBE_FALLBACK="$MU_PROBE_HOME" \
+  DOUBLE_REC="$REC" NOTIFY_REC="$NOTIFY_REC" CLAUDE_BIN="$TMP/claude-double.sh" \
+  PIPELINE_NOTIFY_CMD="$TMP/notify.sh" DOUBLE_MODE=clean bash "$SUT" --board 3 >/dev/null || true
+[ -s "$MU_PROBE_HOME/retro-runs-probe.jsonl" ] \
+  && ok "the child's own retro-runs row landed in the CHILD's dir (its environment carried no pin to follow)" \
+  || bad "t11.probe" "no probe row at $MU_PROBE_HOME (dir: $(ls -A "$MU_PROBE_HOME" 2>/dev/null || echo MISSING))"
+[ ! -e "$MU_LAKE/retro-runs-probe.jsonl" ] \
+  && ok "…and it was NOT diverted into the pinned model-usage lake" \
+  || bad "t11.diverted" "a retro-runs row was written into the pinned lake $MU_LAKE"
+grep -E 'RETRO_RUNS_RAW_DIR|TELEMETRY_RAW_DIR' "$SCRIPT" >/dev/null \
+  && bad "t11.vars" "the wrapper now names a retro-runs/telemetry raw-dir variable" \
+  || ok "the wrapper still names NO retro-runs or telemetry raw-dir variable (pipeline-retro-health.sh's stated premise holds)"
+
+echo "--- test 12: an explicitly-set MODEL_USAGE_RAW_DIR still wins (the pin is a default, not a clobber) ---"
+MU_OVERRIDE="$TMP/explicit-override-lake"
+: > "$REC"
+env MODEL_USAGE_RAW_DIR="$MU_OVERRIDE" PIPELINE_RAW_DIR="$TMP/decoy-lake" \
+  DOUBLE_REC="$REC" NOTIFY_REC="$NOTIFY_REC" CLAUDE_BIN="$TMP/claude-double.sh" \
+  PIPELINE_NOTIFY_CMD="$TMP/notify.sh" DOUBLE_MODE=clean bash "$SUT" --board 3 >/dev/null || true
+[ -s "$MU_OVERRIDE/model-usage-$MU_MONTH.jsonl" ] \
+  && ok "an already-set MODEL_USAGE_RAW_DIR passes through untouched (the live test seam this suite itself relies on)" \
+  || bad "t12.override" "no record at $MU_OVERRIDE"
+[ ! -e "$TMP/decoy-lake/model-usage-$MU_MONTH.jsonl" ] \
+  && ok "…and PIPELINE_RAW_DIR does NOT override it" || bad "t12.precedence" "the decoy lake was written"
+
+echo "--- test 13: the \$HOME expansion is guarded, and the literal matches pipeline-cron.sh's ---"
+# This wrapper runs under `set -u`, where a bare $HOME in the pinned default is
+# an immediate abort. With HOME unset the script already dies later, inside
+# build.config.sh (a pre-existing, unrelated condition), so assert on the
+# SHIPPED bytes of the guard block itself — that is what discriminates a
+# guarded seam from an unguarded one.
+MU_GS="$(grep -n -F 'if [ -n "${MODEL_USAGE_RAW_DIR:-}" ]' "$SCRIPT" | head -n1 | cut -d: -f1)"
+MU_GE="$((MU_GS + 2))"
+MU_GUARD="$(sed -n "${MU_GS},${MU_GE}p" "$SCRIPT")"
+[ -n "$MU_GS" ] && [ "$(sed -n "${MU_GE}p" "$SCRIPT")" = "fi" ] \
+  && ok "located the guarded pin block in the shipped script" || bad "t13.locate" "block not found at $MU_GS"
+MU_G1="$(env -u HOME -u PIPELINE_RAW_DIR -u MODEL_USAGE_RAW_DIR bash -c \
+  'set -uo pipefail; '"$MU_GUARD"'; printf "SURVIVED:%s" "${_MODEL_USAGE_SINK_DIR:-<unset>}"' 2>&1)" || MU_G1="ABORTED:$MU_G1"
+[ "$MU_G1" = "SURVIVED:<unset>" ] \
+  && ok "HOME/PIPELINE_RAW_DIR/MODEL_USAGE_RAW_DIR all unset → the seam sets nothing and does not abort" \
+  || bad "t13.unset-home" "got '$MU_G1'"
+MU_G2="$(env -u PIPELINE_RAW_DIR -u MODEL_USAGE_RAW_DIR HOME="$TMP/fakehome" bash -c \
+  'set -uo pipefail; '"$MU_GUARD"'; printf "%s" "$_MODEL_USAGE_SINK_DIR"' 2>&1)" || MU_G2="ABORTED:$MU_G2"
+[ "$MU_G2" = "$TMP/fakehome/dev/foundation/meta/data/raw" ] \
+  && ok "with HOME set and no overrides, the pin resolves to the canonical absolute sink" || bad "t13.home-set" "got '$MU_G2'"
+MU_CRON_LIT="$(grep -F 'RAW_DIR="${PIPELINE_RAW_DIR:-' "$HERE/../pipeline-cron.sh" | head -n1 | sed -E 's/.*\$\{PIPELINE_RAW_DIR:-(.*)\}".*/\1/')"
+MU_SUT_LIT="$(grep -F 'MODEL_USAGE_RAW_DIR:-${PIPELINE_RAW_DIR:-' "$SCRIPT" | grep -v '^[[:space:]]*#' | head -n1 | sed -E 's/.*\$\{PIPELINE_RAW_DIR:-(.*)\}\}".*/\1/')"
+[ -n "$MU_CRON_LIT" ] && [ "$MU_CRON_LIT" = "$MU_SUT_LIT" ] \
+  && ok "the pinned default ($MU_SUT_LIT) equals pipeline-cron.sh's RAW_DIR literal verbatim" \
+  || bad "t13.equal" "cron='$MU_CRON_LIT' sut='$MU_SUT_LIT'"
+
+echo "--- test 14: the SPAWNED CHILD does not inherit the sink pin (temperloop#1565 review) ---"
+# THE REGRESSION THIS GUARDS. Handing the emitter its sink via
+# `export MODEL_USAGE_RAW_DIR` at the top of this wrapper works for the emitter
+# and is wrong for everything else: an export is process-wide and inherited, so
+# the `claude -p` judge spawned below receives it too. That session's own
+# quality gates read the same variable — validate-model-usage-emit.sh and
+# validate-provider-disclosure.sh both do — which would silently turn two
+# repo-scoped gates into production-data gates. The pin is therefore applied as
+# a per-command prefix on the emitter alone; the child must see NOTHING.
+: > "$REC"
+env -u MODEL_USAGE_RAW_DIR PIPELINE_RAW_DIR="$TMP/lake14" \
+  DOUBLE_REC="$REC" NOTIFY_REC="$NOTIFY_REC" CLAUDE_BIN="$TMP/claude-double.sh" \
+  PIPELINE_NOTIFY_CMD="$TMP/notify.sh" DOUBLE_MODE=clean bash "$SUT" --board 3 >/dev/null || true
+[ "$(sed -n 's/^mu_raw_dir=//p' "$REC")" = "<unset>" ] \
+  && ok "the spawned judge's environment carries NO MODEL_USAGE_RAW_DIR (its gates keep reading their own checkout)" \
+  || bad "t14.inherited" "the child inherited MODEL_USAGE_RAW_DIR=$(sed -n 's/^mu_raw_dir=//p' "$REC")"
+[ -s "$TMP/lake14/model-usage-$MU_MONTH.jsonl" ] \
+  && ok "…while the emitter still wrote to the pinned canonical lake (the pin works, it just does not leak)" \
+  || bad "t14.emit" "no record at $TMP/lake14"
+
+echo "--- test 15: a caller that DID export it is passed through to the child unchanged ---"
+# The complement, so t14 cannot be satisfied by scrubbing the variable: when the
+# OPERATOR's own environment exports MODEL_USAGE_RAW_DIR, that is their choice
+# and this wrapper neither adds nor removes it. t14 proves we introduce no leak;
+# this proves we do not silently strip an inherited one either.
+: > "$REC"
+env MODEL_USAGE_RAW_DIR="$TMP/lake15" \
+  DOUBLE_REC="$REC" NOTIFY_REC="$NOTIFY_REC" CLAUDE_BIN="$TMP/claude-double.sh" \
+  PIPELINE_NOTIFY_CMD="$TMP/notify.sh" DOUBLE_MODE=clean bash "$SUT" --board 3 >/dev/null || true
+[ "$(sed -n 's/^mu_raw_dir=//p' "$REC")" = "$TMP/lake15" ] \
+  && ok "an operator-exported value reaches the child untouched (we neither inject nor strip)" \
+  || bad "t15.passthrough" "got $(sed -n 's/^mu_raw_dir=//p' "$REC")"
 
 echo
 printf 'pipeline-retro-judge-spawn: %d passed, %d failed\n' "$pass" "$fail"
