@@ -931,20 +931,36 @@ ok "30 seq is derived from the tail entry's own seq, with a clean refusal on an 
 #     that prefix mismatch skips the git-tracked check entirely (no
 #     COMMITTED-NOT-TRACKED emitted even though the file is genuinely
 #     untracked); post-fix it fires, exactly like case 19.
+#
+#     The fixture ceiling deliberately sits at
+#     workflows/scripts/model-comparison/untracked-allowlist.txt — inside
+#     the repo tree, NOT under .temperloop/ — so the unrelated
+#     COMMITTED-LOCATION check (validator's check 1, "must never live under
+#     the gitignored .temperloop/ runtime dir") stays silent and
+#     COMMITTED-NOT-TRACKED is the sole discriminator both assertions below
+#     key on. A ceiling under .temperloop/ would make `vrc -ne 0` pass on
+#     BOTH the fixed and unfixed validator (COMMITTED-LOCATION alone is
+#     enough), silently defeating the first assertion.
 # ---------------------------------------------------------------------------
 count
 SYM_REAL="$WORK/31-real"
-mkdir -p "$SYM_REAL/workflows/scripts/model-comparison" "$SYM_REAL/.temperloop/model-comparison"
+mkdir -p "$SYM_REAL/workflows/scripts/model-comparison"
 cp "$ALLOWLIST_SH" "$SYM_REAL/workflows/scripts/model-comparison/allowlist.sh"
 cp "$VALIDATOR" "$SYM_REAL/workflows/scripts/validate-provider-disclosure.sh"
-(
-  cd "$SYM_REAL" \
-    && git -c user.email=test@example.com -c user.name=test init -q \
-    && git -c user.email=test@example.com -c user.name=test add workflows \
-    && git -c user.email=test@example.com -c user.name=test commit -q -m "seed"
-)
+# `git init` + `git add` only, deliberately no `git commit` here: the
+# assertion below reads `git ls-files` (the INDEX), which `add` alone
+# already populates, so a commit contributes nothing to what this fixture
+# checks. Committing would also require neutralizing every possible
+# inherited git config (author identity, GPG signing, hooks, …) rather
+# than just the two `-c user.*` flags this used to pass — a global
+# `commit.gpgsign=true` reproducibly aborts a bare `git commit` with no
+# `FAIL:` message, killing the whole `set -euo pipefail` suite at case 31.
+# Every other non-bare fixture repo in this suite already stops at
+# `git add -A` (see test_validate_feature_docs.sh, test_validate_design_brief.sh).
+( cd "$SYM_REAL" && git init -q && git add workflows ) \
+  || fail "31: fixture setup: could not scaffold the symlinked git repo"
 ln -s 31-real "$WORK/31-link"
-c31="$WORK/31-link/.temperloop/model-comparison/untracked-allowlist.txt"
+c31="$WORK/31-link/workflows/scripts/model-comparison/untracked-allowlist.txt"
 printf 'anthropic\n' >"$c31"
 vrc=0
 vout="$(env PROVIDER_ALLOWLIST_TEST_SEAM=1 \

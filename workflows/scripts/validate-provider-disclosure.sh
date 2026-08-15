@@ -205,15 +205,41 @@ else
   # dropping `-P` from $SCRIPT_DIR/$repo_root_for_git above (which would
   # only re-flip the mismatch onto the ordinary non-test-seam case, since
   # allowlist.sh resolves its own script dir physically unconditionally).
-  committed_dir_physical="$(cd -P "$(dirname "$committed_file")" 2>/dev/null && pwd)"
-  committed_file_physical="$committed_file"
-  if [[ -n "$committed_dir_physical" ]]; then
-    committed_file_physical="$committed_dir_physical/$(basename "$committed_file")"
+  # Deliberately resolving only the DIRECTORY, never the full path: a full
+  # `realpath` on committed_file itself would follow a symlinked ceiling
+  # FILE to its target, but git tracks the symlink entry at its own path —
+  # resolving the directory and re-attaching the literal basename is
+  # strictly more correct for a git-tracked-path check.
+  #
+  # `CDPATH=''` guards the same failure this repo already documents at
+  # kernel/lib.sh's kernel_lib_resolve_for_classify (see also
+  # kernel/tests/test_kernel_lib_resolve.sh case 8): with a RELATIVE
+  # dirname (e.g. PROVIDER_ALLOWLIST_COMMITTED_FILE=fixtures/allow.txt), a
+  # bare `cd` consults an inherited CDPATH and, on a hit, ECHOES the
+  # resolved dir to stdout ALONGSIDE `pwd`'s own output — corrupting this
+  # command substitution into a two-line value that silently fails the
+  # `case` prefix match below and skips the git-tracked check entirely
+  # (the exact bug this whole block fixes, reopened under a different
+  # trigger).
+  if ! committed_dir_physical="$(CDPATH='' cd -P "$(dirname "$committed_file")" 2>/dev/null && pwd)"; then
+    # An inability to physically resolve the ceiling's directory is a hard
+    # abort, not a silent fallback to the unresolved (possibly-mismatched)
+    # $committed_file — falling back here is exactly the fail-open this
+    # whole fix exists to close, just moved one level down. The `-f`/`-r`
+    # checks above make this should-never-happen (a TOCTOU race or an
+    # exotic path error at worst), which is the argument FOR aborting, not
+    # for degrading a security gate silently. (No underlying-error text to
+    # report here — `cd`'s own stderr is suppressed above, matching this
+    # file's other CANNOT-EVALUATE messages, none of which echo a wrapped
+    # command's raw stderr either.)
+    echo "validate-provider-disclosure: CANNOT EVALUATE — could not physically resolve the committed allowlist's directory ($(dirname "$committed_file")); aborting rather than falling back to an unnormalized prefix match that would silently skip the git-tracked check" >&2
+    exit 1
   fi
+  committed_file_physical="$committed_dir_physical/$(basename "$committed_file")"
   case "$committed_file_physical" in
     "$repo_root_for_git"/*)
       if ! git -C "$repo_root_for_git" ls-files --error-unmatch -- "$committed_file_physical" >/dev/null 2>&1; then
-        failures+=("COMMITTED-NOT-TRACKED  $committed_file — exists on disk but is not git-tracked; the committed ceiling must change only through a reviewed commit")
+        failures+=("COMMITTED-NOT-TRACKED  $committed_file (resolved: $committed_file_physical) — exists on disk but is not git-tracked; the committed ceiling must change only through a reviewed commit")
       fi
       ;;
   esac
