@@ -99,6 +99,54 @@
 # NOT a weakening of the per-leg failure resilience above: a leg that fails is
 # still recorded and the batch still continues; only a real signal stops it.
 #
+# ── A SYSTEMIC FAILURE STOPS THE BATCH (temperloop#1554) ──────────────────
+# The paragraph above is about ONE leg failing. This one is about the whole
+# spawn path failing, which is a different fact and needs a different answer.
+#
+# On the first live batch, 14 records replayed successfully over ~3.1h and
+# then EVERY remaining leg fast-failed in ~4-5s: 28 consecutive
+# `candidate-spawn` integration errors, almost certainly a rate or usage
+# limit. The per-leg resilience above is what made that possible — each
+# failure was recorded, the batch continued, and the driver hammered an
+# endpoint that was telling it to stop, ~5s apart, to the end of the corpus.
+# Continuing is the worst available response to that specific cause.
+#
+# So this driver carries a CIRCUIT BREAKER, and its shape is chosen to
+# separate the two facts rather than blur them:
+#
+#   * It counts CONSECUTIVE integration errors carrying the SAME
+#     `integration_error.stage` (replay.sh's own vocabulary:
+#     candidate-spawn, candidate-timeout, envelope-parse, vendor-error,
+#     envelope-usage-missing). 28 consecutive candidate-spawn failures trip
+#     it; a scatter of unrelated per-record incompatibilities does not,
+#     because the streak RE-KEYS to 1 whenever the stage changes.
+#   * ANY leg that scores resets the streak to zero. A systemic outage is
+#     precisely the case where nothing succeeds in between.
+#   * The threshold is MODEL_COMPARISON_BATCH_MAX_CONSECUTIVE_STAGE_ERRORS —
+#     named here, valued only in workflows/scripts/build/build.config.sh
+#     (§ Named-setting convention). 0 disables the breaker.
+#   * Only legs THIS INVOCATION executed are counted. A resumed leg is
+#     evidence about a previous run, not about whether the endpoint is
+#     available now, so it neither increments nor resets the streak.
+#
+# When it trips, every remaining leg is recorded `not-attempted` — NOT an
+# integration error. That distinction is the whole point: an integration
+# error is a claim about a RECORD ("this one is incompatible"), and the
+# breaker's skipped legs make no such claim about anything. A `not-attempted`
+# leg is always retryable (it cost nothing, so there is nothing to protect
+# from a re-spend) and a plain resume re-drives it. The judge pass is skipped
+# too, with a NAMED reason — judging runs through the same spawn seam that
+# just went unavailable.
+#
+# The stop is reported DISTINGUISHABLY from a completed-but-degraded batch:
+# outcome BATCH_STOPPED_EARLY, exit 5 (not 4), a named
+# `circuit_breaker_tripped` degradation, and a `circuit_breaker` block
+# carrying the stage, the streak, and how many legs and whole RECORDS were
+# never attempted. "The corpus was exhausted and some records were
+# incompatible" and "the driver stopped early because the spawn path went
+# systemically unavailable" are different statements, and this file keeps
+# them apart the same way it keeps CANNOT_EVALUATE apart from BATCH_COMPLETE.
+#
 # ── THE COMPLETION RATE IS RECONCILED AGAINST THE ARTIFACT (temperloop#1556)
 # Every count this driver publishes — `replay_completion_rate`, `legs.*`,
 # `arms.*.records_n` — is derived from the LEG state files, which are written
@@ -152,6 +200,17 @@
 #   2  usage error.
 #   3  STOPPED            the gate said stop (`stop:true`) or the operator's
 #                         `--confirm` was absent. NOTHING was spent.
+#   5  BATCH_STOPPED_EARLY the CIRCUIT BREAKER tripped: too many consecutive
+#                         same-stage integration errors, so the driver
+#                         STOPPED rather than running the rest of the corpus
+#                         out against a spawn path that has gone
+#                         systemically unavailable. Deliberately NOT 4 —
+#                         "the corpus was exhausted, some records were
+#                         incompatible" and "the driver stopped early" are
+#                         different statements. Every un-attempted leg is
+#                         recorded `not-attempted` (never an integration
+#                         error) and a resume re-drives it. See § A SYSTEMIC
+#                         FAILURE STOPS THE BATCH.
 #   4  BATCH_DEGRADED     the batch RAN end to end, but at least one leg
 #                         failed, or the judge degraded, or an arm file
 #                         failed to RECONCILE against the leg records this
@@ -171,8 +230,10 @@
 # Every setting this file reads is registered in
 # workflows/scripts/config/setting-registry.tsv and defaulted in
 # workflows/scripts/build/build.config.sh — named symbolically, never
-# re-valued in this prose. This file introduces NO setting of its own: the
-# batch cap comes from the gate, and the state dir is derived from the
+# re-valued in this prose. This file introduces exactly ONE setting of its
+# own, MODEL_COMPARISON_BATCH_MAX_CONSECUTIVE_STAGE_ERRORS (§ A SYSTEMIC
+# FAILURE STOPS THE BATCH), and it lives at that same seam: the batch cap
+# still comes from the gate, and the state dir is still derived from the
 # records dir (overridable with --state-dir).
 set -uo pipefail
 
@@ -187,6 +248,7 @@ JUDGE_SH="$HERE/judge.sh"
 # Layer-6 non-vendoring-caller fallbacks, byte-identical to the registry.
 : "${MODEL_COMPARISON_REPORT_RECORDS_DIR:=.temperloop/model-comparison}"
 : "${MODEL_COMPARISON_MIN_SAMPLE_N:=20}"
+: "${MODEL_COMPARISON_BATCH_MAX_CONSECUTIVE_STAGE_ERRORS:=5}"
 
 # shellcheck source=../lib/cannot-evaluate.sh
 [ -f "$HERE/../lib/cannot-evaluate.sh" ] && . "$HERE/../lib/cannot-evaluate.sh"
@@ -361,7 +423,11 @@ cmd_schema() {
                  estimated_cost:null, cost_basis:null, batch_cap:null},
     selection: {corpus_file:null, corpus_sha256:null, selected_records_n:null, refs:[]},
     legs: {planned_n:null, completed_n:null, resumed_n:null, failed_n:null,
-           scored_n:null, integration_error_n:null},
+           scored_n:null, integration_error_n:null, not_attempted_n:null},
+    circuit_breaker: {basis:null, setting:null, threshold:null, tripped:null,
+                      stage:null, consecutive_same_stage_n:null,
+                      legs_not_attempted_n:null, records_not_attempted_n:null,
+                      not_attempted:[], detail:null},
     completion: {basis:null, replay_completion_rate:null,
                  rate_is_over_a_reconciled_arm:null, rate_caveat:null, per_arm:null},
     failures: [],
@@ -418,6 +484,18 @@ cmd_run() {
     bd_cannot_evaluate "corpus file not found or not a readable regular file: $corpus_file"
     return 1
   fi
+
+  # The circuit-breaker threshold is read ONCE, here, and validated fail-closed
+  # like every other input: a non-integer would otherwise turn every later
+  # `[ "$cb_streak" -ge "$cb_threshold" ]` into a shell error the loop swallows,
+  # leaving the breaker silently disarmed on a spend-bearing run. 0 is a
+  # legitimate value (breaker off); a negative one is not.
+  local cb_threshold="$MODEL_COMPARISON_BATCH_MAX_CONSECUTIVE_STAGE_ERRORS"
+  case "$cb_threshold" in
+    ''|*[!0-9]*)
+      bd_cannot_evaluate "MODEL_COMPARISON_BATCH_MAX_CONSECUTIVE_STAGE_ERRORS must be a non-negative integer (0 disables the circuit breaker), got \"$cb_threshold\" — refusing to start a spend-bearing batch whose stop condition could not be read"
+      return 1 ;;
+  esac
 
   local repo_top
   repo_top="$(cd "$repo_root" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null)"
@@ -591,6 +669,17 @@ cmd_run() {
   local failures_file="$scratch/failures.jsonl"; : >"$failures_file"
   local arm sel_idx sel_ref sel_rec
 
+  # ── THE CIRCUIT BREAKER's running state (temperloop#1554) ──────────────
+  # cb_stage/cb_streak are the CURRENT run of same-stage integration errors:
+  # cb_stage is the stage they all carry, cb_streak how many in a row. A leg
+  # that scores zeroes both; a leg whose stage differs re-keys to that stage
+  # at 1. Once cb_tripped flips, no further leg is executed — each remaining
+  # one is recorded `not-attempted` instead, which is a statement about THIS
+  # RUN and never about the record.
+  local cb_streak=0 cb_stage="" cb_tripped=0 cb_trip_stage="" cb_trip_streak=0
+  local legs_unattempted=0 records_unattempted=0
+  local unattempted_file="$scratch/unattempted.jsonl"; : >"$unattempted_file"
+
   # Read the selection on fd 3, NOT stdin: every `replay.sh execute` below
   # spawns a candidate runner, and the `--live` arm redirects its own stdin
   # from the prompt file — but a stubbed runner is an arbitrary operator
@@ -598,6 +687,10 @@ cmd_run() {
   # rest of this loop's selection and truncate the batch.
   while IFS="$(printf '\t')" read -r sel_idx sel_ref sel_rec <&3; do
     [ -n "$sel_idx" ] || continue
+    # How many of THIS record's legs the breaker skipped. A record all of
+    # whose legs were skipped was never attempted at all in this run, which
+    # is the count an operator needs to size what a resume still owes.
+    local rec_skipped=0
     for arm in "$BATCH_ARM_BASELINE" "$BATCH_ARM_CANDIDATE"; do
       local leg_key leg_rec leg_state
       leg_key="$(printf '%03d' "$sel_idx")-$(bd_slugify "$sel_ref")"
@@ -613,6 +706,12 @@ cmd_run() {
         local prev_state; prev_state="$(jq -r '.state // ""' <"$leg_state" 2>/dev/null)"
         local retryable=0
         [ "$prev_state" = "cannot-evaluate" ] && [ "$retry_failed" -eq 1 ] && retryable=1
+        # A `not-attempted` leg (temperloop#1554) is ALWAYS retryable, with or
+        # without --retry-failed: --retry-failed exists to protect a leg that
+        # may have failed AFTER the candidate ran from a blind re-spend, and a
+        # leg the circuit breaker skipped never ran at all. There is nothing to
+        # protect, so a plain resume re-drives it.
+        [ "$prev_state" = "not-attempted" ] && retryable=1
         if [ "$retryable" -eq 0 ]; then
           legs_resumed=$((legs_resumed + 1))
           case "$prev_state" in
@@ -628,6 +727,29 @@ cmd_run() {
             "$sel_idx" "$idx" "$arm" "$sel_ref" "$prev_state" >&2
           continue
         fi
+      fi
+
+      # ── THE CIRCUIT BREAKER HAS TRIPPED (temperloop#1554) ─────────────
+      # Deliberately AFTER the resume block above: a leg that already reached
+      # a terminal state in an earlier run keeps that state — the breaker
+      # never overwrites recorded work — and only a leg this run would have
+      # EXECUTED is recorded not-attempted. Nothing is prepared and nothing is
+      # spent from here on; the loop keeps walking purely so every remaining
+      # leg gets its `not-attempted` record rather than silently vanishing.
+      if [ "$cb_tripped" -eq 1 ]; then
+        jq -cn --arg stage "$cb_trip_stage" --argjson n "$cb_trip_streak" \
+          '{state:"not-attempted",
+            reason:("the circuit breaker tripped earlier in this batch after " + ($n|tostring)
+                    + " consecutive \"" + $stage + "\" integration errors, so this leg was NEVER EXECUTED. This is not a claim that this record is incompatible — nothing was attempted, nothing was spent, and a resume re-drives it"),
+            stage:null}' >"$leg_state"
+        rm -f "$leg_rec"
+        legs_unattempted=$((legs_unattempted + 1))
+        rec_skipped=$((rec_skipped + 1))
+        jq -cn --arg a "$arm" --arg r "$sel_ref" \
+          '{arm:$a, outcome_ref:$r}' >>"$unattempted_file"
+        printf 'batch.sh: [%s/%s] %s %s — NOT ATTEMPTED (circuit breaker tripped); nothing spent, a resume re-drives it\n' \
+          "$sel_idx" "$idx" "$arm" "$sel_ref" >&2
+        continue
       fi
 
       # ── prepare ────────────────────────────────────────────────────────
@@ -694,15 +816,34 @@ cmd_run() {
       if [ -s "$leg_rec" ] && jq -e 'type=="object"' >/dev/null 2>&1 <"$leg_rec"; then have_record=1; fi
 
       if [ "$x_rc" -eq 0 ] && [ "$have_record" -eq 1 ]; then
-        jq -cn '{state:"scored", reason:null}' >"$leg_state"
+        jq -cn '{state:"scored", reason:null, stage:null}' >"$leg_state"
         legs_done=$((legs_done + 1)); legs_scored=$((legs_scored + 1))
+        # A success is the one thing that proves the spawn path is alive, so
+        # it zeroes the breaker's streak outright (temperloop#1554).
+        cb_streak=0; cb_stage=""
         printf 'batch.sh: [%s/%s] %s %s — scored\n' "$sel_idx" "$idx" "$arm" "$sel_ref" >&2
       elif [ "$x_rc" -eq 4 ] && [ "$have_record" -eq 1 ]; then
-        jq -cn --arg r "$(head -c 400 "$x_err" 2>/dev/null)" \
-          '{state:"integration-error", reason:$r}' >"$leg_state"
+        # The STAGE comes off the record replay.sh just wrote — its own
+        # vocabulary, read rather than re-derived, so the breaker keys on the
+        # same word the record and the report producer already use.
+        local ie_stage
+        ie_stage="$(jq -r '.candidate.integration_error.stage // ""' <"$leg_rec" 2>/dev/null)"
+        [ -n "$ie_stage" ] || ie_stage="unknown"
+        jq -cn --arg r "$(head -c 400 "$x_err" 2>/dev/null)" --arg s "$ie_stage" \
+          '{state:"integration-error", reason:$r, stage:$s}' >"$leg_state"
         legs_done=$((legs_done + 1)); legs_interr=$((legs_interr + 1))
-        printf 'batch.sh: [%s/%s] %s %s — integration error (a record WAS produced); the batch continues\n' \
-          "$sel_idx" "$idx" "$arm" "$sel_ref" >&2
+        if [ "$ie_stage" = "$cb_stage" ]; then
+          cb_streak=$((cb_streak + 1))
+        else
+          cb_stage="$ie_stage"; cb_streak=1
+        fi
+        printf 'batch.sh: [%s/%s] %s %s — integration error (stage %s, %s in a row; a record WAS produced); the batch continues\n' \
+          "$sel_idx" "$idx" "$arm" "$sel_ref" "$ie_stage" "$cb_streak" >&2
+        if [ "$cb_threshold" -gt 0 ] && [ "$cb_streak" -ge "$cb_threshold" ]; then
+          cb_tripped=1; cb_trip_stage="$cb_stage"; cb_trip_streak="$cb_streak"
+          printf 'batch.sh: CIRCUIT BREAKER TRIPPED — %s consecutive "%s" integration errors reached the threshold MODEL_COMPARISON_BATCH_MAX_CONSECUTIVE_STAGE_ERRORS (%s). The spawn path looks systemically unavailable, not the records incompatible, so this batch STOPS here instead of running the rest of the corpus out against it. Every remaining leg is recorded not-attempted and a resume re-drives it once the cause is cleared\n' \
+            "$cb_streak" "$cb_stage" "$cb_threshold" >&2
+        fi
       else
         local why
         why="replay.sh execute exited $x_rc and produced no usable record: $(head -c 400 "$x_err" 2>/dev/null)"
@@ -715,6 +856,13 @@ cmd_run() {
           "$sel_idx" "$idx" "$arm" "$sel_ref" "$why" >&2
       fi
     done
+    # A record NONE of whose legs were attempted — the unit an operator sizes
+    # a resume in. A record whose first arm ran and whose second was skipped
+    # is deliberately NOT counted here: it was partially attempted, and
+    # legs_not_attempted_n already carries that leg.
+    if [ "$rec_skipped" -eq "$BATCH_ARMS_N" ]; then
+      records_unattempted=$((records_unattempted + 1))
+    fi
   done 3<"$sel_tsv"
 
   # ── the end-of-batch worktree sweep. Covers a leg worktree left behind by
@@ -767,7 +915,20 @@ cmd_run() {
   # re-spends no judge call either.
   # ═════════════════════════════════════════════════════════════════════
   local judge_json judge_degraded=0
-  if [ "$live" -eq 0 ] && [ -z "$judge_runner" ]; then
+  if [ "$cb_tripped" -eq 1 ]; then
+    # The breaker tripped because the spawn seam went systemically
+    # unavailable — and the judge pass runs through that SAME seam. Judging
+    # now would hammer the endpoint that just stopped answering, which is the
+    # behaviour temperloop#1554 exists to end. So it is skipped, and NAMED
+    # (never silent — a skipped judge is a fact this file always states). A
+    # resume judges the arms once the cause is cleared, since the judge pass
+    # is keyed on the arm file's own sha256 and re-spends nothing already done.
+    judge_json="$(jq -cn --arg stage "$cb_trip_stage" \
+      '{ran:false, degraded:false,
+        reason:("SKIPPED — the circuit breaker tripped on consecutive \"" + $stage
+                + "\" integration errors, and the judge pass spawns through the same seam that just went systemically unavailable. Judging now would re-hammer it. The arm files are written UNJUDGED; re-run this batch once the cause is cleared and the judge pass will run over them without re-spending any replay"),
+        per_arm:null}')"
+  elif [ "$live" -eq 0 ] && [ -z "$judge_runner" ]; then
     judge_json="$(jq -cn '{ran:false, reason:"no judge seam configured — pass --judge-runner <cmd> (a recorded/stubbed runner) or --live to judge these arms. The arm files are written UNJUDGED; the comparison report counts such rows as unjudged rather than treating an absent judgment as a zero", per_arm:null}')"
   elif [ ! -f "$JUDGE_SH" ]; then
     judge_json="$(jq -cn --arg p "$JUDGE_SH" '{ran:false, reason:("judge.sh not found at " + $p + " — the judge seam is unavailable; the arm files are written UNJUDGED"), per_arm:null}')"
@@ -924,7 +1085,48 @@ cmd_run() {
       | ($br - ($br - $cr)) | unique | length' 2>/dev/null)"
   case "$paired_n" in ''|*[!0-9]*) paired_n=0 ;; esac
 
+  # ── THE CIRCUIT-BREAKER VERDICT (temperloop#1554) ─────────────────────
+  # Published on EVERY run, tripped or not, so "the breaker was armed and did
+  # not fire" is a positive statement in the summary rather than an absence a
+  # reader has to infer. When it did fire, this block is what tells the
+  # operator that the run ENDED EARLY rather than ran out of corpus — the
+  # stage that kept failing, how many in a row, and how much was never
+  # attempted (in legs AND in whole records).
+  local cb_tripped_json=false
+  [ "$cb_tripped" -eq 1 ] && cb_tripped_json=true
+  local circuit_breaker_json
+  circuit_breaker_json="$(jq -cn \
+    --argjson tripped "$cb_tripped_json" --argjson threshold "$cb_threshold" \
+    --arg setting "MODEL_COMPARISON_BATCH_MAX_CONSECUTIVE_STAGE_ERRORS" \
+    --arg stage "$cb_trip_stage" --argjson streak "$cb_trip_streak" \
+    --argjson legs_na "$legs_unattempted" --argjson recs_na "$records_unattempted" \
+    --slurpfile not_attempted "$unattempted_file" \
+    '{basis: "consecutive integration errors carrying the SAME integration_error.stage, counted over the legs THIS invocation executed. Any leg that scores resets the run to zero; a different stage re-keys it to 1; a resumed leg is evidence about a previous run and is not counted. So a scatter of unrelated per-record incompatibilities cannot trip it, and a spawn path that has gone systemically unavailable does",
+      setting: $setting, threshold: $threshold, armed: ($threshold > 0),
+      tripped: $tripped,
+      stage: (if $stage == "" then null else $stage end),
+      consecutive_same_stage_n: $streak,
+      legs_not_attempted_n: $legs_na,
+      records_not_attempted_n: $recs_na,
+      not_attempted: $not_attempted,
+      detail: (if $tripped
+               then ("STOPPED EARLY: " + ($streak|tostring) + " consecutive \"" + $stage
+                     + "\" integration errors reached the threshold, so " + ($legs_na|tostring)
+                     + " further executed replay(s) — " + ($recs_na|tostring)
+                     + " corpus record(s) entirely — were NEVER ATTEMPTED. They are recorded not-attempted, NOT as integration errors: nothing was spent on them and no claim is being made that those records are incompatible. Re-run this batch against the same --state-dir once the cause is cleared and they will be driven without re-spending anything already done"
+                     )
+               elif $threshold == 0
+               then "the circuit breaker is DISABLED (threshold 0): this run would have executed every planned leg however many consecutive integration errors it hit"
+               else "the circuit breaker was armed and did not fire: no run of consecutive same-stage integration errors reached the threshold, so every planned leg was attempted and this batch ended because the corpus was exhausted" end)}')"
+
   local degradations="$scratch/degradations.jsonl"; : >"$degradations"
+  [ "$cb_tripped" -eq 1 ] && jq -cn --arg stage "$cb_trip_stage" \
+    --argjson legs_na "$legs_unattempted" --argjson recs_na "$records_unattempted" \
+    '{kind:"circuit_breaker_tripped",
+      detail:("the batch STOPPED EARLY on consecutive \"" + $stage + "\" integration errors — "
+              + ($legs_na|tostring) + " executed replay(s) across " + ($recs_na|tostring)
+              + " never-attempted corpus record(s) were skipped. This is NOT a completed-but-degraded batch: the corpus was not exhausted, and the skipped legs make no compatibility claim about their records. See circuit_breaker")}' \
+    >>"$degradations"
   [ "$legs_failed" -gt 0 ] && jq -cn --argjson n "$legs_failed" \
     '{kind:"leg_failures", detail:("\($n) of the planned executed replays did not produce a record; each is named in failures[] with its reason")}' >>"$degradations"
   [ "$judge_degraded" -eq 1 ] && jq -cn \
@@ -949,6 +1151,8 @@ cmd_run() {
     --argjson legs_planned "$legs_planned" --argjson legs_done "$legs_done" \
     --argjson legs_resumed "$legs_resumed" --argjson legs_failed "$legs_failed" \
     --argjson legs_scored "$legs_scored" --argjson legs_interr "$legs_interr" \
+    --argjson legs_unattempted "$legs_unattempted" \
+    --argjson circuit_breaker "$circuit_breaker_json" \
     --argjson rate "$rate" \
     --slurpfile failures "$failures_file" \
     --slurpfile degradations "$degradations" \
@@ -960,7 +1164,9 @@ cmd_run() {
     --argjson vcp "$vcp_json" --arg vcp_outcome "$vcp_outcome" --argjson swept "$swept" \
     --arg base_arm "$BATCH_ARM_BASELINE" --arg cand_arm "$BATCH_ARM_CANDIDATE" \
     '{schema_version:$sv,
-      outcome: (if (($legs_failed > 0) or (($degradations | length) > 0)) then "BATCH_DEGRADED" else "BATCH_COMPLETE" end),
+      outcome: (if $circuit_breaker.tripped then "BATCH_STOPPED_EARLY"
+                elif (($legs_failed > 0) or (($degradations | length) > 0)) then "BATCH_DEGRADED"
+                else "BATCH_COMPLETE" end),
       units:{
         basis: "the SAME three non-interchangeable count units replay.sh preflight publishes (temperloop#1379): 1 corpus record = arms_n executed replays = 1 paired outcome. This driver consumes those numbers from the gate rather than re-deriving them, so the batch it executes and the batch the operator authorized are the same batch",
         selected_records_n: "corpus_records", batch_cap: "corpus_records",
@@ -977,10 +1183,13 @@ cmd_run() {
       selection:{corpus_file:$corpus, corpus_sha256:$csha,
                  selected_records_n:$records_n, refs:$refs},
       legs:{planned_n:$legs_planned, completed_n:$legs_done, resumed_n:$legs_resumed,
-            failed_n:$legs_failed, scored_n:$legs_scored, integration_error_n:$legs_interr},
+            failed_n:$legs_failed, scored_n:$legs_scored, integration_error_n:$legs_interr,
+            not_attempted_n:$legs_unattempted},
+      circuit_breaker: $circuit_breaker,
       completion:{
-        basis: "an executed replay COMPLETED when it produced a record — a scored record OR an integration-error record, both of which the comparison report consumes (the latter as a compatibility fact, never a quality one). A leg that produced no record at all is counted as failed and named in failures[]",
+        basis: "an executed replay COMPLETED when it produced a record — a scored record OR an integration-error record, both of which the comparison report consumes (the latter as a compatibility fact, never a quality one). A leg that produced no record at all is counted as failed and named in failures[]. A leg the CIRCUIT BREAKER skipped is neither: it is legs.not_attempted_n, and it is why the rate on a BATCH_STOPPED_EARLY run is low without any record having been found incompatible — read circuit_breaker before reading this rate as a quality signal",
         replay_completion_rate:$rate,
+        legs_not_attempted_n:$legs_unattempted,
         rate_is_over_a_reconciled_arm: $reconciliation.reconciled,
         rate_caveat: (if $reconciliation.reconciled then null else "this rate is computed off the LEG records, and reconciliation[] reports that at least one arm file no longer carries them — do NOT read it as a clean run over that arm file" end),
         per_arm:{($base_arm): {records_n:$base_n}, ($cand_arm): {records_n:$cand_n}}},
@@ -1002,6 +1211,16 @@ cmd_run() {
 
   if [ "$arms_reconciled" -eq 0 ]; then
     printf 'batch.sh: ARM RECONCILIATION MISMATCH — an arm file on disk does not carry the leg records this driver counted; see reconciliation.per_arm. The completion rate below is over the LEG records, NOT over that arm file\n' >&2
+  fi
+  # BATCH_STOPPED_EARLY takes precedence over BATCH_DEGRADED and gets its OWN
+  # code: a degraded batch ran the corpus out, this one did not, and a caller
+  # that cannot tell them apart cannot tell "some records are incompatible"
+  # from "the endpoint stopped answering" (temperloop#1554).
+  if [ "$cb_tripped" -eq 1 ]; then
+    printf 'batch.sh: BATCH STOPPED EARLY — the circuit breaker tripped on %s consecutive "%s" integration errors; %s executed replay(s) across %s never-attempted corpus record(s) were skipped and are recorded not-attempted, NOT as integration errors. %s of %s planned executed replays completed. Re-run against the same --state-dir once the cause is cleared to drive the remainder without re-spending anything\n' \
+      "$cb_trip_streak" "$cb_trip_stage" "$legs_unattempted" "$records_unattempted" \
+      "$legs_done" "$legs_planned" >&2
+    return 5
   fi
   if [ "$legs_failed" -gt 0 ] || [ "$judge_degraded" -eq 1 ] || [ "$vcp_outcome" != "CLEAN" ] \
      || [ "$arms_reconciled" -eq 0 ]; then

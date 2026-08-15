@@ -154,7 +154,7 @@ arms, judges each arm, and writes the two arm files the report producer reads.
 It orchestrates only: it derives no statistic and re-implements no scoring,
 judging, corpus selection or isolation.
 
-Five properties are worth knowing before you run one:
+Six properties are worth knowing before you run one:
 
 - **The gate runs first, and consent is explicit.** Nothing is prepared or
   executed until pre-flight has returned a non-`stop` verdict *and* you have
@@ -167,6 +167,28 @@ Five properties are worth knowing before you run one:
   as failed with its reason and the batch continues; the run exits `4`
   (`BATCH_DEGRADED`) with every failure named, and the **replay completion
   rate** falls out of the summary rather than needing hand-reconstruction.
+- **A systemically unavailable spawn path stops the batch instead of being
+  hammered.** Per-leg resilience is right for one bad record and wrong for an
+  outage: on the first live batch, 14 records replayed over ~3.1h and then
+  every remaining leg fast-failed in ~4–5s — 28 consecutive `candidate-spawn`
+  integration errors, almost certainly a rate limit, driven to the end of the
+  corpus. The driver now carries a **circuit breaker**: once
+  `MODEL_COMPARISON_BATCH_MAX_CONSECUTIVE_STAGE_ERRORS` consecutive
+  integration errors carry the **same** `integration_error.stage`, it stops.
+  Any leg that scores resets the streak and a different stage re-keys it, so a
+  scatter of unrelated per-record incompatibilities never trips it (set the
+  threshold to `0` to disable the breaker entirely). The stop is deliberately
+  *not* a degraded run: outcome `BATCH_STOPPED_EARLY`, exit **`5`**, a named
+  `circuit_breaker_tripped` degradation, and a `circuit_breaker` block giving
+  the stage, the streak, and how many legs and whole records were never
+  attempted — so "the corpus was exhausted and some records were incompatible"
+  and "the driver stopped early because the endpoint went unavailable" are
+  never the same reading. Every skipped leg is recorded `not-attempted`
+  rather than as an integration error (it makes no compatibility claim about
+  its record), and a plain re-run against the same `--state-dir` re-drives
+  exactly those legs without re-spending anything already done. The judge pass
+  is skipped too, with a named reason — it spawns through the same seam
+  (temperloop#1554).
 - **A failed spawn's reason comes from both streams, not just stderr.** A
   candidate or judge spawn runs with stdout captured to an envelope file and
   stderr to a scratch file. `claude -p --output-format json` reports an
