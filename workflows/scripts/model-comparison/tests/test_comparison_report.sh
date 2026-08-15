@@ -670,6 +670,23 @@ run "$IERR"
   || fail "E6: the gate-failing record must count as rework"
 ok "E6 integration errors sit in compatibility and intervention, never in the quality denominator; a failed gate counts as rework"
 
+count
+# The SAME integration-error record (stage "candidate-timeout", tokens null)
+# must also be visible in the COST section — never silently absent just
+# because it was never scored — with a stated reason that a SIGKILLed spawn
+# has no envelope, so partial-usage capture is structurally impossible.
+[ "$(jqf "$RUN_OUT" '.arms.candidate.cost.errored_uncosted_n')" = "1" ] \
+  || fail "E7: the integration-error record must be counted in the cost block, not silently absent"
+[ "$(jqf "$RUN_OUT" '.arms.candidate.cost.errored_uncosted_reason | type')" = "string" ] \
+  || fail "E7: the errored-uncosted count must carry a stated reason string, never a bare number"
+[ "$(jqf "$RUN_OUT" '.arms.candidate.cost.errored_uncosted_reason | test("candidate-timeout"; "i")')" = "true" ] \
+  || fail "E7: the reason must name the integration-error stage rather than a generic disclaimer"
+[ "$(jqf "$RUN_OUT" '.arms.baseline.cost.errored_uncosted_n')" = "0" ] \
+  || fail "E7: an arm with no integration errors must report zero, not the count omitted"
+[ "$(jqf "$RUN_OUT" '.arms.baseline.cost.errored_uncosted_reason')" = "null" ] \
+  || fail "E7: an arm with zero integration errors states no reason (null, not a fabricated explanation)"
+ok "E7 an integration-errored, token-null record is counted in the cost block's errored_uncosted_n with a stated no-envelope reason, never fabricated tokens"
+
 # ═══════════════════════════════════════════════════════════════════════════
 # SECTION F — STATISTICS CONSUMED, NOT RECOMPUTED
 # ═══════════════════════════════════════════════════════════════════════════
