@@ -90,6 +90,25 @@ set -uo pipefail
 REPO="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 SCRIPT="$REPO/workflows/scripts/check-changelog-entry.sh"
 
+# Case 35 copies the KERNEL's own VERSIONING.md — the real contract-surface
+# table whose changelog-gate row is under test — into its hermetic fixture.
+# Resolve it through this test file's own SYMLINK-RESOLVED location, never
+# $REPO (temperloop#1543): in a composed overlay checkout this file is
+# reached through a compat symlink, $REPO above resolves to the OVERLAY root,
+# and that root legitimately carries no VERSIONING.md (the consumer does not
+# run the kernel's release workflow at its root) — so the copy silently
+# yielded a fixture with no table and case 35 false-failed. The asserted
+# content is kernel content, which always lives beside the REAL copy of this
+# test (the same self-scoping shape d3163bf gave test_assemble_changelog for
+# CHANGELOG.md). Portable resolution (no GNU readlink -f).
+_self="${BASH_SOURCE[0]}"
+while [ -L "$_self" ]; do
+  _dir="$(cd -P "$(dirname "$_self")" && pwd)"; _self="$(readlink "$_self")"
+  case "$_self" in /*) ;; *) _self="$_dir/$_self" ;; esac
+done
+KERNEL_ROOT="$(cd -P "$(dirname "$_self")/../../.." && pwd)"
+KERNEL_VERSIONING="$KERNEL_ROOT/VERSIONING.md"
+
 pass=0
 fail=0
 ok() { echo "  ok    $1"; pass=$((pass + 1)); }
@@ -1059,7 +1078,7 @@ assert_has "$HELP_OUT" "Exit codes:" "prints the exit-code table"
 # a change touching only the gate script to come back RED.
 echo "35. a change to the changelog machinery is contract surface (real table)"
 D="$TMP/r35"; new_repo "$D" >/dev/null
-cp "$REPO/VERSIONING.md" "$D/VERSIONING.md"
+cp "$KERNEL_VERSIONING" "$D/VERSIONING.md"
 mkdir -p "$D/workflows/scripts"
 echo "# the changelog gate" > "$D/workflows/scripts/check-changelog-entry.sh"
 git -C "$D" add -A >/dev/null
@@ -1076,7 +1095,7 @@ assert_has "$RUN_OUT" "workflows/scripts/check-changelog-entry.sh" "names the ga
 # the parsed column, not from anything else in the file. Built by deleting the
 # row rather than by diffing against origin/main, so this stays valid after the
 # row merges.
-grep -v 'The changelog gate itself' "$REPO/VERSIONING.md" > "$D/VERSIONING.md"
+grep -v 'The changelog gate itself' "$KERNEL_VERSIONING" > "$D/VERSIONING.md"
 git -C "$D" commit -aqm "remove the changelog-gate row from the table" >/dev/null
 BASE_NOROW="$(git -C "$D" rev-parse HEAD)"
 echo "# the changelog gate, v3" > "$D/workflows/scripts/check-changelog-entry.sh"
