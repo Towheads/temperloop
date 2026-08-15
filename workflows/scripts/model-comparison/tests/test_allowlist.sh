@@ -916,6 +916,48 @@ last_seq="$(jq -r '.seq' "$g30b" | tail -n 1)"
 [[ "$last_seq" -eq 2 ]] || fail "30: expected the second entry to carry seq=2, got $last_seq"
 ok "30 seq is derived from the tail entry's own seq, with a clean refusal on an unreadable tail"
 
+# ---------------------------------------------------------------------------
+# 31. SYMLINK PREFIX (temperloop#1333): the validator's repo-root vs.
+#     committed-file prefix match must not silently skip the git-tracked
+#     check when a symlinked ancestor separates the two. Fabricates its own
+#     symlink (rather than relying on macOS's ambient /tmp -> /private/tmp,
+#     which is what makes case 19 above fail there but stay green on Linux
+#     CI, per the issue's own root-cause note) so this reproduces the bug
+#     deterministically on ANY platform: a real repo lives at 31-real/,
+#     reached ALSO via a sibling symlink 31-link -> 31-real, and the
+#     committed-file path is built THROUGH the symlink (LOGICAL) while the
+#     validator — invoked from inside the symlinked tree — resolves its own
+#     script/repo root PHYSICALLY (`cd -P`), landing on 31-real. Pre-fix,
+#     that prefix mismatch skips the git-tracked check entirely (no
+#     COMMITTED-NOT-TRACKED emitted even though the file is genuinely
+#     untracked); post-fix it fires, exactly like case 19.
+# ---------------------------------------------------------------------------
+count
+SYM_REAL="$WORK/31-real"
+mkdir -p "$SYM_REAL/workflows/scripts/model-comparison" "$SYM_REAL/.temperloop/model-comparison"
+cp "$ALLOWLIST_SH" "$SYM_REAL/workflows/scripts/model-comparison/allowlist.sh"
+cp "$VALIDATOR" "$SYM_REAL/workflows/scripts/validate-provider-disclosure.sh"
+(
+  cd "$SYM_REAL" \
+    && git -c user.email=test@example.com -c user.name=test init -q \
+    && git -c user.email=test@example.com -c user.name=test add workflows \
+    && git -c user.email=test@example.com -c user.name=test commit -q -m "seed"
+)
+ln -s 31-real "$WORK/31-link"
+c31="$WORK/31-link/.temperloop/model-comparison/untracked-allowlist.txt"
+printf 'anthropic\n' >"$c31"
+vrc=0
+vout="$(env PROVIDER_ALLOWLIST_TEST_SEAM=1 \
+  PROVIDER_ALLOWLIST_COMMITTED_FILE="$c31" \
+  PROVIDER_ALLOWLIST_LOCAL_FILE="$WORK/31-local.txt" \
+  PROVIDER_DISCLOSURE_LOG_FILE="$WORK/31-log.jsonl" \
+  bash "$WORK/31-link/workflows/scripts/validate-provider-disclosure.sh" 2>&1)" || vrc=$?
+[[ "$vrc" -ne 0 ]] || fail "31: validator should FAIL on an in-repo but untracked ceiling reached through a symlinked ancestor:
+$vout"
+case "$vout" in *COMMITTED-NOT-TRACKED*) ;; *) fail "31: expected a COMMITTED-NOT-TRACKED line through a symlinked repo-root ancestor, got:
+$vout" ;; esac
+ok "31 validator: a symlinked ancestor between the script and its repo root does not skip the git-tracked check"
+
 echo "---"
 echo "$pass/$total tests passed"
 [[ "$pass" -eq "$total" ]] || fail "only $pass of $total tests passed"

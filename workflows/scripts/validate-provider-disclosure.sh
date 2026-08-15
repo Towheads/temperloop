@@ -183,9 +183,36 @@ else
   # fixture deliberately points PROVIDER_ALLOWLIST_COMMITTED_FILE at a
   # scratch path outside the repo (to exercise narrowing/disclosure-log
   # behavior in isolation), where "git-tracked" has no meaning to check.
-  case "$committed_file" in
+  #
+  # PREFIX-MATCH NORMALIZATION (temperloop#1333). $repo_root_for_git is
+  # resolved PHYSICALLY (`cd -P` above); $committed_file is not necessarily
+  # — allowlist.sh's own default resolves its script dir physically too, so
+  # in the ordinary (non-test-seam) case both sides already agree, but the
+  # fixture-test seam (and any caller-supplied override) hands
+  # PROVIDER_ALLOWLIST_COMMITTED_FILE through unresolved, i.e. LOGICAL. On a
+  # host where an ancestor directory is itself a symlink (macOS aliases
+  # /tmp -> /private/tmp and /var -> /private/var, so a `/build` throwaway
+  # worktree under $TMPDIR is exactly this case), a logical committed_file
+  # and a physical repo_root_for_git are two different strings for the same
+  # file, the `case` prefix match silently fails, and this whole
+  # git-tracked check is skipped rather than run — the file reads as
+  # untracked-but-never-checked instead of failing COMMITTED-NOT-TRACKED.
+  # Physically resolving committed_file's directory here (its own
+  # `-f`/`-r` checks above already proved the file, and hence its
+  # directory, exists) makes the match correct regardless of which form it
+  # arrived in — this is the deliberate fix site rather than touching
+  # allowlist.sh's own root resolution (out of scope for this file) or
+  # dropping `-P` from $SCRIPT_DIR/$repo_root_for_git above (which would
+  # only re-flip the mismatch onto the ordinary non-test-seam case, since
+  # allowlist.sh resolves its own script dir physically unconditionally).
+  committed_dir_physical="$(cd -P "$(dirname "$committed_file")" 2>/dev/null && pwd)"
+  committed_file_physical="$committed_file"
+  if [[ -n "$committed_dir_physical" ]]; then
+    committed_file_physical="$committed_dir_physical/$(basename "$committed_file")"
+  fi
+  case "$committed_file_physical" in
     "$repo_root_for_git"/*)
-      if ! git -C "$repo_root_for_git" ls-files --error-unmatch -- "$committed_file" >/dev/null 2>&1; then
+      if ! git -C "$repo_root_for_git" ls-files --error-unmatch -- "$committed_file_physical" >/dev/null 2>&1; then
         failures+=("COMMITTED-NOT-TRACKED  $committed_file — exists on disk but is not git-tracked; the committed ceiling must change only through a reviewed commit")
       fi
       ;;
