@@ -498,6 +498,73 @@ ds="$(bash "$REPLAY" diff-scope "$REPO" "$BASE" "$TRUTH")"
 ok "B7 score.sh's candidate test-surface detection agrees with replay.sh's own T bucket"
 
 # ═══════════════════════════════════════════════════════════════════════════
+# SECTION B8-B10 — candidate diff text: score.diff.text_excerpt (temperloop#1579)
+# ═══════════════════════════════════════════════════════════════════════════
+
+count
+out="$(bash "$SCORE" score --repo-root "$REPO" --candidate-worktree "$WT_GOOD" --record "$RECORD")"
+te="$(jq -r '.diff.text_excerpt' <<<"$out")"
+[ -n "$te" ] || fail "B8: expected a non-empty text_excerpt for a candidate that made edits, got: $out"
+case "$te" in *"diff --git"*) ;; *) fail "B8: text_excerpt does not look like real diff text, got: [$te]" ;; esac
+[ "$(jq -r '.diff.text_excerpt_truncated' <<<"$out")" = "false" ] || fail "B8: expected text_excerpt_truncated=false under the default cap, got: $out"
+ok "B8 the persisted score record carries real, non-empty candidate diff text in text_excerpt"
+
+count
+out="$(bash "$SCORE" score --repo-root "$REPO" --candidate-worktree "$WT_NT" --record "$RECORD")"
+[ "$(jq -r '.diff.text_excerpt' <<<"$out")" = "" ] || fail "B9: expected an empty text_excerpt for a candidate that touched nothing, got: $out"
+[ "$(jq -r '.diff.text_excerpt_truncated' <<<"$out")" = "false" ] || fail "B9: an empty diff cannot be truncated, got: $out"
+ok "B9 a zero-change candidate yields an empty (not fabricated) text_excerpt"
+
+count
+WT_BIG="$(mk_wt)"
+STUB_MODE=good bash "$STUB" /dev/null >/dev/null "$WT_BIG"
+out="$(env REPLAY_SCORE_DIFF_EXCERPT_MAX_BYTES=40 bash "$SCORE" score --repo-root "$REPO" --candidate-worktree "$WT_BIG" --record "$RECORD")"
+[ "$(jq -r '.diff.text_excerpt_truncated' <<<"$out")" = "true" ] || fail "B10: expected text_excerpt_truncated=true under a 40-byte cap, got: $out"
+full_b="$(jq -r '.diff.text_excerpt_full_bytes' <<<"$out")"
+[ "$full_b" -gt 40 ] || fail "B10: expected text_excerpt_full_bytes > 40, got: $out"
+case "$(jq -r '.diff.text_excerpt' <<<"$out")" in
+  *"TRUNCATED"*) ;;
+  *) fail "B10: expected an explicit truncation marker in text_excerpt, got: $out" ;;
+esac
+ok "B10 an oversized diff is excerpted at REPLAY_SCORE_DIFF_EXCERPT_MAX_BYTES with an explicit truncation marker"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SECTION B11-B13 — X and R buckets carry the SAME per-path attribution N
+# does (temperloop#1579, score.sh:422-477's logic extended)
+# ═══════════════════════════════════════════════════════════════════════════
+
+count
+REC_XR="$WORK/record-xr.json"
+jq -c '.buckets.R = ["CHANGELOG.md"]' "$RECORD" >"$REC_XR"
+WT_XR_NT="$(mk_wt)"
+STUB_MODE=notouch bash "$STUB" /dev/null >/dev/null "$WT_XR_NT"
+out="$(bash "$SCORE" score --repo-root "$REPO" --candidate-worktree "$WT_XR_NT" --record "$REC_XR")"
+[ "$(jq -r '.diff.x.paths[0].path' <<<"$out")" = "CHANGELOG.md" ] || fail "B11: expected the X path attributed, got: $out"
+[ "$(jq -r '.diff.x.paths[0].changed' <<<"$out")" = "false" ] || fail "B11: an untouched X path must read changed=false, got: $out"
+[ "$(jq -r '.diff.r.paths[0].path' <<<"$out")" = "CHANGELOG.md" ] || fail "B11: expected the R path attributed, got: $out"
+[ "$(jq -r '.diff.r.paths[0].changed' <<<"$out")" = "false" ] || fail "B11: an untouched R path must read changed=false, got: $out"
+[ "$(jq -r '.diff.n.files[0].changed' <<<"$out")" = "false" ] || fail "B11: (notouch) N must also read changed=false, got: $out"
+ok "B11 a zero-change candidate reads changed=false in EVERY bucket alike -- N, X and R"
+
+count
+[ "$(jq -r '.diff.x.paths[0] | has("truth_added") and has("matches_truth") and has("formatting_only_truth_churn")' <<<"$out")" = "true" ] \
+  || fail "B12: X path attribution is missing fields N's own attribution carries, got: $out"
+[ "$(jq -r '.diff.r.paths[0] | has("truth_added") and has("matches_truth") and has("formatting_only_truth_churn")' <<<"$out")" = "true" ] \
+  || fail "B12: R path attribution is missing fields N's own attribution carries, got: $out"
+ok "B12 X and R per-path records carry the SAME attribution shape N's own does"
+
+count
+WT_XR_TOUCH="$(mk_wt)"
+STUB_MODE=good bash "$STUB" /dev/null >/dev/null "$WT_XR_TOUCH"
+printf '# changelog\n\n- the candidate ALSO edited this truth-partition path\n' >"$WT_XR_TOUCH/CHANGELOG.md"
+out="$(bash "$SCORE" score --repo-root "$REPO" --candidate-worktree "$WT_XR_TOUCH" --record "$REC_XR")"
+[ "$(jq -r '.diff.x.paths[0].changed' <<<"$out")" = "true" ] || fail "B13: a candidate-touched X path must read changed=true, got: $out"
+[ "$(jq -r '.diff.r.paths[0].changed' <<<"$out")" = "true" ] || fail "B13: a candidate-touched R path must read changed=true, got: $out"
+[ "$(jq -r '.diff.x.treatment' <<<"$out")" = "neutral" ] || fail "B13: X treatment must stay neutral even when touched, got: $out"
+[ "$(jq -r '.diff.r.treatment' <<<"$out")" = "flagged-only" ] || fail "B13: R treatment must stay flagged-only even when touched, got: $out"
+ok "B13 a candidate-touched truth-partition path is mechanically distinguishable (changed=true) from an untouched one, in both X and R"
+
+# ═══════════════════════════════════════════════════════════════════════════
 # SECTION C — execute: the candidate-runner seam and its REFUSAL
 # ═══════════════════════════════════════════════════════════════════════════
 

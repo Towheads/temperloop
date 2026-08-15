@@ -1122,6 +1122,13 @@ fi
 # Wall-clock bound on that gate run. A timeout is reported as
 # `timed_out: true` alongside the normalized 137 exit code, never as a pass.
 : "${REPLAY_SCORE_GATE_TIMEOUT_SECS:=1800}"
+# Byte cap on the candidate diff text score.sh captures into
+# `score.diff.text_excerpt` while the leg's worktree is still live
+# (temperloop#1579 — batch.sh tears the worktree down right after replay, so
+# this is the only point the real patch text can ever be read). An oversized
+# diff is cut at this many bytes with an explicit truncation marker appended
+# to the field itself, never silently grown without bound into the record.
+: "${REPLAY_SCORE_DIFF_EXCERPT_MAX_BYTES:=200000}"
 
 # ── Judge pass (temperloop#1259, epic #1225 "model comparison harness") ────
 # workflows/scripts/model-comparison/judge.sh: the strong-tier JUDGE model
@@ -1231,6 +1238,7 @@ export BUILD_QUOTA_PAUSE_PCT BUILD_QUOTA_CACHE BUILD_QUOTA_WAIT_BUFFER \
        REPLAY_PREFLIGHT_DERIVE_MIN_N \
        REPLAY_PREFLIGHT_CEILING_TOKENS REPLAY_PREFLIGHT_ASSUMED_STDDEV_TOKENS \
        REPLAY_CANDIDATE_TIMEOUT_SECS REPLAY_SCORE_GATE_RELPATH REPLAY_SCORE_GATE_TIMEOUT_SECS \
+       REPLAY_SCORE_DIFF_EXCERPT_MAX_BYTES \
        MODEL_COMPARISON_JUDGE_MODEL MODEL_COMPARISON_JUDGE_TIMEOUT_SECS \
        MODEL_COMPARISON_JUDGE_ROTATION_ENABLED MODEL_COMPARISON_JUDGE_ROTATION_MIN_JUDGES \
        MODEL_COMPARISON_REPORT_RECORDS_DIR \
