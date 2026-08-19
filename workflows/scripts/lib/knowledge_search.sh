@@ -703,9 +703,109 @@ BMIGNORE
   fi
 }
 
-# Writes config.json BEFORE the first index (point 2), and only if absent —
-# this state dir is adapter-owned (point 6), so an existing file is trusted
-# to already carry our posture; we never clobber a config a prior run wrote.
+# ── Posture VERIFY-AND-REPAIR on an EXISTING config.json (foundation#1211) ──
+# _ks_bm_ensure_config used to be write-if-absent: it early-returned on
+# `[ -f "$cfg_path" ]`, so an existing config.json was TRUSTED to still carry
+# the no-mutation posture the adapter wrote. That trust does not hold in the
+# field. A live host was found carrying basic-memory's OWN defaults in that
+# file — sync_changes: true, ensure_frontmatter_on_sync: true, auto_update:
+# true, semantic_embedding_cache_dir: null — i.e. precisely the vault-MUTATION
+# class the posture exists to prevent, silently re-enabled. bm rewrites this
+# file itself (`project add` and friends persist through it), so
+# "adapter-owned state dir" is a claim about intent, never a guarantee about
+# bytes. The adapter therefore VERIFIES the posture keys on every call now and
+# repairs the ones that drifted, instead of assuming presence implies posture.
+#
+# Three properties this is built around:
+#
+#  * MERGE, NEVER REGENERATE. The `projects` map and `default_project` are
+#    adapter-UNOWNED state written by bm's own CLI (point 9: registration is
+#    CLI-only, config-only edits are not honored). Rewriting the file from the
+#    absent-config template below would DEREGISTER every live project. So the
+#    repair is a key-wise merge onto the parsed document: the posture keys are
+#    set, and every other key — bm's bookkeeping included — passes through.
+#  * MODEL AND DIMENSIONS MOVE AS A PAIR, never half-updated — the same
+#    temperloop#907 coupling the absent-config writer has. Both are resolved by
+#    the caller BEFORE either write path runs, so an unknown model fails the
+#    whole call rather than repairing a config into a mismatched width (which
+#    silently yields a zero-embedding index: the index builds, every search
+#    returns nothing, and no error is raised anywhere).
+#  * IDEMPOTENT BY COMPARISON, not by assumption. The repaired document is
+#    compared against the on-disk one in canonical (sorted, compact) form, and
+#    the file is left COMPLETELY untouched — same bytes, same mtime — when
+#    nothing drifted. A config already carrying the posture is therefore never
+#    reformatted, and a second consecutive call is a provable no-op.
+#
+# Best-effort by design: a missing jq, or a config.json that is not a JSON
+# OBJECT — unparseable, empty, truncated, or a valid non-object like `[]` —
+# WARNS on stderr and leaves the file alone (the pre-#1211 behavior for an
+# existing file) rather than failing the search outright — but it never passes
+# silently, so an unverified posture is visible rather than assumed.
+# NOTE: no local named `path`/`cdpath`/`fpath`/`mailpath` here either — see the
+# zsh PATH-tie note on _ks_bm_ensure_config below (temperloop#40).
+_ks_bm_repair_config() {
+  local cfg_path="$1" cache="$2" model="$3" dims="$4"
+  local on_disk repaired tmp_path
+  if ! command -v jq >/dev/null 2>&1; then
+    printf 'knowledge_search: jq not found — the basic-memory no-mutation posture in %s is UNVERIFIED\n' \
+      "$cfg_path" >&2
+    return 0
+  fi
+  # The guard must reject THREE shapes, not just unparseable bytes: `jq . ` on an
+  # EMPTY or whitespace-only file exits 0 with empty output, and a valid-but-
+  # non-object document (`[]`, `"str"`, a bare number) parses fine here and then
+  # fails the merge below with jq's own "Cannot index array" — turning a
+  # recoverable config problem into exit 4 for every search. Both collapse into
+  # one test: demand a JSON OBJECT and treat an empty capture as the failure
+  # signal, so all three take the warn-and-leave-alone path together. An empty
+  # config is the worst case of the drift #1211 exists to close — bm falls back
+  # to ITS defaults (sync_changes/ensure_frontmatter_on_sync true, the
+  # vault-mutation posture) — so it must never report as verified.
+  on_disk="$(jq -S -c 'if type == "object" then . else error("not an object") end' "$cfg_path" 2>/dev/null)" || on_disk=""
+  if [ -z "$on_disk" ]; then
+    printf 'knowledge_search: %s is not a JSON object (empty, truncated, or not valid JSON) — leaving it untouched; the basic-memory no-mutation posture is UNVERIFIED\n' \
+      "$cfg_path" >&2
+    return 0
+  fi
+  # Every key here maps a posture point enumerated on _ks_bm_ensure_config
+  # below; the two sets must stay in lockstep (the tests assert that).
+  repaired="$(jq --arg model "$model" --argjson dims "$dims" --arg cache "$cache" '
+      .disable_permalinks            = true
+    | .ensure_frontmatter_on_sync    = false
+    | .format_on_save                = false
+    | .update_permalinks_on_move     = false
+    | .kebab_filenames               = false
+    | .sync_changes                  = false
+    | .auto_update                   = false
+    | .semantic_embedding_model      = $model
+    | .semantic_embedding_dimensions = $dims
+    | .semantic_embedding_cache_dir  = $cache
+  ' "$cfg_path")" || return 1
+  [ "$(printf '%s\n' "$repaired" | jq -S -c .)" = "$on_disk" ] && return 0
+  # Write via a temp file + rename so a crash mid-write can never leave a
+  # truncated config behind (bm reads this file on every invocation).
+  # SEED THE TEMP FILE FROM THE ORIGINAL so the replacement inherits its mode:
+  # `printf > new-file` would take the umask default, silently widening a 0600
+  # config to 0644 on every repair. `cp` is the portable way to carry the mode
+  # across — `chmod --reference` is GNU-only and `stat -c` vs `stat -f %Lp` is
+  # exactly the BSD/GNU split the tool-invocation rule warns about.
+  # A signal landing between this write and the `mv` orphans the temp file; that
+  # is ACCEPTED rather than trapped. A sourced lib cannot install an EXIT trap
+  # without stomping its caller's, and reaping `"$cfg_path".ks-repair.*` on entry
+  # would race a concurrent repair in another process — deleting ITS temp file
+  # mid-write and turning that call into the search outage this guard avoids.
+  tmp_path="$cfg_path.ks-repair.$$"
+  cp "$cfg_path" "$tmp_path" || { rm -f "$tmp_path"; return 1; }
+  printf '%s\n' "$repaired" > "$tmp_path" || { rm -f "$tmp_path"; return 1; }
+  mv -f "$tmp_path" "$cfg_path" || { rm -f "$tmp_path"; return 1; }
+  printf 'knowledge_search: repaired drifted no-mutation posture keys in %s (foundation#1211)\n' \
+    "$cfg_path" >&2
+  return 0
+}
+
+# Writes config.json BEFORE the first index (point 2) when absent, and VERIFIES
+# + REPAIRS the posture keys on an existing one (foundation#1211 — see
+# _ks_bm_repair_config above for why presence is no longer trusted as posture).
 # Maps every spike-verdict posture point:
 #   point 1 — disable_permalinks: true            (+ env var, see _ks_bm_run)
 #   point 2 — ensure_frontmatter_on_sync: false, format_on_save: false,
@@ -739,14 +839,23 @@ _ks_bm_ensure_config() {
   # file written (foundation#946). Both are "write only if absent", so this is
   # idempotent and independent of config.json's presence.
   _ks_bm_ensure_ignore || return 1
-  [ -f "$cfg_path" ] && return 0
-  # point 7: model and dimensions resolved as a PAIR from the single pin —
-  # AFTER the early return, so an existing config still short-circuits
-  # untouched. A model with no known width fails here rather than writing a
-  # config that would index every note to a zero vector.
+  # point 7: model and dimensions resolved as a PAIR from the single pin, and
+  # BEFORE either write path runs. The old code got this ordering for free by
+  # sitting after a write-if-absent early return; now that an EXISTING config
+  # is repaired rather than trusted, the guarantee has to be stated up front to
+  # still hold on that path: a model with no known width fails the whole call
+  # here, rather than writing — or repairing into — a config whose mismatched
+  # width would index every note to a zero vector.
   model="$(_ks_bm_embedding_model)"
   dims="$(_ks_bm_embedding_dimensions "$model")" || return 1
   mkdir -p "$dir" "$cache" || return 1
+  # Existing config: VERIFY the posture and repair only what drifted. Never
+  # regenerate from the template below — that would deregister bm's
+  # CLI-registered `projects` map (point 9).
+  if [ -f "$cfg_path" ]; then
+    _ks_bm_repair_config "$cfg_path" "$cache" "$model" "$dims" || return 1
+    return 0
+  fi
   cat > "$cfg_path" <<JSON
 {
   "disable_permalinks": true,

@@ -377,6 +377,180 @@ grep -qxF '_inbox' "$IGN"          || fail "6d: existing .bmignore must be prese
 grep -qxF 'should-not-appear' "$IGN" && fail "6d: must NOT append to a pre-existing .bmignore (write-only-if-absent)"
 echo "PASS: 6d .bmignore is write-only-if-absent (idempotent, never clobbers a prior run's file)"
 
+# ── config.json is VERIFY-AND-REPAIR, not write-if-absent (foundation#1211) ──
+# The old _ks_bm_ensure_config early-returned on `[ -f "$cfg_path" ]`, so an
+# EXISTING config was trusted to still carry the posture. A live host was found
+# carrying bm's own defaults there instead (sync_changes: true,
+# ensure_frontmatter_on_sync: true, auto_update: true, cache dir null) — the
+# vault-MUTATION class the posture exists to prevent. Cases 6e-6i pin the
+# replacement: repair the drift, preserve adapter-UNOWNED state, stay
+# idempotent, keep the absent-config path unchanged, and keep the
+# model/dimensions pair-resolution failure non-writing.
+#
+# assert_full_posture <case-label> <config-path> — the posture set case 6 pins,
+# reused so a repaired config is held to exactly the same bar as a fresh one.
+assert_full_posture() {
+  local label="$1" cfg="$2"
+  [ "$(jq -r '.disable_permalinks'         "$cfg")" = "true"  ] || fail "$label point1: disable_permalinks should be true"
+  [ "$(jq -r '.ensure_frontmatter_on_sync' "$cfg")" = "false" ] || fail "$label point2: ensure_frontmatter_on_sync should be false"
+  [ "$(jq -r '.format_on_save'             "$cfg")" = "false" ] || fail "$label point2: format_on_save should be false"
+  [ "$(jq -r '.update_permalinks_on_move'  "$cfg")" = "false" ] || fail "$label point2: update_permalinks_on_move should be false"
+  [ "$(jq -r '.kebab_filenames'            "$cfg")" = "false" ] || fail "$label point2: kebab_filenames should be false"
+  [ "$(jq -r '.sync_changes'               "$cfg")" = "false" ] || fail "$label point3: sync_changes should be false"
+  [ "$(jq -r '.auto_update'                "$cfg")" = "false" ] || fail "$label point5: auto_update should be false"
+  [ "$(jq -r '.semantic_embedding_model'   "$cfg")" = "$(_ks_bm_embedding_model)" ] \
+    || fail "$label point7: semantic_embedding_model must come from the pin"
+  [ "$(jq -r '.semantic_embedding_dimensions | type' "$cfg")" = "number" ] \
+    || fail "$label point7: semantic_embedding_dimensions must be a JSON number"
+  [ "$(jq -r '.semantic_embedding_dimensions' "$cfg")" = "$(_ks_bm_embedding_dimensions)" ] \
+    || fail "$label point7: semantic_embedding_dimensions must be derived from the model pin"
+  case "$(jq -r '.semantic_embedding_cache_dir' "$cfg")" in
+    "$BM_HOME"/*) : ;;
+    *) fail "$label point6: semantic_embedding_cache_dir should live under the isolated BM home" ;;
+  esac
+}
+
+# --- 6e. a DRIFTED existing config.json is repaired, unowned state preserved --
+# The drift seeded here is the exact live-host shape from the issue (bm's own
+# defaults back in place), widened to every posture key so no key is repaired
+# only by luck. Alongside it: a `projects` map (bm registers projects via the
+# CLI — clobbering it deregisters the live store), a `default_project`, and an
+# unrelated bookkeeping key. All three MUST survive byte-equivalent.
+jq '.disable_permalinks            = false
+  | .ensure_frontmatter_on_sync    = true
+  | .format_on_save                = true
+  | .update_permalinks_on_move     = true
+  | .kebab_filenames               = true
+  | .sync_changes                  = true
+  | .auto_update                   = true
+  | .semantic_embedding_model      = "not-the-pinned-model"
+  | .semantic_embedding_dimensions = 1
+  | .semantic_embedding_cache_dir  = null
+  | .projects           = {"mind": "/vault/mind", "test-project": "/kb", "main": "/stray"}
+  | .default_project    = "mind"
+  | .bm_bookkeeping_key = 42' "$CONFIG" > "$TMP/cfg-drifted.json"
+cp "$TMP/cfg-drifted.json" "$CONFIG"
+_ks_bm_ensure_config || fail "6e: ensure_config must succeed on a drifted existing config"
+assert_full_posture "6e" "$CONFIG"
+[ "$(jq -Sc '.projects' "$CONFIG")" = '{"main":"/stray","mind":"/vault/mind","test-project":"/kb"}' ] \
+  || fail "6e: the CLI-registered projects map must survive repair unchanged (got $(jq -Sc '.projects' "$CONFIG"))"
+[ "$(jq -r '.default_project' "$CONFIG")" = "mind" ] \
+  || fail "6e: default_project must survive repair unchanged"
+[ "$(jq -r '.bm_bookkeeping_key' "$CONFIG")" = "42" ] \
+  || fail "6e: unrelated bm bookkeeping keys must survive repair unchanged"
+echo "PASS: 6e a drifted existing config.json is REPAIRED to the no-mutation posture, adapter-unowned state (projects/default_project/bookkeeping) preserved (foundation#1211)"
+
+# --- 6f. idempotent: a second consecutive call changes nothing ----------------
+# Two independent assertions, because either alone is weak: byte-equality shows
+# the FILE did not change, and the absent "repaired" stderr notice shows the
+# write branch was never even entered (a rewrite-to-identical-bytes would pass
+# the first check but not the second).
+cp "$CONFIG" "$TMP/cfg-after-repair.json"
+err6f="$(_ks_bm_ensure_config 2>&1 1>/dev/null)" || fail "6f: repeat call failed"
+cmp -s "$CONFIG" "$TMP/cfg-after-repair.json" \
+  || fail "6f: a second consecutive call must leave the file byte-identical"
+grep -q 'repaired drifted' <<<"$err6f" \
+  && fail "6f: a second call must not take the write branch (stderr: $err6f)"
+echo "PASS: 6f verify-and-repair is idempotent — a second consecutive call rewrites nothing and reports no repair"
+
+# --- 6g. the ABSENT-config path still writes the same config as before --------
+rm -f "$CONFIG"
+_ks_bm_ensure_config || fail "6g: ensure_config must still write an absent config"
+[ -f "$CONFIG" ] || fail "6g: absent config was not written"
+assert_full_posture "6g" "$CONFIG"
+[ "$(jq -r 'has("projects")' "$CONFIG")" = "false" ] \
+  || fail "6g point9: a freshly written config must not carry a hand-written projects map (registration is CLI-only)"
+echo "PASS: 6g the absent-config path is unchanged — same full posture, still no hand-written projects map"
+
+# --- 6h. model/dimensions resolution failure returns non-zero WITHOUT writing --
+# The pre-#1211 ordering guarantee (resolve the pair before anything is
+# written) has to survive the new repair path too: an unknown model must fail
+# BOTH arms — writing nothing when the config is absent, and repairing nothing
+# when it exists — rather than leaving a mismatched width behind, which indexes
+# every note to a zero vector (temperloop#907).
+_ks_bm_saved_model_fn="$(declare -f _ks_bm_embedding_model)"
+_ks_bm_embedding_model() { printf 'not-a-real-model\n'; }
+rm -f "$CONFIG"
+set +e
+_ks_bm_ensure_config 2>/dev/null
+rc6h_absent=$?
+set -e
+[ "$rc6h_absent" -ne 0 ] || fail "6h: an unknown embedding model must fail the absent-config path"
+[ ! -f "$CONFIG" ] || fail "6h: nothing may be written when the model/dimensions pair does not resolve"
+cp "$TMP/cfg-drifted.json" "$CONFIG"
+set +e
+_ks_bm_ensure_config 2>/dev/null
+rc6h_existing=$?
+set -e
+[ "$rc6h_existing" -ne 0 ] || fail "6h: an unknown embedding model must fail the existing-config path too"
+cmp -s "$CONFIG" "$TMP/cfg-drifted.json" \
+  || fail "6h: an existing config must be left untouched when the model/dimensions pair does not resolve"
+eval "$_ks_bm_saved_model_fn"
+[ "$(_ks_bm_embedding_model)" = "bge-small-en-v1.5" ] || fail "6h: failed to restore the real model pin"
+rm -f "$CONFIG"
+_ks_bm_ensure_config || fail "6h: ensure_config should succeed again once the pin is restored"
+assert_full_posture "6h" "$CONFIG"
+echo "PASS: 6h an unresolvable model/dimensions pair fails BOTH paths non-zero and writes/repairs nothing (temperloop#907 ordering guarantee survives)"
+
+# --- 6i. the repair set is one pin + one derivation, like the writer (6a) -----
+# Static half, mirroring 6a: the repair path must interpolate the SAME pin and
+# derivation rather than restating a model name or a width, or the two writers
+# could drift apart into a half-updated pair.
+repair_fn="$(sed -n '/^_ks_bm_repair_config()/,/^}/p' "$SEARCH_LIB")"
+[ -n "$repair_fn" ] || fail "6i: could not extract _ks_bm_repair_config from $SEARCH_LIB"
+grep -qE '\.semantic_embedding_model[[:space:]]*=[[:space:]]*\$model' <<<"$repair_fn" \
+  || fail "6i: the repair path must interpolate the model pin, not restate it"
+grep -qE '\.semantic_embedding_dimensions[[:space:]]*=[[:space:]]*\$dims' <<<"$repair_fn" \
+  || fail "6i: the repair path must interpolate the derived dimensions, not restate them"
+grep -qE 'bge-|\.semantic_embedding_dimensions[[:space:]]*=[[:space:]]*[0-9]' <<<"$repair_fn" \
+  && fail "6i: the repair path must not hardcode a model name or a width (temperloop#907)"
+# Every key the absent-config writer sets must also be VERIFIED by the repair
+# path — otherwise a posture key could be written once and never checked again,
+# which is the whole #1211 defect in miniature.
+cfg_writer_keys="$(sed -n '/^_ks_bm_ensure_config()/,/^}/p' "$SEARCH_LIB" \
+  | sed -nE 's/^[[:space:]]*"([a-z_]+)":.*/\1/p' | sort -u)"
+[ -n "$cfg_writer_keys" ] || fail "6i: could not extract the writer's posture keys"
+while read -r k; do
+  [ -n "$k" ] || continue
+  grep -qE "\\.${k}[[:space:]]*=" <<<"$repair_fn" \
+    || fail "6i: posture key '$k' is written by the absent-config path but never verified by the repair path"
+done <<<"$cfg_writer_keys"
+echo "PASS: 6i the repair path verifies EVERY key the absent-config writer sets, and derives model+dimensions from the same single pin"
+
+# --- 6j. a config that is NOT a JSON object degrades: warn, leave alone, rc=0 --
+# The header contracts a warn-and-leave-alone path for a config the repair
+# cannot safely merge onto, and two shapes reaching it are easy to get wrong:
+#   * EMPTY / whitespace-only — `jq . ` exits 0 with EMPTY output on these, so a
+#     bare parseability guard reports the posture verified while bm, reading a
+#     truncated config, falls back to ITS OWN defaults (sync_changes and
+#     ensure_frontmatter_on_sync true) — the vault-MUTATION posture. That is the
+#     #1211 defect in its worst form: the check is present but cannot see the
+#     state it exists to detect, so it must never pass silently.
+#   * valid-but-NON-OBJECT (`[]`, `"str"`, a bare number) — parses fine, then
+#     fails the key-wise merge with jq's own "Cannot index array", which would
+#     turn a recoverable config problem into exit 4 for EVERY search.
+# All of them must warn, touch nothing, and return 0.
+for bad_case in 'garbage:not json at all' 'empty:' 'blank:   ' 'array:[]' 'string:"str"' 'number:42'; do
+  bad_label="${bad_case%%:*}"
+  bad_body="${bad_case#*:}"
+  printf '%s' "$bad_body" > "$CONFIG"
+  bad_before="$(cksum < "$CONFIG")"
+  set +e
+  err6j="$(_ks_bm_ensure_config 2>&1 1>/dev/null)"
+  rc6j=$?
+  set -e
+  [ "$rc6j" -eq 0 ] \
+    || fail "6j/$bad_label: a non-object config must degrade (rc=0), not fail the search outright (rc=$rc6j)"
+  [ "$(cksum < "$CONFIG")" = "$bad_before" ] \
+    || fail "6j/$bad_label: a config the repair cannot merge onto must be left byte-identical"
+  grep -q 'UNVERIFIED' <<<"$err6j" \
+    || fail "6j/$bad_label: the degradation must WARN on stderr, never pass silently (got: $err6j)"
+done
+rm -f "$CONFIG"
+_ks_bm_ensure_config || fail "6j: ensure_config should succeed again once the bad configs are cleared"
+assert_full_posture "6j" "$CONFIG"
+echo "PASS: 6j a non-object config (garbage/empty/whitespace/array/string/number) warns UNVERIFIED, is left byte-identical, and never fails the search"
+
 # --- 7. env belt-and-suspenders (point 1) + isolated HOME (point 6) reach the subprocess -
 grep -q "BASIC_MEMORY_DISABLE_PERMALINKS=true" "$FAKE_UVX_LOG" \
   || fail "7: subprocess never saw BASIC_MEMORY_DISABLE_PERMALINKS=true"
