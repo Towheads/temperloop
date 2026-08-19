@@ -147,6 +147,21 @@ classify_entry() {
 # with whatever build.config.sh itself sees, so the bare-env plane silently
 # resolves a different root than the script-plane one.
 #
+# AGREEMENT ARM (foundation#1340): equality catches a SPLIT root but is blind
+# to a UNIFORMLY WRONG one — with the machine conf absent both planes fall
+# through to _ks_default_root(), agree, and the check used to print a bare OK
+# over a root that is not the store. Since nothing in this tree installs or
+# verifies that conf, it is an untracked SPOF, and the plain-files backend's
+# `mkdir -p` on append means a wrong root is silently CREATED rather than
+# erroring. So when the planes agree, the check now also reports the root's
+# PROVENANCE (env / machine-conf / default-fallback) and downgrades OK to WARN
+# for default-fallback — the one case where agreement proves nothing. Provenance
+# rather than a store-shaped probe: the only store-identity signal available
+# (`.obsidian/`) is an overlay artifact a kernel-only install does not have,
+# whereas "did anything configure this?" needs no such signal. The WARN is
+# advisory (return 0) — a fresh install with no store configured yet lands here
+# legitimately, and the defect being closed was a false OK, not a missing FAIL.
+#
 # Runs fully offline: sourcing build.config.sh / knowledge_store.sh does no
 # network I/O (only functions never called here would).
 # ---------------------------------------------------------------------------
@@ -182,7 +197,91 @@ check_knowledge_root() {
   printf '  Plane B (bare-env, knowledge_store.sh alone) = %s\n' "$plane_b"
 
   if [[ "$plane_a" == "$plane_b" ]]; then
-    printf '  OK — script-plane and bare-env knowledge-store root agree.\n'
+    # AGREEMENT IS NOT SUFFICIENT (foundation#1340). The comparison above is an
+    # equality check, so it detects a SPLIT root — not a UNIFORMLY WRONG one.
+    # With the rung-3 machine conf absent, BOTH planes fall through to
+    # _ks_default_root() and agree on a root that is not the store at all; the
+    # old code printed a bare OK for exactly that state. That is the same
+    # silent-success shape as the 16-day split-brain outage described above,
+    # and it is reachable today: nothing in this tree installs, deploys, or
+    # verifies the machine conf, so it is an untracked single point of failure.
+    #
+    # The discriminator is PROVENANCE, not content. Asking "does this look like
+    # a store" needs a store-shaped signal, and the only one on hand
+    # (`.obsidian/`, which mind_snapshot.sh keys on) is an overlay artifact a
+    # kernel-only install does not have. Asking "did anything actually CONFIGURE
+    # this root" needs no such signal and is exactly the question whose answer
+    # makes agreement meaningful: if the root came from the default fallback,
+    # both planes agreeing tells us only that both fell back the same way.
+    local provenance root_state
+    # `set +eu`, not `set +e`: the ambient shell carries no `-e` (line 24), so
+    # relaxing it is inert — `-u` is the inherited option that could actually
+    # kill this subshell mid-source. This is the same idiom
+    # _ks_machine_conf_root uses for the same "read a sibling config without
+    # importing its failures" job.
+    #
+    # The `-n` test mirrors `ks_root`'s own `:=` semantics, which treat an
+    # exported-but-EMPTY KNOWLEDGE_STORE_ROOT as unset — so an empty value
+    # labels machine-conf/default-fallback, exactly as ks_root would resolve it.
+    #
+    # `conf-present-but-unusable` is split out because _ks_machine_conf_root
+    # returns 1 for more than one situation: no conf file at all, and a conf
+    # that exists but never sets KNOWLEDGE_STORE_ROOT. Both fall back, but only
+    # the first is the fresh-install case the remedy text below describes —
+    # telling someone who HAS a conf that they have none sends them looking in
+    # the wrong place. (Its third return-1 case, a RELATIVE root, never reaches
+    # this arm: build.config.sh sources the conf directly, so plane A adopts
+    # the relative value while plane B's absolute-path guard rejects it, and
+    # the planes MISMATCH above instead — louder and more accurate.)
+    provenance="$(
+      set +eu
+      # shellcheck source=/dev/null
+      source "$ks_lib" >/dev/null 2>&1
+      if [[ -n "${KNOWLEDGE_STORE_ROOT:-}" ]]; then printf 'env'
+      elif _ks_machine_conf_root >/dev/null 2>&1; then printf 'machine-conf'
+      elif [[ -f "${KNOWLEDGE_STORE_MACHINE_CONF:-}" ]]; then printf 'conf-present-but-unusable'
+      else printf 'default-fallback'; fi
+    )"
+
+    if [[ "$provenance" == "env" || "$provenance" == "machine-conf" ]]; then
+      printf '  OK — script-plane and bare-env knowledge-store root agree (resolved from %s).\n' "$provenance"
+      return 0
+    fi
+
+    # `-print -quit` stops at the FIRST hit: this is a cheap "is there anything
+    # here at all" probe, not a count, so it must not walk a large store. It is
+    # also deliberately NOT `find … | head -1`: `head` closing the pipe early
+    # makes find die of SIGPIPE, so that pipeline reports 141 under `pipefail`
+    # on the common (a file WAS found) path. Harmless while this script runs
+    # `set -uo pipefail` without `-e`, but it would abort the whole check the
+    # day someone adds `-e`. `-quit` is POSIX-2024 and present on both BSD
+    # (macOS) and GNU find, verified on this box.
+    if [[ ! -d "$plane_b" ]]; then
+      root_state='the directory does not exist yet'
+    elif [[ -n "$(find "$plane_b" -type f -name '*.md' -print -quit 2>/dev/null)" ]]; then
+      root_state='the directory holds documents'
+    else
+      root_state='the directory exists but holds no documents'
+    fi
+
+    printf '  WARN — both planes agree, but NOTHING CONFIGURED this root: it came\n'
+    printf '  from the built-in default fallback, so agreement here proves only that\n'
+    printf '  both planes fell back identically — not that the root is your store.\n'
+    printf '  Resolved root: %s (%s)\n' "$plane_b" "$root_state"
+    printf '  If that is not where your knowledge store lives, every consumer is\n'
+    printf '  reading and writing a shadow store — and the plain-files backend\n'
+    printf '  creates it on first append, so this fails silently and looks green.\n'
+    if [[ "$provenance" == "conf-present-but-unusable" ]]; then
+      printf '  Fix: the rung-3 machine conf EXISTS but does not set a usable\n'
+      printf '  KNOWLEDGE_STORE_ROOT, so the root fell back silently. Add an\n'
+      printf '  absolute KNOWLEDGE_STORE_ROOT to it (a relative value is rejected).\n'
+    else
+      printf '  Fix: set KNOWLEDGE_STORE_ROOT in the rung-3 machine conf (see\n'
+      printf '  docs/config-precedence.md, default path under XDG_CONFIG_HOME or\n'
+      printf '  HOME/.config, temperloop/build.config.sh), or point\n'
+      printf '  KNOWLEDGE_STORE_MACHINE_CONF at the conf that sets it.\n'
+      printf '  (A fresh install with no store configured yet is expected to warn here.)\n'
+    fi
     return 0
   fi
 
