@@ -62,6 +62,14 @@
 # manifest_backup_and_record call, no composer invocation, no symlink/file
 # touched).
 #
+# TWO BEST-EFFORT PROVISIONING STEPS run after the managed-path loop, both
+# owned by links.sh and neither a manifest-managed path (so neither can fail
+# this script): links_provision_cache_stores (the issue-cache store root) and
+# links_persist_knowledge_root (F#1771 — persists an operator-supplied
+# KNOWLEDGE_STORE_ROOT into the rung-3 machine conf, or reports the resolved
+# root's provenance; it NEVER invents a store location). Both run only after
+# the consent gate below, and --dry-run returns before either.
+#
 # IDEMPOTENT BY CONSTRUCTION: manifest_backup_and_record() is itself
 # idempotent per path (a second record is a no-op — see its own header), so
 # re-running this script converges: already-correct managed paths are left
@@ -360,6 +368,20 @@ echo
 # ---------------------------------------------------------------------------
 echo "-- Cache-store provisioning --"
 links_provision_cache_stores "$KERNEL_ROOT" || echo "  (non-fatal — see above)"
+echo
+
+# ---------------------------------------------------------------------------
+# Knowledge-store root persist/verify (F#1771) — the install half of the
+# detection half F#1340 shipped in doctor.sh's check_knowledge_root. Same
+# best-effort, not-a-managed-path posture as the cache-store step above: it is
+# reported, never counted against this script's exit code, and it NEVER
+# invents a root — it only makes durable a KNOWLEDGE_STORE_ROOT the operator
+# already set in this run's environment, and otherwise reports the resolved
+# root's provenance. See links.sh's own header for the full contract, including
+# why the rung-3 machine conf is deliberately not manifest-managed.
+# ---------------------------------------------------------------------------
+echo "-- Knowledge-store root --"
+links_persist_knowledge_root "$KERNEL_ROOT" || echo "  (non-fatal — see above)"
 echo
 
 echo "-- Summary --"

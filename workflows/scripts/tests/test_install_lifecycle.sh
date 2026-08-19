@@ -344,10 +344,18 @@ sandbox_tree_manifest "$SANDBOX_XDG_CACHE_HOME"  > "$AFTER_DIR/xdg-cache.tsv"
 # restore it exactly to the pre-install state. Zero exclusions.
 EXCL_HOME=""
 
-# $XDG_CONFIG_HOME: nothing in the install/uninstall flow itself writes
-# here — the only content ever present is the operator-authored wizard-style
+# $XDG_CONFIG_HOME: nothing in the install/uninstall flow writes here ON THIS
+# RUN — the only content ever present is the operator-authored wizard-style
 # conf seeded above (test 6), which is present, unchanged, in BOTH the
 # before and after snapshots, so it already matches with zero exclusions.
+# ONE conditional writer exists (F#1771): install.sh's
+# links_persist_knowledge_root persists the rung-3 machine conf's
+# KNOWLEDGE_STORE_ROOT — but ONLY when the install-time environment already
+# carries an absolute one, which this sandbox deliberately does not export.
+# So this empty exclusion list doubles as an assertion of that function's
+# core promise: with nothing configuring the root, no store location is
+# invented and $XDG_CONFIG_HOME is not touched at all. (The function's own
+# behavior is covered by test_install_links.sh test 12.)
 # (No config-wizard leg runs in this suite — see docs/features/
 # configure-config-cli.md for that separate surface — so there is nothing
 # ELSE this pattern needs to cover today; kept as an explicit empty rather
