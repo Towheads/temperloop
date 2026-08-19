@@ -14,6 +14,187 @@ reads that marker; a stranger greps for it before pulling.
 
 ## [Unreleased]
 
+## [0.33.0] - 2026-08-19
+
+### Added
+
+- **`session-start-drain.sh`'s seam-unavailable fail-open branch is now
+  covered by a test** (#1634). The hook exits 0 without draining when the
+  knowledge_store seam was never sourced — a hooks-only vendor drop with no
+  `workflows/scripts/lib/` two directories up — but no case in
+  `claude/hooks/tests/test_session_start_drain.sh` could reach it, because
+  `make_fixture` always copied both libs in. The new case removes `workflows/`
+  from the fixture and pins all the properties a SessionStart hook owes: rc=0,
+  the `.mind/` stub still on disk byte-identical, nothing written into the
+  store, the session-id `hookSpecificOutput` JSON still on stdout, and the
+  "knowledge_store seam unavailable" line in the log. It goes red if that
+  branch ever exits non-zero — the regression would present as a broken
+  session start on a vendored checkout, not as a skipped drain.
+
+- **`temperloop install` now persists and verifies the knowledge-store root
+  instead of leaving it to an untracked, operator-created file** (#1771). The
+  rung-3 machine conf that `ks_root()` reads through `_ks_machine_conf_root`
+  was written, installed and verified by nothing in this tree, so losing it
+  dropped every consumer onto the XDG default — and because the plain-files
+  backend's append does `mkdir -p`, the wrong root was silently *created* and
+  written to rather than erroring. The install path now owns it, via
+  `links_persist_knowledge_root` (`workflows/scripts/install/links.sh`), which
+  **never guesses a root**: with an absolute `KNOWLEDGE_STORE_ROOT` in the
+  install-time environment and no usable conf root, it appends
+  `: "${KNOWLEDGE_STORE_ROOT:=<value>}"` to the conf (creating the file with a
+  header when absent), so a value that was only ever an ephemeral env var
+  becomes something a bare hook or launchd agent resolves too. A conf that
+  already yields a usable absolute root is left byte-identical, which is also
+  what makes a second install a no-op; a relative root is refused by name
+  (`_ks_machine_conf_root` would reject it, so persisting one would be a
+  silent no-op); and a conf that already *mentions* `KNOWLEDGE_STORE_ROOT`
+  unusably is reported rather than appended behind (dead text) or rewritten (a
+  clobber). With nothing configuring the root at all, the install prints the
+  `default-fallback` / `conf-present-but-unusable` notice — the same
+  provenance vocabulary `doctor.sh`'s `check_knowledge_root` established in
+  #1340 — naming the root every consumer would otherwise use, and does **not**
+  fail: a fresh install legitimately has no store yet. The conf is
+  deliberately not manifest-managed, so `temperloop uninstall` never removes
+  it, exactly as it never removes the store itself.
+
+- **A migrating-from-Obsidian guide ships in `docs/`**
+  (`Towheads/foundation#892`). The kernel documented what the knowledge-search
+  adapter *is*, but not how a store gets moved onto it — that knowledge lived
+  only in issue bodies, a private ledger, and committed eval JSON. The new
+  `docs/migrating-from-obsidian.md` covers the four things that migration
+  actually turned on: constructing a golden-query set, the parity-ledger
+  method, the mutation tripwire, and the staggered writer migration order.
+
+  **Its framing is that this is a migration of access paths, not of data** —
+  the store stays canonical markdown throughout and nothing is converted,
+  which is the single most common wrong expectation to arrive with.
+
+  **The results are reported as measured, including where the incumbent won.**
+  Read from the committed cutover-gate artifacts rather than recollection:
+  basic-memory took hit@5 (0.974 vs 0.842) and recall (0.947 vs 0.790) but
+  **lost MRR** (0.767 vs 0.829), and the guide leads with that row. Search was
+  not a speed win either — cold p50 4.497s, which is why the warm-daemon
+  supervisor unit exists at all.
+
+  It also documents what went wrong, because a method section that only
+  describes the happy path teaches an adopter to repeat the mistake: the
+  parity ledger **failed as a gate** (its raw tally favoured the incumbent,
+  three of its arms were broken instruments, and the weekly regression bench
+  was later found comparing two corpora with zero overlap), and the cutover was
+  re-gated on the golden-query eval instead. Each failure carries its
+  transferable rule.
+
+  A **When not to do this** section gives six self-select-out criteria, and a
+  boundary section states plainly which pieces live in this kernel and which
+  the adopter writes themselves — the harness, ledger, tripwire and scheduled
+  reindex are *not* shipped here, so they are described as methods rather than
+  linked as files a stranger's checkout does not have.
+
+  Contract-surface note: this adds one `kernel` classification line to
+  `workflows/scripts/kernel/kernel-manifest.txt` for the new page. Docs-only
+  otherwise — no behavior, interface, or setting changes.
+
+### Changed
+
+- **The knowledge_search backend installs its pinned `basic-memory` as a uv
+  tool instead of resolving it via `uvx` on every call** (#1113). `_ks_bm_run`
+  used to invoke `uvx --from basic-memory==<pin> basic-memory …`, which has no
+  permanent install location: uv resolves the package, unpacks a ready-to-run
+  environment into its own cache, and executes out of that cache. Every
+  distinct resolution adds another environment and nothing expires them —
+  observed at 30 GB against a 273 MB knowledge store, with the root volume at
+  0 bytes free, and unprunable (`Cache is currently in-use`) for as long as
+  the warm `basic-memory-mcp` daemon held the cache lock. The adapter now
+  installs the pin once (`uv tool install --python <pin> basic-memory==<pin>`)
+  into its own isolated home — `UV_TOOL_DIR`, `UV_TOOL_BIN_DIR` and `HOME` all
+  pinned there, so nothing reaches the operator's `~/.local/{share,bin}` — and
+  invokes the installed entry point by absolute path. uv's cache then holds no
+  live environment, holds no lock, and stays prunable while the daemon serves.
+
+  **Upgrades still follow the pin.** Under `uvx` the pin was re-asserted on
+  every invocation; an installed tool would otherwise keep serving the old
+  build forever. The installed version *and* interpreter are stamped beside
+  the entry point and re-checked on every call, so changing
+  `KNOWLEDGE_SEARCH_BM_VERSION` or `KNOWLEDGE_SEARCH_BM_PYTHON` re-installs
+  rather than silently continuing to run what is on disk.
+
+  **Installing is hybrid, both halves shipped together.**
+  `workflows/scripts/install/doctor.sh` gained a `knowledge_search
+  basic-memory tool` section that installs the pin and reports its state
+  (`INSTALLED` / `PIN DRIFT` / `ABSENT` / `UNAVAILABLE` / `INSTALL FAILED`) —
+  advisory, never affecting doctor's own exit code. And the availability gate
+  installs the pin lazily on first use when it is absent, so a stranger with
+  only `uv` on `PATH` and no `doctor` run still gets a working first
+  `ks_search` — the zero-setup property that made `uvx` the original default.
+  `ks_search_available` is therefore no longer a pure predicate **by
+  default** — pass the new `--probe` flag for a zero-side-effect check that
+  never installs (a hermetic test, a graceful-skip capability probe). It
+  accepts a
+  new `--quiet` flag that suppresses only the `skipped —` notice (never
+  install progress), which `ks_search`'s internal read-log probe now passes.
+
+  Degradation is unchanged in shape: `uv` missing, or the install failing,
+  still returns exit 3 with a `skipped — knowledge_search unavailable: …`
+  line on stderr, nothing on stdout, and uv's own failure output surfaced
+  rather than swallowed. The one-time install is bounded by the new
+  `KNOWLEDGE_SEARCH_BM_INSTALL_TIMEOUT` setting when the caller has sourced
+  `workflows/scripts/lib/portable-timeout.sh`.
+
+- **`session-start-drain.sh` writes session stubs through the knowledge_store
+  seam instead of a raw `curl` PUT** (#732). The SessionStart drain hook used
+  to build its own Obsidian Local REST API request — read the plugin's API key
+  file, `PUT /vault/Sessions/_inbox/<stub>`, branch on the HTTP code — which
+  meant a stranger's plain-files install could never drain a stub at all: no
+  Obsidian vault, no REST plugin, no key file, so every run fell open at
+  "API key file missing". The write is now one `ks_write "Sessions/_inbox/…"`
+  call and `KNOWLEDGE_STORE_BACKEND` decides the transport: `plain-files`
+  (the default) writes atomically under `ks_root`, and `obsidian` reaches the
+  same `PUT /vault/<path>` the hook used to hand-roll, so an Obsidian-backed
+  install keeps its existing wire behaviour. `KS_LIB_DIR` resolution
+  (temperloop#406, hook lib-path resolution) and the
+  fail-open-when-the-seam-is-unreachable posture are unchanged.
+
+  The stub search now prunes **two** store roots rather than one: `ks_root`
+  (the plain-files root) and the vault the Obsidian key-file path names, each
+  with trailing slashes stripped. Both halves are load-bearing — `find -path`
+  never matches a trailing-slashed operand, and under the `obsidian` backend
+  `ks_root` is documented as meaningless, so either gap let a `.mind/` file
+  sitting inside the store be drained back into the store and deleted from
+  source.
+
+### Fixed
+
+- **A freshly installed `ks_search` backend now indexes the corpus before it
+  answers, instead of returning nothing forever** (#1635). Registering a
+  basic-memory project does not scan it, and nothing else on the search path
+  did either — so on a genuinely clean host the chain ran to completion and
+  stopped one step short: install the pin, register the project, search an
+  **empty index**, return zero results with exit 0. Nothing had failed, so
+  nothing was reported; a stranger got "no matches" for every query they ever
+  ran until something else happened to call `ks_search_reindex`. The search
+  path now indexes once, in the same project-not-found branch where it
+  registers, before it retries the query. That branch fires on first use and
+  on a post-`reset` DB drop and never on a warm query, so no per-query cost is
+  added. The index is best-effort — a failure warns on stderr, surfaces the
+  subprocess's own cause, and lets the retry proceed rather than failing the
+  search — and is bounded by the new `KNOWLEDGE_SEARCH_BM_INDEX_TIMEOUT`
+  setting when the caller has sourced
+  `workflows/scripts/lib/portable-timeout.sh`.
+
+- **A clean-host validation of the stranger first-run path ships as an
+  opt-in `make` target** (#1635). Every test of the #1113 uv-tool install
+  switch stubs `uv`, deliberately — kernel principle 3 forbids a live-network
+  install inside the gated suite — so the real path (clean host, only `uv` on
+  `PATH`, no `doctor` run, first `ks_search`) had never been executed. `make
+  validate-clean-host-ks-search` now executes it inside a throwaway Linux
+  container: a real `uv tool install`, a first search over a fixture corpus, a
+  second search that must install nothing, and a third with `uv` removed from
+  `PATH` entirely. It is **manually invoked only** — absent from
+  `scripts/quality-gates.sh`, from `KERNEL_GATES`, and from every CI job — and
+  fails loudly (exit 2) when the Docker daemon is unreachable rather than
+  reporting a skip. The run that found the indexing defect above is recorded
+  verbatim in `docs/validation/clean-host-ks-search.md`.
+
 ## [0.32.0] - 2026-08-15 — BREAKING
 
 ### Changed — BREAKING
