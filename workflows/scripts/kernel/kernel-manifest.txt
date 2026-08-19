@@ -220,6 +220,12 @@ overlay workflows/scripts/build/tests/test_rework_snapshot.sh
 kernel workflows/scripts/lib/*
 kernel workflows/scripts/drain/*
 kernel workflows/scripts/install/*
+# Opt-in, manually invoked developer validations (temperloop#1635) and the
+# verdicts they produce. Kernel content on the stranger test: they exercise
+# the kernel's own install/search seams, and a stranger's kernel-only
+# checkout is precisely the host they validate.
+kernel workflows/scripts/dev/*
+kernel docs/validation/*
 # `temperloop testbed`'s machine-scoped artifact record (temperloop#1117,
 # temperloop#1227) — generic evaluation-workflow machinery, needed for a
 # stranger's own kernel-only checkout exactly like install-manifest.sh above.

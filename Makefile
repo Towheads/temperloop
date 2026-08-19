@@ -23,7 +23,8 @@ TESTBED_SRC := $(FOUNDATION)/workflows/scripts/testbed
 	validate-lexicon validate-template-refs test-scan-stub test-vault-hygiene test-tally-findings test-findings-integrity test-env-hygiene-report lint-pr-body-test test-stranger-config \
 	test-kernel-manifest test-kernel-denylist test-kernel-gitleaks test-kernel-prerename test-kernel-terminology test-pr-leak-guard test-producer-egress docs \
 	test-docs-generator test-conventions-probe test-demo test-proposal-pr guard-install-worktree test-cli-subcommands test-testbed-source \
-	test-testbed-command test-promote-push test-testbed-equivalence test-candidate-session
+	test-testbed-command test-promote-push test-testbed-equivalence test-candidate-session \
+	validate-clean-host-ks-search
 
 help:
 	@echo "Targets:"
@@ -66,6 +67,9 @@ help:
 	@echo "  test-testbed-command    'temperloop testbed' one-command evaluation-build tests"
 	@echo "  test-promote-push       /promote's commit-carrying branch-push tests"
 	@echo "  test-testbed-equivalence  Provider-equivalence guard: identical driver call sequence, both providers"
+	@echo ""
+	@echo "Opt-in, NEVER run by a gate or by CI (needs Docker + network):"
+	@echo "  validate-clean-host-ks-search  Stranger first-run ks_search validation in a clean Linux container"
 
 # Canonical-checkout guard (foundation #509): refuses to run from a linked git
 # worktree unless FORCE_REHOME=1. Not wired into any target below today (no
@@ -359,3 +363,12 @@ test-candidate-session:
 test-stranger-config:
 	@echo "==> Running stranger-config test..."
 	@bash scripts/tests/test_stranger_config.sh
+
+# OPT-IN, MANUALLY INVOKED — deliberately NOT in scripts/quality-gates.sh's
+# KERNEL_GATES and NOT in any .github/workflows/ job (temperloop#1635). It
+# performs a REAL uv-tool install over the network inside a Docker container,
+# which kernel principle 3 forbids in the gated suite. Run it by hand when the
+# install path or its pins change; see the script's own usage header.
+validate-clean-host-ks-search:
+	@echo "==> Running the clean-host ks_search validation (Docker + network required)..."
+	@bash workflows/scripts/dev/validate-clean-host-ks-search.sh
