@@ -62,6 +62,14 @@
 # manifest_backup_and_record call, no composer invocation, no symlink/file
 # touched).
 #
+# TWO BEST-EFFORT PROVISIONING STEPS run after the managed-path loop, both
+# owned by links.sh and neither a manifest-managed path (so neither can fail
+# this script): links_provision_cache_stores (the issue-cache store root) and
+# links_persist_knowledge_root (F#1771 — persists an operator-supplied
+# KNOWLEDGE_STORE_ROOT into the rung-3 machine conf, or reports the resolved
+# root's provenance; it NEVER invents a store location). Both run only after
+# the consent gate below, and --dry-run returns before either.
+#
 # IDEMPOTENT BY CONSTRUCTION: manifest_backup_and_record() is itself
 # idempotent per path (a second record is a no-op — see its own header), so
 # re-running this script converges: already-correct managed paths are left
@@ -214,8 +222,22 @@ while [ "$i" -lt "$n" ]; do
 done
 echo
 
+# Two provisioning steps below write OUTSIDE the managed-path list above, so a
+# plan/consent surface that enumerates only managed paths understates what a
+# real run touches. The knowledge-root step is the one that matters: it may
+# APPEND to an operator-owned config that other tooling sources (F#1771).
+echo "-- Also, outside the managed paths above --"
+echo "  cache-store roots may be provisioned (directories only)"
+if [ -n "${KNOWLEDGE_STORE_ROOT:-}" ]; then
+  echo "  KNOWLEDGE_STORE_ROOT is set in this environment (${KNOWLEDGE_STORE_ROOT})"
+  echo "    -> a real run may APPEND it to the rung-3 machine conf, if that conf does not already set a usable root"
+else
+  echo "  KNOWLEDGE_STORE_ROOT is not set — nothing will be persisted to the machine conf"
+fi
+echo
+
 if [ "$dry_run" -eq 1 ]; then
-  echo "-- Dry run: nothing written above (zero manifest calls, zero file/symlink writes) --"
+  echo "-- Dry run: nothing written above (zero manifest calls, zero file/symlink writes, and no machine-conf append) --"
   echo
   echo "temperloop install: done (dry run)"
   exit 0
@@ -232,7 +254,10 @@ if [ "$do_yes" -eq 1 ]; then
   proceed=1
   echo "install: yes (--yes)"
 elif [ -t 0 ]; then
-  printf 'Install the %s managed path(s) above onto this machine? [y/N] ' "$n"
+  # Names the out-of-manifest work too — the prompt is the consent surface, and
+  # a machine-conf append is the one write here that touches a file the
+  # operator hand-maintains and other tooling sources (F#1771).
+  printf 'Install the %s managed path(s) above, plus the out-of-manifest steps listed, onto this machine? [y/N] ' "$n"
   ans=""
   read -r ans || ans=""
   case "$ans" in
@@ -360,6 +385,20 @@ echo
 # ---------------------------------------------------------------------------
 echo "-- Cache-store provisioning --"
 links_provision_cache_stores "$KERNEL_ROOT" || echo "  (non-fatal — see above)"
+echo
+
+# ---------------------------------------------------------------------------
+# Knowledge-store root persist/verify (F#1771) — the install half of the
+# detection half F#1340 shipped in doctor.sh's check_knowledge_root. Same
+# best-effort, not-a-managed-path posture as the cache-store step above: it is
+# reported, never counted against this script's exit code, and it NEVER
+# invents a root — it only makes durable a KNOWLEDGE_STORE_ROOT the operator
+# already set in this run's environment, and otherwise reports the resolved
+# root's provenance. See links.sh's own header for the full contract, including
+# why the rung-3 machine conf is deliberately not manifest-managed.
+# ---------------------------------------------------------------------------
+echo "-- Knowledge-store root --"
+links_persist_knowledge_root "$KERNEL_ROOT" || echo "  (non-fatal — see above)"
 echo
 
 echo "-- Summary --"

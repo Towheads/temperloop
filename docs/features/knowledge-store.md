@@ -104,6 +104,28 @@ session's Obsidian MCP vault tracks plane A in practice (both derive from
 the same machine-conf-configured root), so a plane A/B mismatch is a real
 signal that the two planes would silently write into different corpora.
 
+**The install path owns the machine conf — and never guesses a root.** The
+rung-3 machine conf that supplies the root to a bare consumer used to be
+untracked and operator-created: nothing installed, wrote, or verified it, so
+losing it dropped every consumer onto the XDG default, and because the
+plain-files backend's append does `mkdir -p`, the wrong root was silently
+*created* rather than erroring. `temperloop install` now runs a
+persist-and-verify step over it. If `KNOWLEDGE_STORE_ROOT` is set — to an
+**absolute** path — in the install-time environment and the conf yields no
+usable root yet, that value is appended to the conf as an assign-if-unset
+line, so a root that was only ever an ephemeral environment variable becomes
+one a hook or launchd agent resolves too. Nothing else is ever written: a conf
+that already yields a usable absolute root is left byte-identical (which also
+makes a second install a no-op), a relative root is refused by name, and a
+conf that already mentions the setting unusably is reported for a human to fix
+rather than appended behind or rewritten. With nothing configuring the root at
+all, the install prints the same `default-fallback` /
+`conf-present-but-unusable` provenance `doctor.sh` reports, names the root
+every consumer would otherwise use, and **does not fail** — a fresh install
+legitimately has no store yet, and no store location is invented on your
+behalf. The conf is your config, not install state: `temperloop uninstall`
+never removes it, exactly as it never removes the store.
+
 ## Limitations — read this if you work across more than one client
 
 **One `$HOME` is one store, and the store is single-tenant.** There is

@@ -18,6 +18,12 @@
 #   8. doctor's check_cache_state reports absent/present/stale per board and
 #      skips cleanly when board.sh/cache.sh are absent
 #   9. an absent/unwarmed cache store never flips doctor's own exit code
+#  12. links_persist_knowledge_root (F#1771): persists an env-supplied
+#      ABSOLUTE root into the rung-3 machine conf and proves a bare consumer
+#      reads it back, never clobbers an already-usable conf (idempotent),
+#      refuses a relative root, reports the default-fallback / conf-present-
+#      but-unusable provenance without failing the install, and never touches
+#      the operator's REAL machine conf
 #
 # No network, no real HOME mutations — every classify test uses a throwaway
 # tmpdir as a fake HOME + fake FOUNDATION.
@@ -619,6 +625,272 @@ grep -q "linked fresh" <<<"$apply_absent_out" || \
   fail "11: freshly-created link should point at the source"
 
 pass "11: links_apply_symlink heals a dangling link farm atomically, is idempotent, preserves real files, and creates absent links"
+
+# ---------------------------------------------------------------------------
+# Test 12: links_persist_knowledge_root (F#1771) — the INSTALL half of the
+# knowledge-store-root single-point-of-failure closure whose DETECTION half
+# (doctor.sh's check_knowledge_root provenance arm) shipped in F#1340.
+#
+# HERMETIC BY CONSTRUCTION. Every invocation runs under `env -i` with a
+# fixture HOME / XDG_CONFIG_HOME / XDG_DATA_HOME, so the operator's REAL
+# rung-3 machine conf and REAL store are unreachable from this test — that
+# conf is the very file #1771 exists to protect, and writing to it from a
+# test run would be the regression, not a flake. The real conf's checksum is
+# captured before this block and re-asserted after it, so hermeticity is a
+# checked property rather than a claim about the fixture wiring.
+# ---------------------------------------------------------------------------
+KS_LIB_SRC="${REPO_ROOT}/workflows/scripts/lib/knowledge_store.sh"
+[ -f "$KS_LIB_SRC" ] || fail "12: knowledge_store.sh not found at ${KS_LIB_SRC}"
+
+REAL_CONF="${KNOWLEDGE_STORE_MACHINE_CONF:-${XDG_CONFIG_HOME:-$HOME/.config}/temperloop/build.config.sh}"
+if [ -f "$REAL_CONF" ]; then
+  real_conf_before="$(cksum <"$REAL_CONF")"
+else
+  real_conf_before="ABSENT"
+fi
+
+FAKE_FOUND12="${TMP}/foundation12"
+mkdir -p "${FAKE_FOUND12}/workflows/scripts/lib"
+cp "$KS_LIB_SRC" "${FAKE_FOUND12}/workflows/scripts/lib/knowledge_store.sh"
+
+# persist_run <fixture-home> [<KNOWLEDGE_STORE_ROOT>] — one hermetic call.
+# An absent/empty second arg means "no KNOWLEDGE_STORE_ROOT in the environment
+# at all"; `env -i` guarantees nothing else leaks in either (notably not
+# KNOWLEDGE_STORE_MACHINE_CONF, which would otherwise repoint the conf read).
+persist_run() {
+  local fake_home="$1" env_root="${2:-}"
+  local -a envargs
+  envargs=(
+    HOME="$fake_home"
+    PATH="$PATH"
+    XDG_CONFIG_HOME="${fake_home}/.config"
+    XDG_DATA_HOME="${fake_home}/.local/share"
+  )
+  if [ -n "$env_root" ]; then
+    envargs+=(KNOWLEDGE_STORE_ROOT="$env_root")
+  fi
+  env -i "${envargs[@]}" bash -c '
+    set -uo pipefail
+    # shellcheck source=/dev/null
+    source "$1"
+    links_persist_knowledge_root "$2"
+  ' _ "$LINKS_SH" "$FAKE_FOUND12" 2>&1
+}
+
+# resolve_root <fixture-home> — what a BARE consumer (a hook, a launchd agent:
+# knowledge_store.sh alone, no env, no build.config.sh) resolves under that
+# fixture. This is the round-trip assertion that discriminates "a line was
+# appended" from "the root is actually persisted": only a conf line
+# _ks_machine_conf_root can read back moves this value.
+resolve_root() {
+  local fake_home="$1"
+  env -i \
+    HOME="$fake_home" \
+    PATH="$PATH" \
+    XDG_CONFIG_HOME="${fake_home}/.config" \
+    XDG_DATA_HOME="${fake_home}/.local/share" \
+    bash -c '
+      set -uo pipefail
+      # shellcheck source=/dev/null
+      source "$1"
+      ks_root
+    ' _ "${FAKE_FOUND12}/workflows/scripts/lib/knowledge_store.sh" 2>/dev/null
+}
+
+# ---- 12a. PERSIST: env set, no conf yet -> written, and READ BACK ----------
+FAKE_HOME12A="${TMP}/home12a"
+mkdir -p "$FAKE_HOME12A"
+CONF12A="${FAKE_HOME12A}/.config/temperloop/build.config.sh"
+STORE12A="${TMP}/store12a"
+
+# Baseline BEFORE the persist: a bare consumer falls through to the XDG
+# default, NOT to the store. If this ever equals $STORE12A the rest of 12a
+# proves nothing.
+pre_root="$(resolve_root "$FAKE_HOME12A")"
+[[ "$pre_root" != "$STORE12A" ]] || \
+  fail "12a: fixture is not discriminating — the bare-env root already equals the store before any persist"
+
+out12a="$(persist_run "$FAKE_HOME12A" "$STORE12A")"
+[ -f "$CONF12A" ] || fail "12a: the machine conf should have been created at ${CONF12A}; output: ${out12a}"
+grep -q "persisted knowledge-store root" <<<"$out12a" || \
+  fail "12a: expected a 'persisted' line; got: ${out12a}"
+grep -Fq ': "${KNOWLEDGE_STORE_ROOT:='"${STORE12A}"'}"' "$CONF12A" || \
+  fail "12a: the conf must carry the assign-if-unset line for the store root; conf: $(cat "$CONF12A")"
+
+post_root="$(resolve_root "$FAKE_HOME12A")"
+[[ "$post_root" == "$STORE12A" ]] || \
+  fail "12a: a bare consumer must now resolve the persisted root (want ${STORE12A}, got ${post_root})"
+
+pass "12a: persists an env-supplied absolute root into the machine conf, and a bare consumer reads it back"
+
+# ---- 12b. NEVER CLOBBER + IDEMPOTENT --------------------------------------
+conf12a_after_first="$(cat "$CONF12A")"
+
+out12b_same="$(persist_run "$FAKE_HOME12A" "$STORE12A")"
+grep -q "already persisted" <<<"$out12b_same" || \
+  fail "12b: a second run with the same env root should report 'already persisted'; got: ${out12b_same}"
+[[ "$(cat "$CONF12A")" == "$conf12a_after_first" ]] || \
+  fail "12b: a second run must leave the conf byte-identical"
+
+out12b_none="$(persist_run "$FAKE_HOME12A")"
+grep -q "already persisted" <<<"$out12b_none" || \
+  fail "12b: a run with no env root over a usable conf should report 'already persisted'; got: ${out12b_none}"
+[[ "$(cat "$CONF12A")" == "$conf12a_after_first" ]] || \
+  fail "12b: a no-env run must leave the conf byte-identical"
+
+out12b_diff="$(persist_run "$FAKE_HOME12A" "${TMP}/store12a-other")"
+[[ "$(cat "$CONF12A")" == "$conf12a_after_first" ]] || \
+  fail "12b: a DIFFERENT env root must NOT rewrite an already-usable conf (never clobber)"
+grep -q "DIFFERS" <<<"$out12b_diff" || \
+  fail "12b: a divergent env root should be surfaced, not silently ignored; got: ${out12b_diff}"
+
+pass "12b: never clobbers an already-usable conf — same, absent, and divergent env roots all leave it byte-identical"
+
+# ---- 12c. RELATIVE ROOTS ARE REFUSED --------------------------------------
+FAKE_HOME12C="${TMP}/home12c"
+mkdir -p "$FAKE_HOME12C"
+CONF12C="${FAKE_HOME12C}/.config/temperloop/build.config.sh"
+
+out12c="$(persist_run "$FAKE_HOME12C" "relative/store")" && rc12c=0 || rc12c=$?
+[ "$rc12c" -eq 0 ] || fail "12c: a relative root must not fail the install (exit=${rc12c}); output: ${out12c}"
+[ ! -f "$CONF12C" ] || \
+  fail "12c: a relative root must NOT be persisted — conf was created: $(cat "$CONF12C")"
+grep -q "RELATIVE" <<<"$out12c" || \
+  fail "12c: expected the refusal to name the value as relative; got: ${out12c}"
+
+pass "12c: refuses a relative KNOWLEDGE_STORE_ROOT (ks_root's machine-conf rung would reject it), without failing the install"
+
+# ---- 12c2. SHELL-METACHARACTER ROOTS ARE REFUSED --------------------------
+# The persisted line is `: "${KNOWLEDGE_STORE_ROOT:=<root>}"` — the value sits
+# inside DOUBLE quotes, so a `$`, backtick or backslash in the path EXPANDS
+# when the conf is re-sourced rather than being carried as data. Persisting
+# one yields a conf that READS correct while every consumer silently resolves
+# a different directory: the exact silent-wrong-root class F#1771 exists to
+# close, reintroduced by the fix for it. Measured before this guard existed —
+# `/tmp/store$HOME-literal` round-tripped as `/tmp/store/Users/.../home-literal`.
+for meta_root in '/tmp/store$HOME-x' '/tmp/store`id`-x' '/tmp/store\x'; do
+  FAKE_HOME12C2="${TMP}/home12c2"
+  rm -rf "$FAKE_HOME12C2"; mkdir -p "$FAKE_HOME12C2"
+  CONF12C2="${FAKE_HOME12C2}/.config/temperloop/build.config.sh"
+
+  out12c2="$(persist_run "$FAKE_HOME12C2" "$meta_root")" && rc12c2=0 || rc12c2=$?
+  [ "$rc12c2" -eq 0 ] ||     fail "12c2: a metacharacter root must not fail the install (root=${meta_root} exit=${rc12c2}); output: ${out12c2}"
+  [ ! -f "$CONF12C2" ] ||     fail "12c2: a metacharacter root must NOT be persisted (root=${meta_root}) — conf was created: $(cat "$CONF12C2")"
+  grep -q "not safe to embed in a sourced conf line" <<<"$out12c2" ||     fail "12c2: expected the refusal to say why the character is unsafe (root=${meta_root}); got: ${out12c2}"
+done
+
+pass "12c2: refuses a KNOWLEDGE_STORE_ROOT containing \$, backtick or backslash — persisting one would expand on re-source and silently resolve a different directory"
+
+# ---- 12c3. A NEWLINE ROOT IS REFUSED --------------------------------------
+# Separate from 12c2 because the newline arm is the one easiest to write
+# wrongly: `$(printf '\n')` in a case pattern is an EMPTY string (command
+# substitution strips trailing newlines), which collapses the pattern to `**`
+# and refuses every path. This case pins both directions — the newline root is
+# refused AND an ordinary root still persists (12a covers the latter, but a
+# collapsed pattern would break it in a way that reads like an unrelated bug).
+FAKE_HOME12C3="${TMP}/home12c3"
+mkdir -p "$FAKE_HOME12C3"
+CONF12C3="${FAKE_HOME12C3}/.config/temperloop/build.config.sh"
+NL_ROOT="$(printf '/tmp/a\n: "${EVIL:=x}"')"
+
+out12c3="$(persist_run "$FAKE_HOME12C3" "$NL_ROOT")" && rc12c3=0 || rc12c3=$?
+[ "$rc12c3" -eq 0 ] || fail "12c3: a newline root must not fail the install (exit=${rc12c3}); output: ${out12c3}"
+[ ! -f "$CONF12C3" ] ||   fail "12c3: a newline root must NOT be persisted — it would inject a second line into a sourced conf; got: $(cat "$CONF12C3")"
+pass "12c3: refuses a KNOWLEDGE_STORE_ROOT containing a newline (it would inject an extra line into the sourced conf)"
+
+# ---- 12c4. AN INERT APPEND IS REPORTED, NOT CLAIMED AS SUCCESS ------------
+# The dead-text guard is TEXTUAL, so it cannot see a conf that parses fine but
+# never reaches the appended line — an early `return`, a conditional, an
+# included file. Without the post-write re-probe the function prints
+# "persisted" over a root that still resolves to the default fallback: the
+# same silent-success shape F#1771 exists to close, one layer up.
+FAKE_HOME12C4="${TMP}/home12c4"
+mkdir -p "${FAKE_HOME12C4}/.config/temperloop"
+CONF12C4="${FAKE_HOME12C4}/.config/temperloop/build.config.sh"
+printf '# early-exit conf\nreturn 0\n' >"$CONF12C4"
+
+out12c4="$(persist_run "$FAKE_HOME12C4" "${TMP}/store12c4")" && rc12c4=0 || rc12c4=$?
+[ "$rc12c4" -eq 0 ] || fail "12c4: an inert append must not fail the install (exit=${rc12c4}); output: ${out12c4}"
+grep -q "inert" <<<"$out12c4" ||   fail "12c4: expected the inert-append report naming what a bare consumer really resolves; got: ${out12c4}"
+grep -q "→ persisted" <<<"$out12c4" &&   fail "12c4: must NOT claim success when the appended line does not take effect; got: ${out12c4}"
+pass "12c4: an appended line that never executes is reported as inert, never claimed as persisted"
+
+# ---- 12c5. ks_lib ABSENT -> SKIPPED, install not failed -------------------
+# The stranger-with-a-partial-tree path, and the only other rc-0 early return.
+FAKE_HOME12C5="${TMP}/home12c5"
+mkdir -p "$FAKE_HOME12C5" "${TMP}/found12c5"
+out12c5="$(HOME="$FAKE_HOME12C5" bash -c '
+  . "'"$LINKS_SH"'" >/dev/null 2>&1
+  links_persist_knowledge_root "'"${TMP}/found12c5"'"' 2>&1)" && rc12c5=0 || rc12c5=$?
+[ "$rc12c5" -eq 0 ] || fail "12c5: a tree with no knowledge_store.sh must not fail the install (exit=${rc12c5}); output: ${out12c5}"
+grep -q "SKIPPED" <<<"$out12c5" ||   fail "12c5: expected a SKIPPED notice when knowledge_store.sh is absent; got: ${out12c5}"
+pass "12c5: a tree with no knowledge_store.sh degrades to SKIPPED rather than failing the install"
+
+# ---- 12d. DEFAULT-FALLBACK NOTICE -----------------------------------------
+FAKE_HOME12D="${TMP}/home12d"
+mkdir -p "$FAKE_HOME12D"
+CONF12D="${FAKE_HOME12D}/.config/temperloop/build.config.sh"
+
+out12d="$(persist_run "$FAKE_HOME12D")" && rc12d=0 || rc12d=$?
+[ "$rc12d" -eq 0 ] || fail "12d: an unconfigured root must not fail the install (exit=${rc12d}); output: ${out12d}"
+[ ! -f "$CONF12D" ] || fail "12d: nothing configured the root — no conf may be invented"
+grep -q "default-fallback" <<<"$out12d" || \
+  fail "12d: expected the check_knowledge_root provenance word 'default-fallback'; got: ${out12d}"
+grep -q "NOTHING configured it" <<<"$out12d" || \
+  fail "12d: expected the prominent 'nothing configured it' notice; got: ${out12d}"
+grep -Fq "${FAKE_HOME12D}/.local/share/temperloop/knowledge" <<<"$out12d" || \
+  fail "12d: the notice must name the fixture's own resolved fallback root (hermeticity + actionability); got: ${out12d}"
+
+pass "12d: reports the default-fallback provenance and the root it would use, invents nothing, and never fails the install"
+
+# ---- 12e. conf-present-but-unusable is refused, not appended to -----------
+FAKE_HOME12E="${TMP}/home12e"
+mkdir -p "${FAKE_HOME12E}/.config/temperloop"
+CONF12E="${FAKE_HOME12E}/.config/temperloop/build.config.sh"
+cat > "$CONF12E" <<'EOF'
+# hand-written machine conf
+: "${KNOWLEDGE_STORE_ROOT:=relative/oops}"
+EOF
+conf12e_before="$(cat "$CONF12E")"
+
+out12e="$(persist_run "$FAKE_HOME12E" "${TMP}/store12e")"
+[[ "$(cat "$CONF12E")" == "$conf12e_before" ]] || \
+  fail "12e: a conf that already mentions KNOWLEDGE_STORE_ROOT must be left byte-identical"
+grep -q "conf-present-but-unusable" <<<"$out12e" || \
+  fail "12e: expected the check_knowledge_root provenance word 'conf-present-but-unusable'; got: ${out12e}"
+
+pass "12e: refuses to append behind an existing (unusable) KNOWLEDGE_STORE_ROOT line — appending there would be dead text, rewriting it would be a clobber"
+
+# ---- 12f. an existing conf WITHOUT the setting is appended to, not replaced ----
+FAKE_HOME12F="${TMP}/home12f"
+mkdir -p "${FAKE_HOME12F}/.config/temperloop"
+CONF12F="${FAKE_HOME12F}/.config/temperloop/build.config.sh"
+STORE12F="${TMP}/store12f"
+cat > "$CONF12F" <<'EOF'
+# hand-written machine conf
+: "${PIPELINE_ENABLED_BOARDS:=3}"
+EOF
+
+out12f="$(persist_run "$FAKE_HOME12F" "$STORE12F")"
+grep -q "persisted knowledge-store root" <<<"$out12f" || \
+  fail "12f: expected a 'persisted' line for a conf with no KNOWLEDGE_STORE_ROOT yet; got: ${out12f}"
+grep -Fq 'PIPELINE_ENABLED_BOARDS' "$CONF12F" || \
+  fail "12f: the operator's pre-existing conf content must be preserved"
+[[ "$(resolve_root "$FAKE_HOME12F")" == "$STORE12F" ]] || \
+  fail "12f: the appended line must be read back by a bare consumer"
+
+pass "12f: appends to an existing conf that sets no root, preserving its other settings"
+
+# ---- 12g. hermeticity: the operator's REAL machine conf was never touched --
+if [ -f "$REAL_CONF" ]; then
+  real_conf_after="$(cksum <"$REAL_CONF")"
+else
+  real_conf_after="ABSENT"
+fi
+[[ "$real_conf_after" == "$real_conf_before" ]] || \
+  fail "12g: the REAL machine conf at ${REAL_CONF} changed during this test run — that file is exactly what #1771 protects"
+
+pass "12g: the operator's real rung-3 machine conf is byte-identical after the whole test block"
 
 # ---------------------------------------------------------------------------
 echo
