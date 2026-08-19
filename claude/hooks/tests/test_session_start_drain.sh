@@ -27,6 +27,11 @@
 #      silent delete).
 #   5. Structural regression guard: the hook issues no raw curl request and
 #      names no Obsidian REST endpoint of its own.
+#   6. Seam UNAVAILABLE (temperloop#1634): a fixture with no workflows/ two
+#      directories up — the hooks-only vendor drop — fails OPEN rather than
+#      blocking session start: rc=0, the stub survives byte-identical, nothing
+#      is written into the store, the session-id JSON still emits, and the log
+#      carries the "knowledge_store seam unavailable" line.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -198,6 +203,44 @@ if [ "$rc" -eq 0 ] && [ -f "$VAULT5/.mind/inside.md" ] \
   ok "the obsidian key-file's vault root is pruned even when it differs from ks_root()"
 else
   bad "obsidian vault root not pruned (rc=$rc, vault-stub-kept=$([ -f "$VAULT5/.mind/inside.md" ] && echo yes || echo no), vault-stub-drained=$([ -e "$ROOT5/Sessions/_inbox/inside.md" ] && echo yes || echo no), outside-drained=$([ -f "$ROOT5/Sessions/_inbox/$STUB_NAME" ] && echo yes || echo no))"
+fi
+
+# ---------------------------------------------------------------------------
+# 8. Seam UNAVAILABLE — the hook FAILS OPEN (temperloop#1634; "Covers" item 6).
+#    Every case above hands the hook a fixture carrying both knowledge_store
+#    libs, so the `declare -F ks_write` guard could never be reached. Here the
+#    fixture's whole workflows/ tree is removed after make_fixture, which is
+#    the shape a hooks-only vendor drop actually has: claude/hooks/ present,
+#    nothing two directories up. KS_LIB_DIR is already pinned EMPTY by
+#    run_hook, so the BASH_SOURCE-relative climb is the only resolution left
+#    and it resolves to nothing.
+#
+#    This is a SessionStart hook: the load-bearing property is not "the drain
+#    is skipped" but "session start is not blocked and no stub is destroyed".
+#    So the assertion pins all four observable outcomes — rc=0, the stub still
+#    on disk and byte-identical, nothing written into the store, and the
+#    session-id additionalContext still on stdout — with the log line as the
+#    fifth, proving the skip was the deliberate branch rather than an
+#    accidental early exit somewhere upstream of it.
+# ---------------------------------------------------------------------------
+FIX6="$TMP/fixture6"; make_fixture "$FIX6"
+rm -rf "$FIX6/workflows"
+HOME6="$TMP/home6"; ROOT6="$TMP/store6"
+mkdir -p "$HOME6/dev/demo/.mind"
+STUB6="$HOME6/dev/demo/.mind/$STUB_NAME"
+printf '%s' "$STUB_BODY" > "$STUB6"
+
+OUT6="$(run_hook "$FIX6" "$HOME6" "$ROOT6")"; rc=$?
+LOG6="$HOME6/.state/foundation/session-start-drain.log"
+
+if [ "$rc" -eq 0 ] \
+   && [ -f "$STUB6" ] && cmp -s "$STUB6" "$TMP/expected-stub" \
+   && [ ! -e "$ROOT6/Sessions/_inbox/$STUB_NAME" ] \
+   && printf '%s' "$OUT6" | jq -e '.hookSpecificOutput.additionalContext == "<session-id>deadbeef</session-id>"' >/dev/null 2>&1 \
+   && grep -q 'knowledge_store seam unavailable' "$LOG6" 2>/dev/null; then
+  ok "seam unavailable (no workflows/ in the fixture): hook fails open — rc=0, stub kept verbatim, nothing written to the store, session-id still emitted, skip logged"
+else
+  bad "seam-unavailable fail-open wrong (rc=$rc, stub-kept=$([ -f "$STUB6" ] && echo yes || echo no), stub-intact=$(cmp -s "$STUB6" "$TMP/expected-stub" && echo yes || echo no), store-write=$([ -e "$ROOT6/Sessions/_inbox/$STUB_NAME" ] && echo yes || echo no), stdout=$OUT6, log=$(cat "$LOG6" 2>/dev/null))"
 fi
 
 echo
