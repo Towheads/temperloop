@@ -67,6 +67,16 @@
 #                                dependency set stays knowledge_store.sh + jq).
 #                                Unbounded install otherwise, exactly as
 #                                before. Default: 900.
+#   KNOWLEDGE_SEARCH_BM_INDEX_TIMEOUT
+#                                bound, in seconds, on the one-time COLD-START
+#                                INDEX a search runs immediately after it first
+#                                registers the project (temperloop#1635 — see
+#                                _ks_bm_initial_index below). Same
+#                                portable-timeout.sh caveat as
+#                                KNOWLEDGE_SEARCH_BM_INSTALL_TIMEOUT above:
+#                                applied only when the caller already sourced
+#                                that library, unbounded otherwise.
+#                                Default: 900.
 #   KNOWLEDGE_SEARCH_RERANK      1 = re-rank the backend's candidate set
 #                                before returning (default); 0 = return the
 #                                backend's own order untouched. See
@@ -596,6 +606,7 @@ ks_search__dispatch() {
 : "${KNOWLEDGE_SEARCH_BM_VERSION:=0.22.1}"
 : "${KNOWLEDGE_SEARCH_BM_PYTHON:=3.13}"
 : "${KNOWLEDGE_SEARCH_BM_INSTALL_TIMEOUT:=900}"
+: "${KNOWLEDGE_SEARCH_BM_INDEX_TIMEOUT:=900}"
 # Overlay seam (foundation#946): extra `.bmignore` patterns appended to the
 # generic upstream base set that _ks_bm_ensure_ignore writes — space- or
 # newline-separated BARE segment names. EMPTY by default, so a stranger's install
@@ -1171,7 +1182,25 @@ JSON
 # _ks_bm_run with no entry point means a caller bypassed that gate. Failing
 # loudly with 127 beats installing from a helper whose callers expect a bm
 # invocation to be all that happens.
-_ks_bm_run() {
+#
+# OPTIONALLY BOUNDED (temperloop#1635). `_ks_bm_run_bounded <secs> …` is the
+# real body; `_ks_bm_run …` is the unbounded façade every existing caller
+# keeps using unchanged. The bound exists for ONE caller — the cold-start
+# index below, which runs INSIDE a search call, where an unbounded subprocess
+# would turn "my first search is slow" into "my first search never returns".
+# Kept as one function rather than two invocation sites so the posture (the
+# isolated HOME, the belt-and-suspenders env var, the absolute entry-point
+# path) still has exactly one author — the property
+# test_knowledge_search_agpl_boundary.sh check 3 is built on.
+#
+# The argv is assembled through `env` rather than a `VAR=v cmd` prefix for the
+# same reason _ks_bm_install_tool does: run_with_timeout's `timeout` backend
+# execs an external command, and a variable-assignment prefix is not part of
+# an argv. Semantics are identical (`env` sets exactly these two variables for
+# exactly this child), and the unbounded path goes through the same array, so
+# there is one command shape, not two.
+_ks_bm_run_bounded() {
+  local secs="$1"; shift
   local bm_bin
   bm_bin="$(_ks_bm_bin_path)"
   if [ ! -x "$bm_bin" ]; then
@@ -1179,9 +1208,61 @@ _ks_bm_run() {
       "$bm_bin" >&2
     return 127
   fi
-  HOME="$(_ks_bm_home)" \
-  BASIC_MEMORY_DISABLE_PERMALINKS=true \
-  "$bm_bin" "$@"
+  local -a bm_cmd
+  bm_cmd=(env
+    "HOME=$(_ks_bm_home)"
+    BASIC_MEMORY_DISABLE_PERMALINKS=true
+    "$bm_bin" "$@")
+  # `command -v`, not `declare -F` — see the zsh note in _ks_bm_install_tool.
+  if [ -n "$secs" ] && command -v run_with_timeout >/dev/null 2>&1; then
+    run_with_timeout "$secs" "${bm_cmd[@]}"
+  else
+    "${bm_cmd[@]}"
+  fi
+}
+
+_ks_bm_run() {
+  _ks_bm_run_bounded "" "$@"
+}
+
+# ── THE COLD-START INDEX (temperloop#1635) ────────────────────────────────
+# Registering a project does NOT index it. `basic-memory project add` writes
+# the registration and returns; nothing scans the corpus. So on a genuinely
+# clean host — the stranger first-run path #1113's lazy install was built to
+# preserve — the chain used to end one step short: install the pin, register
+# the project, search an EMPTY index, and return zero results with exit 0.
+# Legible degradation reported nothing, because nothing had failed; the
+# stranger simply got "no matches" for every query, forever, until something
+# else happened to call ks_search_reindex. Measured live in a clean Debian
+# container on 2026-08-19 (docs/validation/clean-host-ks-search.md): first
+# search, three-note corpus, zero results — the install worked perfectly and
+# the search still could not answer.
+#
+# This closes it at the one place that knows a cold start just happened: the
+# search path's project-not-found miss branch, immediately after the
+# registration it already performs. That branch fires on first use and on a
+# post-`basic-memory reset` DB drop — both are exactly "the index is empty" —
+# and never on a warm query, so this costs nothing per search (the warm path
+# does not even call `project add`, per foundation#996).
+#
+# BEST-EFFORT, NEVER FATAL. A failed index warns on stderr and falls through
+# to the retry: the retry may still be answerable (another process may have
+# indexed the same store), and a zero-result search that then hits the
+# ripgrep lexical fallback is a better outcome than exit 4. What it must
+# never be is SILENT — a silent index failure is the same invisible-empty
+# state this function exists to remove.
+_ks_bm_initial_index() {
+  local project="$1" out rc=0
+  printf 'knowledge_search: first use of project "%s" — indexing the corpus once (a large store can take minutes)\n' \
+    "$project" >&2
+  out="$(_ks_bm_run_bounded "$KNOWLEDGE_SEARCH_BM_INDEX_TIMEOUT" reindex --project "$project" 2>&1)" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    printf 'knowledge_search: the one-time cold-start index failed (exit %s) — searches will return no matches until ks_search_reindex succeeds\n' \
+      "$rc" >&2
+    printf '%s\n' "$out" | tail -n 15 >&2
+    return "$rc"
+  fi
+  return 0
 }
 
 # point 9: project registration via the CLI only — config-only edits to the
@@ -1528,6 +1609,12 @@ _ks_search_backend_basic_memory_search() {
       echo "knowledge_search: basic-memory project registration failed" >&2
       return 4
     }
+    # Registration alone leaves the index EMPTY — index once, here, before the
+    # retry (temperloop#1635; see _ks_bm_initial_index above for why this is
+    # the one place that knows a cold start just happened). Best-effort: a
+    # failure warns and falls through to the retry rather than failing the
+    # search outright.
+    _ks_bm_initial_index "$project" || true
     rc=0
     # The FIRST search's stderr is suppressed above (a miss there is expected —
     # "project not found" on a cold start). A RETRY failure, by contrast, is a

@@ -240,6 +240,20 @@ the next call instead of silently continuing to serve the old build. The
 one-time install is bounded by `KNOWLEDGE_SEARCH_BM_INSTALL_TIMEOUT` when the
 caller has sourced `workflows/scripts/lib/portable-timeout.sh`.
 
+**Installing is not indexing.** Registering the corpus as a basic-memory
+project does not scan it, so a freshly installed backend would otherwise
+answer every query out of an empty index — exit 0, zero results, nothing
+wrong to report. The search path therefore indexes once, in the same
+project-not-found branch where it registers, before it retries the query;
+warm queries never enter that branch and never pay for it. The index is
+best-effort (a failure warns on stderr and lets the retry proceed) and is
+bounded by `KNOWLEDGE_SEARCH_BM_INDEX_TIMEOUT`, under the same
+`portable-timeout.sh` caveat as the install. This was found by executing the
+real stranger first-run path in a clean Linux container rather than against a
+stub — the recorded run is
+[`docs/validation/clean-host-ks-search.md`](../validation/clean-host-ks-search.md),
+re-runnable with `make validate-clean-host-ks-search`.
+
 **Reclaiming an old `uvx` cache.** A host that ran the pre-#1113 default
 still carries the accumulated cache. `pgrep -fl archive-v0` lists any process
 still executing out of a uv cache — if it names your `basic-memory`,

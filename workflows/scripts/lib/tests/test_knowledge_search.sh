@@ -100,6 +100,14 @@ case "$sub" in
     ;;
   reindex)
     printf 'REINDEX args=%s\n' "$*" >> "$FAKE_BM_LOG"
+    # FAKE_BM_REINDEX_FAIL is orthogonal to FAKE_BM_MODE on purpose: the
+    # cold-start index (temperloop#1635) runs INSIDE the register_then_ok
+    # chain, so its failure has to be selectable without disturbing the
+    # search/registration behaviour that same chain depends on.
+    if [ "${FAKE_BM_REINDEX_FAIL:-0}" = "1" ]; then
+      echo "fake-bm: simulated reindex failure detail" >&2
+      exit 1
+    fi
     echo "Reindex complete!"
     exit 0
     ;;
@@ -424,6 +432,79 @@ cold_search_calls="$(grep -c '^SEARCH ' "$FAKE_BM_LOG" || true)"
 [ "$cold_search_calls" -eq 2 ] \
   || fail "5: cold path should search twice — miss then retry (got $cold_search_calls); log:\n$(cat "$FAKE_BM_LOG")"
 echo "PASS: 5 cold/reset path lazily registers (bound to ks_root) and retries the search once (#996)"
+
+# --- 5b. cold path INDEXES once, between registration and the retry (#1635) --
+# `project add` registers; it does NOT scan the corpus. Measured on a clean
+# Debian container (docs/validation/clean-host-ks-search.md), that left a
+# stranger's first search answering out of an EMPTY index: exit 0, zero
+# results, nothing wrong to report. The order is the whole assertion — an
+# index before registration would index an unregistered project, and an index
+# after the retry would be one search too late.
+cold_reindex_calls="$(grep -c '^REINDEX ' "$FAKE_BM_LOG" || true)"
+[ "$cold_reindex_calls" -eq 1 ] \
+  || fail "5b: cold path should index exactly once (got $cold_reindex_calls); log:\n$(cat "$FAKE_BM_LOG")"
+grep -q '^REINDEX args=--project test-project$' "$FAKE_BM_LOG" \
+  || fail "5b: the cold-start index must target the adapter's project; log:\n$(cat "$FAKE_BM_LOG")"
+order5b="$(grep -nE '^(PROJECT_ADD|REINDEX|SEARCH) ' "$FAKE_BM_LOG" | sed -E 's/^[0-9]+:([A-Z_]+) .*/\1/' | tr '\n' ',')"
+[ "$order5b" = "SEARCH,PROJECT_ADD,REINDEX,SEARCH," ] \
+  || fail "5b: cold-path order must be miss → register → index → retry (got: $order5b); log:\n$(cat "$FAKE_BM_LOG")"
+echo "PASS: 5b cold path indexes exactly once, between registration and the retry (#1635)"
+
+# --- 5c. the warm path NEVER indexes (#1635 costs nothing per query) ---------
+# The cold-start index rides the project-not-found miss branch, which a warm
+# query never enters — so neither a warm hit nor a warm no-match may pay for
+# an index. A per-query reindex would be far worse than the per-query
+# `project add` #996 removed.
+rm -rf "$BM_HOME"; rm -f "$FAKE_BM_LOG" "$FAKE_BM_LOG.registered"
+PATH="$BIN:$PATH" FAKE_BM_MODE=ok ks_search "orchard" --limit 5 >/dev/null \
+  || fail "5c: the warm path should succeed"
+PATH="$BIN:$PATH" FAKE_BM_MODE=empty_results ks_search "no-such-term" --limit 5 >/dev/null \
+  || fail "5c: a warm no-match should exit 0"
+if grep -q '^REINDEX ' "$FAKE_BM_LOG"; then
+  fail "5c: a warm query must NEVER index (#1635); log:\n$(cat "$FAKE_BM_LOG")"
+fi
+echo "PASS: 5c a warm hit and a warm no-match never trigger the cold-start index (#1635)"
+
+# --- 5d. a failing cold-start index is best-effort, loud, never fatal --------
+# The retry may still be answerable (another process may have indexed the same
+# store), and a zero-result search that then reaches the ripgrep fallback beats
+# exit 4. What it must never be is silent — a silent index failure recreates
+# the invisible-empty state the index exists to remove.
+rm -rf "$BM_HOME"; rm -f "$FAKE_BM_LOG" "$FAKE_BM_LOG.registered"
+set +e
+err5d="$(PATH="$BIN:$PATH" FAKE_BM_MODE=register_then_ok FAKE_BM_REINDEX_FAIL=1 \
+  ks_search "orchard" --limit 5 2>&1 1>/dev/null)"
+set -e
+rm -rf "$BM_HOME"; rm -f "$FAKE_BM_LOG" "$FAKE_BM_LOG.registered"
+out5d="$(PATH="$BIN:$PATH" FAKE_BM_MODE=register_then_ok FAKE_BM_REINDEX_FAIL=1 \
+  ks_search "orchard" --limit 5 2>/dev/null)" \
+  || fail "5d: a failed cold-start index must NOT fail the search (#1635)"
+[ "$(printf '%s\n' "$out5d" | wc -l | tr -d ' ')" -eq 2 ] \
+  || fail "5d: the retry should still return its results after a failed index; got: $out5d"
+case "$err5d" in
+  *"cold-start index failed"*) : ;;
+  *) fail "5d: a failed cold-start index must say so on stderr (got: $err5d)" ;;
+esac
+case "$err5d" in
+  *"simulated reindex failure detail"*) : ;;
+  *) fail "5d: the index failure's own cause must be surfaced, not swallowed (got: $err5d)" ;;
+esac
+echo "PASS: 5d a failed cold-start index warns loudly, surfaces its cause, and never fails the search (#1635)"
+
+# --- 5e. the cold-start index is BOUNDED when a timeout helper is in scope ---
+# Same probe-don't-depend posture as the install bound (18f below): an
+# unbounded index runs INSIDE a search call, so a wedged one turns "my first
+# search is slow" into "my first search never returns".
+rm -rf "$BM_HOME"; rm -f "$FAKE_BM_LOG" "$FAKE_BM_LOG.registered"
+INDEX_TIMEOUT_WITNESS="$TMP/index-timeout-witness"
+rm -f "$INDEX_TIMEOUT_WITNESS"
+run_with_timeout() { printf '%s\n' "$1" >> "$INDEX_TIMEOUT_WITNESS"; shift; "$@"; }
+PATH="$BIN:$PATH" FAKE_BM_MODE=register_then_ok ks_search "orchard" --limit 5 >/dev/null 2>&1 \
+  || fail "5e: the bounded cold-start index path should still succeed"
+unset -f run_with_timeout
+grep -qx "$KNOWLEDGE_SEARCH_BM_INDEX_TIMEOUT" "$INDEX_TIMEOUT_WITNESS" \
+  || fail "5e: the cold-start index was not bounded by KNOWLEDGE_SEARCH_BM_INDEX_TIMEOUT (witness: $(cat "$INDEX_TIMEOUT_WITNESS" 2>/dev/null))"
+echo "PASS: 5e the one-time cold-start index is bounded by KNOWLEDGE_SEARCH_BM_INDEX_TIMEOUT when a timeout helper is in scope"
 
 # --- 6. posture assembly: config.json carries every no-mutation key ----------
 CONFIG="$BM_HOME/.basic-memory/config.json"

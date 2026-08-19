@@ -347,6 +347,13 @@ knowledge-store workflows/scripts/tests/test_doctor_knowledge_root.sh
 # doctor half of the hybrid uv-tool install design whose other half lives
 # in workflows/scripts/lib/knowledge_search.sh.
 knowledge-store workflows/scripts/tests/test_doctor_bm_tool.sh
+# Same carve-out, same reason (temperloop#1635): the opt-in clean-host
+# validation of the stranger first-run path is dev tooling by path, but its
+# subject matter is this feature's install-then-index seam. Its recorded
+# verdict doc is claimed by the same slug for the same reason.
+knowledge-store workflows/scripts/dev/validate-clean-host-ks-search.sh
+knowledge-store workflows/scripts/dev/clean-host-ks-search-probe.sh
+knowledge-store docs/validation/clean-host-ks-search.md
 
 # ── command-declared — slash-command availability probe (ADR 0008) ──────────
 # The command-side peer of the subagent capability-probe: `command_declared
