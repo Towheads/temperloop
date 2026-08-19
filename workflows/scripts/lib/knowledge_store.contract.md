@@ -556,7 +556,12 @@ ks_search <query> [--limit N] [--partition <name>]
                                   -> ranked results, JSON Lines on stdout
 ks_search_reindex [--full] [--search] [--embeddings]
                                   -> rebuild the backend's index for ks_root
-ks_search_available               -> exit 0/3 probe, no stdout
+ks_search_available [--probe]     -> exit 0/3 probe, no stdout.
+                                     BARE: lazily installs the pin if
+                                     absent (side-effecting).
+                                     --probe: zero-side-effect, never
+                                     installs — use this for a cheap
+                                     predicate / graceful-skip check.
 ks_search_partition_supported     -> exit 0 iff THIS library implements the
                                      --partition scope (a `declare -F`
                                      version-skew probe — § Project partition)
@@ -920,7 +925,16 @@ one-time install. That is the second half of the hybrid install design —
 installed checkout, and this gate keeps the zero-setup first run working for
 a stranger who never runs doctor. `ks_search_available --quiet` suppresses
 only the `skipped —` notice (never install progress), for a caller that
-probes before dispatching and does not want the notice printed twice. A caller that pipes `ks_search` output into further processing
+probes before dispatching and does not want the notice printed twice.
+
+**`ks_search_available --probe` is the zero-side-effect arm** — it answers
+"is the pin installed right now" (exit 0 ready / exit 3 not) and never
+installs, never writes. Any caller using this as a *cheap predicate* rather
+than as "I am about to search" MUST pass `--probe`: a hermetic test, a
+graceful-skip capability check, a dry-run gate. The bare op inside a test
+sandbox will otherwise perform a real network install, which is how the
+KERNEL_GATES entry `scripts/tests/test_stranger_config.sh` briefly became
+network-dependent during this change (kernel principle 3). A caller that pipes `ks_search` output into further processing
 without checking the exit code would see an empty stream either way (zero
 matches vs. unavailable) — checking the exit code is required to
 distinguish them; this is why the contract calls out exit 3 as a distinct,

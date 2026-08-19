@@ -84,6 +84,13 @@ if [ "${FAKE_UV_MODE:-ok}" = "install_fail" ]; then
   exit 1
 fi
 : "${UV_TOOL_BIN_DIR:?fake-uv: UV_TOOL_BIN_DIR must be pinned by the adapter}"
+# HOME= alone does NOT isolate uv's cache or its managed interpreters: both
+# resolve through XDG_CACHE_HOME / XDG_DATA_HOME before falling back to HOME,
+# so an exported XDG dir wins and the downloaded CPython lands in the
+# operator's shared tree. Requiring these two here is what makes that
+# regression visible to a test instead of silent.
+: "${UV_CACHE_DIR:?fake-uv: UV_CACHE_DIR must be pinned by the adapter}"
+: "${UV_PYTHON_INSTALL_DIR:?fake-uv: UV_PYTHON_INSTALL_DIR must be pinned by the adapter}"
 mkdir -p "$UV_TOOL_BIN_DIR"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$UV_TOOL_BIN_DIR/basic-memory"
 chmod +x "$UV_TOOL_BIN_DIR/basic-memory"
@@ -219,5 +226,23 @@ sec6="$(_section "$out6")"
 grep -q 'SKIPPED (knowledge_store.sh / knowledge_search.sh not found' <<<"$sec6" \
   || fail "6: expected SKIPPED when the libraries are absent — got: $sec6"
 pass "6: a tree with no knowledge-store pieces degrades to SKIPPED"
+
+# ---------------------------------------------------------------------------
+# 7. The XDG escape hatch is actually closed: with XDG_CACHE_HOME and
+#    XDG_DATA_HOME exported (routine on Linux/CI), uv's cache and managed
+#    interpreter dirs must STILL be pinned under the adapter's own home. The
+#    fake uv asserts the two vars are set; this case proves the adapter sets
+#    them even when the operator's XDG dirs would otherwise win.
+# ---------------------------------------------------------------------------
+rm -f "$PIN_STAMP" "${TOOL_BIN_DIR}/basic-memory" 2>/dev/null || true
+: > "$UV_LOG"
+set +e
+out7="$(_run_doctor XDG_CACHE_HOME="$HOME_FIX/xdg-cache" XDG_DATA_HOME="$HOME_FIX/xdg-data" 2>&1)"
+rc7=$?
+set -e
+sec7="$(_section "$out7")"
+grep -q 'state       INSTALLED' <<<"$sec7" \
+  || fail "7: exported XDG dirs broke the install (fake uv rejects an unpinned UV_CACHE_DIR / UV_PYTHON_INSTALL_DIR) — got: $sec7 (rc=$rc7)"
+pass "7: uv's cache and managed-interpreter dirs stay pinned under the adapter home even with XDG_CACHE_HOME/XDG_DATA_HOME exported"
 
 echo "All doctor basic-memory-tool tests passed."

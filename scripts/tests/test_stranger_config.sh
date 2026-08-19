@@ -358,7 +358,12 @@ KS_SEARCH_OUT="$(
   # is only assigned lazily, inside it, on first call -- mirroring the
   # ks_root lazy-assign-on-call shape).
   printf 'bm_home=%s\n' "$(_ks_bm_home)"
-  ks_search_available >/dev/null 2>&1
+  # --probe, NOT the bare op: the default arm lazily INSTALLS the pinned
+  # basic-memory tool (temperloop#1113). This sandbox is a fresh mktemp
+  # dir where the tool is never ready, and this gate runs under
+  # KERNEL_GATES, so the bare op would fire a real `uv tool install` --
+  # a live network call from inside a test that asserts it makes none.
+  ks_search_available --probe >/dev/null 2>&1
   printf 'available_rc=%s\n' "$?"
 )"
 

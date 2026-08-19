@@ -549,6 +549,15 @@ check_cache_state() {
 check_bm_tool_install() {
   local store_lib="${FOUNDATION}/workflows/scripts/lib/knowledge_store.sh"
   local search_lib="${FOUNDATION}/workflows/scripts/lib/knowledge_search.sh"
+  # The install bound (KNOWLEDGE_SEARCH_BM_INSTALL_TIMEOUT) is applied by
+  # _ks_bm_install_tool ONLY when run_with_timeout is already in scope — it is
+  # the caller's job to provide it. Doctor is the caller that most predictably
+  # drives the install (it runs it unconditionally on an absent/drifted pin),
+  # and this check is documented as advisory, never a gate: `make doctor` must
+  # stay runnable on a host with no uv and no network. Without this source the
+  # setting is inert here and a wedged network turns `make doctor` into an
+  # unbounded hang — worse than the failure the advisory posture was built for.
+  local timeout_lib="${FOUNDATION}/workflows/scripts/lib/portable-timeout.sh"
 
   printf '\nknowledge_search basic-memory tool (temperloop#1113):\n'
 
@@ -564,6 +573,12 @@ check_bm_tool_install() {
     # shellcheck source=/dev/null
     source "$search_lib" 2>/dev/null || {
       printf '  SKIPPED (could not source knowledge_search.sh)\n'; exit 0; }
+    # Best-effort: an older/vendored tree without this lib simply runs the
+    # install unbounded, exactly as it did before this source existed.
+    if [ -f "$timeout_lib" ]; then
+      # shellcheck source=/dev/null
+      source "$timeout_lib" 2>/dev/null || true
+    fi
 
     # A kernel checkout older than #1113 has no install seam to drive. Report
     # that plainly rather than failing — this file is also read by vendored

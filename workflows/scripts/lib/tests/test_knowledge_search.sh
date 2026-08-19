@@ -312,6 +312,31 @@ set -e
 [ "$rc_ok" -eq 0 ] || fail "3b: ks_search_available should exit 0 when uv is present (got $rc_ok)"
 echo "PASS: 3b ks_search_available exit-code probe matches ks_search's own gate (3 missing / 0 present)"
 
+# --- 3b2. --probe is ZERO-SIDE-EFFECT: it must never invoke uv --------------
+# The default arm lazily installs (the ratified hybrid, temperloop#1113), which
+# silently repurposed every caller that used this as a cheap predicate -- most
+# sharply scripts/tests/test_stranger_config.sh, a KERNEL_GATES entry running in
+# a fresh sandbox, which started firing a real `uv tool install` from inside a
+# test asserting it makes no network call (kernel principle 3). --probe is the
+# sweepable public answer, and THIS case is what keeps it honest: a spy `uv`
+# that records every invocation, asserted to record none.
+SPY_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ks-probe-spy-XXXXXX")"
+mkdir -p "$SPY_DIR/bin" "$SPY_DIR/home"
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s/uv.calls"\nexit 0\n' "$SPY_DIR" > "$SPY_DIR/bin/uv"
+chmod +x "$SPY_DIR/bin/uv"
+: > "$SPY_DIR/uv.calls"
+set +e
+( PATH="$SPY_DIR/bin:$PATH" HOME="$SPY_DIR/home" \
+  KNOWLEDGE_SEARCH_BM_HOME="$SPY_DIR/home/bm" \
+  ks_search_available --probe >/dev/null 2>/dev/null )
+rc_probe=$?
+set -e
+spy_calls="$(wc -l < "$SPY_DIR/uv.calls" | tr -d '[:space:]')"
+[ "$rc_probe" -eq 3 ] || fail "3b2: --probe should exit 3 when the pinned tool is not installed (got $rc_probe)"
+[ "$spy_calls" -eq 0 ] || fail "3b2: --probe invoked uv $spy_calls time(s) — it must be zero-side-effect (calls: $(cat "$SPY_DIR/uv.calls"))"
+rm -rf "$SPY_DIR"
+echo "PASS: 3b2 ks_search_available --probe reports not-ready without invoking uv (no install, no writes)"
+
 # --- 3c. --quiet suppresses the notice and NOTHING ELSE (temperloop#1113) ----
 # ks_search's own read-log probe passes --quiet so the "skipped —" line isn't
 # printed twice. It must suppress exactly that line and keep the same exit

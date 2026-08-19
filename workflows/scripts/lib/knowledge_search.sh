@@ -731,10 +731,19 @@ _ks_bm_install_tool() {
   printf 'knowledge_search: installing %s as a uv tool under %s (one-time; a cold install downloads an interpreter and can take minutes)\n' \
     "$(_ks_bm_pin_id)" "$(_ks_bm_tool_dir)" >&2
   local -a install_cmd
+  # HOME= alone does NOT isolate uv: it resolves its cache as UV_CACHE_DIR ->
+  # $XDG_CACHE_HOME/uv -> HOME-relative, and its managed interpreters as
+  # UV_PYTHON_INSTALL_DIR -> $XDG_DATA_HOME/uv/python -> HOME-relative. An
+  # exported XDG_CACHE_HOME/XDG_DATA_HOME (routine on Linux and CI, and this
+  # repo leans on XDG_STATE_HOME heavily) therefore WINS over the HOME
+  # override and the downloaded CPython lands in the operator's shared tree.
+  # Both are pinned explicitly so every byte uv writes stays under our home.
   install_cmd=(env
     "HOME=$(_ks_bm_home)"
     "UV_TOOL_DIR=$(_ks_bm_tool_dir)"
     "UV_TOOL_BIN_DIR=$(_ks_bm_tool_bin_dir)"
+    "UV_CACHE_DIR=$(_ks_bm_home)/uv-cache"
+    "UV_PYTHON_INSTALL_DIR=$(_ks_bm_home)/uv-python"
     uv tool install --force
       --python "$KNOWLEDGE_SEARCH_BM_PYTHON"
       "basic-memory==${KNOWLEDGE_SEARCH_BM_VERSION}")
@@ -760,10 +769,21 @@ _ks_bm_install_tool() {
     _KS_BM_INSTALL_FAILED=1
     return 1
   fi
-  _ks_bm_pin_id > "$(_ks_bm_pin_stamp_path)" || {
+  # Write-then-rename, never truncate-in-place: the pipeline fans out worker
+  # processes sharing one KNOWLEDGE_SEARCH_BM_HOME, and _ks_bm_tool_ready
+  # cat's this stamp on EVERY ks_search. A concurrent reader landing in a
+  # truncate window would read an empty stamp, conclude "not installed", and
+  # fire a redundant `uv tool install --force` that replaces the entry point
+  # under a sibling about to exec it. rename(2) is atomic within a directory,
+  # so a reader sees either the old stamp or the new one, never a partial.
+  local stamp stamp_tmp
+  stamp="$(_ks_bm_pin_stamp_path)"
+  stamp_tmp="${stamp}.tmp.$$"
+  if ! { _ks_bm_pin_id > "$stamp_tmp" && mv -f "$stamp_tmp" "$stamp"; }; then
+    rm -f "$stamp_tmp"
     _KS_BM_INSTALL_FAILED=1
     return 1
-  }
+  fi
   return 0
 }
 
@@ -825,11 +845,21 @@ _ks_bm_embedding_dimensions() {
 # report available. doctor's half makes the state PREDICTABLE and pre-warmed;
 # this half makes it REACHABLE without doctor. Both, deliberately.
 #
-# What this gate is NOT: a pure predicate. A caller that wants a
-# zero-side-effect probe has `_ks_bm_tool_ready` (private) — the public op's
+# What this gate is NOT, by default: a pure predicate. The public op's
 # contract has always been "can this backend answer a search", and since the
 # answer is now "yes, after a one-time install", performing that install is
 # what makes the answer true rather than merely optimistic.
+#
+# `--probe` is the ZERO-SIDE-EFFECT arm, and it is public on purpose. Making
+# the default arm side-effecting silently repurposed every existing caller
+# that used this as a cheap predicate — most sharply the hermetic gate at
+# scripts/tests/test_stranger_config.sh, which runs under KERNEL_GATES in a
+# fresh sandbox where the tool is never ready, and which therefore started
+# firing a real network install from inside a test whose own assertion reads
+# "never a network call" (kernel principle 3). A private `_ks_bm_tool_ready`
+# was not enough: an out-of-file caller cannot reach a private accessor, so
+# the only sweepable fix is a public flag. `--probe` answers "is it ready
+# RIGHT NOW" — exit 0 ready, exit 3 not — and never installs, never writes.
 #
 # `--quiet` suppresses the "skipped —" notice ONLY (ks_search's internal
 # read-log probe passes it so the notice isn't printed twice). Install
@@ -844,18 +874,25 @@ _ks_bm_embedding_dimensions() {
 # knowledge_search_mcp.sh, neither of which shellcheck can follow.
 # shellcheck disable=SC2120
 _ks_search_backend_basic_memory_available() {
-  local quiet=0
+  local quiet=0 probe=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --quiet) quiet=1; shift ;;
+      --probe) probe=1; shift ;;
       *)
-        printf 'knowledge_search: basic-memory available: unrecognised argument "%s" (accepted: --quiet)\n' "$1" >&2
+        printf 'knowledge_search: basic-memory available: unrecognised argument "%s" (accepted: --quiet, --probe)\n' "$1" >&2
         return 2
         ;;
     esac
   done
 
   _ks_bm_tool_ready && return 0
+
+  # --probe stops here: report not-ready, install nothing, write nothing.
+  if [ "$probe" -eq 1 ]; then
+    [ "$quiet" -eq 1 ] || echo "skipped — knowledge_search unavailable: the pinned basic-memory tool is not installed (probe only; run 'make doctor' or any ks_search to install it)" >&2
+    return 3
+  fi
 
   if ! command -v uv >/dev/null 2>&1; then
     [ "$quiet" -eq 1 ] || echo "skipped — knowledge_search unavailable: uv not found on PATH (needed to install the pinned basic-memory tool)" >&2

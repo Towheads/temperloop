@@ -28,7 +28,10 @@
   installs the pin lazily on first use when it is absent, so a stranger with
   only `uv` on `PATH` and no `doctor` run still gets a working first
   `ks_search` — the zero-setup property that made `uvx` the original default.
-  `ks_search_available` is therefore no longer a pure predicate; it accepts a
+  `ks_search_available` is therefore no longer a pure predicate **by
+  default** — pass the new `--probe` flag for a zero-side-effect check that
+  never installs (a hermetic test, a graceful-skip capability probe). It
+  accepts a
   new `--quiet` flag that suppresses only the `skipped —` notice (never
   install progress), which `ks_search`'s internal read-log probe now passes.
 
