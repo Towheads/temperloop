@@ -47,11 +47,26 @@
 #                                ${XDG_STATE_HOME:-$HOME/.local/state}/foundation/basic-memory-home
 #   KNOWLEDGE_SEARCH_BM_PROJECT  the basic-memory project name bound to
 #                                ks_root. Default: foundation-knowledge
-#   KNOWLEDGE_SEARCH_BM_VERSION  pinned basic-memory version (point 5) passed
-#                                to `uvx --from basic-memory==<version>`.
-#                                Default: 0.22.1 (the spike-verdict pin —
-#                                upgrades are a deliberate adapter change to
-#                                this default, not silent drift).
+#   KNOWLEDGE_SEARCH_BM_VERSION  pinned basic-memory version (point 5)
+#                                INSTALLED as a uv tool
+#                                (`uv tool install basic-memory==<version>`)
+#                                and invoked through the installed entry
+#                                point. Default: 0.22.1 (the spike-verdict
+#                                pin — upgrades are a deliberate adapter
+#                                change to this default, not silent drift;
+#                                changing it RE-INSTALLS, it never keeps
+#                                running the previously installed build —
+#                                see _ks_bm_tool_ready below).
+#   KNOWLEDGE_SEARCH_BM_INSTALL_TIMEOUT
+#                                bound, in seconds, on that one-time
+#                                `uv tool install` (temperloop#1113). Applied
+#                                only when the caller has already sourced
+#                                workflows/scripts/lib/portable-timeout.sh
+#                                (probed with `declare -F run_with_timeout`,
+#                                never sourced from here — this library's
+#                                dependency set stays knowledge_store.sh + jq).
+#                                Unbounded install otherwise, exactly as
+#                                before. Default: 900.
 #   KNOWLEDGE_SEARCH_RERANK      1 = re-rank the backend's candidate set
 #                                before returning (default); 0 = return the
 #                                backend's own order untouched. See
@@ -102,8 +117,10 @@
 #                                ks_search itself, never delegated to a
 #                                backend that might not honour it.
 #   KNOWLEDGE_SEARCH_BM_PYTHON   pinned CPython version passed to
-#                                `uvx --python <version>` (point 5's
-#                                companion pin). The bm version pin alone
+#                                `uv tool install --python <version>`
+#                                (point 5's companion pin, and part of the
+#                                installed-pin identity — changing it
+#                                re-installs). The bm version pin alone
 #                                still let uv resolve whatever interpreter
 #                                the host offered; a host that resolved
 #                                3.14 hit a from-source maturin/PyO3 build
@@ -157,11 +174,23 @@
 #                                    private `_ks_bm_run`. An UNRECOGNISED
 #                                    argument is rejected with exit 2, never
 #                                    silently discarded.
-# ks_search_available             -> exit 0 if the selected backend's
-#                                    required tooling is present, exit 3
-#                                    otherwise. Lets a caller probe before
-#                                    calling ks_search if it wants to avoid
-#                                    the stderr notice.
+# ks_search_available [--quiet]   -> exit 0 if the selected backend's
+#                                    required tooling is present OR could be
+#                                    made present, exit 3 otherwise. Lets a
+#                                    caller probe before calling ks_search if
+#                                    it wants to avoid the stderr notice.
+#                                    NOT a pure predicate since temperloop#1113:
+#                                    on the basic-memory backend this gate
+#                                    LAZILY INSTALLS the pinned tool when it
+#                                    is absent (the hybrid install design —
+#                                    see _ks_search_backend_basic_memory_
+#                                    available below), so a stranger who never
+#                                    ran `doctor` still gets a working first
+#                                    ks_search. `--quiet` suppresses only the
+#                                    "skipped —" degradation notice (used by
+#                                    ks_search's own internal probe so the
+#                                    notice isn't printed twice); install
+#                                    progress still reaches stderr.
 #
 # Exit codes (both ks_search and ks_search_reindex):
 #   0 — success. For ks_search, this includes a legitimate ZERO-result
@@ -176,7 +205,9 @@
 #       ks_search_reindex flag, a --limit/--partition with no value, an EMPTY
 #       --partition value, dispatch to an unregistered backend).
 #   3 — backend unavailable ("skipped"): the backend's required subprocess
-#       tooling (uvx) is not on PATH. A message beginning
+#       tooling could not be made present — `uv` is not on PATH, or the
+#       one-time `uv tool install` of the pinned basic-memory failed
+#       (temperloop#1113). A message beginning
 #       "skipped — knowledge_search unavailable" is printed to stderr;
 #       NOTHING is ever printed to stdout in this case — legible
 #       degradation, never a silent empty result.
@@ -249,14 +280,19 @@ ks_search() {
   # rg-fallback, mode, wall-time — are only known once the call completes),
   # gated the same way the pre-#1449 code gated its pre-dispatch emit: on the
   # backend's availability probe (the same "available" op ks_search_available
-  # exposes publicly; dispatched directly here, stdout/stderr suppressed for
-  # THIS probe only so its "skipped —" notice isn't printed twice) — an
-  # unavailable backend (no uvx on PATH) never really searches, so it
-  # shouldn't log a search attempt either, and the probe itself is a
-  # zero-subprocess `command -v` check, so this gate never depends on PATH
-  # carrying anything beyond that.
+  # exposes publicly) — an unavailable backend never really searches, so it
+  # shouldn't log a search attempt either.
+  #
+  # `--quiet` (temperloop#1113), not a blanket `2>/dev/null`. The suppression
+  # here has ever only had ONE job: stop the "skipped —" notice being printed
+  # twice (once by this probe, once by the real dispatch below). Since #1113
+  # the gate can also do a one-time `uv tool install`, whose progress is the
+  # only thing telling an operator why their first ks_search is taking
+  # minutes — swallowing ALL of the probe's stderr would make that first run
+  # silently hang-looking. So the notice is suppressed by name and everything
+  # else passes through.
   local do_log=0
-  ks_search__dispatch available >/dev/null 2>/dev/null && do_log=1
+  ks_search__dispatch available --quiet >/dev/null && do_log=1
 
   # Dispatch to the backend, capturing stdout so a legitimate ZERO-result
   # (exit 0, empty stream) can trigger a ripgrep fallback over the corpus
@@ -543,10 +579,12 @@ ks_search__dispatch() {
 
 # ── basic-memory backend ──────────────────────────────────────────────────
 # Every function below either assembles the posture (config/env) or shells
-# out to the pinned `uvx --from basic-memory==<version> basic-memory ...`
-# CLI. Nothing here imports or vendors any basic-memory source — the ONLY
-# way this file talks to basic-memory is via `uvx` as a subprocess (points
-# 4 and 5). Confirmed against the real 0.22.1 CLI (network-available
+# out to the pinned basic-memory CLI, INSTALLED as a uv tool and invoked
+# through its own installed entry point (temperloop#1113 — see
+# _ks_bm_ensure_tool below for why this replaced the per-run `uvx --from
+# basic-memory==<version>` resolution). Nothing here imports or vendors any
+# basic-memory source — the ONLY way this file talks to basic-memory is as a
+# subprocess (points 4 and 5). Confirmed against the real 0.22.1 CLI (network-available
 # adapter-authoring session, 2026-07-02): `project add` is idempotent
 # (prints "already exists" and exits 0 on a repeat call), a config.json
 # holding ONLY the override keys below is merged with the tool's own
@@ -557,6 +595,7 @@ ks_search__dispatch() {
 : "${KNOWLEDGE_SEARCH_BM_PROJECT:=foundation-knowledge}"
 : "${KNOWLEDGE_SEARCH_BM_VERSION:=0.22.1}"
 : "${KNOWLEDGE_SEARCH_BM_PYTHON:=3.13}"
+: "${KNOWLEDGE_SEARCH_BM_INSTALL_TIMEOUT:=900}"
 # Overlay seam (foundation#946): extra `.bmignore` patterns appended to the
 # generic upstream base set that _ks_bm_ensure_ignore writes — space- or
 # newline-separated BARE segment names. EMPTY by default, so a stranger's install
@@ -582,6 +621,177 @@ _ks_bm_ignore_path() { printf '%s/.bmignore\n' "$(_ks_bm_config_dir)"; }
 # point 6 (cont'd): semantic_embedding_cache_dir pinned inside the isolated
 # home, not the machine's shared HF/fastembed cache.
 _ks_bm_cache_dir()   { printf '%s/embedding-cache\n' "$(_ks_bm_home)"; }
+
+# ── point 5, rewritten: the pin is INSTALLED, not resolved per run (#1113) ──
+# This adapter used to reach basic-memory as `uvx --from
+# basic-memory==<pin> basic-memory ...` — zero setup, but with NO PERMANENT
+# INSTALL LOCATION. uv resolves the package, unpacks a ready-to-run
+# environment into its own cache (`archive-v0`), and executes OUT OF THAT
+# CACHE. Every distinct resolution (a new pin, a new interpreter, a changed
+# dependency set) adds another environment and nothing ever expires them:
+# measured at 30 GB on a host that had been running this path for months,
+# against a knowledge store of 273 MB, with the root volume at 0 bytes free.
+#
+# Two properties made it worse than ordinary cache growth, and BOTH are
+# closed by installing instead of resolving:
+#   * The isolated HOME (point 6) forks a SECOND cache — uv locates its cache
+#     relative to HOME, so the adapter's own pinned home grows a cache tree
+#     independent of the operator's.
+#   * The cache CANNOT BE PRUNED while a long-running search process is up:
+#     uvx holds the cache lock for that process's whole lifetime, so
+#     `uv cache prune` fails with "Cache is currently in-use" for as long as
+#     the warm basic-memory-mcp daemon (knowledge_search_mcp.sh) is serving —
+#     and because the cache IS the live environment, clearing it by hand
+#     would delete the running interpreter out from under that daemon. With a
+#     persistent daemon the reclaim window never naturally arrives.
+# An INSTALLED uv tool puts a stable virtualenv (with its own managed
+# interpreter) under _ks_bm_tool_dir instead, so uv's cache holds no live
+# environment, holds no lock, and stays prunable at any time — including
+# while the daemon is serving.
+#
+# Everything the tool install writes stays adapter-owned, under the same
+# isolated home point 6 already established: UV_TOOL_DIR (the virtualenvs),
+# UV_TOOL_BIN_DIR (the entry-point shims), and HOME (uv's own cache +
+# managed-interpreter dirs) are ALL pinned there. Nothing lands in the
+# operator's `~/.local/{share,bin}`, and the invocation below never resolves
+# `basic-memory` through PATH — so a system-wide basic-memory install can
+# neither be picked up by accident nor shadowed by ours.
+_ks_bm_tool_dir()     { printf '%s/uv-tools\n' "$(_ks_bm_home)"; }
+_ks_bm_tool_bin_dir() { printf '%s/uv-tool-bin\n' "$(_ks_bm_home)"; }
+_ks_bm_bin_path()     { printf '%s/basic-memory\n' "$(_ks_bm_tool_bin_dir)"; }
+
+# THE PIN-CHANGE GUARD, and the sharpest regression risk of the switch. Under
+# uvx the pin was re-asserted on EVERY invocation, so bumping
+# KNOWLEDGE_SEARCH_BM_VERSION took effect on the next call for free. An
+# installed tool has no such property: it would happily keep serving the
+# previously installed build forever while the adapter's own pin said
+# otherwise — silent drift of exactly the kind point 5's `auto_update: false`
+# posture exists to make deliberate rather than invisible.
+#
+# So the installed pin's IDENTITY is recorded on disk next to the shim and
+# compared on every call. The identity is BOTH pins (version + interpreter),
+# because both are arguments to the install and either changing means the
+# installed environment no longer matches what this file asks for. A stamp
+# that disagrees — or is missing, as it is on a tree installed by an older
+# copy of this adapter — is treated exactly like "not installed": re-install,
+# then re-stamp.
+_ks_bm_pin_stamp_path() { printf '%s/.ks-installed-pin\n' "$(_ks_bm_tool_bin_dir)"; }
+_ks_bm_pin_id() {
+  printf 'basic-memory==%s python=%s\n' \
+    "$KNOWLEDGE_SEARCH_BM_VERSION" "$KNOWLEDGE_SEARCH_BM_PYTHON"
+}
+
+# Cheap, zero-subprocess readiness probe: an executable entry point AND a pin
+# stamp that matches the pins THIS process is configured with. Kept cheap on
+# purpose — it runs on every ks_search (twice: the read-log probe and the
+# backend's own gate), so it must never cost more than a couple of stats.
+_ks_bm_tool_ready() {
+  local bm_bin stamp
+  bm_bin="$(_ks_bm_bin_path)"
+  stamp="$(_ks_bm_pin_stamp_path)"
+  [ -x "$bm_bin" ] || return 1
+  [ -f "$stamp" ] || return 1
+  [ "$(cat "$stamp" 2>/dev/null)" = "$(_ks_bm_pin_id)" ] || return 1
+  return 0
+}
+
+# Installs (or RE-installs, on a pin change) the pinned tool. `--force` is
+# unconditional rather than conditional-on-drift: this function is only
+# reached when _ks_bm_tool_ready already said the on-disk state does NOT
+# match the configured pins, and `uv tool install` without it can decline to
+# replace an existing installation — precisely the silent-old-version failure
+# the stamp exists to catch.
+#
+# PER-PROCESS FAILURE MEMO. A failed install must not be retried on every
+# subsequent gate call: ks_search alone runs the gate twice per query, and a
+# minutes-long network failure repeated per call would turn one degraded
+# search into an unbounded stall. The memo is process-local private state
+# (never a setting), so a fresh process retries — a transient network outage
+# self-heals on the next invocation without anyone clearing anything.
+#
+# The bound on the install is applied ONLY when the caller has already
+# sourced portable-timeout.sh; this library refuses to grow a second
+# dependency for it (it cannot resolve its own directory portably — it is
+# sourced under zsh as well as bash, where BASH_SOURCE does not exist). Every
+# env override goes through `env` rather than a `VAR=v func` prefix, because
+# a variable assignment prefixed onto a *shell function* call persists into
+# the calling shell in some bash modes — and clobbering the caller's HOME
+# would be a spectacular way to fail.
+_ks_bm_install_tool() {
+  local out rc=0 bm_bin
+  [ "${_KS_BM_INSTALL_FAILED:-0}" = "1" ] && return 1
+  if ! command -v uv >/dev/null 2>&1; then
+    _KS_BM_INSTALL_FAILED=1
+    return 127
+  fi
+  mkdir -p "$(_ks_bm_home)" "$(_ks_bm_tool_dir)" "$(_ks_bm_tool_bin_dir)" || {
+    _KS_BM_INSTALL_FAILED=1
+    return 1
+  }
+  printf 'knowledge_search: installing %s as a uv tool under %s (one-time; a cold install downloads an interpreter and can take minutes)\n' \
+    "$(_ks_bm_pin_id)" "$(_ks_bm_tool_dir)" >&2
+  local -a install_cmd
+  # HOME= alone does NOT isolate uv: it resolves its cache as UV_CACHE_DIR ->
+  # $XDG_CACHE_HOME/uv -> HOME-relative, and its managed interpreters as
+  # UV_PYTHON_INSTALL_DIR -> $XDG_DATA_HOME/uv/python -> HOME-relative. An
+  # exported XDG_CACHE_HOME/XDG_DATA_HOME (routine on Linux and CI, and this
+  # repo leans on XDG_STATE_HOME heavily) therefore WINS over the HOME
+  # override and the downloaded CPython lands in the operator's shared tree.
+  # Both are pinned explicitly so every byte uv writes stays under our home.
+  install_cmd=(env
+    "HOME=$(_ks_bm_home)"
+    "UV_TOOL_DIR=$(_ks_bm_tool_dir)"
+    "UV_TOOL_BIN_DIR=$(_ks_bm_tool_bin_dir)"
+    "UV_CACHE_DIR=$(_ks_bm_home)/uv-cache"
+    "UV_PYTHON_INSTALL_DIR=$(_ks_bm_home)/uv-python"
+    uv tool install --force
+      --python "$KNOWLEDGE_SEARCH_BM_PYTHON"
+      "basic-memory==${KNOWLEDGE_SEARCH_BM_VERSION}")
+  # `command -v`, NOT `declare -F`: under zsh `declare` is `typeset` and its
+  # `-F` flag means "float with N digits", so `declare -F run_with_timeout`
+  # SUCCEEDS unconditionally (declaring a float of that name) and this branch
+  # would always be taken — then die with "command not found". This library is
+  # sourced under zsh (temperloop#40), so the probe has to be one both shells
+  # answer the same way. `command -v` finds shell functions in both.
+  if command -v run_with_timeout >/dev/null 2>&1; then
+    out="$(run_with_timeout "${KNOWLEDGE_SEARCH_BM_INSTALL_TIMEOUT}" "${install_cmd[@]}" 2>&1)" || rc=$?
+  else
+    out="$("${install_cmd[@]}" 2>&1)" || rc=$?
+  fi
+  if [ "$rc" -ne 0 ]; then
+    printf '%s\n' "$out" | tail -n 15 >&2
+    _KS_BM_INSTALL_FAILED=1
+    return "$rc"
+  fi
+  bm_bin="$(_ks_bm_bin_path)"
+  if [ ! -x "$bm_bin" ]; then
+    printf 'knowledge_search: uv tool install reported success but no entry point exists at %s\n' "$bm_bin" >&2
+    _KS_BM_INSTALL_FAILED=1
+    return 1
+  fi
+  # Write-then-rename, never truncate-in-place: the pipeline fans out worker
+  # processes sharing one KNOWLEDGE_SEARCH_BM_HOME, and _ks_bm_tool_ready
+  # cat's this stamp on EVERY ks_search. A concurrent reader landing in a
+  # truncate window would read an empty stamp, conclude "not installed", and
+  # fire a redundant `uv tool install --force` that replaces the entry point
+  # under a sibling about to exec it. rename(2) is atomic within a directory,
+  # so a reader sees either the old stamp or the new one, never a partial.
+  local stamp stamp_tmp
+  stamp="$(_ks_bm_pin_stamp_path)"
+  stamp_tmp="${stamp}.tmp.$$"
+  if ! { _ks_bm_pin_id > "$stamp_tmp" && mv -f "$stamp_tmp" "$stamp"; }; then
+    rm -f "$stamp_tmp"
+    _KS_BM_INSTALL_FAILED=1
+    return 1
+  fi
+  return 0
+}
+
+# The idempotent front door: ready -> no-op; otherwise install/re-pin.
+_ks_bm_ensure_tool() {
+  _ks_bm_tool_ready && return 0
+  _ks_bm_install_tool
+}
 
 # point 7: THE embedding-model pin — the single site where the model name is
 # authored. Nothing else in this file may spell a model name; the config
@@ -615,17 +825,83 @@ _ks_bm_embedding_dimensions() {
   esac
 }
 
-# point 1: uvx/basic-memory presence is the sole availability gate — bm
-# itself is fetched on demand by uvx, so "installed" here means "uvx is on
-# PATH", not "basic-memory is pre-installed". This IS the dispatch target
-# for the public "available" op (ks_search_available calls this directly,
-# by the `_ks_search_backend_<name>_<op>` naming convention) — exit 0 when
-# ready, exit 3 with the "skipped —" stderr notice when not, so a caller
-# gets the same legible-degradation signal whether it probes explicitly via
+# point 1, rewritten for the installed-tool default (temperloop#1113): the
+# gate is now "the pinned tool is installed at the configured pins, OR can be
+# installed right now". This IS the dispatch target for the public
+# "available" op (ks_search_available calls this directly, by the
+# `_ks_search_backend_<name>_<op>` naming convention) — exit 0 when ready,
+# exit 3 with the "skipped —" stderr notice when not, so a caller gets the
+# same legible-degradation signal whether it probes explicitly via
 # ks_search_available or hits it implicitly via ks_search/ks_search_reindex.
+#
+# ── The gate LAZILY INSTALLS — the second half of the ratified hybrid ──────
+# Moving off `uvx` traded away the one virtue that made it the default: a
+# stranger with nothing but `uv` on PATH got a working first ks_search with
+# no setup step at all. `workflows/scripts/install/doctor.sh` installs and
+# reports the pin, which covers an INSTALLED checkout — but a stranger who
+# never runs doctor would otherwise hit a permanent "skipped —" with no hint
+# that one command fixes it, a silent-skip hole where zero-setup used to be.
+# So the gate self-heals: absent tool + `uv` on PATH -> install it here, then
+# report available. doctor's half makes the state PREDICTABLE and pre-warmed;
+# this half makes it REACHABLE without doctor. Both, deliberately.
+#
+# What this gate is NOT, by default: a pure predicate. The public op's
+# contract has always been "can this backend answer a search", and since the
+# answer is now "yes, after a one-time install", performing that install is
+# what makes the answer true rather than merely optimistic.
+#
+# `--probe` is the ZERO-SIDE-EFFECT arm, and it is public on purpose. Making
+# the default arm side-effecting silently repurposed every existing caller
+# that used this as a cheap predicate — most sharply the hermetic gate at
+# scripts/tests/test_stranger_config.sh, which runs under KERNEL_GATES in a
+# fresh sandbox where the tool is never ready, and which therefore started
+# firing a real network install from inside a test whose own assertion reads
+# "never a network call" (kernel principle 3). A private `_ks_bm_tool_ready`
+# was not enough: an out-of-file caller cannot reach a private accessor, so
+# the only sweepable fix is a public flag. `--probe` answers "is it ready
+# RIGHT NOW" — exit 0 ready, exit 3 not — and never installs, never writes.
+#
+# `--quiet` suppresses the "skipped —" notice ONLY (ks_search's internal
+# read-log probe passes it so the notice isn't printed twice). Install
+# progress and uv's own failure output are never suppressed by it: they are
+# the only thing distinguishing a first run that is working from one that has
+# hung. An unrecognised flag is rejected (exit 2) rather than shifted away,
+# matching every other argument loop this file owns (temperloop#418).
+#
+# SC2120: this function IS called with an argument — but only through the
+# dispatch indirection (`ks_search__dispatch available --quiet`, resolved by
+# name at runtime) and from the warm backend's delegation in
+# knowledge_search_mcp.sh, neither of which shellcheck can follow.
+# shellcheck disable=SC2120
 _ks_search_backend_basic_memory_available() {
-  command -v uvx >/dev/null 2>&1 && return 0
-  echo "skipped — knowledge_search unavailable: uvx not found on PATH" >&2
+  local quiet=0 probe=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --quiet) quiet=1; shift ;;
+      --probe) probe=1; shift ;;
+      *)
+        printf 'knowledge_search: basic-memory available: unrecognised argument "%s" (accepted: --quiet, --probe)\n' "$1" >&2
+        return 2
+        ;;
+    esac
+  done
+
+  _ks_bm_tool_ready && return 0
+
+  # --probe stops here: report not-ready, install nothing, write nothing.
+  if [ "$probe" -eq 1 ]; then
+    [ "$quiet" -eq 1 ] || echo "skipped — knowledge_search unavailable: the pinned basic-memory tool is not installed (probe only; run 'make doctor' or any ks_search to install it)" >&2
+    return 3
+  fi
+
+  if ! command -v uv >/dev/null 2>&1; then
+    [ "$quiet" -eq 1 ] || echo "skipped — knowledge_search unavailable: uv not found on PATH (needed to install the pinned basic-memory tool)" >&2
+    return 3
+  fi
+
+  _ks_bm_install_tool && return 0
+  [ "$quiet" -eq 1 ] || printf 'skipped — knowledge_search unavailable: could not install %s as a uv tool\n' \
+    "$(_ks_bm_pin_id)" >&2
   return 3
 }
 
@@ -825,9 +1101,10 @@ _ks_bm_repair_config() {
 # `fpath`, or `mailpath`. Under zsh those identifiers are tied to the colon-array
 # side of the corresponding uppercase env var (`path` <-> `PATH`), so a
 # `local path=…` in a *sourced* function silently rebinds `PATH` for that scope —
-# and since these libs are sourced (not executed) and then call `uvx` via
-# `_ks_bm_run`, a clobbered `PATH` makes `uvx` unresolvable (exit 127 -> ks exit
-# 4). bash treats `path` as an ordinary variable, so this is invisible under
+# and since these libs are sourced (not executed) and then shell out to
+# PATH-resolved tooling (`uv` and `env` in the install gate; `jq`, `rg` and
+# friends downstream), a clobbered `PATH` makes those unresolvable and the
+# search fails. bash treats `path` as an ordinary variable, so this is invisible under
 # bash and under CI. Use `cfg_path`/`proj_path`/`doc_path` instead. (temperloop#40)
 _ks_bm_ensure_config() {
   local dir cfg_path cache model dims
@@ -878,15 +1155,33 @@ JSON
 # interpreter pin (KNOWLEDGE_SEARCH_BM_PYTHON — without it uv resolves the
 # host's newest CPython, and a resolution onto a version some bm dependency
 # ships no wheel for triggers a from-source native build that can fail; the
-# temperloop#368 / foundation#1176 failure mode). This is the
-# ONLY place in this file that invokes the `basic-memory` binary, and it is
-# always via `uvx --from basic-memory==<pin>` — never a bare `basic-memory`
-# that could silently pick up an unpinned/system install, and NEVER the
-# `mcp` subcommand (point 4 — sidesteps upstream #1017).
+# temperloop#368 / foundation#1176 failure mode). Both pins are asserted at
+# INSTALL time now (temperloop#1113) rather than re-passed per invocation,
+# and _ks_bm_tool_ready re-checks them on every call so a pin change
+# re-installs instead of silently continuing to run the old build.
+#
+# This is the ONLY place in this file that invokes the basic-memory binary,
+# and it does so by ABSOLUTE PATH into the adapter's own tool-bin dir — never
+# a bare `basic-memory` that PATH could resolve to an unpinned/system
+# install, and NEVER the `mcp` subcommand (point 4 — sidesteps upstream
+# #1017).
+#
+# The readiness check here is a GUARD, not the install seam: every public
+# entry point runs the availability gate (which installs) first, so reaching
+# _ks_bm_run with no entry point means a caller bypassed that gate. Failing
+# loudly with 127 beats installing from a helper whose callers expect a bm
+# invocation to be all that happens.
 _ks_bm_run() {
+  local bm_bin
+  bm_bin="$(_ks_bm_bin_path)"
+  if [ ! -x "$bm_bin" ]; then
+    printf 'knowledge_search: pinned basic-memory tool is not installed at %s (availability gate bypassed?)\n' \
+      "$bm_bin" >&2
+    return 127
+  fi
   HOME="$(_ks_bm_home)" \
   BASIC_MEMORY_DISABLE_PERMALINKS=true \
-  uvx --python "$KNOWLEDGE_SEARCH_BM_PYTHON" --from "basic-memory==${KNOWLEDGE_SEARCH_BM_VERSION}" basic-memory "$@"
+  "$bm_bin" "$@"
 }
 
 # point 9: project registration via the CLI only — config-only edits to the
@@ -1193,6 +1488,7 @@ _ks_search_backend_basic_memory_search() {
     esac
   done
 
+  # shellcheck disable=SC2119  # deliberately no args: these call sites want the loud (non-quiet) gate
   _ks_search_backend_basic_memory_available || return $?
   _ks_bm_ensure_config || {
     echo "knowledge_search: could not write basic-memory config" >&2
@@ -1292,6 +1588,7 @@ _ks_search_backend_basic_memory_reindex() {
     esac
   done
 
+  # shellcheck disable=SC2119  # deliberately no args: these call sites want the loud (non-quiet) gate
   _ks_search_backend_basic_memory_available || return $?
   _ks_bm_ensure_config || {
     echo "knowledge_search: could not write basic-memory config" >&2

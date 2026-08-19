@@ -4,7 +4,7 @@
 # "script-plane read telemetry"): ks__read_log_emit and its two call sites —
 # knowledge_store.sh's ks__dispatch (every ks_read/ks_write/ks_append/
 # ks_list, for the plain-files backend) and knowledge_search.sh's ks_search
-# entrypoint. Zero network: the ks_search case drives a FAKE `uvx` binary on
+# entrypoint. Zero network: the ks_search case drives a FAKE `uv` binary on
 # PATH, same fixture pattern as test_knowledge_search.sh. All state
 # (KNOWLEDGE_STORE_ROOT, KNOWLEDGE_READ_LOG, KNOWLEDGE_SEARCH_BM_HOME) lives
 # under a throwaway tmpdir; never touches a real vault, XDG dir, or the
@@ -166,14 +166,34 @@ echo "PASS: 8 the doc-path-or-query field is sanitized (no raw tabs/newlines sur
 SEARCH_TMP="$TMP/search"
 mkdir -p "$SEARCH_TMP/store" "$SEARCH_TMP/bm-home" "$SEARCH_TMP/bin"
 SEARCH_LOG="$SEARCH_TMP/knowledge-reads.log"
-cat > "$SEARCH_TMP/bin/uvx" <<'FAKE'
+# ── fake `uv` + installed basic-memory entry point (temperloop#1113) ────────
+# Since #1113 the adapter installs the pinned basic-memory as a uv tool and
+# invokes the installed entry point by absolute path — nothing named
+# `basic-memory` is ever resolved through PATH. So these cases put a fake `uv`
+# on PATH instead, and it materialises the canned CLI stub below into
+# $UV_TOOL_BIN_DIR exactly as a real `uv tool install` would. No network, no
+# real install.
+#
+# _mk_fake_uv <bin-dir> <template-path>
+_mk_fake_uv() {
+  local bin_dir="$1" template="$2"
+  mkdir -p "$bin_dir"
+  cat > "$bin_dir/uv" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
-# Drop `[uvx flags...] basic-memory` — consume up to and including the
-# `basic-memory` command token, so a new uvx flag (--python, --from) never
-# breaks the fake (`basic-memory==<ver>` is a distinct string, never matched).
-while [ $# -gt 0 ] && [ "$1" != "basic-memory" ]; do shift; done
-shift || true
+[ "\${1:-}" = "tool" ] && [ "\${2:-}" = "install" ] || { echo "fake-uv: unsupported: \$*" >&2; exit 9; }
+: "\${UV_TOOL_BIN_DIR:?fake-uv: UV_TOOL_BIN_DIR must be pinned by the adapter}"
+mkdir -p "\$UV_TOOL_BIN_DIR"
+cp "$template" "\$UV_TOOL_BIN_DIR/basic-memory"
+chmod +x "\$UV_TOOL_BIN_DIR/basic-memory"
+exit 0
+EOF
+  chmod +x "$bin_dir/uv"
+}
+
+cat > "$SEARCH_TMP/basic-memory.template" <<'FAKE'
+#!/usr/bin/env bash
+set -euo pipefail
 case "$1 $2 $3" in
   "project add "*) exit 0 ;;
   "tool search-notes "*)
@@ -183,7 +203,7 @@ case "$1 $2 $3" in
 esac
 exit 9
 FAKE
-chmod +x "$SEARCH_TMP/bin/uvx"
+_mk_fake_uv "$SEARCH_TMP/bin" "$SEARCH_TMP/basic-memory.template"
 
 (
   export KNOWLEDGE_STORE_ROOT="$SEARCH_TMP/store"
@@ -230,24 +250,22 @@ echo "PASS: 10 an empty ks_search query (usage error) does not append a read-log
 # --- 11-15. additive OUTCOME fields (foundation#1449, epic foundation#1443) --
 # ks__read_log_emit now accepts optional trailing fields, and ks_search
 # appends six of them after the query field: result_count, top_score,
-# abstained, rg_fallback, mode, wall_ms. A richer fake `uvx`
-# (FAKE_UVX_MODE-selectable, same idiom as test_knowledge_search.sh) drives a
+# abstained, rg_fallback, mode, wall_ms. A richer fake basic-memory stub
+# (FAKE_BM_MODE-selectable, same idiom as test_knowledge_search.sh) drives a
 # real hit, a genuine no-match with a literal rg-fallback hit, a genuine
 # no-match with no rg hit either, and a backend error.
 OUT_TMP="$TMP/outcome"
 mkdir -p "$OUT_TMP/store" "$OUT_TMP/bm-home" "$OUT_TMP/bin"
 OUT_LOG="$OUT_TMP/knowledge-reads.log"
-cat > "$OUT_TMP/bin/uvx" <<'FAKE'
+cat > "$OUT_TMP/basic-memory.template" <<'FAKE'
 #!/usr/bin/env bash
 set -euo pipefail
-while [ $# -gt 0 ] && [ "$1" != "basic-memory" ]; do shift; done
-shift || true
 sub="${1:-}"; shift || true
 case "$sub" in
   project) exit 0 ;;
   tool)
     if [ "${1:-}" = "search-notes" ]; then
-      case "${FAKE_UVX_MODE:-hit}" in
+      case "${FAKE_BM_MODE:-hit}" in
         hit)
           echo '{"results":[{"title":"Foo","score":1.23,"matched_chunk":"c1","file_path":"Decisions/foo.md"},{"title":"Bar","score":0.9,"matched_chunk":"c2","file_path":"Decisions/bar.md"}]}'
           exit 0
@@ -257,7 +275,7 @@ case "$sub" in
           exit 0
           ;;
         error)
-          echo "fake-uvx: simulated backend crash" >&2
+          echo "fake-bm: simulated backend crash" >&2
           exit 1
           ;;
         low_conf)
@@ -273,7 +291,7 @@ case "$sub" in
 esac
 exit 9
 FAKE
-chmod +x "$OUT_TMP/bin/uvx"
+_mk_fake_uv "$OUT_TMP/bin" "$OUT_TMP/basic-memory.template"
 
 DOT="$(printf '\xc2\xb7')"
 SEP=" ${DOT} "
@@ -286,7 +304,7 @@ field_n() { awk -v SEP="$SEP" -F"$SEP" -v n="$2" '{print $n}' <<<"$1"; }
   export KNOWLEDGE_SEARCH_BM_PROJECT="outcome-test"
   export KNOWLEDGE_READ_LOG="$OUT_LOG"
   export PATH="$OUT_TMP/bin:$PATH"
-  export FAKE_UVX_MODE="hit"
+  export FAKE_BM_MODE="hit"
   export KNOWLEDGE_SEARCH_RERANK=0
   unset CLAUDE_CODE_SESSION_ID || true
   # shellcheck source=/dev/null
@@ -312,7 +330,7 @@ echo "PASS: 11 a real hit's read-log line carries result_count/top_score/mode/rg
   export KNOWLEDGE_SEARCH_BM_PROJECT="outcome-test"
   export KNOWLEDGE_READ_LOG="$OUT_LOG"
   export PATH="$OUT_TMP/bin:$PATH"
-  export FAKE_UVX_MODE="hit"
+  export FAKE_BM_MODE="hit"
   unset KNOWLEDGE_SEARCH_RERANK || true
   unset CLAUDE_CODE_SESSION_ID || true
   # shellcheck source=/dev/null
@@ -337,7 +355,7 @@ if command -v rg >/dev/null 2>&1; then
     export KNOWLEDGE_SEARCH_BM_PROJECT="outcome-test"
     export KNOWLEDGE_READ_LOG="$OUT_LOG"
     export PATH="$OUT_TMP/bin:$PATH"
-    export FAKE_UVX_MODE="empty"
+    export FAKE_BM_MODE="empty"
     unset CLAUDE_CODE_SESSION_ID || true
     # shellcheck source=/dev/null
     source "$STORE_LIB"
@@ -362,7 +380,7 @@ fi
   export KNOWLEDGE_SEARCH_BM_PROJECT="outcome-test"
   export KNOWLEDGE_READ_LOG="$OUT_LOG"
   export PATH="$OUT_TMP/bin:$PATH"
-  export FAKE_UVX_MODE="empty"
+  export FAKE_BM_MODE="empty"
   unset CLAUDE_CODE_SESSION_ID || true
   # shellcheck source=/dev/null
   source "$STORE_LIB"
@@ -383,7 +401,7 @@ echo "PASS: 14 a genuine no-match (rg finds nothing either) reports result_count
   export KNOWLEDGE_SEARCH_BM_PROJECT="outcome-test"
   export KNOWLEDGE_READ_LOG="$OUT_LOG"
   export PATH="$OUT_TMP/bin:$PATH"
-  export FAKE_UVX_MODE="error"
+  export FAKE_BM_MODE="error"
   unset CLAUDE_CODE_SESSION_ID || true
   set +e
   # shellcheck source=/dev/null
@@ -419,7 +437,7 @@ if command -v curl >/dev/null 2>&1; then
     export KNOWLEDGE_SEARCH_BM_PROJECT="outcome-test"
     export KNOWLEDGE_READ_LOG="$OUT_LOG"
     export PATH="$OUT_TMP/bin:$PATH"
-    export FAKE_UVX_MODE="hit"
+    export FAKE_BM_MODE="hit"
     export KNOWLEDGE_SEARCH_BACKEND="basic-memory-mcp"
     export KNOWLEDGE_SEARCH_BM_MCP_URL="http://127.0.0.1:1/mcp"
     export KNOWLEDGE_SEARCH_BM_MCP_CONNECT_TIMEOUT="1"
@@ -444,7 +462,7 @@ else
 fi
 
 # --- 17. abstention floor wires the `abstained` outcome field (foundation#1450) ---
-# Reuses the same OUT_TMP fixture; a new FAKE_UVX_MODE returns two candidates
+# Reuses the same OUT_TMP fixture; a new FAKE_BM_MODE returns two candidates
 # that fail BOTH abstention floors for the query below (unrelated titles ->
 # L==0; scores 0.65/0.60 < the 0.72 default). A literal-match file is ALSO
 # planted so this proves the ratified L1 semantics (clause 4): the rg
@@ -460,7 +478,7 @@ if command -v rg >/dev/null 2>&1; then
     export KNOWLEDGE_SEARCH_BM_PROJECT="outcome-test"
     export KNOWLEDGE_READ_LOG="$OUT_LOG"
     export PATH="$OUT_TMP/bin:$PATH"
-    export FAKE_UVX_MODE="low_conf"
+    export FAKE_BM_MODE="low_conf"
     export KNOWLEDGE_SEARCH_ABSTAIN=1
     unset CLAUDE_CODE_SESSION_ID || true
     # shellcheck source=/dev/null
@@ -492,7 +510,7 @@ fi
   export KNOWLEDGE_SEARCH_BM_PROJECT="outcome-test"
   export KNOWLEDGE_READ_LOG="$OUT_LOG"
   export PATH="$OUT_TMP/bin:$PATH"
-  export FAKE_UVX_MODE="low_conf"
+  export FAKE_BM_MODE="low_conf"
   unset KNOWLEDGE_SEARCH_ABSTAIN || true
   unset CLAUDE_CODE_SESSION_ID || true
   # shellcheck source=/dev/null

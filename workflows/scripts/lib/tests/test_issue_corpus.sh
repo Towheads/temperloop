@@ -4,7 +4,7 @@
 # renderer + ks_search reindex chain (plan item "cache-search-corpus").
 # Zero network: overrides cache.sh's `_cache_gh` seam (mirroring
 # board/tests/test_cache_store.sh) to replay canned REST payloads, and
-# drives a FAKE `uvx` on PATH (mirroring test_knowledge_search.sh) so
+# drives a FAKE `uv` on PATH (mirroring test_knowledge_search.sh) so
 # ks_search_reindex/ks_search never touch the real basic-memory CLI. Every
 # store lives under a throwaway tmpdir -- CACHE_STORE_ROOT and
 # KNOWLEDGE_STORE_ROOT are both sandboxed; this test never touches a real
@@ -17,7 +17,7 @@
 #      only that issue's doc (mtime advances) and leaves the other issue's
 #      doc untouched (mtime unchanged).
 #   2. Reindex chain: issue_corpus_sync drives cache_refresh -> render ->
-#      ks_search_reindex, and the fake-uvx log proves reindex was invoked
+#      ks_search_reindex, and the fake basic-memory log proves reindex was invoked
 #      against the project bound to ks_root (the mechanical assertion this
 #      item's acceptance calls for). A smoke ks_search query (against the
 #      same mocked backend the rest of this repo's knowledge_search tests
@@ -57,9 +57,10 @@ KNOWLEDGE_SEARCH_BM_HOME="$TMP/bm-home"
 # knowledge-reads.log.
 KNOWLEDGE_READ_LOG="$TMP/knowledge-reads.log"
 BIN="$TMP/bin"
-FAKE_UVX_LOG="$TMP/uvx-calls.log"
+FAKE_BM_LOG="$TMP/bm-calls.log"
+FAKE_BM_TEMPLATE="$TMP/basic-memory.template"
 mkdir -p "$CACHE_STORE_ROOT" "$KNOWLEDGE_STORE_ROOT" "$BIN"
-export CACHE_STORE_ROOT KNOWLEDGE_STORE_ROOT KNOWLEDGE_SEARCH_BM_HOME KNOWLEDGE_READ_LOG FAKE_UVX_LOG
+export CACHE_STORE_ROOT KNOWLEDGE_STORE_ROOT KNOWLEDGE_SEARCH_BM_HOME KNOWLEDGE_READ_LOG FAKE_BM_LOG FAKE_BM_TEMPLATE
 export KNOWLEDGE_SEARCH_BM_PROJECT="issue-corpus-test-project"
 
 cleanup() {
@@ -68,36 +69,32 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# ── fake `uvx` fixture (mirrors test_knowledge_search.sh's) ────────────────
-cat > "$BIN/uvx" <<'FAKE'
+# ── fake basic-memory entry point + fake `uv` (mirrors test_knowledge_search.sh) ──
+cat > "$FAKE_BM_TEMPLATE" <<'FAKE'
 #!/usr/bin/env bash
 set -euo pipefail
-: "${FAKE_UVX_LOG:?}"
-printf 'ARGS: %s\n' "$*" >> "$FAKE_UVX_LOG"
-# Consume `[uvx flags...] basic-memory` — robust to new uvx flags (--python,
-# --from); `basic-memory==<ver>` is a distinct string, never matched.
-while [ $# -gt 0 ] && [ "$1" != "basic-memory" ]; do shift; done
-shift || true
+: "${FAKE_BM_LOG:?}"
+printf 'ARGS: %s\n' "$*" >> "$FAKE_BM_LOG"
 sub="${1:-}"; shift || true
 case "$sub" in
   project)
     action="${1:-}"; shift || true
     if [ "$action" = "add" ]; then
       name="${1:-}"; proj_path="${2:-}"
-      printf 'PROJECT_ADD name=%s path=%s\n' "$name" "$proj_path" >> "$FAKE_UVX_LOG"
+      printf 'PROJECT_ADD name=%s path=%s\n' "$name" "$proj_path" >> "$FAKE_BM_LOG"
       echo "Project '$name' added successfully"
       exit 0
     fi
     ;;
   reindex)
-    printf 'REINDEX args=%s\n' "$*" >> "$FAKE_UVX_LOG"
+    printf 'REINDEX args=%s\n' "$*" >> "$FAKE_BM_LOG"
     echo "Reindex complete!"
     exit 0
     ;;
   tool)
     if [ "${1:-}" = "search-notes" ]; then
       shift
-      printf 'SEARCH args=%s\n' "$*" >> "$FAKE_UVX_LOG"
+      printf 'SEARCH args=%s\n' "$*" >> "$FAKE_BM_LOG"
       cat <<'JSON'
 {"results":[{"title":"Hello World","type":"entity","score":1.5,"content":"body one","matched_chunk":"body one snippet","file_path":"issues/Acme-issue-corpus-test/1-hello-world.md","metadata":{},"entity_id":1}],"current_page":1,"page_size":10,"total":1,"has_more":false}
 JSON
@@ -105,10 +102,25 @@ JSON
     fi
     ;;
 esac
-echo "fake-uvx: unhandled invocation: $*" >&2
+echo "fake-bm: unhandled invocation: $*" >&2
 exit 9
 FAKE
-chmod +x "$BIN/uvx"
+
+# Fake `uv` — the only thing on PATH. Since temperloop#1113 the adapter
+# installs the pinned basic-memory as a uv tool and invokes the installed
+# entry point by absolute path, so this materialises the stub above exactly
+# as a real `uv tool install` would. Still zero network.
+cat > "$BIN/uv" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+[ "\${1:-}" = "tool" ] && [ "\${2:-}" = "install" ] || { echo "fake-uv: unsupported: \$*" >&2; exit 9; }
+: "\${UV_TOOL_BIN_DIR:?fake-uv: UV_TOOL_BIN_DIR must be pinned by the adapter}"
+mkdir -p "\$UV_TOOL_BIN_DIR"
+cp "$FAKE_BM_TEMPLATE" "\$UV_TOOL_BIN_DIR/basic-memory"
+chmod +x "\$UV_TOOL_BIN_DIR/basic-memory"
+exit 0
+EOF
+chmod +x "$BIN/uv"
 
 # shellcheck source=scripts/board/lib/cache.sh
 source "$BOARD_LIB_DIR/cache.sh"
@@ -270,24 +282,24 @@ grep -q '^number: 1$' <<<"$via_ks_read" || fail "7: ks_read content did not matc
 echo "PASS: 7 rendered docs are readable back through ks_read (corpus lives inside ks_root, no side-channel path)"
 
 # --- 8. reindex chain: issue_corpus_sync drives refresh -> render -> reindex -
-rm -f "$FAKE_UVX_LOG"
+rm -f "$FAKE_BM_LOG"
 PATH="$BIN:$PATH" issue_corpus_sync "$REPO" >/dev/null 2>&1
-[ -f "$FAKE_UVX_LOG" ] || fail "8: issue_corpus_sync never invoked the (fake) uvx subprocess"
-grep -q "PROJECT_ADD name=$KNOWLEDGE_SEARCH_BM_PROJECT path=$KNOWLEDGE_STORE_ROOT\$" "$FAKE_UVX_LOG" \
-  || fail "8: reindex chain's project registration was not bound to ks_root (KNOWLEDGE_STORE_ROOT); log:\n$(cat "$FAKE_UVX_LOG")"
-grep -q '^REINDEX args=--project '"$KNOWLEDGE_SEARCH_BM_PROJECT"'$' "$FAKE_UVX_LOG" \
-  || fail "8: expected an incremental (no --full) reindex call bound to the project; log:\n$(cat "$FAKE_UVX_LOG")"
+[ -f "$FAKE_BM_LOG" ] || fail "8: issue_corpus_sync never invoked the (fake) basic-memory subprocess"
+grep -q "PROJECT_ADD name=$KNOWLEDGE_SEARCH_BM_PROJECT path=$KNOWLEDGE_STORE_ROOT\$" "$FAKE_BM_LOG" \
+  || fail "8: reindex chain's project registration was not bound to ks_root (KNOWLEDGE_STORE_ROOT); log:\n$(cat "$FAKE_BM_LOG")"
+grep -q '^REINDEX args=--project '"$KNOWLEDGE_SEARCH_BM_PROJECT"'$' "$FAKE_BM_LOG" \
+  || fail "8: expected an incremental (no --full) reindex call bound to the project; log:\n$(cat "$FAKE_BM_LOG")"
 echo "PASS: 8 issue_corpus_sync chains cache_refresh -> issue_corpus_render -> ks_search_reindex, bound to ks_root"
 
 # --- 8b. --full is forwarded to ks_search_reindex ----------------------------
-rm -f "$FAKE_UVX_LOG"
+rm -f "$FAKE_BM_LOG"
 PATH="$BIN:$PATH" issue_corpus_sync "$REPO" --full >/dev/null 2>&1
-grep -q '^REINDEX args=--full --project '"$KNOWLEDGE_SEARCH_BM_PROJECT"'$' "$FAKE_UVX_LOG" \
-  || fail "8b: --full should be forwarded to ks_search_reindex; log:\n$(cat "$FAKE_UVX_LOG")"
+grep -q '^REINDEX args=--full --project '"$KNOWLEDGE_SEARCH_BM_PROJECT"'$' "$FAKE_BM_LOG" \
+  || fail "8b: --full should be forwarded to ks_search_reindex; log:\n$(cat "$FAKE_BM_LOG")"
 echo "PASS: 8b issue_corpus_sync --full forwards --full to ks_search_reindex"
 
 # --- 9. offline smoke: a seeded issue is returned by a ks_search query -------
-# This drives the SAME mocked-uvx harness every other knowledge_search test in
+# This drives the SAME mocked basic-memory harness every other knowledge_search test in
 # this repo uses (see test_knowledge_search.sh) -- it proves the mechanical
 # round-trip (render -> reindex -> search returns the rendered doc_id), not
 # real embedding-based relevance. A live semantic-relevance smoke against the

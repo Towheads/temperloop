@@ -51,8 +51,9 @@ renders a board's cached issues into the store via `ks_write` and then
 chains a `ks_search_reindex`, so the searchable corpus and the read/write
 corpus are structurally the same directory by construction, not by
 convention. The search path runs a **pinned** `basic-memory` CLI —
-`uvx --from basic-memory==<version>`, never a bare `basic-memory` that could
-silently pick up an unpinned or system install — with the version fixed by
+installed once as a uv tool into the adapter's own isolated home and invoked
+by absolute path, never a bare `basic-memory` that could silently pick up an
+unpinned or system install (see § Resource impact) — with the version fixed by
 `KNOWLEDGE_SEARCH_BM_VERSION` (default `0.22.1`, the spike-verified pin) and
 `auto_update: false`, so an upgrade is always a deliberate version bump, not
 a background drift. It runs inside an isolated `HOME` with
@@ -155,7 +156,7 @@ partition — scoped search.
 
 Consumes: `KNOWLEDGE_STORE_ROOT` / `KNOWLEDGE_STORE_BACKEND` /
 `KNOWLEDGE_SEARCH_BM_VERSION` environment (or their config-file defaults),
-and, for the search path, a locally installed `uvx`. `issue-corpus.sh`
+and, for the search path, a locally installed `uv`. `issue-corpus.sh`
 consumes the board issue-cache store's on-disk contract (`cache.sh`'s
 `snapshot.jsonl` / `details/<n>.json` / `meta.json`) directly — it never
 sources `board.sh` — so the knowledge-store stack carries no dependency on
@@ -170,19 +171,20 @@ Storage: the `plain-files` backend writes one markdown file per document
 under `KNOWLEDGE_STORE_ROOT`; cost scales linearly with corpus size, and
 this seam performs no retention or garbage collection on its own. Runtime:
 `ks_read`/`ks_write`/`ks_append`/`ks_list` are direct filesystem operations,
-sub-millisecond each; the search path additionally spawns one pinned `uvx`
-subprocess per query or reindex — the only process-spawn cost in this seam.
-API/network budget: zero for ordinary read/write/append/list. The search
-subprocess itself runs fully local once its pinned package is cached; the
-only network touch is `uvx`'s fetch of the pinned `basic-memory` version
-for a resolution it has not cached before.
+sub-millisecond each; the search path additionally spawns one pinned
+`basic-memory` subprocess per query or reindex — the only process-spawn cost
+in this seam. API/network budget: zero for ordinary read/write/append/list.
+The search subprocess runs fully local; the only network touch is the
+**one-time** `uv tool install` of the pinned version (and a re-install when
+the pin changes).
 
-### Configure `uv tool install` — the `uvx` cache grows without bound
+### The pin is INSTALLED, not resolved per run
 
-`_ks_bm_run` invokes the pinned package as `uvx --from
-basic-memory==<pin> basic-memory …`, which is convenient (nothing to
-install ahead of time) but has a storage consequence worth configuring
-away before it bites.
+`_ks_bm_run` invokes the pinned package through an entry point that
+`uv tool install` put on disk, at an absolute path inside the adapter's own
+isolated home. This is the kernel default as of temperloop#1113. It used to
+be `uvx --from basic-memory==<pin> basic-memory …`, which needed no install
+step but had a storage consequence that eventually filled a disk.
 
 Under `uvx` there is **no permanent install location**: uv resolves the
 package, unpacks a ready-to-run environment into its own cache
@@ -190,16 +192,16 @@ package, unpacks a ready-to-run environment into its own cache
 resolution — a different pin, a different Python, a changed dependency
 set — adds another environment, and nothing expires them. On a host that
 had been running the search path for months this reached **30 GB**, against
-a knowledge store of 273 MB.
+a knowledge store of 273 MB, with the root volume at 0 bytes free.
 
-Two things make it worse than ordinary cache growth:
+Two things made it worse than ordinary cache growth:
 
 - **A pinned `HOME` forks a second cache.** uv locates its cache relative
   to `HOME`. Any wrapper that runs `basic-memory` under an isolated home
-  (the warm-daemon posture described above does exactly this, to reach an
-  adapter-owned `config.json`) causes uv to build a *separate* cache tree
-  inside that home rather than reusing the user's. The host then carries
-  two independent unbounded caches instead of one.
+  (the adapter does exactly this, to reach an adapter-owned `config.json`)
+  causes uv to build a *separate* cache tree inside that home rather than
+  reusing the user's. The host then carries two independent unbounded
+  caches instead of one.
 - **The cache cannot be pruned while a long-running search process is
   up.** `uvx` holds the cache lock for the entire lifetime of the process
   it launched, so `uv cache prune` fails with `Cache is currently in-use`
@@ -208,32 +210,42 @@ Two things make it worse than ordinary cache growth:
   interpreter out from under that daemon. A persistent warm daemon means
   the reclaim window never naturally arrives.
 
-**The configuration that avoids all of this** is to install the pin as a
-uv *tool* and invoke the installed entry point, rather than resolving it
-per-run:
+An installed tool avoids all of it: a stable virtualenv (~380 MB, with its
+own managed interpreter) lives under the adapter's isolated home, the cache
+holds no live environment, holds no lock, and is safe to prune or delete at
+any time — including while the daemon is serving.
 
-```sh
-# once, using the same HOME the search path runs under
-HOME=<isolated-bm-home> uv tool install "basic-memory==<pin>"
+**Where it installs, and when.** Everything is pinned inside
+`KNOWLEDGE_SEARCH_BM_HOME` — `UV_TOOL_DIR`, `UV_TOOL_BIN_DIR` and `HOME`
+alike — so nothing reaches the operator's `~/.local/{share,bin}` and the
+entry point is invoked by absolute path (a system-wide `basic-memory` is
+never picked up, and never shadowed). The install happens in **two** places,
+deliberately:
 
-# then invoke the installed entry point instead of `uvx --from …`
-<isolated-bm-home>/.local/bin/basic-memory mcp …
-```
+- **`doctor.sh`** installs the pin and reports its state
+  (`INSTALLED` / `PIN DRIFT` / `ABSENT` / `UNAVAILABLE` / `INSTALL FAILED`),
+  so an installed checkout is predictable and pre-warmed. Advisory: it never
+  changes `doctor`'s own exit code.
+- **The availability gate** (`ks_search_available`, and therefore every
+  `ks_search` / `ks_search_reindex`) installs it lazily on first use if it is
+  absent, so a stranger with only `uv` on `PATH` and no `doctor` run still
+  gets a working first search — the zero-setup property `uvx` used to
+  provide. When it genuinely cannot install, the call degrades with the usual
+  `skipped — knowledge_search unavailable: …` line on stderr and exit 3.
 
-That places a stable virtualenv under
-`$HOME/.local/share/uv/tools/basic-memory/` (~380 MB, with its own
-managed interpreter). The cache then holds no live environment, releases
-its lock, and is safe to prune or delete at any time — including while
-the daemon is serving. Upgrades become explicit (`uv tool install
-basic-memory==<newpin>`), which is arguably more honest for a version
-that is pinned anyway.
+**Upgrades follow the pin.** The installed version *and* interpreter are
+stamped beside the entry point and re-checked on every call, so bumping
+`KNOWLEDGE_SEARCH_BM_VERSION` or `KNOWLEDGE_SEARCH_BM_PYTHON` re-installs on
+the next call instead of silently continuing to serve the old build. The
+one-time install is bounded by `KNOWLEDGE_SEARCH_BM_INSTALL_TIMEOUT` when the
+caller has sourced `workflows/scripts/lib/portable-timeout.sh`.
 
-**Checking and reclaiming.** `pgrep -fl archive-v0` lists any process
-still executing out of a uv cache — if it names your `basic-memory`, the
-switch above has not taken effect for that process. Once nothing runs
-from it, `uv cache prune` (or removing the cache directory outright)
-reclaims the space; verify the daemon still answers its health check
-afterwards.
+**Reclaiming an old `uvx` cache.** A host that ran the pre-#1113 default
+still carries the accumulated cache. `pgrep -fl archive-v0` lists any process
+still executing out of a uv cache — if it names your `basic-memory`,
+something is still on the old path. Once nothing runs from it, `uv cache
+prune` (or removing the cache directory outright) reclaims the space; verify
+the daemon still answers its health check afterwards.
 
 Note that `du` will overstate what you get back. uv populates
 environments with APFS copy-on-write clones, which share physical blocks
@@ -241,16 +253,13 @@ that `du` counts in full for every entry — on the host above, a cache
 `du` reported as 30 GB returned roughly 8 GB of actual free space. Read
 `df`, not `du`, when measuring the reclaim.
 
-The kernel's own default remains `uvx` (it needs no install step, which
-matters for a first run); adopting `uv tool install` is an operator
-configuration, and making it the default is tracked separately.
-
 ## Telemetry
 
 The `knowledge-search-fallback` stream (one of the frozen telemetry
 record shapes named in `claude/presentation-plane.md`'s kernel table)
 records when a search falls back to a degraded path. `doctor.sh`'s
-"Knowledge-store root check" and "Cache-store state" sections are the
-direct-observation surface for backend/root drift — run `bash
+"Knowledge-store root check", "Cache-store state" and "knowledge_search
+basic-memory tool" sections are the direct-observation surface for
+backend/root/install drift — run `bash
 workflows/scripts/install/doctor.sh` and read `OK` / `MISMATCH` /
 `SKIPPED` per check.
