@@ -64,6 +64,10 @@ none docs/cognitive-load.md
 none docs/pitch.md
 none docs/about.md
 none docs/using-the-pipeline.md
+# The migrating-from-Obsidian write-up (Towheads/foundation#892): a narrative
+# method page for a search/write-path migration, same "none" treatment as the
+# other top-level docs-site pages above.
+none docs/migrating-from-obsidian.md
 none AGENTS.md
 none llms.txt
 none CLAUDE.md
