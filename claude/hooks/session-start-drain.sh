@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # SessionStart hook — drains .mind/ session stubs from all dev roots into the
-# Obsidian vault at Sessions/_inbox/<original-filename>.md via the Obsidian
-# Local REST API. Deletes each local stub on successful upload.
+# knowledge store at Sessions/_inbox/<original-filename>.md, via the
+# knowledge_store seam's `ks_write` op. Deletes each local stub once its
+# document write reports success.
 #
 # Stubs that land in Sessions/_inbox/ are reviewed and processed by the
 # /tidy slash command (extracts learnings, generates tasks, moves to
@@ -11,38 +12,49 @@
 # ${XDG_STATE_HOME:-$HOME/.local/state}/foundation/session-start-drain.log —
 # and stubs are left in place for the next run. Never blocks session start.
 #
-# EVAL_RUN suppression: when EVAL_RUN is set (non-empty), the vault drain is
+# EVAL_RUN suppression: when EVAL_RUN is set (non-empty), the store drain is
 # skipped entirely.  The session-id additionalContext is still emitted so eval
-# runs can trace their own session; no vault writes occur.
+# runs can trace their own session; no store writes occur.
 
 set -uo pipefail
 
-# Vault-root / config resolution routes through the knowledge_store seam
-# (foundation #777, Epic A #762 "kernel split") rather than a hardcoded vault
-# path. This hook is permanently Obsidian-specific (it drains straight into
-# Sessions/_inbox via the vault's REST API, never through ks_read/ks_write),
-# so the config it borrows DIRECTLY is the obsidian backend's own settings
-# (KNOWLEDGE_STORE_OBSIDIAN_API_KEY_FILE / _API_BASE below) rather than a
-# call to ks_root() in this file's own code.
+# ── Transport is the SEAM's business, not this hook's (temperloop#732) ──────
+# This hook used to hand-roll a `curl -X PUT` against the Obsidian Local REST
+# API, with its own API-key read, TLS flag and HTTP-code branch. That was a
+# caller-routing gap, NOT a deliberate by-backend-mode transport this file is
+# supposed to branch on: knowledge_store.contract.md § Non-goals of this seam
+# says plainly "This file defines the interface and both backends
+# (`plain-files`, `obsidian`) — it does not itself route any hook, command,
+# or script through the interface. Routing callers over ... is sibling-level
+# work". So there is no mode for a caller to switch on; there is one op,
+# `ks_write`, and KNOWLEDGE_STORE_BACKEND decides the wire format behind it:
 #
-# That does NOT make this hook independent of ks_root(), though: read
-# knowledge_store_obsidian.sh's own header before assuming so.
-# KNOWLEDGE_STORE_OBSIDIAN_API_KEY_FILE's own default (that file, currently
-# line 55) is `$(ks_root)/.obsidian/plugins/obsidian-local-rest-api/data.json`
-# — and this hook's own VAULT (below, currently line 85) is derived by
-# stripping that exact suffix back off API_KEY_FILE. So every time this
-# hook's operator leaves that default unoverridden, the whole vault path
-# this hook drains into is derived from ks_root() TRANSITIVELY, through two
-# hops. A ks_root() resolution bug in the bare-env plane (temperloop#1328 —
-# a process that never sources build.config.sh, exactly this hook's own
-# shape, falling through to the wrong default root) therefore breaks this
-# hook's drain just as surely as if it called ks_root() itself — measured
-# cost before the fix: 218 skipped drains across 16 consecutive days on the
-# operator's host. "Deliberately not used here" was true only of a direct
-# call in this file; read as "independent of ks_root" it overstates the
-# case. The transport itself (raw curl PUT, not ks_write) is unchanged — see
-# the header comment below on why a whole-file PUT stays outside the
-# interface's own write op for this hook.
+#   plain-files (the default) -> an atomic file write under ks_root. This is
+#     the transport a stranger's fresh install needs and the one the raw-curl
+#     path could never provide — it required an Obsidian vault plus a running
+#     Local REST API plugin just to drain a stub.
+#   obsidian                  -> `PUT /vault/<path>` on the Local REST API
+#     (contract § The obsidian backend, op-to-REST table), i.e. exactly the
+#     request this hook used to build by hand — so an Obsidian-backed install
+#     keeps its old wire behaviour, with the key file, base URL and
+#     whole-file-replace semantics owned by one adapter instead of copied here.
+#
+# ── knowledge_store lib resolution ─────────────────────────────────────────
+# Both libs are sourced: knowledge_store.sh for the interface itself, and
+# knowledge_store_obsidian.sh so an operator running
+# KNOWLEDGE_STORE_BACKEND=obsidian has that backend's four
+# `_ks_backend_obsidian_*` functions in scope for ks__dispatch to find (the
+# registration seam — the interface file itself never implements it).
+#
+# This hook therefore depends on ks_root() DIRECTLY now, in one hop, rather
+# than transitively through the obsidian key-file default it used to strip a
+# suffix off. That dependency is the load-bearing one to keep in mind: a
+# ks_root() resolution bug in the bare-env plane (temperloop#1328 — a process
+# that never sources build.config.sh, exactly this hook's own shape, falling
+# through to the wrong default root) breaks this hook's drain outright.
+# Measured cost before that fix: 218 skipped drains across 16 consecutive
+# days on the operator's host. `workflows/scripts/install/doctor.sh`'s
+# check_knowledge_root() is the standing guard on it.
 #
 # Resolution order (temperloop#406 — no shipped hook may default to a
 # hardcoded personal checkout path):
@@ -57,8 +69,9 @@ set -uo pipefail
 #      directory.
 # No hardcoded personal-path default: on a checkout where neither resolves
 # (a stripped-down tree with no workflows/scripts/lib/), KS_LIB_DIR stays
-# empty and the sourcing below simply no-ops — the drain then fails open at
-# the "API key file missing" check further down, same as today.
+# empty, the sourcing below no-ops, and the "seam unavailable" check further
+# down fails open onto "skipping drain" exactly as the old "API key file
+# missing" check did.
 KS_LIB_DIR="${KS_LIB_DIR:-}"
 if [ -z "$KS_LIB_DIR" ]; then
   KS_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../workflows/scripts/lib" 2>/dev/null && pwd)"
@@ -72,17 +85,9 @@ if [ -n "$KS_LIB_DIR" ] && [ -f "$KS_LIB_DIR/knowledge_store_obsidian.sh" ]; the
   . "$KS_LIB_DIR/knowledge_store_obsidian.sh"
 fi
 
-# If the seam couldn't be sourced (e.g. a stripped-down checkout with no
-# workflows/scripts/lib/), these stay empty — the existing "API key file
-# missing" check further below (an empty path fails `[ -f "" ]`) already fails
-# open onto "skipping drain" with no separate early exit needed, and the
-# session-id emission below (which must fire regardless) is unaffected.
-API_KEY_FILE="${KNOWLEDGE_STORE_OBSIDIAN_API_KEY_FILE:-}"
-API_BASE="${KNOWLEDGE_STORE_OBSIDIAN_API_BASE:-https://127.0.0.1:27124}"
-# The vault's filesystem root, derived from the API key file's fixed Obsidian
-# plugin-data suffix (never a hardcoded vault path) — needed below only to
-# EXCLUDE the vault dir from the stub search, not for any vault content I/O.
-VAULT="${API_KEY_FILE%/.obsidian/plugins/obsidian-local-rest-api/data.json}"
+# doc-id prefix, not a filesystem path — every write below is
+# `ks_write "$INBOX_DIR/<filename>"`, which the seam normalizes and resolves
+# against whatever the active backend calls its root.
 INBOX_DIR="Sessions/_inbox"
 XDG_STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/foundation"
 mkdir -p "$XDG_STATE_DIR" 2>/dev/null || true
@@ -102,26 +107,37 @@ if [ -n "$SHORT_ID" ]; then
   printf '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"<session-id>%s</session-id>"}}\n' "$SHORT_ID"
 fi
 
-# EVAL_RUN suppression: skip all vault writes (the stub drain below).
+# EVAL_RUN suppression: skip all store writes (the stub drain below).
 # Session-id was already emitted above so eval runs can trace their session.
 # shellcheck source=eval-guard.sh
 . "$(dirname "${BASH_SOURCE[0]}")/eval-guard.sh"
 eval_guard_exit_if_eval
 
-# Read API key.
-if [ ! -f "$API_KEY_FILE" ]; then
-  log "API key file missing: $API_KEY_FILE — skipping drain"
+# Fail open when the seam never got sourced (a hooks-only vendor drop with no
+# workflows/scripts/lib/ two directories up). Stubs are left in place.
+if ! declare -F ks_write >/dev/null 2>&1; then
+  log "knowledge_store seam unavailable (KS_LIB_DIR='$KS_LIB_DIR') — skipping drain"
   exit 0
 fi
 
-API_KEY=$(jq -r '.apiKey // empty' "$API_KEY_FILE" 2>/dev/null)
-if [ -z "$API_KEY" ]; then
-  log "Could not read apiKey from $API_KEY_FILE — skipping drain"
-  exit 0
+# The store's own root, resolved only to EXCLUDE it from the stub search — a
+# .mind/ directory that happens to sit inside the store must never be drained
+# back into the store. No content I/O uses this value; every write goes
+# through ks_write's own doc-id resolution. (Under the obsidian backend the
+# vault root is likewise where KNOWLEDGE_STORE_OBSIDIAN_API_KEY_FILE's own
+# default plants the plugin data file, so this still names the right tree.)
+STORE_ROOT=""
+if declare -F ks_root >/dev/null 2>&1; then
+  STORE_ROOT="$(ks_root 2>/dev/null)" || STORE_ROOT=""
 fi
 
-# Find stubs across dev roots, excluding the vault itself.
-STUBS=$(find "$HOME/dev" "$HOME/Cursor" -path "$VAULT" -prune -o -type f -path '*/.mind/*.md' -print 2>/dev/null)
+# Find stubs across dev roots, excluding the store itself.
+FIND_ARGS=("$HOME/dev" "$HOME/Cursor")
+if [ -n "$STORE_ROOT" ]; then
+  FIND_ARGS+=(-path "$STORE_ROOT" -prune -o)
+fi
+FIND_ARGS+=(-type f -path '*/.mind/*.md' -print)
+STUBS=$(find "${FIND_ARGS[@]}" 2>/dev/null)
 
 if [ -z "$STUBS" ]; then
   exit 0  # nothing to drain, silent
@@ -135,39 +151,33 @@ while IFS= read -r stub; do
   [ ! -f "$stub" ] && continue
 
   filename=$(basename "$stub")
-  vault_path="$INBOX_DIR/$filename"
+  doc_id="$INBOX_DIR/$filename"
 
-  # PUT is idempotent — overwrites if a prior run partially completed.
-  # Whole-file PUT only: this hook issues NO PATCH, so the Obsidian Local REST
-  # API 4.0.0 change that made `targetScope` required on PATCH does not apply
-  # here (verified, foundation #6). If you ever add a PATCH call to this hook,
-  # it MUST carry a `Target-Type`/`targetScope` (and `createTargetIfMissing`
-  # where relevant) or it 400s on REST API >= 4.0.
-  http_code=$(curl -s -k -o /tmp/drain_response.$$ -w '%{http_code}' \
-    -X PUT "$API_BASE/vault/$vault_path" \
-    -H "Authorization: Bearer $API_KEY" \
-    -H "Content-Type: text/markdown" \
-    --data-binary "@$stub" 2>/dev/null)
+  # ks_write is a whole-document replace (contract § ks_write) — idempotent,
+  # so a re-run after a partially-completed prior drain simply overwrites,
+  # the same property the old PUT relied on. stdin is redirected explicitly
+  # from the stub, so it never consumes this loop's own stdin.
+  ks_err=$(ks_write "$doc_id" < "$stub" 2>&1 >/dev/null)
+  rc=$?
 
-  if [ "$http_code" = "204" ] || [ "$http_code" = "200" ]; then
+  if [ "$rc" -eq 0 ]; then
     rm -f "$stub"
     moved=$((moved + 1))
-    log "drained: $stub -> $vault_path"
+    log "drained: $stub -> $doc_id"
   else
     failed=$((failed + 1))
-    response=$(cat /tmp/drain_response.$$ 2>/dev/null | head -c 200)
-    log "FAILED [$http_code]: $stub -> $vault_path | response: $response"
+    detail=$(printf '%s' "$ks_err" | tr '\n' ' ' | head -c 200)
+    log "FAILED [ks_write rc=$rc]: $stub -> $doc_id | $detail"
   fi
-  rm -f /tmp/drain_response.$$
 done <<< "$STUBS"
 
 if [ "$moved" -gt 0 ] || [ "$failed" -gt 0 ]; then
   log "summary: $moved moved, $failed failed"
 fi
 
-# Vault snapshotting is NOT done here — the nightly /tidy command is the sole
+# Store snapshotting is NOT done here — the nightly /tidy command is the sole
 # `mind_snapshot.sh` runner (its Step 8, temperloop K86). The session-start hook
-# only drains SessionEnd stubs into _inbox; snapshotting the vault's state is
+# only drains SessionEnd stubs into _inbox; snapshotting the store's state is
 # /tidy's job so the whole nightly run's writes land in one snapshot.
 
 exit 0
