@@ -642,7 +642,7 @@ pass "11: links_apply_symlink heals a dangling link farm atomically, is idempote
 KS_LIB_SRC="${REPO_ROOT}/workflows/scripts/lib/knowledge_store.sh"
 [ -f "$KS_LIB_SRC" ] || fail "12: knowledge_store.sh not found at ${KS_LIB_SRC}"
 
-REAL_CONF="${XDG_CONFIG_HOME:-$HOME/.config}/temperloop/build.config.sh"
+REAL_CONF="${KNOWLEDGE_STORE_MACHINE_CONF:-${XDG_CONFIG_HOME:-$HOME/.config}/temperloop/build.config.sh}"
 if [ -f "$REAL_CONF" ]; then
   real_conf_before="$(cksum <"$REAL_CONF")"
 else
@@ -759,6 +759,72 @@ grep -q "RELATIVE" <<<"$out12c" || \
   fail "12c: expected the refusal to name the value as relative; got: ${out12c}"
 
 pass "12c: refuses a relative KNOWLEDGE_STORE_ROOT (ks_root's machine-conf rung would reject it), without failing the install"
+
+# ---- 12c2. SHELL-METACHARACTER ROOTS ARE REFUSED --------------------------
+# The persisted line is `: "${KNOWLEDGE_STORE_ROOT:=<root>}"` — the value sits
+# inside DOUBLE quotes, so a `$`, backtick or backslash in the path EXPANDS
+# when the conf is re-sourced rather than being carried as data. Persisting
+# one yields a conf that READS correct while every consumer silently resolves
+# a different directory: the exact silent-wrong-root class F#1771 exists to
+# close, reintroduced by the fix for it. Measured before this guard existed —
+# `/tmp/store$HOME-literal` round-tripped as `/tmp/store/Users/.../home-literal`.
+for meta_root in '/tmp/store$HOME-x' '/tmp/store`id`-x' '/tmp/store\x'; do
+  FAKE_HOME12C2="${TMP}/home12c2"
+  rm -rf "$FAKE_HOME12C2"; mkdir -p "$FAKE_HOME12C2"
+  CONF12C2="${FAKE_HOME12C2}/.config/temperloop/build.config.sh"
+
+  out12c2="$(persist_run "$FAKE_HOME12C2" "$meta_root")" && rc12c2=0 || rc12c2=$?
+  [ "$rc12c2" -eq 0 ] ||     fail "12c2: a metacharacter root must not fail the install (root=${meta_root} exit=${rc12c2}); output: ${out12c2}"
+  [ ! -f "$CONF12C2" ] ||     fail "12c2: a metacharacter root must NOT be persisted (root=${meta_root}) — conf was created: $(cat "$CONF12C2")"
+  grep -q "not safe to embed in a sourced conf line" <<<"$out12c2" ||     fail "12c2: expected the refusal to say why the character is unsafe (root=${meta_root}); got: ${out12c2}"
+done
+
+pass "12c2: refuses a KNOWLEDGE_STORE_ROOT containing \$, backtick or backslash — persisting one would expand on re-source and silently resolve a different directory"
+
+# ---- 12c3. A NEWLINE ROOT IS REFUSED --------------------------------------
+# Separate from 12c2 because the newline arm is the one easiest to write
+# wrongly: `$(printf '\n')` in a case pattern is an EMPTY string (command
+# substitution strips trailing newlines), which collapses the pattern to `**`
+# and refuses every path. This case pins both directions — the newline root is
+# refused AND an ordinary root still persists (12a covers the latter, but a
+# collapsed pattern would break it in a way that reads like an unrelated bug).
+FAKE_HOME12C3="${TMP}/home12c3"
+mkdir -p "$FAKE_HOME12C3"
+CONF12C3="${FAKE_HOME12C3}/.config/temperloop/build.config.sh"
+NL_ROOT="$(printf '/tmp/a\n: "${EVIL:=x}"')"
+
+out12c3="$(persist_run "$FAKE_HOME12C3" "$NL_ROOT")" && rc12c3=0 || rc12c3=$?
+[ "$rc12c3" -eq 0 ] || fail "12c3: a newline root must not fail the install (exit=${rc12c3}); output: ${out12c3}"
+[ ! -f "$CONF12C3" ] ||   fail "12c3: a newline root must NOT be persisted — it would inject a second line into a sourced conf; got: $(cat "$CONF12C3")"
+pass "12c3: refuses a KNOWLEDGE_STORE_ROOT containing a newline (it would inject an extra line into the sourced conf)"
+
+# ---- 12c4. AN INERT APPEND IS REPORTED, NOT CLAIMED AS SUCCESS ------------
+# The dead-text guard is TEXTUAL, so it cannot see a conf that parses fine but
+# never reaches the appended line — an early `return`, a conditional, an
+# included file. Without the post-write re-probe the function prints
+# "persisted" over a root that still resolves to the default fallback: the
+# same silent-success shape F#1771 exists to close, one layer up.
+FAKE_HOME12C4="${TMP}/home12c4"
+mkdir -p "${FAKE_HOME12C4}/.config/temperloop"
+CONF12C4="${FAKE_HOME12C4}/.config/temperloop/build.config.sh"
+printf '# early-exit conf\nreturn 0\n' >"$CONF12C4"
+
+out12c4="$(persist_run "$FAKE_HOME12C4" "${TMP}/store12c4")" && rc12c4=0 || rc12c4=$?
+[ "$rc12c4" -eq 0 ] || fail "12c4: an inert append must not fail the install (exit=${rc12c4}); output: ${out12c4}"
+grep -q "inert" <<<"$out12c4" ||   fail "12c4: expected the inert-append report naming what a bare consumer really resolves; got: ${out12c4}"
+grep -q "→ persisted" <<<"$out12c4" &&   fail "12c4: must NOT claim success when the appended line does not take effect; got: ${out12c4}"
+pass "12c4: an appended line that never executes is reported as inert, never claimed as persisted"
+
+# ---- 12c5. ks_lib ABSENT -> SKIPPED, install not failed -------------------
+# The stranger-with-a-partial-tree path, and the only other rc-0 early return.
+FAKE_HOME12C5="${TMP}/home12c5"
+mkdir -p "$FAKE_HOME12C5" "${TMP}/found12c5"
+out12c5="$(HOME="$FAKE_HOME12C5" bash -c '
+  . "'"$LINKS_SH"'" >/dev/null 2>&1
+  links_persist_knowledge_root "'"${TMP}/found12c5"'"' 2>&1)" && rc12c5=0 || rc12c5=$?
+[ "$rc12c5" -eq 0 ] || fail "12c5: a tree with no knowledge_store.sh must not fail the install (exit=${rc12c5}); output: ${out12c5}"
+grep -q "SKIPPED" <<<"$out12c5" ||   fail "12c5: expected a SKIPPED notice when knowledge_store.sh is absent; got: ${out12c5}"
+pass "12c5: a tree with no knowledge_store.sh degrades to SKIPPED rather than failing the install"
 
 # ---- 12d. DEFAULT-FALLBACK NOTICE -----------------------------------------
 FAKE_HOME12D="${TMP}/home12d"

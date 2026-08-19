@@ -222,8 +222,22 @@ while [ "$i" -lt "$n" ]; do
 done
 echo
 
+# Two provisioning steps below write OUTSIDE the managed-path list above, so a
+# plan/consent surface that enumerates only managed paths understates what a
+# real run touches. The knowledge-root step is the one that matters: it may
+# APPEND to an operator-owned config that other tooling sources (F#1771).
+echo "-- Also, outside the managed paths above --"
+echo "  cache-store roots may be provisioned (directories only)"
+if [ -n "${KNOWLEDGE_STORE_ROOT:-}" ]; then
+  echo "  KNOWLEDGE_STORE_ROOT is set in this environment (${KNOWLEDGE_STORE_ROOT})"
+  echo "    -> a real run may APPEND it to the rung-3 machine conf, if that conf does not already set a usable root"
+else
+  echo "  KNOWLEDGE_STORE_ROOT is not set — nothing will be persisted to the machine conf"
+fi
+echo
+
 if [ "$dry_run" -eq 1 ]; then
-  echo "-- Dry run: nothing written above (zero manifest calls, zero file/symlink writes) --"
+  echo "-- Dry run: nothing written above (zero manifest calls, zero file/symlink writes, and no machine-conf append) --"
   echo
   echo "temperloop install: done (dry run)"
   exit 0
@@ -240,7 +254,10 @@ if [ "$do_yes" -eq 1 ]; then
   proceed=1
   echo "install: yes (--yes)"
 elif [ -t 0 ]; then
-  printf 'Install the %s managed path(s) above onto this machine? [y/N] ' "$n"
+  # Names the out-of-manifest work too — the prompt is the consent surface, and
+  # a machine-conf append is the one write here that touches a file the
+  # operator hand-maintains and other tooling sources (F#1771).
+  printf 'Install the %s managed path(s) above, plus the out-of-manifest steps listed, onto this machine? [y/N] ' "$n"
   ans=""
   read -r ans || ans=""
   case "$ans" in

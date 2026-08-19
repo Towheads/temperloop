@@ -413,9 +413,22 @@ links_persist_knowledge_root() {
     _ks_machine_conf_root 2>/dev/null
   )"
 
+  # An unparseable ks_lib leaves KNOWLEDGE_STORE_MACHINE_CONF unset under
+  # `set +u`, so conf="" flows on: `dirname ""` is `.`, `mkdir -p .` SUCCEEDS,
+  # and the run dies at `>""` reporting a permissions problem for an empty
+  # path — a wrong diagnosis that costs the operator a wasted hunt.
+  if [ -z "$conf" ]; then
+    echo "  SKIPPED (could not resolve KNOWLEDGE_STORE_MACHINE_CONF from ${ks_lib})"
+    return 0
+  fi
+
   # ---- 1. Never clobber ---------------------------------------------------
   if [ -n "$conf_root" ]; then
-    echo "  = knowledge-store root already persisted (provenance: machine-conf): ${conf_root}"
+    # "conf provenance", not "provenance": with KNOWLEDGE_STORE_ROOT exported
+    # doctor's ordered discriminator reports `env` for the RESOLVED root, so an
+    # unqualified `provenance: machine-conf` here would contradict it. This
+    # line reports where the CONF stands; the NOTE below covers divergence.
+    echo "  = knowledge-store root already persisted (conf provenance: machine-conf): ${conf_root}"
     echo "    conf: ${conf} (left untouched)"
     if [ -n "${KNOWLEDGE_STORE_ROOT:-}" ] && [ "${KNOWLEDGE_STORE_ROOT}" != "$conf_root" ]; then
       echo "  NOTE: KNOWLEDGE_STORE_ROOT is set in this environment to ${KNOWLEDGE_STORE_ROOT}, which DIFFERS from the persisted root above. The conf wins for every process that does not inherit that export; nothing was rewritten (never clobber). Reconcile by hand if the env value is the one you meant to keep."
@@ -435,7 +448,37 @@ links_persist_knowledge_root() {
         ;;
     esac
 
-    if [ -f "$conf" ] && grep -q 'KNOWLEDGE_STORE_ROOT' "$conf" 2>/dev/null; then
+    # The persisted line is `: "${KNOWLEDGE_STORE_ROOT:=<root>}"` — the value
+    # sits inside DOUBLE quotes, so a `$`, a backtick or a backslash in the
+    # path is not data when the conf is re-sourced: it EXPANDS. A root of
+    # `/tmp/store$HOME-literal` persists verbatim and then resolves to
+    # `/tmp/store/Users/you/home-literal` — a conf that READS correct while
+    # every consumer silently uses a different directory. That is the exact
+    # silent-wrong-root class this whole issue exists to close, reintroduced
+    # by the fix for it. (Measured: the round-trip returned the expanded path.)
+    #
+    # Refuse rather than escape, matching the relative-path branch above. A
+    # single-quoted assignment would carry these safely but would depart from
+    # the `:=` idiom every other line in this conf uses, and a shell
+    # metacharacter in a knowledge-store path is pathological enough that
+    # saying so plainly beats quietly rewriting the operator's path.
+    # NOTE the newline arm uses $'\n' — a `$(printf '\n')` here would be an
+    # EMPTY string (command substitution strips trailing newlines), collapsing
+    # the pattern to `**` and refusing every path. Measured: it rejected a
+    # perfectly ordinary /var/folders/... root.
+    local _nl=$'\n'
+    case "$env_root" in
+      *'$'*|*'`'*|*\\*|*'"'*|*"$_nl"*)
+        echo "  ! knowledge-store root NOT persisted: KNOWLEDGE_STORE_ROOT contains a character that is not safe to embed in a sourced conf line (one of \" \$ \` \\ or a newline) — ${env_root}" >&2
+        echo "    The persisted form quotes the value, so that character would EXPAND when the conf is re-sourced and every consumer would silently resolve a DIFFERENT directory than the one you set. Use a path without them." >&2
+        return 0
+        ;;
+    esac
+
+    # Skip COMMENT lines: an unanchored whole-file match fires on
+    # `# TODO: set KNOWLEDGE_STORE_ROOT here`, and the remedy below then sends
+    # the operator hunting for a broken assignment that does not exist.
+    if [ -f "$conf" ] && grep -v '^[[:space:]]*#' "$conf" 2>/dev/null | grep 'KNOWLEDGE_STORE_ROOT' >/dev/null; then
       echo "  ! knowledge-store root NOT persisted (provenance: conf-present-but-unusable): ${conf} already mentions KNOWLEDGE_STORE_ROOT, but it does not resolve to a usable absolute path." >&2
       echo "    Appending another line would be dead text (the var is already bound) and rewriting yours would be a clobber — fix that line by hand so it reads an absolute path." >&2
       return 0
@@ -473,8 +516,30 @@ links_persist_knowledge_root() {
       echo "  ! could not append to the machine conf: ${conf} (permissions?)" >&2
       return 1
     fi
+    # VERIFY, do not claim. The dead-text guard above is textual, so it cannot
+    # see any reason the appended line might not EXECUTE — a conf that ends in
+    # `return 0`, an early-return guard, a conditional block, or an included
+    # sub-file all leave the append inert while the grep finds nothing. Without
+    # this re-probe the function prints "persisted" over a root that still
+    # resolves to the default fallback: the same silent-success shape this
+    # whole issue exists to close, one layer up. Re-ask the exact question a
+    # bare consumer asks, and gate the success line on the answer.
+    local verified
+    verified="$(
+      set +eu
+      unset KNOWLEDGE_STORE_ROOT
+      # shellcheck source=/dev/null
+      . "$ks_lib" >/dev/null 2>&1
+      _ks_machine_conf_root 2>/dev/null
+    )"
+    if [ "$verified" != "$env_root" ]; then
+      echo "  ! appended a KNOWLEDGE_STORE_ROOT line to ${conf}, but a bare consumer still resolves '${verified:-<default fallback>}', not '${env_root}'." >&2
+      echo "    Something earlier in that conf — an early return, a conditional, an included file — stops the line taking effect, so the appended block is inert. Remove it and set the root by hand." >&2
+      return 0
+    fi
     echo "  → persisted knowledge-store root into the rung-3 machine conf: ${env_root}"
     echo "    conf: ${conf}"
+    echo "    Verified: a bare consumer (no build.config.sh in the chain) now resolves it."
     echo "    It was only an environment variable before this; every consumer that never sources build.config.sh (a hook, a launchd agent) now resolves it too."
     return 0
   fi
