@@ -120,22 +120,53 @@ if ! declare -F ks_write >/dev/null 2>&1; then
   exit 0
 fi
 
-# The store's own root, resolved only to EXCLUDE it from the stub search — a
-# .mind/ directory that happens to sit inside the store must never be drained
-# back into the store. No content I/O uses this value; every write goes
-# through ks_write's own doc-id resolution. (Under the obsidian backend the
-# vault root is likewise where KNOWLEDGE_STORE_OBSIDIAN_API_KEY_FILE's own
-# default plants the plugin data file, so this still names the right tree.)
-STORE_ROOT=""
+# The store's own root(s), resolved only to EXCLUDE them from the stub search
+# — a .mind/ directory that happens to sit inside the store must never be
+# drained back into the store. No content I/O uses these values; every write
+# goes through ks_write's own doc-id resolution.
+#
+# TWO roots are pruned, not one, and both are best-effort. ks_root() is the
+# plain-files root; under the obsidian backend that value is documented as
+# meaningless (knowledge_store_obsidian.sh: "the vault IS the root"), and the
+# vault is instead the tree KNOWLEDGE_STORE_OBSIDIAN_API_KEY_FILE points into
+# — operator-overridable, so it does NOT necessarily agree with ks_root(). An
+# operator who overrides the key-file path while leaving KNOWLEDGE_STORE_ROOT
+# at its default would otherwise leave the real vault unpruned and have its
+# own .mind/*.md drained out of it and deleted. Pruning both is two cheap
+# -path terms and costs nothing when they coincide or when either is empty.
+STORE_ROOTS=()
+
+# Trailing slashes MUST be stripped: find -path compares against the walked
+# path, which never carries one, and treats its operand as a glob — so a root
+# set as '/path/' matches nothing, -prune silently falls through, and the
+# store drains into itself. ks_root prints KNOWLEDGE_STORE_ROOT verbatim and
+# strips nothing, so an operator-set trailing slash reaches here intact.
+_add_store_root() {
+  local root="${1%/}"
+  [ -n "$root" ] || return 0
+  local seen
+  for seen in ${STORE_ROOTS[0]+"${STORE_ROOTS[@]}"}; do
+    [ "$seen" = "$root" ] && return 0
+  done
+  STORE_ROOTS+=("$root")
+}
+
 if declare -F ks_root >/dev/null 2>&1; then
-  STORE_ROOT="$(ks_root 2>/dev/null)" || STORE_ROOT=""
+  _add_store_root "$(ks_root 2>/dev/null || true)"
+fi
+
+# The obsidian vault root, derived by stripping the plugin-data suffix that
+# KNOWLEDGE_STORE_OBSIDIAN_API_KEY_FILE's own default plants inside the vault.
+_key_file="${KNOWLEDGE_STORE_OBSIDIAN_API_KEY_FILE:-}"
+if [ -n "$_key_file" ]; then
+  _add_store_root "${_key_file%/.obsidian/plugins/obsidian-local-rest-api/data.json}"
 fi
 
 # Find stubs across dev roots, excluding the store itself.
 FIND_ARGS=("$HOME/dev" "$HOME/Cursor")
-if [ -n "$STORE_ROOT" ]; then
-  FIND_ARGS+=(-path "$STORE_ROOT" -prune -o)
-fi
+for _root in ${STORE_ROOTS[0]+"${STORE_ROOTS[@]}"}; do
+  FIND_ARGS+=(-path "$_root" -prune -o)
+done
 FIND_ARGS+=(-type f -path '*/.mind/*.md' -print)
 STUBS=$(find "${FIND_ARGS[@]}" 2>/dev/null)
 

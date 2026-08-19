@@ -57,9 +57,12 @@ make_fixture() {
   chmod +x "$dir/claude/hooks/"*.sh
 }
 
-# run_hook <fixture-dir> <sandbox-home> <store-root> -> stdout on fd1
+# run_hook <fixture-dir> <sandbox-home> <store-root> [obsidian-key-file]
+#   -> stdout on fd1. The 4th arg is optional and sets
+#   KNOWLEDGE_STORE_OBSIDIAN_API_KEY_FILE; when omitted it is pinned EMPTY so
+#   no operator value can leak into a case that does not opt in.
 run_hook() {
-  local dir="$1" home="$2" root="$3"
+  local dir="$1" home="$2" root="$3" key_file="${4:-}"
   printf '{"session_id":"deadbeef-1111-2222-3333-444455556666"}' \
     | env HOME="$home" \
           XDG_STATE_HOME="$home/.state" \
@@ -67,6 +70,7 @@ run_hook() {
           XDG_DATA_HOME="$home/.data" \
           KS_LIB_DIR= \
           KNOWLEDGE_STORE_ROOT="$root" \
+          KNOWLEDGE_STORE_OBSIDIAN_API_KEY_FILE="$key_file" \
       bash "$dir/claude/hooks/session-start-drain.sh" 2>"$TMP/stderr.last"
 }
 
@@ -146,6 +150,54 @@ if ! grep -qE '^[^#]*\bcurl\b' "$HOOK_SRC" \
   ok "hook carries no raw curl call and no Obsidian /vault/ endpoint of its own"
 else
   bad "hook still contains a raw curl / REST endpoint: $(grep -nE '^[^#]*(\bcurl\b|/vault/)' "$HOOK_SRC")"
+fi
+
+# ---------------------------------------------------------------------------
+# 6. Store-root prune survives a TRAILING SLASH on KNOWLEDGE_STORE_ROOT.
+#    find -path compares against the walked path (never trailing-slashed) and
+#    treats its operand as a glob, so an unstripped '/root/' silently matches
+#    nothing and the store drains into itself. ks_root prints the operator's
+#    value verbatim, so the strip has to happen in the hook.
+# ---------------------------------------------------------------------------
+FIX4="$TMP/fixture4"; make_fixture "$FIX4"
+HOME4="$TMP/home4"; ROOT4="$HOME4/dev/store-vault-slash"
+mkdir -p "$ROOT4/.mind" "$HOME4/dev/demo/.mind"
+printf 'inside the store\n' > "$ROOT4/.mind/inside.md"
+printf '%s' "$STUB_BODY" > "$HOME4/dev/demo/.mind/$STUB_NAME"
+
+run_hook "$FIX4" "$HOME4" "$ROOT4/" >/dev/null; rc=$?
+
+if [ "$rc" -eq 0 ] && [ -f "$ROOT4/.mind/inside.md" ] \
+   && [ ! -e "$ROOT4/Sessions/_inbox/inside.md" ] \
+   && [ -f "$ROOT4/Sessions/_inbox/$STUB_NAME" ]; then
+  ok "a trailing slash on KNOWLEDGE_STORE_ROOT still prunes the store (root normalised before find -path)"
+else
+  bad "trailing-slash store root not pruned (rc=$rc, inside-kept=$([ -f "$ROOT4/.mind/inside.md" ] && echo yes || echo no), inside-drained=$([ -e "$ROOT4/Sessions/_inbox/inside.md" ] && echo yes || echo no), outside-drained=$([ -f "$ROOT4/Sessions/_inbox/$STUB_NAME" ] && echo yes || echo no))"
+fi
+
+# ---------------------------------------------------------------------------
+# 7. The obsidian vault root is pruned TOO, even when it disagrees with
+#    ks_root(). An operator who overrides KNOWLEDGE_STORE_OBSIDIAN_API_KEY_FILE
+#    while leaving KNOWLEDGE_STORE_ROOT at an unrelated value would otherwise
+#    have the real vault's own .mind/*.md drained out of it and deleted.
+# ---------------------------------------------------------------------------
+FIX5="$TMP/fixture5"; make_fixture "$FIX5"
+HOME5="$TMP/home5"; ROOT5="$TMP/store5"           # plain-files root: elsewhere
+VAULT5="$HOME5/dev/real-vault"                    # the vault the key file names
+KEY5="$VAULT5/.obsidian/plugins/obsidian-local-rest-api/data.json"
+mkdir -p "$VAULT5/.mind" "$(dirname "$KEY5")" "$HOME5/dev/demo/.mind"
+printf '{"apiKey":"x"}\n' > "$KEY5"
+printf 'inside the vault\n' > "$VAULT5/.mind/inside.md"
+printf '%s' "$STUB_BODY" > "$HOME5/dev/demo/.mind/$STUB_NAME"
+
+run_hook "$FIX5" "$HOME5" "$ROOT5" "$KEY5" >/dev/null; rc=$?
+
+if [ "$rc" -eq 0 ] && [ -f "$VAULT5/.mind/inside.md" ] \
+   && [ ! -e "$ROOT5/Sessions/_inbox/inside.md" ] \
+   && [ -f "$ROOT5/Sessions/_inbox/$STUB_NAME" ]; then
+  ok "the obsidian key-file's vault root is pruned even when it differs from ks_root()"
+else
+  bad "obsidian vault root not pruned (rc=$rc, vault-stub-kept=$([ -f "$VAULT5/.mind/inside.md" ] && echo yes || echo no), vault-stub-drained=$([ -e "$ROOT5/Sessions/_inbox/inside.md" ] && echo yes || echo no), outside-drained=$([ -f "$ROOT5/Sessions/_inbox/$STUB_NAME" ] && echo yes || echo no))"
 fi
 
 echo
