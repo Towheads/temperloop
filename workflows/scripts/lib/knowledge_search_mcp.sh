@@ -5,8 +5,8 @@
 #
 # Talks to a persistent, externally-supervised `basic-memory mcp`
 # streamable-http daemon (launchd / systemd / any process supervisor — this
-# library never launches it) instead of spawning a fresh `uvx basic-memory`
-# CLI per query. A warm daemon pays basic-memory's ~2s app/DB/embedding-model
+# library never launches it) instead of spawning a fresh basic-memory
+# CLI subprocess per query. A warm daemon pays basic-memory's ~2s app/DB/embedding-model
 # startup ONCE at load; each search is then a plain HTTP round-trip to an
 # in-process handler — measured ~0.2s per fresh call (full initialize + search
 # cycle) vs several seconds for the cold CLI path. The cold "basic-memory"
@@ -25,8 +25,8 @@
 #
 # ── Fail-open ─────────────────────────────────────────────────────────────
 # If the daemon is unreachable / errors / returns an unparseable body, this
-# backend DELEGATES to the cold "basic-memory" backend (a fresh uvx CLI
-# subprocess). A slow answer, never a silent empty result — the adapter's
+# backend DELEGATES to the cold "basic-memory" backend (a fresh subprocess
+# against the adapter's uv-tool-installed basic-memory entry point). A slow answer, never a silent empty result — the adapter's
 # legible-degradation posture (knowledge_search.sh exit-code contract) is
 # preserved.
 #
@@ -42,7 +42,7 @@
 # ── AGPL boundary ─────────────────────────────────────────────────────────
 # basic-memory (AGPL-3.0) is reached ONLY as a separate process over the MCP
 # protocol (HTTP + JSON-RPC) — never imported or vendored, exactly as the cold
-# backend reaches it via `uvx`. This file itself NEVER runs `basic-memory mcp`
+# backend reaches it as an installed CLI. This file itself NEVER runs `basic-memory mcp`
 # (it is an HTTP *client* of an already-running daemon); starting the daemon is
 # the supervisor's job, out of this repo's tree. So the adapter stays
 # CLI-only-plus-HTTP-client and test_knowledge_search_agpl_boundary.sh's "no
@@ -196,12 +196,19 @@ _ks_bm_mcp_open_session() {
 
 # available: warm daemon reachable OR the cold backend's tooling is present.
 # Never worse than the cold backend — a down daemon still reports available
-# when uvx is on PATH, because search will fail open to the cold path.
+# when the cold path can run, because search will fail open to it.
+#
+# Argument passthrough (temperloop#1113): the cold gate now accepts `--quiet`
+# (suppressing only its "skipped —" notice) AND lazily installs the pinned
+# uv tool when it is absent, so this delegation must forward "$@" rather than
+# swallow it — otherwise ks_search's own quiet read-log probe would print the
+# cold notice through the warm backend. The daemon probe runs FIRST, so a
+# healthy warm daemon never triggers the cold path's install.
 _ks_search_backend_basic_memory_mcp_available() {
   if _ks_bm_mcp_open_session >/dev/null 2>&1; then
     return 0
   fi
-  _ks_search_backend_basic_memory_available
+  _ks_search_backend_basic_memory_available "$@"
 }
 
 # search <query> [--limit N] -> JSONL on stdout, SAME shape as the cold

@@ -337,6 +337,12 @@ knowledge-store workflows/scripts/lib/tests/test_issue_marker_probe.sh
 # machinery generally — same exact-path carve-out style as
 # review-agents' test_doctor_reviewer_coverage.sh claim below.
 knowledge-store workflows/scripts/tests/test_doctor_knowledge_root.sh
+# Same carve-out, same reason (temperloop#1113): doctor's
+# check_bm_tool_install() is install/doctor MACHINERY by path, but its
+# subject matter is this feature's search-backend install seam — the
+# doctor half of the hybrid uv-tool install design whose other half lives
+# in workflows/scripts/lib/knowledge_search.sh.
+knowledge-store workflows/scripts/tests/test_doctor_bm_tool.sh
 
 # ── command-declared — slash-command availability probe (ADR 0008) ──────────
 # The command-side peer of the subagent capability-probe: `command_declared

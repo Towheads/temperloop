@@ -2,10 +2,20 @@
 #
 # AGPL boundary lint (foundation #776, Epic A #762): the knowledge_search
 # basic-memory backend must talk to basic-memory (AGPL-3.0) ONLY as an
-# external CLI subprocess (`uvx --from basic-memory==<pin> basic-memory ...`)
-# — never a vendored copy of its source, never a Python import, never a bare
-# invocation of the `basic-memory` binary that bypasses the pinned `uvx`
-# wrapper. This repo holds no AGPL-3.0 code and must not start now.
+# external CLI subprocess — never a vendored copy of its source, never a
+# Python import, never a bare invocation of the `basic-memory` binary that
+# bypasses the adapter's own pinned wrapper. This repo holds no AGPL-3.0 code
+# and must not start now.
+#
+# THE WRAPPER CHANGED SHAPE IN temperloop#1113, the boundary did not. The
+# adapter used to resolve the pin per run (`uvx --from basic-memory==<pin>
+# basic-memory ...`); it now installs that same pin as a uv tool into its own
+# isolated home and invokes the installed entry point BY ABSOLUTE PATH
+# (`_ks_bm_run`). Both are "spawn it as a subprocess and read its stdout" —
+# no source vendored, no package imported, no dependency manifest declaring
+# it. What check 3 below still forbids is unchanged and is the part that
+# matters: a `basic-memory` in COMMAND POSITION, which would resolve through
+# PATH to some unpinned install outside the boundary.
 #
 # Greps the tracked-or-would-be-tracked tree: `git ls-files --cached
 # --others --exclude-standard` and `git grep --untracked` so a change that
@@ -35,30 +45,34 @@ imports="$(git grep --untracked -nE '(^|[^.[:alnum:]_])(import[[:space:]]+basic_
 [ -z "$imports" ] || fail "a Python import of basic_memory was found (must stay a CLI subprocess): $imports"
 echo "PASS: 2 no Python import of basic_memory anywhere in the tree"
 
-# --- 3. `basic-memory` is never invoked as a COMMAND outside the uvx wrapper -
+# --- 3. `basic-memory` is never invoked as a bare COMMAND WORD --------------
 #        Distinguishes "basic-memory" as a *command word* (start of a shell
 #        command: line start, or right after `;`/`&`/`|`/`$(`) from every
 #        other mention of the string (doc prose, `.basic-memory` config-dir
 #        paths, log/error messages, env-var names/defaults) -- those are all
 #        fine and expected throughout the adapter and its tests/docs. Only a
-#        line where "basic-memory" sits in command position AND does not
-#        also carry "uvx" is a real boundary violation (a bypass of the
-#        pinned subprocess wrapper).
+#        line where "basic-memory" sits in command position is a real
+#        boundary violation: the adapter invokes its installed entry point
+#        through a PATH-INDEPENDENT variable ("$bm_bin"), so a bare
+#        `basic-memory ...` can only mean a PATH lookup that escapes the
+#        pinned install. Lines that carry `uvx`/`uv tool` are exempted so the
+#        historical-note prose and the fixture stubs that mention the old
+#        wrapper do not trip the lint.
 invocations="$(git grep --untracked -nE '(^|[;&|]|\$\()[[:space:]]*basic-memory[[:space:]]' -- '*.sh' 2>/dev/null | grep -v "^${THIS_TEST_REL}:" || true)"
 bad=""
 while IFS= read -r hit; do
   [ -n "$hit" ] || continue
   case "$hit" in
-    *uvx*) continue ;;
+    *uvx*|*"uv tool"*) continue ;;
   esac
   bad="${bad}${bad:+$'\n'}${hit}"
 done <<<"$invocations"
-[ -z "$bad" ] || fail "found 'basic-memory' invoked as a command outside the uvx subprocess wrapper: $bad"
-echo "PASS: 3 every command-position invocation of basic-memory goes through the uvx subprocess boundary"
+[ -z "$bad" ] || fail "found 'basic-memory' invoked as a bare command word, bypassing the adapter's pinned installed entry point: $bad"
+echo "PASS: 3 no shell line invokes basic-memory as a bare command word (every call goes through the adapter's pinned entry point)"
 
 # --- 4. the adapter never runs the mcp subcommand (sidesteps upstream #1017) -
 mcp_calls="$(git grep --untracked -nE 'basic-memory[^|&;]* mcp( |$)' -- '*.sh' 2>/dev/null | grep -v "^${THIS_TEST_REL}:" || true)"
 [ -z "$mcp_calls" ] || fail "found a 'basic-memory ... mcp' invocation in tracked source (adapter must be CLI-only, never the MCP server): $mcp_calls"
 echo "PASS: 4 no tracked shell script invokes 'basic-memory mcp'"
 
-echo "ALL PASS: AGPL boundary held -- basic-memory is referenced only in docs/tests and invoked only through the pinned uvx subprocess"
+echo "ALL PASS: AGPL boundary held -- basic-memory is referenced only in docs/tests and invoked only as a pinned external subprocess"

@@ -832,11 +832,20 @@ The adapter's required posture, every point implemented in
    #1017). Every call is `basic-memory tool ...` / `basic-memory project
    ...` / `basic-memory reindex ...` — CLI-only, JSON-shaped stdout parsed
    by `jq`.
-5. **`auto_update: false`**; the version is pinned in every invocation via
-   `uvx --from basic-memory==0.22.1 basic-memory ...`
-   (`KNOWLEDGE_SEARCH_BM_VERSION`, default `0.22.1`). Upgrading the pin is
-   a deliberate adapter change, not silent drift. The **interpreter is
-   pinned too** (`uvx --python <ver>`, `KNOWLEDGE_SEARCH_BM_PYTHON`, default
+5. **`auto_update: false`**; the version is pinned by INSTALLING it as a uv
+   tool — `uv tool install --python <ver> basic-memory==0.22.1`
+   (`KNOWLEDGE_SEARCH_BM_VERSION`, default `0.22.1`) — and invoking the
+   installed entry point, rather than resolving `uvx --from
+   basic-memory==<pin>` on every call (temperloop#1113: `uvx` has no
+   permanent install location, so uv unpacked a live environment into its
+   cache per resolution with nothing expiring them — 30 GB against a 273 MB
+   store, and unprunable for as long as a warm daemon held the cache lock).
+   The installed pin's identity (version **and** interpreter) is stamped
+   beside the entry point and re-checked on every call, so **changing either
+   pin re-installs** rather than silently continuing to run the old build.
+   Upgrading the pin is a deliberate adapter change, not silent drift. The
+   **interpreter is pinned too** (`--python <ver>`,
+   `KNOWLEDGE_SEARCH_BM_PYTHON`, default
    `3.13`): the version pin alone still let uv resolve the host's newest
    CPython, and a resolution onto a version some dependency ships no
    prebuilt wheel for triggers a from-source native build that can fail on
@@ -847,7 +856,12 @@ The adapter's required posture, every point implemented in
    (`KNOWLEDGE_SEARCH_BM_HOME`, default
    `${XDG_STATE_HOME:-$HOME/.local/state}/foundation/basic-memory-home`),
    so `~/.basic-memory/{config.json,memory.db}` under that isolated HOME is
-   adapter-owned and never touches Travis's real home directory.
+   adapter-owned and never touches Travis's real home directory. The uv tool
+   install of point 5 is pinned into the same isolated home
+   (`UV_TOOL_DIR`, `UV_TOOL_BIN_DIR`, and `HOME` all point inside it), so
+   nothing lands in the operator's `~/.local/{share,bin}` and the invocation
+   is by absolute path — a system-wide `basic-memory` can neither be picked
+   up by accident nor shadowed by the adapter's.
    `semantic_embedding_cache_dir` is pinned inside it too (confirmed live:
    the fastembed model download lands under the pinned cache dir, not the
    machine's shared HF cache).
@@ -891,10 +905,22 @@ adapter's worktree for the full transcript.
 
 ### Legible degradation
 
-When `uvx` is not on `PATH`, `ks_search`/`ks_search_reindex`/
-`ks_search_available` all return exit 3 with `skipped — knowledge_search
-unavailable: uvx not found on PATH` on stderr and **print nothing to
-stdout**. A caller that pipes `ks_search` output into further processing
+When the pinned tool cannot be made available, `ks_search`/
+`ks_search_reindex`/`ks_search_available` all return exit 3 with a message
+beginning `skipped — knowledge_search unavailable:` on stderr and **print
+nothing to stdout**. Two causes reach it: `uv` is not on `PATH`, or the
+one-time `uv tool install` of the pinned version failed (uv's own output is
+surfaced, tail-bounded, rather than swallowed).
+
+`ks_search_available` is therefore **not a pure predicate** since
+temperloop#1113: on the basic-memory backend it LAZILY INSTALLS the pin when
+it is absent, so "available" means "can answer a search", including after a
+one-time install. That is the second half of the hybrid install design —
+`workflows/scripts/install/doctor.sh` installs and reports the pin for an
+installed checkout, and this gate keeps the zero-setup first run working for
+a stranger who never runs doctor. `ks_search_available --quiet` suppresses
+only the `skipped —` notice (never install progress), for a caller that
+probes before dispatching and does not want the notice printed twice. A caller that pipes `ks_search` output into further processing
 without checking the exit code would see an empty stream either way (zero
 matches vs. unavailable) — checking the exit code is required to
 distinguish them; this is why the contract calls out exit 3 as a distinct,
@@ -904,16 +930,16 @@ documented code rather than folding it into the zero-results case.
 
 basic-memory is AGPL-3.0. This repo holds no AGPL-3.0 code and must not —
 so the adapter's only contact with basic-memory is spawning it as a
-subprocess (`uvx --from basic-memory==<pin> basic-memory ...`) and reading
-its stdout. No basic-memory source is vendored, no Python import of
-`basic_memory` exists anywhere in this repo, and no build/dependency
-manifest here declares it as a package dependency (it is fetched
-on-demand, per-invocation, by `uvx` — never installed into this repo's own
-environment). `workflows/scripts/lib/tests/test_knowledge_search_agpl_boundary.sh`
+subprocess and reading its stdout. No basic-memory source is vendored, no
+Python import of `basic_memory` exists anywhere in this repo, and no
+build/dependency manifest here declares it as a package dependency (it is
+installed by `uv` into the adapter's own isolated home, out of tree — never
+into this repo's own environment). `workflows/scripts/lib/tests/test_knowledge_search_agpl_boundary.sh`
 enforces this mechanically: it fails if a vendored `basic-memory`/
 `basic_memory` path appears in the tracked tree, if a Python `import
-basic_memory` appears anywhere, or if any shell invocation of the
-`basic-memory` binary bypasses the `uvx` subprocess boundary.
+basic_memory` appears anywhere, or if any shell line invokes `basic-memory`
+as a bare command word (which could only mean a `PATH` lookup escaping the
+adapter's pinned, absolute-path entry point).
 
 ### Obsidian-mode note
 

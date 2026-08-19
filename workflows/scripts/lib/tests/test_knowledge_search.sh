@@ -32,36 +32,52 @@ trap 'rm -rf "$TMP"' EXIT
 
 ROOT="$TMP/store"          # the knowledge_store corpus (ks_root)
 BM_HOME="$TMP/bm-home"     # isolated basic-memory HOME (point 6)
-BIN="$TMP/bin"             # fake-uvx PATH dir
-FAKE_UVX_LOG="$TMP/uvx-calls.log"
+BIN="$TMP/bin"             # fake-`uv` PATH dir
+FAKE_BM_LOG="$TMP/bm-calls.log"   # every call to the INSTALLED basic-memory shim
+FAKE_UV_LOG="$TMP/uv-calls.log"   # every call to `uv` itself (i.e. tool installs)
+FAKE_BM_TEMPLATE="$TMP/basic-memory.template"
+# Where the adapter installs its uv tool, derived from BM_HOME exactly as
+# knowledge_search.sh's own _ks_bm_tool_bin_dir/_ks_bm_bin_path do. Asserted
+# rather than assumed: case 18a below proves the adapter really writes here.
+TOOL_BIN_DIR="$BM_HOME/uv-tool-bin"
+BM_BIN="$TOOL_BIN_DIR/basic-memory"
+PIN_STAMP="$TOOL_BIN_DIR/.ks-installed-pin"
 mkdir -p "$ROOT" "$BIN"
 
-# ── the fake `uvx` fixture ───────────────────────────────────────────────
-# Mimics `uvx --from basic-memory==<ver> basic-memory <subcmd> ...` closely
-# enough to drive knowledge_search.sh's dispatch/posture/parsing logic
-# without ever touching the network or a real embedding model. Logs every
-# invocation's argv + the HOME/BASIC_MEMORY_DISABLE_PERMALINKS env it saw,
-# so the test can assert posture (points 1 and 6) after the fact.
-# FAKE_UVX_MODE selects canned behavior for `tool search-notes`:
+# -- the fake basic-memory ENTRY POINT (temperloop#1113) -------------------
+# Written to disk as a TEMPLATE, not directly onto PATH: since #1113 the
+# adapter no longer resolves `uvx --from basic-memory==<ver>` per run -- it
+# installs the pin once as a uv tool and invokes the installed entry point by
+# absolute path. So the fake `uv` below is what materialises this template
+# into $UV_TOOL_BIN_DIR/basic-memory, exactly as a real `uv tool install`
+# would, and NOTHING named `basic-memory` is ever placed on PATH.
+#
+# The template is stamped with the spec/interpreter that installed it
+# (@SPEC@/@PY@), which is what lets case 18c prove a PIN CHANGE re-installed
+# rather than silently keeping the old build alive -- the sharpest regression
+# risk of moving off per-run resolution.
+#
+# Logs every invocation's argv + the resolved $0 + the
+# HOME/BASIC_MEMORY_DISABLE_PERMALINKS env it saw, so the test can assert
+# posture (points 1 and 6) after the fact. FAKE_BM_MODE selects canned
+# behavior for `tool search-notes`:
 #   ok (default) -> canned 2-result hybrid JSON on stdout
 #   search_fail  -> exit 1, message on stderr (subprocess-error path)
 #   bad_json     -> exit 0, non-JSON on stdout (parse-error path)
-cat > "$BIN/uvx" <<'FAKE'
+cat > "$FAKE_BM_TEMPLATE" <<'FAKE'
 #!/usr/bin/env bash
 set -euo pipefail
-: "${FAKE_UVX_LOG:?}"
+: "${FAKE_BM_LOG:?}"
+INSTALLED_SPEC='@SPEC@'
+INSTALLED_PY='@PY@'
 {
   printf 'ARGS: %s\n' "$*"
+  printf 'BIN=%s\n' "$0"
+  printf 'INSTALLED=%s python=%s\n' "$INSTALLED_SPEC" "$INSTALLED_PY"
   printf 'HOME=%s\n' "${HOME:-<unset>}"
   printf 'BASIC_MEMORY_DISABLE_PERMALINKS=%s\n' "${BASIC_MEMORY_DISABLE_PERMALINKS:-<unset>}"
-} >> "$FAKE_UVX_LOG"
+} >> "$FAKE_BM_LOG"
 
-# argv shape from _ks_bm_run: [uvx flags...] basic-memory <sub> ...
-# Consume everything up to and including the `basic-memory` command token so
-# a new uvx flag (--python, --from) never breaks the fake. (`basic-memory==<ver>`
-# is a distinct string, so the --from value never terminates the loop early.)
-while [ $# -gt 0 ] && [ "$1" != "basic-memory" ]; do shift; done
-shift || true
 sub="${1:-}"; shift || true
 
 case "$sub" in
@@ -69,34 +85,34 @@ case "$sub" in
     action="${1:-}"; shift || true
     if [ "$action" = "add" ]; then
       name="${1:-}"; path="${2:-}"
-      printf 'PROJECT_ADD name=%s path=%s\n' "$name" "$path" >> "$FAKE_UVX_LOG"
-      if [ "${FAKE_UVX_MODE:-ok}" = "project_add_fail" ]; then
+      printf 'PROJECT_ADD name=%s path=%s\n' "$name" "$path" >> "$FAKE_BM_LOG"
+      if [ "${FAKE_BM_MODE:-ok}" = "project_add_fail" ]; then
         echo "Error adding project: simulated registration failure detail" >&2
         exit 1
       fi
       # register_then_ok (#996 lazy-on-miss cold path): registration drops a
       # marker so a subsequent search-notes succeeds where the pre-register one
       # failed (project-not-found → register → retry).
-      [ "${FAKE_UVX_MODE:-ok}" = "register_then_ok" ] && : > "${FAKE_UVX_LOG}.registered"
+      [ "${FAKE_BM_MODE:-ok}" = "register_then_ok" ] && : > "${FAKE_BM_LOG}.registered"
       echo "Project '$name' added successfully"
       exit 0
     fi
     ;;
   reindex)
-    printf 'REINDEX args=%s\n' "$*" >> "$FAKE_UVX_LOG"
+    printf 'REINDEX args=%s\n' "$*" >> "$FAKE_BM_LOG"
     echo "Reindex complete!"
     exit 0
     ;;
   tool)
     if [ "${1:-}" = "search-notes" ]; then
       shift
-      printf 'SEARCH args=%s\n' "$*" >> "$FAKE_UVX_LOG"
-      case "${FAKE_UVX_MODE:-ok}" in
+      printf 'SEARCH args=%s\n' "$*" >> "$FAKE_BM_LOG"
+      case "${FAKE_BM_MODE:-ok}" in
         search_fail|project_add_fail)
           # project_add_fail must also MISS the search: under #996's lazy-on-miss
           # flow, `project add` is only attempted after a search miss, so a
           # registration-failure test needs the search to fail first.
-          echo "fake-uvx: simulated backend crash / miss" >&2
+          echo "fake-bm: simulated backend crash / miss" >&2
           exit 1
           ;;
         bad_json)
@@ -134,8 +150,8 @@ JSON
         register_then_ok)
           # Fail until the project has been registered (marker present), then
           # return results — the #996 lazy-on-miss cold/reset path.
-          if [ ! -f "${FAKE_UVX_LOG}.registered" ]; then
-            echo "fake-uvx: project not registered (register_then_ok, pre-registration)" >&2
+          if [ ! -f "${FAKE_BM_LOG}.registered" ]; then
+            echo "fake-bm: project not registered (register_then_ok, pre-registration)" >&2
             exit 1
           fi
           cat <<'JSON'
@@ -153,16 +169,85 @@ JSON
     fi
     ;;
 esac
-echo "fake-uvx: unhandled invocation: $*" >&2
+echo "fake-bm: unhandled invocation: $*" >&2
 exit 9
 FAKE
+
+# -- the fake `uv` (the ONLY thing this test puts on PATH) -----------------
+# Implements exactly the one call the adapter makes: `uv tool install --force
+# --python <ver> basic-memory==<ver>`, materialising the template above into
+# $UV_TOOL_BIN_DIR. It hard-REQUIRES UV_TOOL_DIR/UV_TOOL_BIN_DIR to be set,
+# which is itself an assertion: if the adapter ever stopped pinning the tool
+# dirs into its own isolated home, this fake would fail loudly instead of
+# quietly installing into the operator's real ~/.local/bin.
+#
+# FAKE_UV_MODE selects the install outcome:
+#   ok (default) -> installs the entry point, exit 0
+#   install_fail -> exit 1 with a message on stderr (degradation path)
+#   install_noop -> exit 0 but write NO entry point (the "reported success,
+#                   produced nothing" case the adapter must still catch)
+cat > "$BIN/uv" <<'FAKEUV'
+#!/usr/bin/env bash
+set -euo pipefail
+: "${FAKE_UV_LOG:?}"
+{
+  printf 'ARGS: %s\n' "$*"
+  printf 'HOME=%s\n' "${HOME:-<unset>}"
+  printf 'UV_TOOL_DIR=%s\n' "${UV_TOOL_DIR:-<unset>}"
+  printf 'UV_TOOL_BIN_DIR=%s\n' "${UV_TOOL_BIN_DIR:-<unset>}"
+} >> "$FAKE_UV_LOG"
+
+[ "${1:-}" = "tool" ] && [ "${2:-}" = "install" ] || {
+  echo "fake-uv: unsupported invocation: $*" >&2; exit 9; }
+shift 2
+py=""; spec=""; forced=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --force)  forced=1; shift ;;
+    --python) py="${2:-}"; shift 2 ;;
+    *)        spec="$1"; shift ;;
+  esac
+done
+printf 'TOOL_INSTALL spec=%s python=%s force=%s\n' "$spec" "$py" "$forced" >> "$FAKE_UV_LOG"
+
+case "${FAKE_UV_MODE:-ok}" in
+  install_fail)
+    echo "fake-uv: simulated resolution failure for $spec" >&2
+    exit 1
+    ;;
+  install_noop)
+    exit 0
+    ;;
+esac
+
+: "${UV_TOOL_DIR:?fake-uv: UV_TOOL_DIR must be pinned by the adapter}"
+: "${UV_TOOL_BIN_DIR:?fake-uv: UV_TOOL_BIN_DIR must be pinned by the adapter}"
+: "${FAKE_BM_TEMPLATE:?}"
+mkdir -p "$UV_TOOL_DIR/basic-memory" "$UV_TOOL_BIN_DIR"
+sed -e "s|@SPEC@|$spec|g" -e "s|@PY@|$py|g" "$FAKE_BM_TEMPLATE" > "$UV_TOOL_BIN_DIR/basic-memory"
+chmod +x "$UV_TOOL_BIN_DIR/basic-memory"
+exit 0
+FAKEUV
+chmod +x "$BIN/uv"
+
+# A PATH-visible `uvx` that can only FAIL. Since #1113 nothing in the adapter
+# may reach basic-memory by per-run resolution; this tripwire turns a
+# regression back to `uvx --from ...` into a loud, named failure instead of a
+# silent (and, on a host with a real uvx, network-touching) success.
+cat > "$BIN/uvx" <<'FAKEUVX'
+#!/usr/bin/env bash
+: "${FAKE_UV_LOG:?}"
+printf 'FORBIDDEN_UVX: %s\n' "$*" >> "$FAKE_UV_LOG"
+echo "fake-uvx: the adapter must not resolve basic-memory per run (temperloop#1113)" >&2
+exit 9
+FAKEUVX
 chmod +x "$BIN/uvx"
 
 # ── shared env for every case below ─────────────────────────────────────
 export KNOWLEDGE_STORE_ROOT="$ROOT"
 export KNOWLEDGE_SEARCH_BM_HOME="$BM_HOME"
 export KNOWLEDGE_SEARCH_BM_PROJECT="test-project"
-export FAKE_UVX_LOG
+export FAKE_BM_LOG FAKE_UV_LOG FAKE_BM_TEMPLATE
 # Isolate the read-log (temperloop#229) under the throwaway tmpdir too — every
 # ks_search call below goes through ks__read_log_emit; without this override
 # it would default to the real machine's $XDG_STATE_HOME/foundation/
@@ -175,13 +260,13 @@ source "$STORE_LIB"
 source "$SEARCH_LIB"
 
 # --- 1. empty query -> exit 2, no subprocess call ----------------------------
-rm -f "$FAKE_UVX_LOG"
+rm -f "$FAKE_BM_LOG"
 set +e
 out="$(PATH="$BIN:$PATH" ks_search "" 2>&1)"
 rc=$?
 set -e
 [ "$rc" -eq 2 ] || fail "1: empty query should exit 2 (got $rc)"
-[ ! -e "$FAKE_UVX_LOG" ] || fail "1: empty query must not reach the backend subprocess"
+[ ! -e "$FAKE_BM_LOG" ] || fail "1: empty query must not reach the backend subprocess"
 echo "PASS: 1 ks_search with an empty query exits 2 without touching the backend"
 
 # --- 2. unregistered backend -> dispatch error, exit 2 ------------------------
@@ -204,13 +289,17 @@ out="$(PATH="$EMPTY_BIN" ks_search "hello" 2>/dev/null)"
 rc=$?
 err="$(PATH="$EMPTY_BIN" ks_search "hello" 2>&1 1>/dev/null)"
 set -e
-[ "$rc" -eq 3 ] || fail "3: missing uvx should exit 3 (got $rc)"
-[ -z "$out" ] || fail "3: missing uvx must print NOTHING to stdout (got: $out)"
+[ "$rc" -eq 3 ] || fail "3: missing uv should exit 3 (got $rc)"
+[ -z "$out" ] || fail "3: missing uv must print NOTHING to stdout (got: $out)"
 case "$err" in
   "skipped — knowledge_search unavailable"*) : ;;
   *) fail "3: stderr must begin with the 'skipped —' notice (got: $err)" ;;
 esac
-echo "PASS: 3 ks_search with no uvx on PATH degrades legibly (exit 3, skipped notice, empty stdout)"
+case "$err" in
+  *"uv not found on PATH"*) : ;;
+  *) fail "3: the notice must name the missing tool (got: $err)" ;;
+esac
+echo "PASS: 3 ks_search with no uv on PATH degrades legibly (exit 3, skipped notice, empty stdout)"
 
 # --- 3b. ks_search_available mirrors the same probe --------------------------
 set +e
@@ -219,14 +308,34 @@ rc=$?
 PATH="$BIN:$PATH" ks_search_available >/dev/null 2>/dev/null
 rc_ok=$?
 set -e
-[ "$rc" -eq 3 ] || fail "3b: ks_search_available should exit 3 when uvx is missing (got $rc)"
-[ "$rc_ok" -eq 0 ] || fail "3b: ks_search_available should exit 0 when uvx is present (got $rc_ok)"
+[ "$rc" -eq 3 ] || fail "3b: ks_search_available should exit 3 when uv is missing (got $rc)"
+[ "$rc_ok" -eq 0 ] || fail "3b: ks_search_available should exit 0 when uv is present (got $rc_ok)"
 echo "PASS: 3b ks_search_available exit-code probe matches ks_search's own gate (3 missing / 0 present)"
+
+# --- 3c. --quiet suppresses the notice and NOTHING ELSE (temperloop#1113) ----
+# ks_search's own read-log probe passes --quiet so the "skipped —" line isn't
+# printed twice. It must suppress exactly that line and keep the same exit
+# code -- a blanket 2>/dev/null there would also swallow install progress,
+# which is the only signal an operator gets on a cold first run.
+set +e
+err_quiet="$(PATH="$EMPTY_BIN" ks_search_available --quiet 2>&1 1>/dev/null)"
+rc_quiet=$?
+err_bogus="$(PATH="$EMPTY_BIN" ks_search_available --no-such-flag 2>&1 1>/dev/null)"
+rc_bogus=$?
+set -e
+[ "$rc_quiet" -eq 3 ] || fail "3c: --quiet must not change the exit code (got $rc_quiet)"
+[ -z "$err_quiet" ] || fail "3c: --quiet must suppress the skipped notice (got: $err_quiet)"
+[ "$rc_bogus" -eq 2 ] || fail "3c: an unrecognised available flag should exit 2 (got $rc_bogus)"
+case "$err_bogus" in
+  *"unrecognised argument"*) : ;;
+  *) fail "3c: an unrecognised available flag must say so (got: $err_bogus)" ;;
+esac
+echo "PASS: 3c ks_search_available --quiet suppresses only the notice; an unknown flag is rejected (exit 2)"
 
 # --- 4. successful hybrid search -> JSONL reshape, ranked order preserved ----
 rm -rf "$BM_HOME"
-rm -f "$FAKE_UVX_LOG" "$FAKE_UVX_LOG.registered"
-out="$(PATH="$BIN:$PATH" FAKE_UVX_MODE=ok ks_search "orchard" --limit 5)" || fail "4: ks_search should succeed"
+rm -f "$FAKE_BM_LOG" "$FAKE_BM_LOG.registered"
+out="$(PATH="$BIN:$PATH" FAKE_BM_MODE=ok ks_search "orchard" --limit 5)" || fail "4: ks_search should succeed"
 lines="$(printf '%s\n' "$out" | wc -l | tr -d ' ')"
 [ "$lines" -eq 2 ] || fail "4: expected 2 JSONL result lines (got $lines): $out"
 line1="$(printf '%s\n' "$out" | sed -n '1p')"
@@ -244,12 +353,12 @@ echo "PASS: 4 ks_search reshapes basic-memory's hybrid-search JSON into ranked J
 # --- 4b. warm path issues ONE subprocess: no per-query project add (#996) -----
 # The warm/ok path (project already registered) must NOT call `project add` —
 # the ~1.9s re-register #996 drops — and must issue exactly one search-notes.
-if grep -q '^PROJECT_ADD ' "$FAKE_UVX_LOG"; then
-  fail "4b: warm path must NOT call project add (#996); log:\n$(cat "$FAKE_UVX_LOG")"
+if grep -q '^PROJECT_ADD ' "$FAKE_BM_LOG"; then
+  fail "4b: warm path must NOT call project add (#996); log:\n$(cat "$FAKE_BM_LOG")"
 fi
-warm_search_calls="$(grep -c '^SEARCH ' "$FAKE_UVX_LOG" || true)"
+warm_search_calls="$(grep -c '^SEARCH ' "$FAKE_BM_LOG" || true)"
 [ "$warm_search_calls" -eq 1 ] \
-  || fail "4b: warm path should issue exactly ONE search-notes (got $warm_search_calls); log:\n$(cat "$FAKE_UVX_LOG")"
+  || fail "4b: warm path should issue exactly ONE search-notes (got $warm_search_calls); log:\n$(cat "$FAKE_BM_LOG")"
 echo "PASS: 4b warm path issues one subprocess — no per-query project add (#996)"
 
 # --- 4c. warm no-match: exit 0 + empty stdout, still NO re-register (#996) -----
@@ -258,16 +367,16 @@ echo "PASS: 4b warm path issues one subprocess — no per-query project add (#99
 # NOT a miss → no re-register, and the empty envelope reshapes to zero output
 # lines + exit 0 (NOT a backend error). If this ever broke, a no-match would
 # both slow to a needless register+retry AND wrongly report exit 4.
-rm -rf "$BM_HOME"; rm -f "$FAKE_UVX_LOG" "$FAKE_UVX_LOG.registered"
-out4c="$(PATH="$BIN:$PATH" FAKE_UVX_MODE=empty_results ks_search "no-such-term" --limit 5)" \
+rm -rf "$BM_HOME"; rm -f "$FAKE_BM_LOG" "$FAKE_BM_LOG.registered"
+out4c="$(PATH="$BIN:$PATH" FAKE_BM_MODE=empty_results ks_search "no-such-term" --limit 5)" \
   || fail "4c: a warm no-match must exit 0 (empty {\"results\":[]} envelope is not a failure)"
 [ -z "$out4c" ] || fail "4c: a warm no-match must print nothing to stdout (got: $out4c)"
-if grep -q '^PROJECT_ADD ' "$FAKE_UVX_LOG"; then
-  fail "4c: a warm no-match must NOT re-register (#996); log:\n$(cat "$FAKE_UVX_LOG")"
+if grep -q '^PROJECT_ADD ' "$FAKE_BM_LOG"; then
+  fail "4c: a warm no-match must NOT re-register (#996); log:\n$(cat "$FAKE_BM_LOG")"
 fi
-nomatch_search="$(grep -c '^SEARCH ' "$FAKE_UVX_LOG" || true)"
+nomatch_search="$(grep -c '^SEARCH ' "$FAKE_BM_LOG" || true)"
 [ "$nomatch_search" -eq 1 ] \
-  || fail "4c: warm no-match should issue exactly ONE search (got $nomatch_search); log:\n$(cat "$FAKE_UVX_LOG")"
+  || fail "4c: warm no-match should issue exactly ONE search (got $nomatch_search); log:\n$(cat "$FAKE_BM_LOG")"
 echo "PASS: 4c warm no-match → exit 0, empty stdout, no re-register (#996 empty-envelope contract)"
 
 # --- 5. cold/reset path: lazy register-on-miss, bound to ks_root, then retry --
@@ -276,19 +385,19 @@ echo "PASS: 4c warm no-match → exit 0, empty stdout, no re-register (#996 empt
 # registers (bound to ks_root — the corpus-root binding still holds, now on the
 # cold path) and retries the search ONCE.
 rm -rf "$BM_HOME"
-rm -f "$FAKE_UVX_LOG" "$FAKE_UVX_LOG.registered"
-out5="$(PATH="$BIN:$PATH" FAKE_UVX_MODE=register_then_ok ks_search "orchard" --limit 5)" \
+rm -f "$FAKE_BM_LOG" "$FAKE_BM_LOG.registered"
+out5="$(PATH="$BIN:$PATH" FAKE_BM_MODE=register_then_ok ks_search "orchard" --limit 5)" \
   || fail "5: cold-path ks_search should recover via register+retry"
 [ "$(printf '%s\n' "$out5" | wc -l | tr -d ' ')" -eq 2 ] \
   || fail "5: cold-path search should return 2 results after register+retry; got: $out5"
-grep -q "PROJECT_ADD name=test-project path=$ROOT\$" "$FAKE_UVX_LOG" \
-  || fail "5: cold-path register must bind project to ROOT ($ROOT); log:\n$(cat "$FAKE_UVX_LOG")"
-cold_add_calls="$(grep -c '^PROJECT_ADD ' "$FAKE_UVX_LOG" || true)"
-cold_search_calls="$(grep -c '^SEARCH ' "$FAKE_UVX_LOG" || true)"
+grep -q "PROJECT_ADD name=test-project path=$ROOT\$" "$FAKE_BM_LOG" \
+  || fail "5: cold-path register must bind project to ROOT ($ROOT); log:\n$(cat "$FAKE_BM_LOG")"
+cold_add_calls="$(grep -c '^PROJECT_ADD ' "$FAKE_BM_LOG" || true)"
+cold_search_calls="$(grep -c '^SEARCH ' "$FAKE_BM_LOG" || true)"
 [ "$cold_add_calls" -eq 1 ] \
-  || fail "5: cold path should register exactly once (got $cold_add_calls); log:\n$(cat "$FAKE_UVX_LOG")"
+  || fail "5: cold path should register exactly once (got $cold_add_calls); log:\n$(cat "$FAKE_BM_LOG")"
 [ "$cold_search_calls" -eq 2 ] \
-  || fail "5: cold path should search twice — miss then retry (got $cold_search_calls); log:\n$(cat "$FAKE_UVX_LOG")"
+  || fail "5: cold path should search twice — miss then retry (got $cold_search_calls); log:\n$(cat "$FAKE_BM_LOG")"
 echo "PASS: 5 cold/reset path lazily registers (bound to ks_root) and retries the search once (#996)"
 
 # --- 6. posture assembly: config.json carries every no-mutation key ----------
@@ -552,26 +661,49 @@ assert_full_posture "6j" "$CONFIG"
 echo "PASS: 6j a non-object config (garbage/empty/whitespace/array/string/number) warns UNVERIFIED, is left byte-identical, and never fails the search"
 
 # --- 7. env belt-and-suspenders (point 1) + isolated HOME (point 6) reach the subprocess -
-grep -q "BASIC_MEMORY_DISABLE_PERMALINKS=true" "$FAKE_UVX_LOG" \
+grep -q "BASIC_MEMORY_DISABLE_PERMALINKS=true" "$FAKE_BM_LOG" \
   || fail "7: subprocess never saw BASIC_MEMORY_DISABLE_PERMALINKS=true"
-grep -q "HOME=$BM_HOME\$" "$FAKE_UVX_LOG" \
+grep -q "HOME=$BM_HOME\$" "$FAKE_BM_LOG" \
   || fail "7: subprocess HOME was not pinned to the isolated basic-memory home ($BM_HOME)"
 echo "PASS: 7 the subprocess env carries the belt-and-suspenders disable-permalinks flag and the isolated HOME"
 
 # --- 8. never invokes the mcp subcommand (point 4) ---------------------------
-! grep -qE '^ARGS:.* mcp( |$)' "$FAKE_UVX_LOG" || fail "8: found a 'basic-memory mcp' invocation -- adapter must be CLI-only"
+! grep -qE '^ARGS:.* mcp( |$)' "$FAKE_BM_LOG" || fail "8: found a 'basic-memory mcp' invocation -- adapter must be CLI-only"
 echo "PASS: 8 no call in this test run ever invoked 'basic-memory mcp' (sidesteps upstream #1017)"
 
-# --- 9. version + interpreter pins reach every invocation (point 5) -----------
-total_calls="$(grep -c '^ARGS:' "$FAKE_UVX_LOG")"
-pinned_calls="$(grep -c "^ARGS: --python $KNOWLEDGE_SEARCH_BM_PYTHON --from basic-memory==0.22.1 basic-memory" "$FAKE_UVX_LOG")"
+# --- 9. every invocation runs the PINNED, INSTALLED entry point (point 5) ----
+# Since temperloop#1113 the pins are asserted at INSTALL time rather than
+# re-passed per run, so the per-call assertion moves with them: every call
+# must be the adapter's own installed shim (absolute path under the isolated
+# home, never a PATH lookup), and that shim must be the one the configured
+# pins installed.
+total_calls="$(grep -c '^ARGS:' "$FAKE_BM_LOG")"
 [ "$total_calls" -gt 0 ] || fail "9: expected at least one subprocess call in the log"
-[ "$total_calls" -eq "$pinned_calls" ] || fail "9: not every call carried both pins (total=$total_calls pinned=$pinned_calls; expected --python $KNOWLEDGE_SEARCH_BM_PYTHON --from basic-memory==0.22.1)"
-echo "PASS: 9 every subprocess invocation carries the version pin AND the interpreter pin (point 5 + K#368)"
+bin_calls="$(grep -c "^BIN=$BM_BIN\$" "$FAKE_BM_LOG" || true)"
+[ "$total_calls" -eq "$bin_calls" ] \
+  || fail "9: not every call ran the installed entry point at $BM_BIN (total=$total_calls installed=$bin_calls)"
+pinned_calls="$(grep -c "^INSTALLED=basic-memory==$KNOWLEDGE_SEARCH_BM_VERSION python=$KNOWLEDGE_SEARCH_BM_PYTHON\$" "$FAKE_BM_LOG" || true)"
+[ "$total_calls" -eq "$pinned_calls" ] \
+  || fail "9: not every call ran a shim installed at both pins (total=$total_calls pinned=$pinned_calls; expected basic-memory==$KNOWLEDGE_SEARCH_BM_VERSION python=$KNOWLEDGE_SEARCH_BM_PYTHON)"
+echo "PASS: 9 every subprocess invocation runs the installed entry point built from the version AND interpreter pins (point 5 + K#368)"
+
+# --- 9b. per-run resolution is GONE (temperloop#1113) ------------------------
+# The whole point of the switch: uv's cache must hold no live environment for
+# basic-memory, which is only true if nothing resolves it per run. The `uvx`
+# tripwire on PATH logs any such attempt.
+! grep -q '^FORBIDDEN_UVX' "$FAKE_UV_LOG" \
+  || fail "9b: something resolved basic-memory through uvx (log:\n$(grep '^FORBIDDEN_UVX' "$FAKE_UV_LOG"))"
+grep -q "^UV_TOOL_DIR=$BM_HOME/" "$FAKE_UV_LOG" \
+  || fail "9b: uv tool install did not pin UV_TOOL_DIR inside the isolated home (log:\n$(cat "$FAKE_UV_LOG"))"
+grep -q "^UV_TOOL_BIN_DIR=$TOOL_BIN_DIR\$" "$FAKE_UV_LOG" \
+  || fail "9b: uv tool install did not pin UV_TOOL_BIN_DIR to $TOOL_BIN_DIR (log:\n$(cat "$FAKE_UV_LOG"))"
+grep -q "^HOME=$BM_HOME\$" "$FAKE_UV_LOG" \
+  || fail "9b: uv tool install did not run under the isolated HOME ($BM_HOME)"
+echo "PASS: 9b nothing resolves basic-memory per run; the install is pinned entirely inside the adapter's isolated home"
 
 # --- 10. backend error: subprocess exits non-zero -> exit 4 -------------------
 set +e
-out="$(PATH="$BIN:$PATH" FAKE_UVX_MODE=search_fail ks_search "anything" 2>/tmp/ks-search-test-err.$$)"
+out="$(PATH="$BIN:$PATH" FAKE_BM_MODE=search_fail ks_search "anything" 2>/tmp/ks-search-test-err.$$)"
 rc=$?
 err="$(cat "/tmp/ks-search-test-err.$$")"
 rm -f "/tmp/ks-search-test-err.$$"
@@ -583,7 +715,7 @@ echo "PASS: 10 a failing basic-memory subprocess call returns exit 4 with nothin
 
 # --- 10b. registration failure surfaces the subprocess's own error (K#368) ----
 set +e
-out="$(PATH="$BIN:$PATH" FAKE_UVX_MODE=project_add_fail ks_search "anything" 2>/tmp/ks-search-test-err10b.$$)"
+out="$(PATH="$BIN:$PATH" FAKE_BM_MODE=project_add_fail ks_search "anything" 2>/tmp/ks-search-test-err10b.$$)"
 rc=$?
 err="$(cat "/tmp/ks-search-test-err10b.$$")"
 rm -f "/tmp/ks-search-test-err10b.$$"
@@ -602,7 +734,7 @@ echo "PASS: 10b a failing project registration surfaces the subprocess's own err
 
 # --- 11. backend error: unparseable output -> exit 4 --------------------------
 set +e
-out="$(PATH="$BIN:$PATH" FAKE_UVX_MODE=bad_json ks_search "anything" 2>/dev/null)"
+out="$(PATH="$BIN:$PATH" FAKE_BM_MODE=bad_json ks_search "anything" 2>/dev/null)"
 rc=$?
 set -e
 [ "$rc" -eq 4 ] || fail "11: unparseable backend output should exit 4 (got $rc)"
@@ -610,14 +742,14 @@ set -e
 echo "PASS: 11 unparseable basic-memory output returns exit 4 with nothing on stdout"
 
 # --- 12. reindex entry point: incremental (default) and --full ----------------
-rm -f "$FAKE_UVX_LOG"
-PATH="$BIN:$PATH" FAKE_UVX_MODE=ok ks_search_reindex >/dev/null || fail "12: incremental reindex should succeed"
-grep -q '^REINDEX args=--project test-project$' "$FAKE_UVX_LOG" \
-  || fail "12: incremental reindex should call reindex WITHOUT --full (log:\n$(cat "$FAKE_UVX_LOG"))"
-rm -f "$FAKE_UVX_LOG"
-PATH="$BIN:$PATH" FAKE_UVX_MODE=ok ks_search_reindex --full >/dev/null || fail "12b: --full reindex should succeed"
-grep -q '^REINDEX args=--full --project test-project$' "$FAKE_UVX_LOG" \
-  || fail "12b: --full reindex should pass --full through (log:\n$(cat "$FAKE_UVX_LOG"))"
+rm -f "$FAKE_BM_LOG"
+PATH="$BIN:$PATH" FAKE_BM_MODE=ok ks_search_reindex >/dev/null || fail "12: incremental reindex should succeed"
+grep -q '^REINDEX args=--project test-project$' "$FAKE_BM_LOG" \
+  || fail "12: incremental reindex should call reindex WITHOUT --full (log:\n$(cat "$FAKE_BM_LOG"))"
+rm -f "$FAKE_BM_LOG"
+PATH="$BIN:$PATH" FAKE_BM_MODE=ok ks_search_reindex --full >/dev/null || fail "12b: --full reindex should succeed"
+grep -q '^REINDEX args=--full --project test-project$' "$FAKE_BM_LOG" \
+  || fail "12b: --full reindex should pass --full through (log:\n$(cat "$FAKE_BM_LOG"))"
 echo "PASS: 12 ks_search_reindex drives both incremental (default) and --full rebuilds"
 
 # --- 12c. flag passthrough: --search / --embeddings reach the backend CLI -----
@@ -625,40 +757,40 @@ echo "PASS: 12 ks_search_reindex drives both incremental (default) and --full re
 # every other argument away, so the 61s `reindex --full --search` shape (full
 # rescan + FTS rebuild, no forced full re-embed) was unreachable through the
 # public seam — a caller had to reach into the private _ks_bm_run.
-rm -f "$FAKE_UVX_LOG"
-PATH="$BIN:$PATH" FAKE_UVX_MODE=ok ks_search_reindex --full --search >/dev/null \
+rm -f "$FAKE_BM_LOG"
+PATH="$BIN:$PATH" FAKE_BM_MODE=ok ks_search_reindex --full --search >/dev/null \
   || fail "12c: --full --search reindex should succeed"
-grep -q '^REINDEX args=--full --search --project test-project$' "$FAKE_UVX_LOG" \
-  || fail "12c: --full --search should reach the CLI as 'reindex --full --search' (log:\n$(cat "$FAKE_UVX_LOG"))"
+grep -q '^REINDEX args=--full --search --project test-project$' "$FAKE_BM_LOG" \
+  || fail "12c: --full --search should reach the CLI as 'reindex --full --search' (log:\n$(cat "$FAKE_BM_LOG"))"
 
-rm -f "$FAKE_UVX_LOG"
-PATH="$BIN:$PATH" FAKE_UVX_MODE=ok ks_search_reindex --full --embeddings >/dev/null \
+rm -f "$FAKE_BM_LOG"
+PATH="$BIN:$PATH" FAKE_BM_MODE=ok ks_search_reindex --full --embeddings >/dev/null \
   || fail "12d: --full --embeddings reindex should succeed"
-grep -q '^REINDEX args=--full --embeddings --project test-project$' "$FAKE_UVX_LOG" \
-  || fail "12d: --full --embeddings should reach the CLI as 'reindex --full --embeddings' (log:\n$(cat "$FAKE_UVX_LOG"))"
+grep -q '^REINDEX args=--full --embeddings --project test-project$' "$FAKE_BM_LOG" \
+  || fail "12d: --full --embeddings should reach the CLI as 'reindex --full --embeddings' (log:\n$(cat "$FAKE_BM_LOG"))"
 
 # Order is normalized, not caller-dependent: --search alone, and the flags
 # passed in the reverse order, both emit the same canonical command line.
-rm -f "$FAKE_UVX_LOG"
-PATH="$BIN:$PATH" FAKE_UVX_MODE=ok ks_search_reindex --search >/dev/null \
+rm -f "$FAKE_BM_LOG"
+PATH="$BIN:$PATH" FAKE_BM_MODE=ok ks_search_reindex --search >/dev/null \
   || fail "12e: --search alone should succeed"
-grep -q '^REINDEX args=--search --project test-project$' "$FAKE_UVX_LOG" \
-  || fail "12e: --search alone should reach the CLI without --full (log:\n$(cat "$FAKE_UVX_LOG"))"
+grep -q '^REINDEX args=--search --project test-project$' "$FAKE_BM_LOG" \
+  || fail "12e: --search alone should reach the CLI without --full (log:\n$(cat "$FAKE_BM_LOG"))"
 
-rm -f "$FAKE_UVX_LOG"
-PATH="$BIN:$PATH" FAKE_UVX_MODE=ok ks_search_reindex --search --full >/dev/null \
+rm -f "$FAKE_BM_LOG"
+PATH="$BIN:$PATH" FAKE_BM_MODE=ok ks_search_reindex --search --full >/dev/null \
   || fail "12f: reversed flag order should succeed"
-grep -q '^REINDEX args=--full --search --project test-project$' "$FAKE_UVX_LOG" \
-  || fail "12f: flag order should be normalized to --full --search (log:\n$(cat "$FAKE_UVX_LOG"))"
+grep -q '^REINDEX args=--full --search --project test-project$' "$FAKE_BM_LOG" \
+  || fail "12f: flag order should be normalized to --full --search (log:\n$(cat "$FAKE_BM_LOG"))"
 echo "PASS: 12c ks_search_reindex forwards --search/--embeddings through to the backend CLI"
 
 # --- 12g. an UNRECOGNISED flag is rejected, never silently discarded ----------
 # The pre-#888 loop shifted unknown args away, so a mistyped `--ful` quietly
 # ran a reindex the caller never asked for. Now: exit 2 (the contract's
 # invalid-usage code), nothing on stdout, and NO backend call at all.
-rm -f "$FAKE_UVX_LOG"
+rm -f "$FAKE_BM_LOG"
 set +e
-out12g="$(PATH="$BIN:$PATH" FAKE_UVX_MODE=ok ks_search_reindex --ful 2>/tmp/ks-search-test-err12g.$$)"
+out12g="$(PATH="$BIN:$PATH" FAKE_BM_MODE=ok ks_search_reindex --ful 2>/tmp/ks-search-test-err12g.$$)"
 rc12g=$?
 set -e
 err12g="$(cat /tmp/ks-search-test-err12g.$$)"
@@ -669,8 +801,8 @@ case "$err12g" in
   *'unrecognised argument "--ful"'*) : ;;
   *) fail "12g: stderr must name the offending argument (got: $err12g)" ;;
 esac
-[ ! -s "$FAKE_UVX_LOG" ] \
-  || fail "12g: an unrecognised flag must NOT reach the backend at all (log:\n$(cat "$FAKE_UVX_LOG"))"
+[ ! -s "$FAKE_BM_LOG" ] \
+  || fail "12g: an unrecognised flag must NOT reach the backend at all (log:\n$(cat "$FAKE_BM_LOG"))"
 echo "PASS: 12g ks_search_reindex rejects an unrecognised flag (exit 2) instead of silently discarding it"
 
 # --- 13. reindex degrades the same way as search when uvx is missing ----------
@@ -696,8 +828,8 @@ echo "PASS: 13 ks_search_reindex degrades legibly the same way ks_search does (e
 if command -v rg >/dev/null 2>&1; then
   mkdir -p "$ROOT/Decisions"
   printf '# Widget cache decision\n\nThe frobnicator uses a widget cache.\n' > "$ROOT/Decisions/widget-cache.md"
-  rm -f "$FAKE_UVX_LOG" "$FAKE_UVX_LOG.registered"
-  out14="$(PATH="$BIN:$PATH" FAKE_UVX_MODE=empty_results ks_search "frobnicator" --limit 5 2>/dev/null)" \
+  rm -f "$FAKE_BM_LOG" "$FAKE_BM_LOG.registered"
+  out14="$(PATH="$BIN:$PATH" FAKE_BM_MODE=empty_results ks_search "frobnicator" --limit 5 2>/dev/null)" \
     || fail "14: rg fallback path should exit 0"
   [ -n "$out14" ] || fail "14: rg fallback should surface the literal match (got empty)"
   fdoc="$(printf '%s\n' "$out14" | sed -n '1p' | jq -r '.doc_id')"
@@ -705,9 +837,9 @@ if command -v rg >/dev/null 2>&1; then
   [ "$fdoc" = "Decisions/widget-cache.md" ] \
     || fail "14: fallback doc_id should be the corpus-relative path (got: $fdoc)"
   [ "$fscore" = "0" ] || fail "14: fallback score should be the 0 sentinel (got: $fscore)"
-  fb_search="$(grep -c '^SEARCH ' "$FAKE_UVX_LOG" || true)"
+  fb_search="$(grep -c '^SEARCH ' "$FAKE_BM_LOG" || true)"
   [ "$fb_search" -eq 1 ] \
-    || fail "14: fallback must not issue extra backend subprocesses (got $fb_search); log:\n$(cat "$FAKE_UVX_LOG")"
+    || fail "14: fallback must not issue extra backend subprocesses (got $fb_search); log:\n$(cat "$FAKE_BM_LOG")"
   echo "PASS: 14 rg fallback surfaces a literal corpus match on a backend zero-result (foundation#950)"
 else
   echo "SKIP: 14 rg fallback assertion (ripgrep not installed)"
@@ -715,8 +847,8 @@ fi
 
 # --- 14b. rg fallback is fail-open: zero-result with no corpus match -> empty --
 rm -rf "${ROOT:?}/Decisions"
-rm -f "$FAKE_UVX_LOG" "$FAKE_UVX_LOG.registered"
-out14b="$(PATH="$BIN:$PATH" FAKE_UVX_MODE=empty_results ks_search "no-such-literal-xyzzy" --limit 5 2>/dev/null)" \
+rm -f "$FAKE_BM_LOG" "$FAKE_BM_LOG.registered"
+out14b="$(PATH="$BIN:$PATH" FAKE_BM_MODE=empty_results ks_search "no-such-literal-xyzzy" --limit 5 2>/dev/null)" \
   || fail "14b: a zero-result with no fallback match must still exit 0"
 [ -z "$out14b" ] || fail "14b: no backend match and no rg match must print nothing (got: $out14b)"
 echo "PASS: 14b rg fallback is fail-open — no backend match and no corpus match yields empty, exit 0"
@@ -812,16 +944,16 @@ echo "PASS: 15d re-rank off-switch is a no-op; on, it returns exactly k records"
 # 15e. FETCH DEPTH reaches the subprocess: the caller asks for 5, the backend is
 # asked for KNOWLEDGE_SEARCH_RERANK_DEPTH. Asserted against the fake uvx's own
 # argv log, so this pins the wiring rather than the intent.
-rm -f "$FAKE_UVX_LOG" "$FAKE_UVX_LOG.registered"
+rm -f "$FAKE_BM_LOG" "$FAKE_BM_LOG.registered"
 PATH="$BIN:$PATH" KNOWLEDGE_SEARCH_RERANK=1 KNOWLEDGE_SEARCH_RERANK_DEPTH=20 \
   ks_search "hybrid probe" --limit 5 >/dev/null 2>&1 || true
-grep -q -- "--page-size 20" "$FAKE_UVX_LOG" \
-  || fail "15e: cold path must fetch RERANK_DEPTH (20), not the caller's --limit (log: $(cat "$FAKE_UVX_LOG"))"
-rm -f "$FAKE_UVX_LOG" "$FAKE_UVX_LOG.registered"
+grep -q -- "--page-size 20" "$FAKE_BM_LOG" \
+  || fail "15e: cold path must fetch RERANK_DEPTH (20), not the caller's --limit (log: $(cat "$FAKE_BM_LOG"))"
+rm -f "$FAKE_BM_LOG" "$FAKE_BM_LOG.registered"
 PATH="$BIN:$PATH" KNOWLEDGE_SEARCH_RERANK=0 \
   ks_search "hybrid probe" --limit 5 >/dev/null 2>&1 || true
-grep -q -- "--page-size 5" "$FAKE_UVX_LOG" \
-  || fail "15e: with the re-rank off, fetch depth must collapse back to --limit (log: $(cat "$FAKE_UVX_LOG"))"
+grep -q -- "--page-size 5" "$FAKE_BM_LOG" \
+  || fail "15e: with the re-rank off, fetch depth must collapse back to --limit (log: $(cat "$FAKE_BM_LOG"))"
 echo "PASS: 15e fetch depth is RERANK_DEPTH when on and the caller's --limit when off"
 
 # --- 16. abstention floor (foundation#1450, epic foundation#1443) ------------
@@ -880,8 +1012,8 @@ echo "PASS: 16e the abstention gate never touches the score-0 rg-fallback bypass
 # 16f. FULL ks_search integration: the sentinel never leaks to a real caller —
 # enabled + failing floors returns genuine empty stdout, exit 0, via the
 # fake uvx's low_conf canned response.
-rm -f "$FAKE_UVX_LOG" "$FAKE_UVX_LOG.registered"
-out16f="$(PATH="$BIN:$PATH" FAKE_UVX_MODE=low_conf KNOWLEDGE_SEARCH_ABSTAIN=1 \
+rm -f "$FAKE_BM_LOG" "$FAKE_BM_LOG.registered"
+out16f="$(PATH="$BIN:$PATH" FAKE_BM_MODE=low_conf KNOWLEDGE_SEARCH_ABSTAIN=1 \
   ks_search "widget install guide" --limit 5)"
 rc16f=$?
 [ "$rc16f" -eq 0 ] || fail "16f: an abstained ks_search call must still exit 0 (got $rc16f)"
@@ -899,8 +1031,8 @@ echo "PASS: 16f ks_search never leaks the abstention sentinel; exit 0 with empty
 # acme's note and the OTHER partition's notes are ABSENT. A no-op filter, or a
 # scope flag silently discarded somewhere down the stack, fails here — which a
 # flag-parses-only assertion would not catch.
-rm -f "$FAKE_UVX_LOG" "$FAKE_UVX_LOG.registered"
-out17a="$(PATH="$BIN:$PATH" FAKE_UVX_MODE=two_partitions \
+rm -f "$FAKE_BM_LOG" "$FAKE_BM_LOG.registered"
+out17a="$(PATH="$BIN:$PATH" FAKE_BM_MODE=two_partitions \
   ks_search "retainer terms" --limit 5 --partition acme)" \
   || fail "17a: a scoped ks_search should succeed"
 docs17a="$(printf '%s\n' "$out17a" | jq -r '.doc_id' | sort | tr '\n' '|')"
@@ -915,8 +1047,8 @@ echo "PASS: 17a a scoped ks_search returns only its own partition — the other 
 # 17b. NO REGRESSION for the dominant single-tenant user: with no partition
 # configured, the identical query returns the whole unfiltered candidate set,
 # exactly as it did pre-#418.
-rm -f "$FAKE_UVX_LOG" "$FAKE_UVX_LOG.registered"
-out17b="$(PATH="$BIN:$PATH" FAKE_UVX_MODE=two_partitions ks_search "retainer terms" --limit 5)" \
+rm -f "$FAKE_BM_LOG" "$FAKE_BM_LOG.registered"
+out17b="$(PATH="$BIN:$PATH" FAKE_BM_MODE=two_partitions ks_search "retainer terms" --limit 5)" \
   || fail "17b: an unscoped ks_search should succeed"
 n17b="$(printf '%s\n' "$out17b" | wc -l | tr -d ' ')"
 [ "$n17b" -eq 4 ] \
@@ -925,8 +1057,8 @@ echo "PASS: 17b default (no partition configured) is unchanged — the whole cor
 
 # 17c. the DIRECTORY membership form is honoured alongside the filename form:
 # scoping to `zenith` returns both `Decisions/zenith - …md` and `zenith/…`.
-rm -f "$FAKE_UVX_LOG" "$FAKE_UVX_LOG.registered"
-out17c="$(PATH="$BIN:$PATH" FAKE_UVX_MODE=two_partitions \
+rm -f "$FAKE_BM_LOG" "$FAKE_BM_LOG.registered"
+out17c="$(PATH="$BIN:$PATH" FAKE_BM_MODE=two_partitions \
   ks_search "retainer terms" --limit 5 --partition zenith)" \
   || fail "17c: a zenith-scoped ks_search should succeed"
 docs17c="$(printf '%s\n' "$out17c" | jq -r '.doc_id' | sort | tr '\n' '|')"
@@ -939,8 +1071,8 @@ echo "PASS: 17c partition membership matches both the '<project> - ' filename fo
 # 17d. the ENV route (KNOWLEDGE_SEARCH_PARTITION) scopes just as hard as the
 # flag — this is the route a consultant actually uses (export once per
 # engagement), so it must not be a second, weaker path.
-rm -f "$FAKE_UVX_LOG" "$FAKE_UVX_LOG.registered"
-out17d="$(PATH="$BIN:$PATH" FAKE_UVX_MODE=two_partitions KNOWLEDGE_SEARCH_PARTITION=acme \
+rm -f "$FAKE_BM_LOG" "$FAKE_BM_LOG.registered"
+out17d="$(PATH="$BIN:$PATH" FAKE_BM_MODE=two_partitions KNOWLEDGE_SEARCH_PARTITION=acme \
   ks_search "retainer terms" --limit 5)" \
   || fail "17d: an env-scoped ks_search should succeed"
 [ "$(printf '%s\n' "$out17d" | jq -r '.doc_id' | sort | tr '\n' '|')" = "Decisions/acme - retainer terms.md|" ] \
@@ -956,9 +1088,9 @@ echo "PASS: 17d KNOWLEDGE_SEARCH_PARTITION scopes every call, identically to the
 
 # 17e. an unrecognised ks_search argument -> exit 2, nothing on stdout, and NO
 # backend call at all.
-rm -f "$FAKE_UVX_LOG" "$FAKE_UVX_LOG.registered"
+rm -f "$FAKE_BM_LOG" "$FAKE_BM_LOG.registered"
 set +e
-out17e="$(PATH="$BIN:$PATH" FAKE_UVX_MODE=two_partitions ks_search "retainer terms" --scope acme 2>/tmp/ks-search-test-err17e.$$)"
+out17e="$(PATH="$BIN:$PATH" FAKE_BM_MODE=two_partitions ks_search "retainer terms" --scope acme 2>/tmp/ks-search-test-err17e.$$)"
 rc17e=$?
 set -e
 err17e="$(cat /tmp/ks-search-test-err17e.$$)"; rm -f /tmp/ks-search-test-err17e.$$
@@ -968,26 +1100,26 @@ case "$err17e" in
   *'unrecognised argument "--scope"'*) : ;;
   *) fail "17e: stderr must name the offending argument (got: $err17e)" ;;
 esac
-[ ! -s "$FAKE_UVX_LOG" ] \
-  || fail "17e: an unrecognised argument must not reach the backend (log:\n$(cat "$FAKE_UVX_LOG"))"
+[ ! -s "$FAKE_BM_LOG" ] \
+  || fail "17e: an unrecognised argument must not reach the backend (log:\n$(cat "$FAKE_BM_LOG"))"
 echo "PASS: 17e ks_search rejects an unrecognised argument (exit 2, no results, no backend call)"
 
 # 17f. an EMPTY --partition value is rejected, never read as "no partition" —
 # the `--partition "$CLIENT"` that expanded to nothing must fail loudly rather
 # than silently widen back to the whole corpus.
-rm -f "$FAKE_UVX_LOG" "$FAKE_UVX_LOG.registered"
+rm -f "$FAKE_BM_LOG" "$FAKE_BM_LOG.registered"
 set +e
-out17f="$(PATH="$BIN:$PATH" FAKE_UVX_MODE=two_partitions ks_search "retainer terms" --partition "" 2>/dev/null)"
+out17f="$(PATH="$BIN:$PATH" FAKE_BM_MODE=two_partitions ks_search "retainer terms" --partition "" 2>/dev/null)"
 rc17f=$?
-out17f2="$(PATH="$BIN:$PATH" FAKE_UVX_MODE=two_partitions ks_search "retainer terms" --partition 2>/dev/null)"
+out17f2="$(PATH="$BIN:$PATH" FAKE_BM_MODE=two_partitions ks_search "retainer terms" --partition 2>/dev/null)"
 rc17f2=$?
 set -e
 [ "$rc17f" -eq 2 ]  || fail "17f: an empty --partition value must exit 2, never widen the corpus (got $rc17f)"
 [ -z "$out17f" ]    || fail "17f: an empty --partition must return nothing (got: $out17f)"
 [ "$rc17f2" -eq 2 ] || fail "17f: a valueless --partition must exit 2 (got $rc17f2)"
 [ -z "$out17f2" ]   || fail "17f: a valueless --partition must return nothing (got: $out17f2)"
-[ ! -s "$FAKE_UVX_LOG" ] \
-  || fail "17f: a malformed --partition must not reach the backend (log:\n$(cat "$FAKE_UVX_LOG"))"
+[ ! -s "$FAKE_BM_LOG" ] \
+  || fail "17f: a malformed --partition must not reach the backend (log:\n$(cat "$FAKE_BM_LOG"))"
 echo "PASS: 17f an empty or valueless --partition is rejected (exit 2), never silently widened to the whole corpus"
 
 # 17g. the BACKENDS refuse the scope flag rather than swallowing it. Enforcement
@@ -996,7 +1128,7 @@ echo "PASS: 17f an empty or valueless --partition is rejected (exit 2), never si
 # does not recognise, so the old `*) shift ;;` widening cannot come back through
 # a direct backend call either.
 set +e
-PATH="$BIN:$PATH" FAKE_UVX_MODE=two_partitions \
+PATH="$BIN:$PATH" FAKE_BM_MODE=two_partitions \
   _ks_search_backend_basic_memory_search "retainer terms" --partition acme >/dev/null 2>&1
 rc17g=$?
 set -e
@@ -1047,8 +1179,10 @@ export KNOWLEDGE_STORE_ROOT="$ROOT"
 export KNOWLEDGE_SEARCH_BM_HOME="$BM_HOME"
 export KNOWLEDGE_SEARCH_BM_PROJECT="test-project"
 export KNOWLEDGE_READ_LOG="$TMP/knowledge-reads-17j.log"
-export FAKE_UVX_LOG="$TMP/uvx-17j.log"
-export FAKE_UVX_MODE=empty_results
+export FAKE_BM_LOG="$TMP/bm-17j.log"
+export FAKE_UV_LOG="$TMP/uv-17j.log"
+export FAKE_BM_TEMPLATE="$FAKE_BM_TEMPLATE"
+export FAKE_BM_MODE=empty_results
 export PATH="$BIN:\$PATH"
 source "$STORE_LIB"
 source "$SEARCH_LIB"
@@ -1067,5 +1201,127 @@ out17j="$(bash "$CONSUMER17" 2>/dev/null)" || fail "17j: the scoped fallback pat
 grep -q 'zenith' <<<"$out17j" \
   && fail "17j: CROSS-PARTITION BLEED via the rg lexical fallback:\n$out17j"
 echo "PASS: 17j the rg lexical-fallback stream is partition-filtered too — the degraded path cannot leak"
+
+# ── 18. uv-tool install lifecycle (temperloop#1113) ─────────────────────────
+# Four states the install seam can be in, each discriminated independently:
+# pin-absent-then-installed, pin-already-installed, pin-changed-so-repinned,
+# and install-fails-so-degrades. Every one is driven by the fake `uv` above —
+# no network, no real `uv tool install`, no live index (kernel principle 3).
+
+# --- 18a. pin ABSENT -> the availability gate installs it on first use --------
+# The zero-setup guarantee: a stranger with only uv on PATH and no doctor run
+# still answers their first ks_search. Nothing is pre-installed here.
+rm -rf "$BM_HOME"
+rm -f "$FAKE_BM_LOG" "$FAKE_BM_LOG.registered" "$FAKE_UV_LOG"
+[ ! -e "$BM_BIN" ] || fail "18a: fixture error — the entry point should not exist yet"
+out18a="$(PATH="$BIN:$PATH" FAKE_BM_MODE=ok ks_search "orchard" --limit 5 2>/dev/null)" \
+  || fail "18a: a first ks_search with nothing installed should still succeed"
+[ -n "$out18a" ] || fail "18a: the lazily-installed first search returned no results"
+[ -x "$BM_BIN" ] || fail "18a: the gate did not install an entry point at $BM_BIN"
+[ -f "$PIN_STAMP" ] || fail "18a: the gate did not record the installed pin at $PIN_STAMP"
+[ "$(cat "$PIN_STAMP")" = "basic-memory==$KNOWLEDGE_SEARCH_BM_VERSION python=$KNOWLEDGE_SEARCH_BM_PYTHON" ] \
+  || fail "18a: the pin stamp does not name both pins (got: $(cat "$PIN_STAMP"))"
+installs18a="$(grep -c '^TOOL_INSTALL ' "$FAKE_UV_LOG" || true)"
+[ "$installs18a" -eq 1 ] \
+  || fail "18a: expected exactly ONE tool install for a cold first search (got $installs18a); log:\n$(cat "$FAKE_UV_LOG")"
+grep -q "^TOOL_INSTALL spec=basic-memory==$KNOWLEDGE_SEARCH_BM_VERSION python=$KNOWLEDGE_SEARCH_BM_PYTHON force=1\$" "$FAKE_UV_LOG" \
+  || fail "18a: the install did not carry both pins (log:\n$(cat "$FAKE_UV_LOG"))"
+echo "PASS: 18a a cold first ks_search lazily installs the pinned uv tool and answers normally (zero-setup preserved)"
+
+# --- 18b. pin ALREADY installed -> no second install, no subprocess cost ------
+rm -f "$FAKE_BM_LOG" "$FAKE_BM_LOG.registered" "$FAKE_UV_LOG"
+out18b="$(PATH="$BIN:$PATH" FAKE_BM_MODE=ok ks_search "orchard" --limit 5 2>/dev/null)" \
+  || fail "18b: a warm ks_search should succeed"
+[ -n "$out18b" ] || fail "18b: the warm search returned no results"
+[ ! -s "$FAKE_UV_LOG" ] \
+  || fail "18b: an already-installed pin must not re-invoke uv at all (log:\n$(cat "$FAKE_UV_LOG"))"
+echo "PASS: 18b an already-installed pin is a pure filesystem check — uv is never invoked again"
+
+# --- 18c. pin CHANGED -> re-installed, never silently the old build -----------
+# THE regression this switch introduces if left unguarded: under uvx the pin
+# was re-asserted every run, so a bump took effect for free. An installed tool
+# would happily keep serving the old build forever.
+rm -f "$FAKE_BM_LOG" "$FAKE_BM_LOG.registered" "$FAKE_UV_LOG"
+out18c="$(PATH="$BIN:$PATH" FAKE_BM_MODE=ok KNOWLEDGE_SEARCH_BM_VERSION=0.23.0 \
+  ks_search "orchard" --limit 5 2>/dev/null)" || fail "18c: a search after a pin bump should succeed"
+[ -n "$out18c" ] || fail "18c: the re-pinned search returned no results"
+grep -q '^TOOL_INSTALL spec=basic-memory==0.23.0 ' "$FAKE_UV_LOG" \
+  || fail "18c: a version bump did not re-install (log:\n$(cat "$FAKE_UV_LOG"))"
+grep -q '^INSTALLED=basic-memory==0.23.0 ' "$FAKE_BM_LOG" \
+  || fail "18c: the bumped search still ran the OLD installed build (log:\n$(cat "$FAKE_BM_LOG"))"
+[ "$(cat "$PIN_STAMP")" = "basic-memory==0.23.0 python=$KNOWLEDGE_SEARCH_BM_PYTHON" ] \
+  || fail "18c: the pin stamp was not updated to the new pin (got: $(cat "$PIN_STAMP"))"
+# The INTERPRETER pin is half of the identity too — bumping it alone re-installs.
+rm -f "$FAKE_BM_LOG" "$FAKE_BM_LOG.registered" "$FAKE_UV_LOG"
+PATH="$BIN:$PATH" FAKE_BM_MODE=ok KNOWLEDGE_SEARCH_BM_PYTHON=3.12 \
+  ks_search "orchard" --limit 5 >/dev/null 2>&1 || fail "18c: a search after an interpreter bump should succeed"
+grep -q '^TOOL_INSTALL spec=basic-memory==.* python=3.12 ' "$FAKE_UV_LOG" \
+  || fail "18c: an interpreter bump did not re-install (log:\n$(cat "$FAKE_UV_LOG"))"
+# Restore the tree to the configured pins for the remaining cases.
+rm -f "$FAKE_UV_LOG"
+PATH="$BIN:$PATH" FAKE_BM_MODE=ok ks_search "orchard" --limit 5 >/dev/null 2>&1 \
+  || fail "18c: restoring the configured pins should succeed"
+echo "PASS: 18c changing EITHER pin re-installs and re-stamps — an upgrade never silently keeps running the old build"
+
+# --- 18d. install FAILS -> legible degradation, exit 3, no stdout -------------
+# Run inside a command substitution so the adapter's per-process
+# failure memo cannot leak into the cases below.
+rm -rf "$BM_HOME"
+rm -f "$FAKE_BM_LOG" "$FAKE_BM_LOG.registered" "$FAKE_UV_LOG"
+set +e
+out18d="$(PATH="$BIN:$PATH" FAKE_UV_MODE=install_fail ks_search "orchard" --limit 5 2>/dev/null)"
+rc18d=$?
+err18d="$(PATH="$BIN:$PATH" FAKE_UV_MODE=install_fail ks_search "orchard" --limit 5 2>&1 1>/dev/null)"
+set -e
+[ "$rc18d" -eq 3 ] || fail "18d: a failed install should degrade with exit 3 (got $rc18d)"
+[ -z "$out18d" ] || fail "18d: a failed install must print NOTHING to stdout (got: $out18d)"
+case "$err18d" in
+  *"skipped — knowledge_search unavailable"*) : ;;
+  *) fail "18d: a failed install must still emit the 'skipped —' notice (got: $err18d)" ;;
+esac
+case "$err18d" in
+  *"simulated resolution failure"*) : ;;
+  *) fail "18d: uv's own failure output must be surfaced, not swallowed (got: $err18d)" ;;
+esac
+[ ! -e "$PIN_STAMP" ] || fail "18d: a failed install must not write a pin stamp"
+# ONE attempt per process, not one per gate call (ks_search runs the gate
+# twice: the read-log probe and the backend's own gate).
+installs18d="$(grep -c '^TOOL_INSTALL ' "$FAKE_UV_LOG" || true)"
+[ "$installs18d" -eq 2 ] \
+  || fail "18d: expected exactly one install attempt per process (2 processes ran; got $installs18d)"
+echo "PASS: 18d a failed install degrades legibly (exit 3, 'skipped —' notice, uv's cause surfaced, no stdout) and is not retried within the process"
+
+# --- 18e. install reports success but produces NO entry point ----------------
+rm -rf "$BM_HOME"
+rm -f "$FAKE_BM_LOG" "$FAKE_UV_LOG"
+set +e
+out18e="$(PATH="$BIN:$PATH" FAKE_UV_MODE=install_noop ks_search "orchard" --limit 5 2>/dev/null)"
+rc18e=$?
+err18e="$(PATH="$BIN:$PATH" FAKE_UV_MODE=install_noop ks_search "orchard" --limit 5 2>&1 1>/dev/null)"
+set -e
+[ "$rc18e" -eq 3 ] || fail "18e: a no-op install should degrade with exit 3 (got $rc18e)"
+[ -z "$out18e" ] || fail "18e: a no-op install must print NOTHING to stdout (got: $out18e)"
+case "$err18e" in
+  *"no entry point exists at"*) : ;;
+  *) fail "18e: the adapter must name the missing entry point (got: $err18e)" ;;
+esac
+echo "PASS: 18e an install that reports success but writes no entry point is caught, not trusted"
+
+# --- 18f. the install is BOUNDED when a timeout helper is in scope -----------
+# knowledge_search.sh refuses to grow a dependency on portable-timeout.sh (it
+# is sourced under zsh too, where BASH_SOURCE does not exist), so it probes for
+# run_with_timeout and uses it only when the caller already provided one.
+rm -rf "$BM_HOME"
+rm -f "$FAKE_BM_LOG" "$FAKE_UV_LOG"
+TIMEOUT_WITNESS="$TMP/timeout-witness"
+rm -f "$TIMEOUT_WITNESS"
+run_with_timeout() { printf '%s\n' "$1" > "$TIMEOUT_WITNESS"; shift; "$@"; }
+PATH="$BIN:$PATH" FAKE_BM_MODE=ok ks_search "orchard" --limit 5 >/dev/null 2>&1 \
+  || fail "18f: the bounded install path should still succeed"
+unset -f run_with_timeout
+[ -f "$TIMEOUT_WITNESS" ] || fail "18f: run_with_timeout was in scope but the install did not route through it"
+[ "$(cat "$TIMEOUT_WITNESS")" = "$KNOWLEDGE_SEARCH_BM_INSTALL_TIMEOUT" ] \
+  || fail "18f: the install was not bounded by KNOWLEDGE_SEARCH_BM_INSTALL_TIMEOUT (got: $(cat "$TIMEOUT_WITNESS"))"
+echo "PASS: 18f the one-time install is bounded by KNOWLEDGE_SEARCH_BM_INSTALL_TIMEOUT when a timeout helper is in scope"
 
 echo "ALL PASS: knowledge_search.sh (interface + basic-memory backend, mocked subprocess)"

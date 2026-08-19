@@ -517,6 +517,91 @@ check_cache_state() {
 }
 
 # ---------------------------------------------------------------------------
+# check_bm_tool_install — install AND REPORT the knowledge_search backend's
+# pinned basic-memory uv tool (temperloop#1113).
+#
+# This is the DOCTOR half of the ratified hybrid install design. The other
+# half lives in workflows/scripts/lib/knowledge_search.sh's availability gate,
+# which lazily installs the pin on first use so a stranger who never runs
+# doctor still gets a working first `ks_search`. Neither half replaces the
+# other: the lazy half keeps the zero-setup first-run virtue that made `uvx`
+# the original default, and this half gives an INSTALLED checkout a
+# predictable, pre-warmed state — so the first real search is fast, and an
+# operator can see the pin's install state without running a search at all.
+#
+# Why the switch happened (the state this reports on): resolving
+# `uvx --from basic-memory==<pin>` per run left uv unpacking a fresh
+# environment into its own cache with no permanent install location and no
+# expiry — measured at 30 GB against a 273 MB store, unprunable for as long as
+# a warm daemon held the cache lock. An installed uv tool puts a stable
+# virtualenv on disk instead, and the cache goes back to being a cache.
+#
+# ADVISORY, never a gate. `make doctor` must stay runnable on a host with no
+# `uv`, no network, or no interest in the search seam at all — an uninstalled
+# or uninstallable pin is a reported state, not a broken managed link. It
+# therefore always returns 0, exactly like check_cache_state.
+#
+# Runs entirely inside a SUBSHELL so sourcing the two libraries cannot leak
+# their `:=` defaults (KNOWLEDGE_STORE_ROOT and friends) into doctor's own
+# scope or into any later check — the same isolation posture
+# check_knowledge_root and check_cache_state already use.
+# ---------------------------------------------------------------------------
+check_bm_tool_install() {
+  local store_lib="${FOUNDATION}/workflows/scripts/lib/knowledge_store.sh"
+  local search_lib="${FOUNDATION}/workflows/scripts/lib/knowledge_search.sh"
+
+  printf '\nknowledge_search basic-memory tool (temperloop#1113):\n'
+
+  if [[ ! -f "$store_lib" || ! -f "$search_lib" ]]; then
+    printf '  SKIPPED (knowledge_store.sh / knowledge_search.sh not found under %s)\n' "$FOUNDATION"
+    return 0
+  fi
+
+  (
+    # shellcheck source=/dev/null
+    source "$store_lib" 2>/dev/null || {
+      printf '  SKIPPED (could not source knowledge_store.sh)\n'; exit 0; }
+    # shellcheck source=/dev/null
+    source "$search_lib" 2>/dev/null || {
+      printf '  SKIPPED (could not source knowledge_search.sh)\n'; exit 0; }
+
+    # A kernel checkout older than #1113 has no install seam to drive. Report
+    # that plainly rather than failing — this file is also read by vendored
+    # trees that pull the kernel forward at their own pace.
+    if ! declare -F _ks_bm_ensure_tool >/dev/null 2>&1; then
+      printf '  SKIPPED (this knowledge_search.sh predates the uv-tool install seam)\n'
+      exit 0
+    fi
+
+    printf '  pin         %s\n' "$(_ks_bm_pin_id)"
+    printf '  entry point %s\n' "$(_ks_bm_bin_path)"
+
+    if _ks_bm_tool_ready; then
+      printf '  state       INSTALLED (matches the configured pin)\n'
+      exit 0
+    fi
+
+    if ! command -v uv >/dev/null 2>&1; then
+      printf '  state       UNAVAILABLE (uv is not on PATH — install uv, then re-run doctor)\n'
+      exit 0
+    fi
+
+    if [ -x "$(_ks_bm_bin_path)" ]; then
+      printf '  state       PIN DRIFT (installed at a different pin) — re-installing\n'
+    else
+      printf '  state       ABSENT — installing\n'
+    fi
+
+    if _ks_bm_ensure_tool; then
+      printf '  state       INSTALLED (matches the configured pin)\n'
+    else
+      printf '  state       INSTALL FAILED (uv output above) — ks_search will degrade with a "skipped --" notice\n'
+    fi
+  )
+  return 0
+}
+
+# ---------------------------------------------------------------------------
 # check_reviewer_coverage — advisory, WARN-level reviewer-activation-coverage
 # check (temperloop#550, ADR 0007/0008). REUSES #548's pure, non-interactive
 # data path (reviewer_coverage_gaps / reviewer_coverage_check_integrity,
@@ -694,6 +779,8 @@ cross_checkout_status=0
 check_cross_checkout_split || cross_checkout_status=$?
 
 check_cache_state || true
+
+check_bm_tool_install || true
 
 check_reviewer_coverage || true
 

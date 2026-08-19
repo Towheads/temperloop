@@ -221,6 +221,14 @@ KERNEL_GATES=(
   # $FOUNDATION. Same direct-`bash` form as the sibling doctor gates above
   # (kernel Makefile is generator-owned; no new target added here).
   "bash workflows/scripts/tests/test_doctor_cross_checkout_split.sh"
+  # knowledge_search basic-memory uv-tool install check (temperloop#1113):
+  # doctor.sh's check_bm_tool_install() — the DOCTOR half of the hybrid
+  # install design (the availability gate's lazy half is covered by
+  # workflows/scripts/lib/tests/test_knowledge_search.sh). Hermetic: a fake
+  # `uv` on PATH, never a real `uv tool install`. Same direct-`bash` form as
+  # the sibling doctor gates above (kernel Makefile is generator-owned; no new
+  # target added here).
+  "bash workflows/scripts/tests/test_doctor_bm_tool.sh"
   # Legacy host-config preflight (temperloop#908): workflows/scripts/install/
   # legacy-host-preflight.sh's registry-driven HOST-STATE check — asserts the
   # CONSUMABLE ON THE HOST for a legacy path a release has removed, never the
