@@ -252,6 +252,9 @@ Operating and reference pages:
   merge queue in full (§ 6 below is the summary).
 - [`docs/config-precedence.md`](docs/config-precedence.md) — how every
   setting resolves (CLI flag → env → machine → repo-local → repo → default).
+- [`docs/migrating-from-obsidian.md`](docs/migrating-from-obsidian.md) — the
+  write-up of a real search/write-path migration off Obsidian's REST and MCP
+  stack, with the measured before/after and what went wrong.
 - [`docs/features/`](docs/features/) — one reference page per shipped
   feature (problem, how it works, integration, resource impact, telemetry).
 - [`docs/adr/`](docs/adr/) — the architecture decision records, starting at
