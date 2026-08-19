@@ -1064,9 +1064,10 @@ _ks_bm_repair_config() {
 # `fpath`, or `mailpath`. Under zsh those identifiers are tied to the colon-array
 # side of the corresponding uppercase env var (`path` <-> `PATH`), so a
 # `local path=…` in a *sourced* function silently rebinds `PATH` for that scope —
-# and since these libs are sourced (not executed) and then call `uvx` via
-# `_ks_bm_run`, a clobbered `PATH` makes `uvx` unresolvable (exit 127 -> ks exit
-# 4). bash treats `path` as an ordinary variable, so this is invisible under
+# and since these libs are sourced (not executed) and then shell out to
+# PATH-resolved tooling (`uv` and `env` in the install gate; `jq`, `rg` and
+# friends downstream), a clobbered `PATH` makes those unresolvable and the
+# search fails. bash treats `path` as an ordinary variable, so this is invisible under
 # bash and under CI. Use `cfg_path`/`proj_path`/`doc_path` instead. (temperloop#40)
 _ks_bm_ensure_config() {
   local dir cfg_path cache model dims

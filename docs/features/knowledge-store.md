@@ -51,8 +51,9 @@ renders a board's cached issues into the store via `ks_write` and then
 chains a `ks_search_reindex`, so the searchable corpus and the read/write
 corpus are structurally the same directory by construction, not by
 convention. The search path runs a **pinned** `basic-memory` CLI —
-`uvx --from basic-memory==<version>`, never a bare `basic-memory` that could
-silently pick up an unpinned or system install — with the version fixed by
+installed once as a uv tool into the adapter's own isolated home and invoked
+by absolute path, never a bare `basic-memory` that could silently pick up an
+unpinned or system install (see § Resource impact) — with the version fixed by
 `KNOWLEDGE_SEARCH_BM_VERSION` (default `0.22.1`, the spike-verified pin) and
 `auto_update: false`, so an upgrade is always a deliberate version bump, not
 a background drift. It runs inside an isolated `HOME` with
@@ -155,7 +156,7 @@ partition — scoped search.
 
 Consumes: `KNOWLEDGE_STORE_ROOT` / `KNOWLEDGE_STORE_BACKEND` /
 `KNOWLEDGE_SEARCH_BM_VERSION` environment (or their config-file defaults),
-and, for the search path, a locally installed `uvx`. `issue-corpus.sh`
+and, for the search path, a locally installed `uv`. `issue-corpus.sh`
 consumes the board issue-cache store's on-disk contract (`cache.sh`'s
 `snapshot.jsonl` / `details/<n>.json` / `meta.json`) directly — it never
 sources `board.sh` — so the knowledge-store stack carries no dependency on

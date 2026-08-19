@@ -245,14 +245,15 @@ issue_corpus_render() {
 # --- the full chain: cache refresh -> render -> ks_search reindex ----------
 # <owner/repo> [--full] -> cache_refresh (cache.sh, live gh calls) then
 # issue_corpus_render (this file) then ks_search_reindex (knowledge_search.sh
-# -- the ONLY basic-memory call site; this file never invokes uvx/
+# -- the ONLY basic-memory call site; this file never invokes uv/
 # basic-memory directly). `--full` is forwarded to ks_search_reindex only
 # (cache_refresh has no incremental/full distinction of its own).
 #
 # Propagates whichever step's failure rc first: cache_refresh's (1/2),
 # issue_corpus_render's (1/2), or ks_search_reindex's (2/3/4 -- see
 # knowledge_search.sh's exit-code contract, including the legible-
-# degradation exit 3 when uvx is unavailable).
+# degradation exit 3 when the pinned basic-memory tool cannot be made
+# available).
 issue_corpus_sync() {
   local repo="$1" full=0
   shift || true
