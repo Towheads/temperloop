@@ -70,9 +70,87 @@ done <<<"$invocations"
 [ -z "$bad" ] || fail "found 'basic-memory' invoked as a bare command word, bypassing the adapter's pinned installed entry point: $bad"
 echo "PASS: 3 no shell line invokes basic-memory as a bare command word (every call goes through the adapter's pinned entry point)"
 
-# --- 4. the adapter never runs the mcp subcommand (sidesteps upstream #1017) -
+# --- 4a. the ADAPTER never runs the mcp subcommand (sidesteps upstream #1017) -
 mcp_calls="$(git grep --untracked -nE 'basic-memory[^|&;]* mcp( |$)' -- '*.sh' 2>/dev/null | grep -v "^${THIS_TEST_REL}:" || true)"
-[ -z "$mcp_calls" ] || fail "found a 'basic-memory ... mcp' invocation in tracked source (adapter must be CLI-only, never the MCP server): $mcp_calls"
-echo "PASS: 4 no tracked shell script invokes 'basic-memory mcp'"
+[ -z "$mcp_calls" ] || fail "found a 'basic-memory ... mcp' invocation in tracked shell source (the adapter must be CLI-only, never the MCP server): $mcp_calls"
+echo "PASS: 4a no tracked shell script invokes 'basic-memory mcp'"
 
-echo "ALL PASS: AGPL boundary held -- basic-memory is referenced only in docs/tests and invoked only as a pinned external subprocess"
+# --- 4b. any tracked SUPERVISOR UNIT that launches the MCP server must be
+#         explicitly sanctioned (foundation#1019) ----------------------------
+#
+# 4a alone made this invariant hold by FILE EXTENSION rather than by intent.
+# A consuming repo can ship a warm-search daemon — foundation's
+# com.foundation.bm-mcp.plist does exactly that, and it genuinely launches
+# `basic-memory mcp`, which IS the upstream #1017 exposure 4a proxies for —
+# and 4a grepped straight past it twice over: the file is a `.plist` (outside
+# the `*.sh` pathspec), and launchd splits argv across SEPARATE <string>
+# elements, so `basic-memory` and `mcp` never share a line and NO line-oriented
+# regex can see the pair no matter what pathspec it is given.
+#
+# So assert the property POSITIVELY rather than assuming absence: find every
+# tracked unit that launches the MCP server and require each to carry an
+# explicit sanction marker. A supervised daemon is a deliberate, reviewed
+# decision; a stray future one — a new plist, a systemd unit, a compose file —
+# carries no marker and fails here. The marker lives IN the unit rather than in
+# an allowlist file this KERNEL test would have to hardcode a consuming repo's
+# paths into: self-describing, and it travels with the unit it sanctions.
+SANCTION_MARKER='AGPL-SUPERVISOR-SANCTIONED'
+
+# Prints the tracked units that launch the MCP server WITHOUT a sanction
+# marker, one per line. Factored out so the fixture self-check below can drive
+# it against a scratch tree rather than only ever against the real one.
+find_unsanctioned_units() {
+  local root="$1" unit
+  while IFS= read -r unit; do
+    [ -n "$unit" ] || continue
+    [ -f "$root/$unit" ] || continue
+    # TWO independent token tests, never one pattern — see the argv-splitting
+    # note above. A unit that names basic-memory AND carries a standalone
+    # `mcp` token is an MCP launcher whatever its file format.
+    grep -q 'basic-memory' "$root/$unit" 2>/dev/null || continue
+    grep -qE '(<string>[[:space:]]*mcp[[:space:]]*</string>|(^|[[:space:]"'"'"'=])mcp([[:space:]"'"'"']|$))' "$root/$unit" 2>/dev/null || continue
+    grep -q "$SANCTION_MARKER" "$root/$unit" 2>/dev/null && continue
+    printf '%s\n' "$unit"
+  done <<EOF
+$(cd "$root" && git ls-files --cached --others --exclude-standard -- '*.plist' '*.service' '*.yaml' '*.yml' 2>/dev/null || true)
+EOF
+}
+
+unsanctioned="$(find_unsanctioned_units "$REPO_ROOT" | tr '\n' ' ' | sed 's/ *$//')"
+[ -z "$unsanctioned" ] || fail "a tracked supervisor unit launches 'basic-memory mcp' without the $SANCTION_MARKER marker (a supervised MCP daemon must be a deliberate, marked decision — add the marker with a one-line rationale, or remove the launch): $unsanctioned"
+echo "PASS: 4b every tracked supervisor unit that launches 'basic-memory mcp' carries the $SANCTION_MARKER marker"
+
+# --- 4c. the 4b detector actually bites (fixture self-check) ----------------
+# Without this, 4b passes vacuously on any tree that ships no unit files at all
+# — which is the kernel repo's OWN situation, and is precisely the "an unrun
+# gate reads as a pass" shape this whole re-scope exists to close.
+_agpl_fixture="$(mktemp -d "${TMPDIR:-/tmp}/agpl-boundary-fixture-XXXXXX")"
+trap 'rm -rf "$_agpl_fixture"' EXIT
+(
+  cd "$_agpl_fixture"
+  git init -q .
+  mkdir -p units
+  # An UNMARKED launcher, argv split across elements exactly as launchd writes it.
+  cat > units/unmarked.plist <<'PLIST'
+<key>ProgramArguments</key>
+<array>
+  <string>/opt/bm/bin/basic-memory</string>
+  <string>mcp</string>
+  <string>--transport</string>
+  <string>streamable-http</string>
+</array>
+PLIST
+  # The same launcher, sanctioned.
+  sed 's|<array>|<array><!-- AGPL-SUPERVISOR-SANCTIONED: warm search daemon -->|' \
+    units/unmarked.plist > units/marked.plist
+  # A unit that names basic-memory but launches no MCP server.
+  printf '<string>/opt/bm/bin/basic-memory</string>\n<string>sync</string>\n' > units/not-mcp.plist
+)
+_fx_out="$(find_unsanctioned_units "$_agpl_fixture" | sort | tr '\n' ' ' | sed 's/ *$//')"
+[ "$_fx_out" = "units/unmarked.plist" ] \
+  || fail "4c: the 4b detector does not discriminate — expected exactly 'units/unmarked.plist', got '$_fx_out' (an unmarked launcher must be caught; a marked one and a non-MCP unit must not be)"
+rm -rf "$_agpl_fixture"
+trap - EXIT
+echo "PASS: 4c the 4b detector catches an unmarked MCP launcher and clears both a marked one and a non-MCP unit (fixture-verified, so 4b cannot pass vacuously)"
+
+echo "ALL PASS: AGPL boundary held -- basic-memory is referenced only in docs/tests, invoked only as a pinned external subprocess, and supervised only by explicitly sanctioned units"
