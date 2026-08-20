@@ -39,6 +39,15 @@
 # (no per-query spam). Every step is fail-open: any error there is swallowed, the
 # cold path still runs, and the caller still gets results with exit 0.
 #
+# ── Session lifecycle ─────────────────────────────────────────────────────
+# Every MCP session this file opens (_ks_bm_mcp_open_session) is terminated by
+# a matching _ks_bm_mcp_close_session — the streamable-HTTP DELETE /mcp
+# teardown — on EVERY exit path, error/timeout paths included. The daemon
+# retains per-session state until told to drop it (~1-3.6MB per search,
+# 9.2GB after 48h before this — foundation#1710), so open/close pairing is a hard
+# invariant here, and the close itself is fail-open (a failed DELETE never
+# breaks a successful search).
+#
 # ── AGPL boundary ─────────────────────────────────────────────────────────
 # basic-memory (AGPL-3.0) is reached ONLY as a separate process over the MCP
 # protocol (HTTP + JSON-RPC) — never imported or vendored, exactly as the cold
@@ -192,11 +201,31 @@ _ks_bm_mcp_open_session() {
   printf '%s' "$sid"
 }
 
+# Terminates an MCP session: DELETE /mcp carrying Mcp-Session-Id — the MCP
+# streamable-HTTP teardown. WITHOUT this, the daemon retains per-session server
+# state forever (measured ~1-3.6MB per search, 9.2GB after 48h — foundation#1710), so
+# every session this file opens MUST reach a close on every exit path,
+# including error/timeout paths. Fail-open: a failed DELETE must never turn a
+# successful search into an error — always returns 0.
+_ks_bm_mcp_close_session() {
+  local sid="${1:-}"
+  [ -n "$sid" ] || return 0
+  curl -s -o /dev/null \
+    --connect-timeout "$KNOWLEDGE_SEARCH_BM_MCP_CONNECT_TIMEOUT" \
+    --max-time "$KNOWLEDGE_SEARCH_BM_MCP_MAX_TIME" \
+    -H "Mcp-Session-Id: $sid" -H "MCP-Protocol-Version: $KNOWLEDGE_SEARCH_BM_MCP_PROTO" \
+    -X DELETE "$KNOWLEDGE_SEARCH_BM_MCP_URL" >/dev/null 2>&1 || true
+  return 0
+}
+
 # ── public backend interface (dispatched by knowledge_search.sh) ──────────
 
 # available: warm daemon reachable OR the cold backend's tooling is present.
 # Never worse than the cold backend — a down daemon still reports available
 # when the cold path can run, because search will fail open to it.
+# The probe session it opens is torn down immediately (foundation#1710): even a
+# bare initialize costs the daemon ~50KB of retained state, and ks_search runs
+# this probe on EVERY query (its read-log gate), so an unclosed probe leaks too.
 #
 # Argument passthrough (temperloop#1113): the cold gate now accepts `--quiet`
 # (suppressing only its "skipped —" notice) AND lazily installs the pinned
@@ -205,7 +234,9 @@ _ks_bm_mcp_open_session() {
 # cold notice through the warm backend. The daemon probe runs FIRST, so a
 # healthy warm daemon never triggers the cold path's install.
 _ks_search_backend_basic_memory_mcp_available() {
-  if _ks_bm_mcp_open_session >/dev/null 2>&1; then
+  local sid
+  if sid="$(_ks_bm_mcp_open_session 2>/dev/null)" && [ -n "$sid" ]; then
+    _ks_bm_mcp_close_session "$sid"
     return 0
   fi
   _ks_search_backend_basic_memory_available "$@"
@@ -258,13 +289,20 @@ _ks_search_backend_basic_memory_mcp_search() {
         -H 'Content-Type: application/json' \
         -H 'Accept: application/json, text/event-stream' \
         -H "Mcp-Session-Id: $sid" -H "MCP-Protocol-Version: $KNOWLEDGE_SEARCH_BM_MCP_PROTO" \
-        -X POST --data "$call" "$KNOWLEDGE_SEARCH_BM_MCP_URL" 2>/dev/null)"
+        -X POST --data "$call" "$KNOWLEDGE_SEARCH_BM_MCP_URL" 2>/dev/null)" || true
+    # The session's work is DONE the moment the tools/call round-trip returns
+    # (or times out — the `|| true` above keeps a curl failure from skipping
+    # this line under a `set -e` caller). Terminate it HERE, before parsing, so
+    # every subsequent path — parse success, tool error, unparseable body, and
+    # the degraded-result fallback — runs after the teardown: no exit path
+    # leaks a session (foundation#1710).
+    _ks_bm_mcp_close_session "$sid"
     # Extract the SSE data line, verify a non-error tool result, then reshape via
     # the shared _ks_bm_reshape_results (one owner of the JSONL contract, so warm
     # and cold can't drift apart).
     results="$(printf '%s' "$raw" | sed -n 's/^data: //p' \
       | jq -e 'if (.result.isError == true) then error("tool error")
-               else (.result.content[0].text | fromjson) end' 2>/dev/null)"
+               else (.result.content[0].text | fromjson) end' 2>/dev/null)" || true
     if [ -n "$results" ]; then
       # Same reshape AND same re-rank as the cold path — both stages have ONE
       # owner in knowledge_search.sh so a change can't land on one surface only.
