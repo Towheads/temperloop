@@ -131,4 +131,92 @@ grep -q -- '--argjson lim "\$depth"' "$MCP_LIB" \
   || fail "4: the warm MCP search path must send the computed depth as page_size, not the caller's limit"
 echo "PASS: 4b warm MCP search path fetches the same re-rank depth as the cold path"
 
-echo "ALL PASS: knowledge_search_mcp.sh (registration + selection + fail-open, hermetic)"
+# ── 5. SESSION TEARDOWN (foundation#1710) ─────────────────────────────────
+# Every MCP session the backend opens must be terminated with a DELETE /mcp
+# carrying its Mcp-Session-Id, on EVERY exit path — the daemon retains
+# ~1-3.6MB per unterminated session (9.2GB after 48h). Hermetic: shadow the
+# curl binary with a shell function that plays the daemon and logs every
+# request, so we can assert exactly which sessions were opened and closed.
+CURL_LOG="$TMP/curl.log"
+curl() {
+  local i method="GET" data="" dump=0 sid=""
+  local args=("$@")
+  for ((i = 0; i < ${#args[@]}; i++)); do
+    case "${args[$i]}" in
+      -X)     method="${args[$((i + 1))]}" ;;
+      --data) data="${args[$((i + 1))]}" ;;
+      -D)     dump=1 ;;
+      -H)     case "${args[$((i + 1))]}" in
+                "Mcp-Session-Id: "*) sid="${args[$((i + 1))]#Mcp-Session-Id: }" ;;
+              esac ;;
+    esac
+  done
+  if [ "$method" = "DELETE" ]; then
+    printf 'DELETE %s\n' "$sid" >> "$CURL_LOG"
+    return "${CURL_STUB_DELETE_RC:-0}"
+  fi
+  case "$data" in
+    *'"initialize"'*)
+      printf 'INIT\n' >> "$CURL_LOG"
+      [ "$dump" = 1 ] && printf 'HTTP/1.1 200 OK\r\nmcp-session-id: stub-sid-42\r\n\r\n'
+      return 0 ;;
+    *'notifications/initialized'*)
+      printf 'INITIALIZED %s\n' "$sid" >> "$CURL_LOG"
+      return 0 ;;
+    *'tools/call'*)
+      printf 'CALL %s\n' "$sid" >> "$CURL_LOG"
+      if [ "${CURL_STUB_CALL_MODE:-ok}" = "ok" ]; then
+        printf 'event: message\ndata: %s\n\n' \
+          "$(jq -cn '{result:{isError:false,content:[{text:({results:[{file_path:"notes/a.md",title:"alpha note",score:0.9,matched_chunk:"alpha snippet"}]}|tojson)}]}}')"
+      fi
+      return 0 ;;
+  esac
+  return 0
+}
+
+# 5a. SUCCESS path: the search session is opened once and DELETEd once, with
+# the daemon-issued session id — and results still come back.
+: > "$CURL_LOG"
+out="$(_ks_search_backend_basic_memory_mcp_search "alpha" --limit 5)"
+case "$out" in *'notes/a.md'*) : ;; *) fail "5a: warm success path returned no results through the stub daemon: [$out]" ;; esac
+[ "$(grep -c '^DELETE ' "$CURL_LOG")" = "1" ] \
+  || fail "5a: expected exactly 1 DELETE on the success path, log: [$(cat "$CURL_LOG")]"
+grep -q '^DELETE stub-sid-42$' "$CURL_LOG" \
+  || fail "5a: DELETE did not carry the daemon-issued Mcp-Session-Id, log: [$(cat "$CURL_LOG")]"
+echo "PASS: 5a success path terminates its session (one DELETE, correct Mcp-Session-Id)"
+
+# 5b. ERROR path: daemon reachable but the tool returns an unusable body — the
+# search falls back to the cold path AND still tears the session down (a
+# failed query must not leak a session either).
+: > "$CURL_LOG"
+export CURL_STUB_CALL_MODE="empty"
+out="$(_ks_search_backend_basic_memory_mcp_search "alpha" --limit 5 2>/dev/null)"
+unset CURL_STUB_CALL_MODE
+case "$out" in *"COLD_SEARCH_MARKER"*) : ;; *) fail "5b: degraded-result path did not fall back to cold, got: [$out]" ;; esac
+grep -q '^DELETE stub-sid-42$' "$CURL_LOG" \
+  || fail "5b: error/fallback path leaked its session (no DELETE), log: [$(cat "$CURL_LOG")]"
+echo "PASS: 5b error path still terminates the session before falling back cold"
+
+# 5c. FAIL-OPEN teardown: a failing DELETE must never turn a successful search
+# into an error.
+: > "$CURL_LOG"
+export CURL_STUB_DELETE_RC=7
+rc=0; out="$(_ks_search_backend_basic_memory_mcp_search "alpha" --limit 5)" || rc=$?
+unset CURL_STUB_DELETE_RC
+[ "$rc" = "0" ] || fail "5c: a failed DELETE broke a successful search (rc=$rc)"
+case "$out" in *'notes/a.md'*) : ;; *) fail "5c: a failed DELETE dropped the results: [$out]" ;; esac
+echo "PASS: 5c fail-open: a failed DELETE never breaks a successful search"
+
+# 5d. AVAILABILITY probe: ks_search runs the available op on every query (its
+# read-log gate), and even a bare initialize costs the daemon ~50KB — so the
+# probe session must be torn down too.
+: > "$CURL_LOG"
+_ks_search_backend_basic_memory_mcp_available \
+  || fail "5d: available returned non-zero against a reachable stub daemon"
+grep -q '^DELETE stub-sid-42$' "$CURL_LOG" \
+  || fail "5d: availability probe leaked its bare-initialize session, log: [$(cat "$CURL_LOG")]"
+echo "PASS: 5d availability probe terminates its bare-initialize session"
+
+unset -f curl
+
+echo "ALL PASS: knowledge_search_mcp.sh (registration + selection + fail-open + session teardown, hermetic)"
