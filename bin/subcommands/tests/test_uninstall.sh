@@ -48,6 +48,18 @@
 # no `gh`), mirroring the manifest-seeding pin above for install-manifest
 # fixtures.
 #
+# Tests 11-13 cover temperloop#1658 — the knowledge-search backend home's
+# advisory scope (g), print_bm_tool_home_bullet:
+#   11. The tree exists: uninstall NAMES it by its real path, prints the
+#      scope (g) heading and the exact `rm -rf`, and — print-only — leaves
+#      it byte-identical after `--yes`.
+#   12. No tree at all (every host without `uv`, i.e. every CI runner):
+#      uninstall says nothing about it and never creates one.
+#   13. An explicit KNOWLEDGE_SEARCH_BM_HOME override is honored, so the
+#      printed `rm -rf` is never the wrong path.
+# The fixture is a plain directory — `uv` is never a dependency of this
+# suite; what is under test is the disclosure, which keys on existence.
+#
 # No network. Every test runs inside a throwaway sandbox HOME/XDG root —
 # nothing touches real machine state.
 set -uo pipefail
@@ -385,6 +397,98 @@ grep -qi "testbed" <<<"$out10" && fail "10: no testbed record must produce NO te
 
 sandbox_down
 echo "PASS: 10 (no testbed record at all produces no testbed-related output, and none is created)"
+
+# =============================================================================
+# Tests 11-13 cover temperloop#1658 — the knowledge-search backend home's
+# advisory scope (g), print_bm_tool_home_bullet. The tree is a full Python
+# virtualenv + uv cache + derived search index that knowledge_search.sh
+# materialises LAZILY (doctor.sh's check_bm_tool_install, or the first
+# ks_search on a host that never ran doctor), never `temperloop install`.
+# Nothing in it is manifest-recorded, so uninstall correctly never removes
+# it — which makes DISCLOSING it this script's whole job for that scope.
+#
+# The fixture is a plain directory, deliberately: `uv` is not a dependency
+# of this suite and must never become one (CI has none), and what is being
+# tested is the DISCLOSURE, which keys on the directory's existence alone.
+# =============================================================================
+
+# bm_home_path — resolves the same way uninstall.sh's own bullet does, from
+# INSIDE the sandbox, so it tracks the sandboxed XDG_STATE_HOME rather than
+# the real machine's.
+bm_home_path() {
+  sandbox_bash 'printf "%s\n" "${KNOWLEDGE_SEARCH_BM_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/foundation/basic-memory-home}"'
+}
+
+# =============================================================================
+# Test 11: the backend home exists — uninstall NAMES it by its real path,
+#          prints the scope (g) heading and the exact rm -rf command, and
+#          (print-only) leaves the tree byte-identical after `--yes`.
+# =============================================================================
+sandbox_up uninstall-test11
+
+bm_home11="$(bm_home_path)"
+mkdir -p "$bm_home11/uv-tools/basic-memory/lib/python3.13/site-packages"
+printf 'home = /nonexistent\n' > "$bm_home11/uv-tools/basic-memory/pyvenv.cfg"
+[ -d "$bm_home11" ] || fail "11: setup — the backend home should exist after seeding"
+
+out11="$(run_uninstall --yes 2>&1)" && rc11=0 || rc11=$?
+[ "$rc11" -eq 0 ] || fail "11: uninstall --yes should exit 0 (got rc=$rc11, out: $out11)"
+
+grep -q "Knowledge-search backend home" <<<"$out11" || fail "11: expected the scope (g) heading (got: $out11)"
+grep -qF "$bm_home11" <<<"$out11" || fail "11: expected the backend home to be named by its real path (got: $out11)"
+grep -qF "rm -rf \"$bm_home11\"" <<<"$out11" || fail "11: expected the exact rm -rf command for the backend home (got: $out11)"
+
+[ -d "$bm_home11" ] || fail "11: the backend home must still exist after uninstall (print-only — never deleted)"
+[ -f "$bm_home11/uv-tools/basic-memory/pyvenv.cfg" ] || fail "11: the backend home's contents must survive uninstall"
+[ "$(cat "$bm_home11/uv-tools/basic-memory/pyvenv.cfg")" = "home = /nonexistent" ] \
+  || fail "11: the backend home's contents must be byte-identical after uninstall (print-only)"
+
+sandbox_down
+echo "PASS: 11 (an existing knowledge-search backend home is named with its exact rm -rf, and survives --yes untouched)"
+
+# =============================================================================
+# Test 12: no backend home at all — the state on every host without `uv`,
+#          which is every GitHub runner. Uninstall says nothing about it,
+#          and never creates one. An unconditional bullet here would name a
+#          path that was never written: a false disclosure, not a helpful
+#          one.
+# =============================================================================
+sandbox_up uninstall-test12
+
+bm_home12="$(bm_home_path)"
+[ ! -e "$bm_home12" ] || fail "12: setup — no backend home should exist yet"
+
+out12="$(run_uninstall --yes 2>&1)" && rc12=0 || rc12=$?
+[ "$rc12" -eq 0 ] || fail "12: uninstall --yes should exit 0 (got rc=$rc12, out: $out12)"
+grep -q "Knowledge-search backend home" <<<"$out12" && fail "12: an absent backend home must produce NO scope (g) output (got: $out12)"
+grep -qi "basic-memory-home" <<<"$out12" && fail "12: an absent backend home must not be named anywhere in the output (got: $out12)"
+[ ! -e "$bm_home12" ] || fail "12: uninstall must never CREATE a backend home that didn't already exist"
+
+sandbox_down
+echo "PASS: 12 (no knowledge-search backend home produces no scope (g) output, and none is created)"
+
+# =============================================================================
+# Test 13: the printed guidance honors an explicit KNOWLEDGE_SEARCH_BM_HOME
+#          override — the same precedence knowledge_search.sh's _ks_bm_home()
+#          resolves the real home with. Guidance built from the
+#          XDG_STATE_HOME fallback alone would hand an operator who has that
+#          knob set a wrong rm -rf path. Test 7's shape, for scope (g).
+# =============================================================================
+sandbox_up uninstall-test13
+
+override_home13="$SANDBOX_ROOT/custom-bm-home"
+mkdir -p "$override_home13/uv-tools"
+printf 'x\n' > "$override_home13/uv-tools/marker"
+default_home13="$SANDBOX_XDG_STATE_HOME/foundation/basic-memory-home"
+mkdir -p "$default_home13"
+
+out13="$(KNOWLEDGE_SEARCH_BM_HOME="$override_home13" run_uninstall --yes 2>&1)" && rc13=0 || rc13=$?
+[ "$rc13" -eq 0 ] || fail "13: uninstall --yes should exit 0 (got rc=$rc13, out: $out13)"
+grep -qF "$override_home13" <<<"$out13" || fail "13: expected the guidance to print the KNOWLEDGE_SEARCH_BM_HOME override path (got: $out13)"
+grep -qF "$default_home13" <<<"$out13" && fail "13: guidance must NOT print the XDG_STATE_HOME fallback when KNOWLEDGE_SEARCH_BM_HOME is set (got: $out13)"
+
+sandbox_down
+echo "PASS: 13 (backend-home guidance honors an explicit KNOWLEDGE_SEARCH_BM_HOME override)"
 
 echo
 echo "ALL PASS: test_uninstall.sh"

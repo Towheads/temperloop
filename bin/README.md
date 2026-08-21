@@ -64,10 +64,10 @@ it already. (A pre-v0.19.0 install also symlinked a `foundation` compat
 shim; that is no longer created.) No shell-rc
 edits, no `sudo`.
 
-Uninstalling is layered across **six separate scopes** — most people only
+Uninstalling is layered across **seven separate scopes** — most people only
 ever need `temperloop uninstall` (the machine-surface install) or
 `temperloop eject` (undoing `init` in a target repo); see § Uninstall below
-for the full breakdown and the other four.
+for the full breakdown and the other five.
 
 ## Quickstart: testbed → first epic → promote → adopt
 
@@ -213,7 +213,7 @@ Background you don't need for the quickstart above, but will if you're
 uninstalling, auditing what `gh` calls get logged, or running this CLI
 across more than one client/engagement.
 
-### Uninstall — six separate scopes, don't conflate them
+### Uninstall — seven separate scopes, don't conflate them
 
 | Scope | What it undoes | How |
 |---|---|---|
@@ -223,6 +223,7 @@ across more than one client/engagement.
 | (d) **Issue-cache store root** | `${CACHE_STORE_ROOT:-${XDG_CACHE_HOME:-$HOME/.cache}/temperloop}` — created by `temperloop install`, grown by ongoing board cache reads/refreshes; deliberately **not** tracked by the manifest (it's regenerable cache, not install state, so "restore its original content" is the wrong verb for it) | manual, optional: `rm -rf "${CACHE_STORE_ROOT:-${XDG_CACHE_HOME:-$HOME/.cache}/temperloop}"` |
 | (e) **First-epic substrate** | default-branch protection, head-branch auto-delete, the merge-queue disposition, any scaffolded CI workflow, and the recorded `§ Principles` disposition — applied by the **first epic** via `/assess --epic N` → `/build`, never by `init`, so none of it is in scope (c)'s manifest and **`temperloop eject` does not revert it** | manual: repo **Settings → Branches** (and delete the generated workflow file); step-by-step in [`docs/features/engineering-principles.md` § Uninstall / removal](../docs/features/engineering-principles.md) |
 | (f) **Machine-scoped testbed record** | pointers to testbed repositories `temperloop testbed` created in **your own GitHub account**, recorded in `${XDG_STATE_HOME:-$HOME/.local/state}/temperloop/testbed-record.json` (`workflows/scripts/testbed/record.sh`) — a live remote repository, not a local file/symlink, so it's deliberately **not** folded into scope (b)'s manifest | `temperloop uninstall` **names** any repo the record still shows and prints the exact `temperloop testbed --teardown` command for each — print-only, it never deletes the repo or the record entry itself: `temperloop testbed --teardown --repo OWNER/NAME` |
+| (g) **Knowledge-search backend home** | `${KNOWLEDGE_SEARCH_BM_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/foundation/basic-memory-home}` (`workflows/scripts/lib/knowledge_search.sh`'s `_ks_bm_home`) — the pinned `basic-memory` uv tool, uv's own cache and any managed CPython it downloaded, and the derived search index, all pinned inside that one directory. `temperloop install` never writes it: it appears lazily, on a host that has `uv`, the first time `make doctor` or an `ks_search` needs it. Deliberately **not** tracked by the manifest for scope (d)'s reason — it's regenerable tool state, not install state, and not your notes either (the knowledge **store** is a separate directory under `$XDG_DATA_HOME` that `temperloop uninstall` also never touches) | manual, optional: `rm -rf "${KNOWLEDGE_SEARCH_BM_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/foundation/basic-memory-home}"` — safe, but the next search re-downloads an interpreter and rebuilds a ~380 MB virtualenv. `temperloop uninstall` **names** the tree and prints this command whenever it is actually on disk, and says nothing about it when it is not |
 
 Scope (e) is the one to read twice, because it is the only scope with no
 command behind it. Since the `init` scope-down, `init` itself writes no API
@@ -256,7 +257,9 @@ guidance for scope (d) (the cache store root) and a reminder to run
 plus, when the testbed record (scope (f)) still shows a live testbed repo,
 its `owner/name` and the exact `temperloop testbed --teardown` command to
 remove it; it says nothing about scope (f) at all when the record is empty
-or absent.
+or absent. Scope (g) (the knowledge-search backend home) prints on that same
+present-or-silent rule: named, with its `rm -rf`, whenever the tree exists —
+nothing at all on a host that never grew one.
 
 `temperloop uninstall` reads **only** its manifest: it removes every path it
 created and restores every preexisting path it backed up from that exact

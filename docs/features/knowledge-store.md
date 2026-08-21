@@ -255,6 +255,22 @@ deliberately:
   provide. When it genuinely cannot install, the call degrades with the usual
   `skipped — knowledge_search unavailable: …` line on stderr and exit 3.
 
+**Removing it — uninstall scope (g).** Because nothing in that home is
+manifest-recorded, `temperloop uninstall` never removes it, and neither does
+anything else: it is written lazily by the two callers above and then simply
+stays. That is a deliberate disposition, not an oversight (temperloop#1658)
+— every byte is regenerable from the pin, so it is not install state to
+restore and not user data to preserve; keeping it only avoids re-downloading
+an interpreter and rebuilding the ~380 MB virtualenv on the next search. It
+is disclosed rather than silent: it is scope **(g)** of
+[`bin/README.md`](../../bin/README.md) § Uninstall, and `temperloop
+uninstall` itself names the tree and prints
+`rm -rf "$KNOWLEDGE_SEARCH_BM_HOME"` whenever it is on disk (and nothing at
+all when it is not — a host with no `uv` never grows one). Your notes are
+not in there: the knowledge **store** is a separate directory under
+`$XDG_DATA_HOME`, which `temperloop uninstall` also never touches, for the
+opposite reason (it *is* user data — ADR 0003).
+
 **Upgrades follow the pin.** The installed version *and* interpreter are
 stamped beside the entry point and re-checked on every call, so bumping
 `KNOWLEDGE_SEARCH_BM_VERSION` or `KNOWLEDGE_SEARCH_BM_PYTHON` re-installs on

@@ -63,9 +63,11 @@ the gap is never silent.
 
 ## Integration
 
-Three separate removal scopes now exist, and neither doc nor code
-conflates them — `bin/README.md`'s Uninstall section and `eject.sh`'s own
-`print_uninstall_bullet()` both state the same table:
+Several separate removal scopes now exist, and neither doc nor code
+conflates them — `bin/README.md`'s Uninstall section carries the full,
+canonical table (seven scopes as of temperloop#1658); `eject.sh`'s own
+`print_uninstall_bullet()` restates the subset a target-repo operator needs.
+The three this subcommand was born to delineate:
 
 - **(a) Bootstrap footprint** — manual `rm`, documented but not automated
   (see "How it works" above for why).
@@ -77,6 +79,27 @@ conflates them — `bin/README.md`'s Uninstall section and `eject.sh`'s own
   `init.sh`/reader `eject.sh`) from the machine-scoped manifest this item
   reverses — see `manifest.sh`'s own header for why the two are never
   merged or cross-read.
+
+Later scopes were added the same way — a `print_*_bullet()` here, a table
+row in `bin/README.md`, never a silent extension of what (b) removes. The
+newest is **(g) the knowledge-search backend home**
+(`${KNOWLEDGE_SEARCH_BM_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/foundation/basic-memory-home}`,
+temperloop#1658): the pinned `basic-memory` uv tool, uv's own cache and any
+managed CPython it downloaded, and the derived search index. `temperloop
+install` never writes it — it is materialised lazily, and only on a host
+that has `uv`, by `doctor.sh`'s advisory `check_bm_tool_install` or by the
+first `ks_search`. It is regenerable tool state rather than install state
+(so, like scope (d), "restore its original content" is the wrong verb for
+it) and it is not user data either, so it is neither manifest-recorded nor
+removed. `print_bm_tool_home_bullet()` names it and prints its `rm -rf`
+**whenever the tree is actually on disk**, and prints nothing at all when it
+is not — scope (f)'s "say nothing when there is nothing to say" posture
+rather than scopes (a)/(d)'s unconditional one, because a host with no `uv`
+never grows one. That coupling is asserted end-to-end, not by review:
+`workflows/scripts/tests/test_install_lifecycle.sh` case 7f fails if the
+tree survives uninstall and the uninstall output did not name it by its real
+path — so the exclusion case 7c declares can never quietly become an
+*undisclosed* one.
 
 `temperloop uninstall` is dispatched exactly like every other subcommand —
 a discovered file at `bin/subcommands/uninstall.sh`, no dispatcher edit

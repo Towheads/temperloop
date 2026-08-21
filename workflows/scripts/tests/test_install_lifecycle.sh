@@ -371,9 +371,50 @@ EXCL_XDG_CONFIG=""
 # all before install. This is manifest.sh's own documented contract (see
 # its header's "Re-install convergence" note and manifest_remove_path_entry
 # — it deletes a KEY, never the file), not a leak: a future re-install
-# should find, not recreate, this same state file. Declared here as the one
-# expected exclusion for this root.
-EXCL_XDG_STATE="temperloop/install-manifest.json"
+# should find, not recreate, this same state file.
+#
+# SECOND declared exclusion (temperloop#1658): the knowledge-search backend
+# home, `foundation/basic-memory-home/` — knowledge_search.sh's
+# _ks_bm_home(), i.e. ${KNOWLEDGE_SEARCH_BM_HOME:-$XDG_STATE_HOME/foundation/
+# basic-memory-home}. `temperloop install` never writes a byte of it. It is
+# materialised LATER, by whichever of two callers gets there first: step 3's
+# own `doctor.sh` run (check_bm_tool_install — advisory, pre-warms the pin)
+# or the first `ks_search` on a host that never ran doctor
+# (_ks_bm_ensure_tool's lazy arm). Both drive `uv tool install
+# basic-memory==<pin>` with HOME/UV_TOOL_DIR/UV_TOOL_BIN_DIR/UV_CACHE_DIR/
+# UV_PYTHON_INSTALL_DIR all pinned INSIDE this one directory, so the whole
+# tree — the venv under uv-tools/, the entry-point shims under uv-tool-bin/,
+# uv's own cache and any managed CPython it downloads, and basic-memory's
+# derived search index under .basic-memory/ — is one unit with one
+# disposition.
+#
+# The disposition is DELIBERATELY-UNMANAGED, REGENERABLE TOOL STATE — the
+# same call EXCL_XDG_CACHE below makes for the cache-store root, and for the
+# same reason: it is not install state, so "restore its original content" is
+# the wrong verb for it, and `temperloop uninstall` (which touches only
+# manifest-recorded paths) correctly never removes it. It is NOT declared
+# user data either — unlike the knowledge store (7d/EXCL_XDG_DATA) nothing in
+# here is authored by a human; every byte is rebuildable from the pin. The
+# reason it is kept rather than removed is cost: rebuilding it re-downloads
+# an interpreter and a ~380 MB virtualenv (see docs/features/
+# knowledge-store.md § The pin is INSTALLED, not resolved per run).
+#
+# THE EXCLUSION IS NOT THE DISPOSAL — it is only the test's half of it. The
+# operator-facing half is scope (g) of bin/README.md's Uninstall table, which
+# `temperloop uninstall` itself prints (uninstall.sh's
+# print_bm_tool_home_bullet) whenever the tree is actually on disk. Test 7f
+# below asserts that coupling directly, so this exclusion can never quietly
+# become an UNDISCLOSED one.
+#
+# Named, never wildcarded: this is one directory, spelled out. Every other
+# path under $XDG_STATE_HOME — including a future producer's state, the class
+# temperloop#760/#1042 track — still fails 7c.
+EXCL_XDG_STATE="temperloop/install-manifest.json
+foundation/basic-memory-home/*"
+
+# The same directory as a path, for 7f's on-disk probe below. Kept beside the
+# exclusion that names it so the two cannot drift apart.
+BM_TOOL_HOME="$SANDBOX_XDG_STATE_HOME/foundation/basic-memory-home"
 
 # $XDG_DATA_HOME: nothing in links_enumerate(), manifest.sh, or the
 # cache-store provisioning step targets XDG_DATA_HOME at all. The ONE
@@ -413,8 +454,8 @@ sandbox_tree_diff "$BEFORE_DIR/xdg-config.tsv" "$AFTER_DIR/xdg-config.tsv" "$EXC
 pass "7b: \$XDG_CONFIG_HOME is byte-identical before-install vs after-uninstall (the operator-authored wizard-style conf is present and unchanged in both — see test 6)"
 
 sandbox_tree_diff "$BEFORE_DIR/xdg-state.tsv" "$AFTER_DIR/xdg-state.tsv" "$EXCL_XDG_STATE" \
-  || fail "7c: unexplained residue under \$XDG_STATE_HOME beyond the declared install-manifest.json exclusion (see the unified diff above)"
-pass "7c: \$XDG_STATE_HOME residue after uninstall is exactly the declared exclusion (the empty install-manifest.json a full uninstall legitimately leaves behind) — no unexplained residue"
+  || fail "7c: unexplained residue under \$XDG_STATE_HOME beyond the two declared exclusions (install-manifest.json, foundation/basic-memory-home/*) (see the unified diff above)"
+pass "7c: \$XDG_STATE_HOME residue after uninstall is exactly the two declared exclusions (the empty install-manifest.json a full uninstall legitimately leaves behind, and the regenerable knowledge-search backend home) — no unexplained residue"
 
 sandbox_tree_diff "$BEFORE_DIR/xdg-data.tsv" "$AFTER_DIR/xdg-data.tsv" "$EXCL_XDG_DATA" \
   || fail "7d: unexplained residue under \$XDG_DATA_HOME beyond the explicitly-kept knowledge store dir (see the unified diff above)"
@@ -430,6 +471,34 @@ pass "7e: \$XDG_CACHE_HOME residue after uninstall is exactly the declared exclu
 # cannot see an empty directory (see that variable's own comment).
 if [ -d "$SANDBOX_XDG_CACHE_HOME/temperloop" ]; then
   echo "  (info) \$XDG_CACHE_HOME/temperloop still present after uninstall, as declared/expected"
+fi
+
+# ===========================================================================
+# 7f. THE EXCLUSION↔DISCLOSURE COUPLING (temperloop#1658).
+#
+# An exclusion that lives only in this file is the same defect wearing a
+# passing test: the tree stays on the operator's disk and no removal surface
+# ever names it. So EXCL_XDG_STATE's second pattern is not allowed to stand
+# on its own — if the knowledge-search backend home is actually present
+# after uninstall, `temperloop uninstall`'s OWN output must have named it
+# (uninstall.sh's print_bm_tool_home_bullet, scope (g)).
+#
+# HOST-INDEPENDENT BY CONSTRUCTION, which is the other half of #1658. The
+# tree only exists on a host with `uv` on PATH (step 3's doctor run drives
+# the install; without uv it reports UNAVAILABLE and writes nothing), so
+# both arms below are legitimate machine states and BOTH pass — exactly one
+# `pass` line either way. What the two arms differ on is what they were able
+# to prove, and each says so. GitHub's runners have no uv and take the
+# second arm; every workstation with uv takes the first.
+# ===========================================================================
+if [ -d "$BM_TOOL_HOME" ]; then
+  grep -q 'Knowledge-search backend home' <<<"$uninstall_out" \
+    || fail "7f: the knowledge-search backend home is present under \$XDG_STATE_HOME after uninstall, but 'temperloop uninstall' never named it — an excluded-but-undisclosed residue (expected uninstall.sh's scope (g) bullet; got: $uninstall_out)"
+  grep -q "$BM_TOOL_HOME" <<<"$uninstall_out" \
+    || fail "7f: uninstall's scope (g) bullet printed, but not the actual on-disk path ($BM_TOOL_HOME) — an operator cannot act on a bullet that names the wrong tree (got: $uninstall_out)"
+  pass "7f: the knowledge-search backend home survives uninstall (declared in EXCL_XDG_STATE) AND 'temperloop uninstall' names it by its real path as scope (g) — the exclusion is disclosed on the removal surface, not only in this test"
+else
+  pass "7f: no knowledge-search backend home under \$XDG_STATE_HOME after uninstall (no 'uv' on this host, so doctor's check_bm_tool_install reported UNAVAILABLE and wrote nothing) — the declared exclusion is inert here and there is nothing for scope (g) to name"
 fi
 
 # ===========================================================================
