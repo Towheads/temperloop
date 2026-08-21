@@ -82,7 +82,7 @@ board=""
 files=()
 while [ $# -gt 0 ]; do
   case "$1" in
-    --board) board="${2:-}"; shift 2 ;;
+    --board) board="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
     --board=*) board="${1#--board=}"; shift ;;
     -h|--help)
       sed -n '3,40p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'

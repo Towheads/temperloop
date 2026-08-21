@@ -427,6 +427,15 @@ quality-gates scripts/tests/test_lint_pipe_grep_q.sh
 # every macOS host ships. It cost eight consecutive red nightly-macos runs.
 quality-gates scripts/lint-bash32-ctlesc-ifs.sh
 quality-gates scripts/tests/test_lint_bash32_ctlesc_ifs.sh
+# Option-loop `shift 2` lint + its two suites (temperloop#1342) — fourth member
+# of the same family, textual for the same reason: `--flag) v="${2:-}"; shift 2 ;;`
+# inside `while [ $# -gt 0 ]` is valid to shellcheck and to `bash -n`, and merely
+# RUNNING it is not detection either — bash's `shift n` fails when n > $# without
+# shifting, so the loop spins at 100% CPU and a hung gate burns the runner to the
+# job timeout instead of failing. 112 sites across 26 files carried it.
+quality-gates scripts/lint-argloop-shift2.sh
+quality-gates scripts/tests/test_lint_argloop_shift2.sh
+quality-gates workflows/scripts/tests/test_argloop_trailing_flag.sh
 quality-gates scripts/ensure-shellcheck.sh
 quality-gates scripts/tests/test_ensure_shellcheck.sh
 quality-gates workflows/scripts/config/*

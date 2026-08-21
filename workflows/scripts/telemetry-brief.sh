@@ -104,7 +104,7 @@ telemetry_raw_dir_set="${TELEMETRY_RAW_DIR+1}"
 lookback="$TELEMETRY_LOOKBACK_DAYS"
 while [ $# -gt 0 ]; do
   case "$1" in
-    --lookback-days) lookback="${2:-$lookback}"; shift 2 ;;
+    --lookback-days) lookback="${2:-$lookback}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
     *) shift ;;
   esac
 done

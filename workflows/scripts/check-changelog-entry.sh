@@ -236,8 +236,8 @@ usage() {
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --base) BASE="${2:-}"; shift 2 ;;
-    --head) HEAD="${2:-}"; shift 2 ;;
+    --base) BASE="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+    --head) HEAD="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
     -h|--help) usage; exit 0 ;;
     *) echo "check-changelog-entry: unknown argument '$1'" >&2; exit 2 ;;
   esac

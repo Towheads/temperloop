@@ -133,8 +133,8 @@ EOF
 while [ $# -gt 0 ]; do
   case "$1" in
     --confirm-live-writes) CONFIRM=1; shift ;;
-    --repo) repo_override="${2:-}"; shift 2 ;;
-    --slot) slot="${2:-}"; shift 2 ;;
+    --repo) repo_override="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+    --slot) slot="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
     -h|--help) usage; exit 0 ;;
     *) echo "verify-first-epic-consent: unknown argument '$1'" >&2; usage >&2; exit 2 ;;
   esac

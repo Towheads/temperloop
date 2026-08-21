@@ -33,15 +33,15 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --class)
       class="${2:-}"
-      shift 2
+      shift; if [ $# -gt 0 ]; then shift; fi
       ;;
     --root)
       KERNEL_MANIFEST_ROOT="${2:-}"
-      shift 2
+      shift; if [ $# -gt 0 ]; then shift; fi
       ;;
     --manifest)
       KERNEL_MANIFEST_FILE="${2:-}"
-      shift 2
+      shift; if [ $# -gt 0 ]; then shift; fi
       ;;
     *)
       echo "usage: $(basename "$0") [--class kernel|overlay|split] [--root DIR] [--manifest FILE]" >&2

@@ -448,6 +448,37 @@ KERNEL_GATES=(
   # where a real bash 3.2 exists — re-measures the premise itself.
   "bash scripts/lint-bash32-ctlesc-ifs.sh"
   "bash scripts/tests/test_lint_bash32_ctlesc_ifs.sh"
+  # Option-loop `shift 2` guard + its regression (temperloop#1342). Fourth
+  # member of the same STATIC-lint family. Bash's `shift n` FAILS when n > $#
+  # and a FAILED shift does not shift, so `--flag) v="${2:-}"; shift 2 ;;`
+  # inside `while [ $# -gt 0 ]` spins at 100% CPU forever when the flag is the
+  # LAST argument — 112 sites across 26 files carried it, and
+  # `emit-item-efficiency.sh --slug` was confirmed hanging. Nothing else in
+  # this list catches it: every affected file passed shellcheck, and `bash -n`
+  # exits 0 too (the line is syntactically perfect).
+  # A HUNG gate does not FAIL — it burns the runner to the job timeout, so
+  # even running the code is not detection. A LINT rather than only a sweep
+  # because the shape was INDEPENDENTLY RE-DERIVED in brand-new code
+  # (async-workflow-health.sh, temperloop#1297) by a worker that had never seen
+  # the emit-*.sh sites. Its test asserts the lint fires on the VERBATIM
+  # pre-fix emit-item-efficiency.sh line, stays silent on the four correct
+  # shapes a wider rule would have flagged (~58 `${2:?…}` sites, a bare `$2`
+  # under `set -u`, `while [ "$#" -ge 2 ]`, an `if [ $# -lt 2 ]` preflight), and
+  # re-measures its own hang/no-hang premise under a bounded watchdog.
+  "bash scripts/lint-argloop-shift2.sh"
+  "bash scripts/tests/test_lint_argloop_shift2.sh"
+  # The RUNTIME half of the same item: every repaired arg loop is extracted
+  # verbatim from its shipped file and executed with each flag LAST under a 10s
+  # watchdog, plus the five emit-*.sh scripts end-to-end with their raw-lake
+  # sink in a tmpdir. Coverage is DERIVED by grep from the fix idiom (floors:
+  # >= 20 files, >= 100 invocations) so a new adopter is covered without anyone
+  # editing a registry. Bounded on purpose — an UNBOUNDED assertion for this
+  # defect HANGS the suite instead of failing it, which is worse than no test.
+  # Carries its own discrimination control: a reintroduced `shift 2` must be
+  # killed by the watchdog AND turn the lint red. Zero network, nothing written
+  # outside the tmpdir. Same direct-`bash` form as the sibling gates above
+  # (kernel Makefile is generator-owned).
+  "bash workflows/scripts/tests/test_argloop_trailing_flag.sh"
   # Main knowledge_store interface + plain-files backend suite (foundation
   # #771) — root resolution, doc-id normalization, write/read round-trip,
   # --no-clobber, atomic write, list, and (temperloop#1308) the ks_append

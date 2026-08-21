@@ -208,9 +208,9 @@ resolve_cmd() {
   local testbed_repo="" issue="" body_file=""
   while [ $# -gt 0 ]; do
     case "$1" in
-      --testbed-repo) testbed_repo="${2:-}"; shift 2 ;;
-      --issue) issue="${2:-}"; shift 2 ;;
-      --body-file) body_file="${2:-}"; shift 2 ;;
+      --testbed-repo) testbed_repo="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+      --issue) issue="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+      --body-file) body_file="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
       -h | --help) usage; exit 0 ;;
       *) die "unknown argument: $1 (run --help)" ;;
     esac
@@ -266,8 +266,8 @@ report_cmd() {
   local testbed_repo="" state="open"
   while [ $# -gt 0 ]; do
     case "$1" in
-      --testbed-repo) testbed_repo="${2:-}"; shift 2 ;;
-      --state) state="${2:-}"; shift 2 ;;
+      --testbed-repo) testbed_repo="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+      --state) state="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
       -h | --help) usage; exit 0 ;;
       *) die "unknown argument: $1 (run --help)" ;;
     esac

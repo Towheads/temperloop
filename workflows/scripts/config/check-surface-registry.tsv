@@ -157,3 +157,15 @@ workflows/scripts/kernel/check-pr-leak-guard.sh	empty	covered	workflows/scripts/
 workflows/scripts/lint-pr-body.sh	absent	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	lint-pr-body.sh [absent]: exits non-zero, never a silent OK
 workflows/scripts/lint-pr-body.sh	unreadable	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	lint-pr-body.sh [unreadable]: exits non-zero, never a silent OK
 workflows/scripts/lint-pr-body.sh	empty	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	lint-pr-body.sh [empty]: exits non-zero under --require-verification, never a silent OK
+
+# ── lint-argloop-shift2.sh (temperloop#1342) — the option-loop `shift 2` guard.
+#    Registered rather than parked `pending` (that set is shrink-only), and its
+#    fixture seam is the explicit FILE-argument mode the regression suite already
+#    uses. Before the preflight it shipped the exact defect this class names: an
+#    absent/unreadable path made awk write "can't open file" to stderr, left the
+#    captured report EMPTY, and the lint printed OK and exited 0. The injectable
+#    "empty input" for a multi-file lint is an EMPTY RESOLVED FILE SET — a lint
+#    that scanned nothing has established nothing. ─────────────────────────────
+scripts/lint-argloop-shift2.sh	absent	covered	scripts/tests/test_lint_argloop_shift2.sh	an ABSENT input path: exit non-zero (CANNOT EVALUATE), not 0
+scripts/lint-argloop-shift2.sh	unreadable	covered	scripts/tests/test_lint_argloop_shift2.sh	an UNREADABLE input path: exit non-zero (CANNOT EVALUATE), not 0
+scripts/lint-argloop-shift2.sh	empty	covered	scripts/tests/test_lint_argloop_shift2.sh	an EMPTY resolved file set: exit non-zero (CANNOT EVALUATE), not 0

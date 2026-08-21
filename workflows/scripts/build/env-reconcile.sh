@@ -394,7 +394,7 @@ fi
 FORMAT="report"
 while [ $# -gt 0 ]; do
   case "$1" in
-    --format) FORMAT="${2:-}"; shift 2 ;;
+    --format) FORMAT="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
     --format=*) FORMAT="${1#--format=}"; shift ;;
     -h|--help) grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;

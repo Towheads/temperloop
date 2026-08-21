@@ -182,8 +182,8 @@ days=30
 format=json
 while [ $# -gt 0 ]; do
   case "$1" in
-    --days) days="${2:-$days}"; shift 2 ;;
-    --format) format="${2:-$format}"; shift 2 ;;
+    --days) days="${2:-$days}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+    --format) format="${2:-$format}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
     --json) format=json; shift ;;
     -h|--help) sed -n '2,80p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) shift ;;

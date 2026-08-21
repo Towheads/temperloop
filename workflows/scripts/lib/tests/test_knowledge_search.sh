@@ -212,7 +212,7 @@ py=""; spec=""; forced=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --force)  forced=1; shift ;;
-    --python) py="${2:-}"; shift 2 ;;
+    --python) py="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
     *)        spec="$1"; shift ;;
   esac
 done

@@ -158,8 +158,8 @@ cmd_diff() {
   local to="" from=""
   while [ $# -gt 0 ]; do
     case "$1" in
-      --to) to="${2:-}"; shift 2 ;;
-      --from) from="${2:-}"; shift 2 ;;
+      --to) to="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+      --from) from="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
       -h | --help) usage; exit 0 ;;
       *) die "diff: unknown argument: $1 (run --help)" ;;
     esac
@@ -224,9 +224,9 @@ cmd_report() {
   local migrated="" reapplied="" left=""
   while [ $# -gt 0 ]; do
     case "$1" in
-      --migrated) migrated="${2:-}"; shift 2 ;;
-      --reapplied) reapplied="${2:-}"; shift 2 ;;
-      --left) left="${2:-}"; shift 2 ;;
+      --migrated) migrated="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+      --reapplied) reapplied="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+      --left) left="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
       -h | --help) usage; exit 0 ;;
       *) die "report: unknown argument: $1 (run --help)" ;;
     esac
@@ -247,15 +247,15 @@ cmd_record() {
   local issue="" pr="" create_issue=0 title=""
   while [ $# -gt 0 ]; do
     case "$1" in
-      --to) to="${2:-}"; shift 2 ;;
-      --testbed-repo) testbed_repo="${2:-}"; shift 2 ;;
-      --migrated) migrated="${2:-}"; shift 2 ;;
-      --reapplied) reapplied="${2:-}"; shift 2 ;;
-      --left) left="${2:-}"; shift 2 ;;
-      --issue) issue="${2:-}"; shift 2 ;;
-      --pr) pr="${2:-}"; shift 2 ;;
+      --to) to="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+      --testbed-repo) testbed_repo="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+      --migrated) migrated="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+      --reapplied) reapplied="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+      --left) left="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+      --issue) issue="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+      --pr) pr="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
       --create-issue) create_issue=1; shift ;;
-      --title) title="${2:-}"; shift 2 ;;
+      --title) title="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
       -h | --help) usage; exit 0 ;;
       *) die "record: unknown argument: $1 (run --help)" ;;
     esac

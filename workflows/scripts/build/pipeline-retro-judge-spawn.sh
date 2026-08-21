@@ -83,8 +83,8 @@ model=""
 dry_run=0
 while [ $# -gt 0 ]; do
   case "$1" in
-    --board) board="${2:-}"; shift 2 ;;
-    --model) model="${2:-}"; shift 2 ;;
+    --board) board="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+    --model) model="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
     --dry-run) dry_run=1; shift ;;
     -h|--help) sed -n '2,80p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) printf 'pipeline-retro-judge-spawn.sh: unknown arg %s\n' "$1" >&2; exit 2 ;;

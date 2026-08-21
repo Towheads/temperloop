@@ -342,12 +342,12 @@ is_iso_date() { case "$1" in [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) return 
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --since) since="${2:-}"; [ -n "$since" ] || { echo "pipeline-spend-report: --since needs a YYYY-MM-DD value" >&2; usage >&2; exit 2; }; shift 2 ;;
-    --until) until_="${2:-}"; [ -n "$until_" ] || { echo "pipeline-spend-report: --until needs a YYYY-MM-DD value" >&2; usage >&2; exit 2; }; shift 2 ;;
-    --run)   run_filter="${2:-}"; [ -n "$run_filter" ] || { echo "pipeline-spend-report: --run needs a workflow id" >&2; usage >&2; exit 2; }; shift 2 ;;
-    --root)  root="${2:-}"; [ -n "$root" ] || { echo "pipeline-spend-report: --root needs a directory" >&2; usage >&2; exit 2; }; shift 2 ;;
-    --format) format="${2:-}"; shift 2 ;;
-    --top)   top_runs="${2:-}"; shift 2 ;;
+    --since) since="${2:-}"; [ -n "$since" ] || { echo "pipeline-spend-report: --since needs a YYYY-MM-DD value" >&2; usage >&2; exit 2; }; shift; if [ $# -gt 0 ]; then shift; fi ;;
+    --until) until_="${2:-}"; [ -n "$until_" ] || { echo "pipeline-spend-report: --until needs a YYYY-MM-DD value" >&2; usage >&2; exit 2; }; shift; if [ $# -gt 0 ]; then shift; fi ;;
+    --run)   run_filter="${2:-}"; [ -n "$run_filter" ] || { echo "pipeline-spend-report: --run needs a workflow id" >&2; usage >&2; exit 2; }; shift; if [ $# -gt 0 ]; then shift; fi ;;
+    --root)  root="${2:-}"; [ -n "$root" ] || { echo "pipeline-spend-report: --root needs a directory" >&2; usage >&2; exit 2; }; shift; if [ $# -gt 0 ]; then shift; fi ;;
+    --format) format="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+    --top)   top_runs="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
     --by-agent-type) by_agent_type=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "pipeline-spend-report: unknown arg: $1" >&2; usage >&2; exit 2 ;;
