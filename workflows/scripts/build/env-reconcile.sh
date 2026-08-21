@@ -123,6 +123,49 @@
 #                            class whenever the tree is dirty or the verdict is
 #                            unestablished.
 #
+#   harness agent worktree   <checkout>/.claude/worktrees/agent-<id> — the
+#   (temperloop#1405)        SECOND worktree layout, created by Claude Code's
+#                            own agent isolation (`isolation: "worktree"`)
+#                            INSIDE the checkout, untracked, on a machine-made
+#                            `worktree-agent-<id>` branch with no PR behind it.
+#                            Its own named class, ONE token, four reasons:
+#                            HARNESS_WORKTREE:ACTIVE
+#                                              younger than
+#                                              $STALE_UNTRACKED_DAYS — an agent
+#                                              may still be working in it.
+#                                              Reported on its own `HARNESS`
+#                                              line, NEVER counted as drift.
+#                            HARNESS_WORKTREE:STALE
+#                                              past the horizon and CLEAN — the
+#                                              only removable one. Its finding
+#                                              carries the exact removal command
+#                                              (directory AND the leftover
+#                                              branch).
+#                            HARNESS_WORKTREE:STALE_DIRTY
+#                            HARNESS_WORKTREE:STALE_UNCERTAIN
+#                                              past the horizon but carrying
+#                                              uncommitted work / unprobeable.
+#                                              REPORT ONLY, same rule as
+#                                              DIRTY_WORKTREE above.
+#                            Scanned under every cron+operator checkout that
+#                            HAS a $HARNESS_WT_SUBDIR directory (a checkout can
+#                            host these without ever having had a <repo>.wt/).
+#
+#                            Why a class of its own, not a reason folded into
+#                            the three above: nothing reaps these, their branch
+#                            never had a PR, and the remedy differs — so the
+#                            operator needs to know WHICH kind of worktree they
+#                            are looking at. Before this, they were not scanned
+#                            at all and instead surfaced as the parent
+#                            checkout's opaque `DIRTY` / `STALE_UNTRACKED:
+#                            .claude/worktrees/` — a remedy-less class that told
+#                            a reader something was there but not what to do,
+#                            and MASKED any real drift beside it (both observed
+#                            live 2026-08-13). Those parent-level classes now
+#                            exclude this path (_status_porcelain_sans_harness)
+#                            precisely BECAUSE it is classified here; every
+#                            other dirty path still reports DIRTY.
+#
 #   launchd agent            each infra/launchd/*.plist declared beside a
 #                            checkout above. Drift:
 #                              AGENT_UNLOADED  declared AND installed on THIS
@@ -214,7 +257,14 @@
 #   ENV_RECONCILE_CRON_CHECKOUTS
 #   ENV_RECONCILE_OPERATOR_CHECKOUTS
 #   ENV_RECONCILE_LAUNCHD_DIRS
-#   ENV_RECONCILE_STALE_UNTRACKED_DAYS      (default 7)
+#   ENV_RECONCILE_STALE_UNTRACKED_DAYS      (default 7 — also the staleness
+#                                            horizon for a harness agent
+#                                            worktree, ACTIVE vs STALE)
+#   ENV_RECONCILE_HARNESS_WT_SUBDIR         (default .claude/worktrees — the
+#                                            checkout-relative directory the
+#                                            harness creates its agent
+#                                            worktrees under, #1405. No
+#                                            trailing slash.)
 #   ENV_RECONCILE_AGENT_HEARTBEAT_DIR       (default $XDG_STATE_HOME/foundation/
 #                                            agent-heartbeat — dir of <label>.ran
 #                                            markers the jobs write on success)
@@ -404,6 +454,14 @@ case "$FORMAT" in report|entry) ;; *) echo "unknown --format: $FORMAT (report|en
 
 # ── Tunables (env-overridable) ────────────────────────────────────────────────
 STALE_UNTRACKED_DAYS="${ENV_RECONCILE_STALE_UNTRACKED_DAYS:-7}"
+# Harness agent worktrees (temperloop#1405). Claude Code's own agent isolation
+# (`isolation: "worktree"`) creates worktrees under
+# <checkout>/.claude/worktrees/agent-<id>/ — INSIDE the checkout and untracked,
+# a different layout from the <repo>.wt/<slug> one worktree.sh uses. Relative to
+# a checkout root, and carries NO trailing slash (each consumer appends its
+# own). Overridable so a host whose harness writes elsewhere is still scanned
+# rather than silently unclassified.
+HARNESS_WT_SUBDIR="${ENV_RECONCILE_HARNESS_WT_SUBDIR:-.claude/worktrees}"
 AGENT_DEFAULT_CADENCE_S="${ENV_RECONCILE_AGENT_DEFAULT_CADENCE_S:-86400}"
 # Heartbeat markers: the reliable freshness signal (#1173). A launchd job touches
 # $AGENT_HEARTBEAT_DIR/<label>.ran on SUCCESSFUL completion; env-reconcile reads
@@ -658,6 +716,36 @@ _behind_origin_default() {
   fi
 }
 
+# ── _status_porcelain_sans_harness <repo> ─────────────────────────────────────
+# The checkout's `git status --porcelain` with every entry under
+# $HARNESS_WT_SUBDIR/ dropped (temperloop#1405).
+#
+# WHY. Harness agent worktrees live INSIDE the checkout and are untracked, so
+# any checkout that had ever run an `isolation: "worktree"` agent reported a
+# bare DIRTY (cron role) or STALE_UNTRACKED:.claude/worktrees/ (operator role) —
+# an opaque class with no remedy pointer that MASKED whatever real drift sat
+# beside it (both observed live 2026-08-13). Those worktrees are classified in
+# their own right by classify_worktree's harness arm now, so counting them again
+# here is double-reporting, not detection.
+#
+# ONLY that one path prefix is dropped, and only when it is the ENTRY's own
+# path: every other dirty or untracked path still reaches the caller, so a
+# genuinely dirty checkout still reports DIRTY. A coarser collapse (git
+# reporting `?? .claude/` because nothing under it is tracked) deliberately does
+# NOT match — swallowing that would hide real untracked files like
+# .claude/settings.local.json.
+_status_porcelain_sans_harness() {
+  local repo="$1"
+  git -C "$repo" status --porcelain 2>/dev/null | awk -v p="${HARNESS_WT_SUBDIR}/" '
+    {
+      path = substr($0, 4)          # porcelain v1: two status chars + one space
+      sub(/^"/, "", path)           # unquote a path git had to escape
+      if (substr(path, 1, length(p)) == p) next
+      print
+    }
+  '
+}
+
 # ── classify_cron_checkout <repo> ─────────────────────────────────────────────
 # Prints zero or more space-separated class tokens (empty = OK).
 classify_cron_checkout() {
@@ -668,7 +756,9 @@ classify_cron_checkout() {
   branch="$(current_branch_of "$repo")" || branch=""
   default="$(default_branch_of "$repo")" || default="main"
 
-  if [ -n "$(git -C "$repo" status --porcelain 2>/dev/null)" ]; then
+  # Harness agent worktrees are excluded here — they carry their own named class
+  # (temperloop#1405); see _status_porcelain_sans_harness.
+  if [ -n "$(_status_porcelain_sans_harness "$repo")" ]; then
     classes="${classes}DIRTY "
   fi
 
@@ -814,7 +904,9 @@ classify_operator_checkout() {
     if [ "$age_days" -gt "$STALE_UNTRACKED_DAYS" ]; then
       classes="${classes}STALE_UNTRACKED:${f} "
     fi
-  done < <(git -C "$repo" status --porcelain 2>/dev/null | awk '/^\?\?/{ sub(/^\?\? /,""); print }')
+    # Same harness-worktree exclusion as the cron role's DIRTY test above
+    # (temperloop#1405) — .claude/worktrees/ is classified in its own right.
+  done < <(_status_porcelain_sans_harness "$repo" | awk '/^\?\?/{ sub(/^\?\? /,""); print }')
 
   # An out-of-date VENDORED guard hook — the consumer is running protections the
   # kernel has since widened (see the "Vendored-hook drift" block in the header).
@@ -954,15 +1046,99 @@ _worktree_verdict() {
   esac
 }
 
+# ── Harness agent worktrees (temperloop#1405) ─────────────────────────────────
+# _is_harness_worktree <wt_abs> — true iff the path sits under some checkout's
+# $HARNESS_WT_SUBDIR. Keyed on the PATH LAYOUT, deliberately never on the branch
+# name: `worktree-agent-<id>` is only the harness's current convention, and
+# classifying a worktree from a naming convention is precisely the mistake
+# temperloop#658 removed from this same function.
+_is_harness_worktree() {
+  case "$1" in
+    */"$HARNESS_WT_SUBDIR"/*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# _harness_worktree_age_days <wt_abs> — whole days since the worktree directory
+# was last touched. FAIL-OPEN: an un-stat-able path reads as age 0, which routes
+# to ACTIVE below — i.e. informational, never drift and never a removal
+# suggestion. Guessing "old" from a failed stat is the one error that could cost
+# someone their work.
+_harness_worktree_age_days() {
+  local m now
+  m="$(file_mtime "$1")"
+  case "$m" in ''|*[!0-9]*) printf '0'; return 0 ;; esac
+  [ "$m" -gt 0 ] || { printf '0'; return 0; }
+  now="$(now_epoch)"
+  printf '%s' "$(( (now - m) / 86400 ))"
+}
+
+# _harness_worktree_verdict <slug> <dirt> <age_days> — the ONE place a harness
+# worktree becomes an emitted CLASS. It is its OWN named class rather than a
+# reason folded into LEAKED_WORKTREE/DIRTY_WORKTREE, because its remedy is
+# different: nothing reaps these, the branch is `worktree-agent-<id>` with no PR
+# behind it, and an operator reading the report needs to know that before acting.
+# Two axes:
+#   AGE   younger than $STALE_UNTRACKED_DAYS ⇒ ACTIVE. A live agent may still be
+#         working in there, so this is informational, never counted as drift —
+#         flagging every running agent would just re-create, one layer down, the
+#         same noise this class exists to remove.
+#   DIRT  past the horizon, only a CONFIRMED-CLEAN tree is ever handed to a
+#         consumer as removable (STALE); uncommitted work downgrades to
+#         STALE_DIRTY and an unprobeable tree to STALE_UNCERTAIN, both
+#         report-only. Same never-remove-on-an-unestablished-verdict rule
+#         _worktree_verdict enforces for the <repo>.wt layout.
+_harness_worktree_verdict() {
+  local slug="$1" dirt="$2" age_days="$3"
+  if [ "$age_days" -le "$STALE_UNTRACKED_DAYS" ]; then
+    printf 'HARNESS_WORKTREE:ACTIVE:%s' "$slug"
+    return 0
+  fi
+  case "$dirt" in
+    clean) printf 'HARNESS_WORKTREE:STALE:%s' "$slug" ;;
+    dirty) printf 'HARNESS_WORKTREE:STALE_DIRTY:%s' "$slug" ;;
+    *) printf 'HARNESS_WORKTREE:STALE_UNCERTAIN:%s' "$slug" ;;
+  esac
+}
+
+# _harness_worktree_remedy <repo> <wt_abs> — the copy-pasteable removal command
+# a STALE finding line carries. It names the leftover `worktree-agent-<id>`
+# branch when git still records one: those branches are the second, invisible
+# half of the leak (they survive the directory), so a remedy that removed only
+# the directory would leave the report clean and the repo still accumulating.
+_harness_worktree_remedy() {
+  local repo="$1" wt="$2" branch
+  if branch="$(_worktree_branch_of "$repo" "$wt")" && [ -n "$branch" ]; then
+    printf 'git -C %s worktree remove %s && git -C %s branch -D %s' \
+      "$repo" "$wt" "$repo" "$branch"
+  else
+    printf 'git -C %s worktree remove %s && git -C %s worktree prune' \
+      "$repo" "$wt" "$repo"
+  fi
+}
+
 # ── classify_worktree <repo> <wt_dir> ─────────────────────────────────────────
 # <repo> is the PARENT checkout root (without .wt); <wt_dir> is the
-# <repo>.wt/<slug> directory being examined.
+# <repo>.wt/<slug> — or <repo>/$HARNESS_WT_SUBDIR/agent-<id> — directory being
+# examined.
 classify_worktree() {
   local repo="$1" wt="$2" slug branch wt_abs merged state dirt
   slug="$(basename "$wt")"
 
   wt_abs="$(cd "$wt" 2>/dev/null && pwd -P)" || wt_abs="$wt"
   dirt="$(_worktree_dirt_state "$wt_abs")"
+
+  # HARNESS-LAYOUT ARM (temperloop#1405) — ahead of the <repo>.wt tests below,
+  # and additive to them. A harness agent worktree sits on a machine-made
+  # `worktree-agent-<id>` branch that never had a PR, so the registered /
+  # branch-gone / merged / PR-state ladder underneath says nothing useful about
+  # it; run through that ladder it fell out the bottom as OK while the parent
+  # checkout reported an opaque, remedy-less DIRTY on its behalf. It gets its
+  # own named class instead, so real drift stops hiding among these.
+  if _is_harness_worktree "$wt_abs"; then
+    _harness_worktree_verdict "$slug" "$dirt" "$(_harness_worktree_age_days "$wt_abs")"
+    return 0
+  fi
 
   if ! git -C "$repo" worktree list --porcelain 2>/dev/null | grep -xF "worktree $wt_abs" >/dev/null; then
     _worktree_verdict ORPHANED "$slug" "$dirt"
@@ -1241,6 +1417,23 @@ while [ "$_i" -lt "${#OPERATOR_CHECKOUTS[@]}" ]; do
   [ -d "${_c}.wt" ] && WT_ROOTS+=("$_c")
 done
 
+# The SECOND worktree layout (temperloop#1405): checkouts that host harness
+# agent worktrees under $HARNESS_WT_SUBDIR. A separate root list, not a filter
+# on WT_ROOTS — a checkout can host harness worktrees without ever having had a
+# <repo>.wt/ directory, and both of the live instances in #1405 were exactly
+# that shape.
+declare -a HARNESS_WT_ROOTS=()
+_i=0
+while [ "$_i" -lt "${#CRON_CHECKOUTS[@]}" ]; do
+  _c="${CRON_CHECKOUTS[$_i]}"; _i=$((_i + 1))
+  [ -d "${_c}/${HARNESS_WT_SUBDIR}" ] && HARNESS_WT_ROOTS+=("$_c")
+done
+_i=0
+while [ "$_i" -lt "${#OPERATOR_CHECKOUTS[@]}" ]; do
+  _c="${OPERATOR_CHECKOUTS[$_i]}"; _i=$((_i + 1))
+  [ -d "${_c}/${HARNESS_WT_SUBDIR}" ] && HARNESS_WT_ROOTS+=("$_c")
+done
+
 # Resolve once (#531): does THIS host own the cron-checkout role? On a
 # non-owning host a cron checkout that is simply not present here is
 # EXPECTED_ELSEWHERE, not ABSENT — the absence is the owning host's concern.
@@ -1372,6 +1565,42 @@ while [ "$_i" -lt "${#WT_ROOTS[@]}" ]; do
       esac
     fi
   done < <(find "${c}.wt" -mindepth 1 -maxdepth 1 -type d 2>/dev/null)
+done
+
+# ── Harness agent worktrees (temperloop#1405) ────────────────────────────────
+# The second layout, scanned into the same WT_LINES section so an operator reads
+# every worktree in one place. Each finding carries a REMEDY POINTER, because
+# the whole defect being fixed here is that these surfaced as an opaque parent
+# DIRTY telling the reader something was there but never what to do about it.
+_i=0
+while [ "$_i" -lt "${#HARNESS_WT_ROOTS[@]}" ]; do
+  c="${HARNESS_WT_ROOTS[$_i]}"; _i=$((_i + 1))
+  while IFS= read -r wt; do
+    [ -n "$wt" ] || continue
+    wt_checked=$((wt_checked + 1))
+    cls="$(classify_worktree "$c" "$wt")"
+    case "$cls" in
+      HARNESS_WORKTREE:ACTIVE:*)
+        # Named, but NOT drift: a live agent may still be working in there.
+        WT_LINES="${WT_LINES}  HARNESS      $wt  [${cls}]"$'\n'
+        ;;
+      HARNESS_WORKTREE:STALE:*)
+        WT_LINES="${WT_LINES}  DRIFT        $wt  [${cls}]"$'\n'
+        add "- ⚠️ stale harness agent worktree (clean tree, safe to remove): $wt — ${cls}" drift
+        add "  - remedy — remove it and its leftover branch: \`$(_harness_worktree_remedy "$c" "$wt")\`"
+        ;;
+      HARNESS_WORKTREE:*)
+        WT_LINES="${WT_LINES}  DRIFT        $wt  [${cls}]"$'\n'
+        add "- ⚠️ stale harness agent worktree with unsaved or unprobeable work — REPORT ONLY, never remove: $wt — ${cls}" drift
+        add "  - remedy — inspect before disposing: \`git -C $wt status\`"
+        ;;
+      *)
+        # Unreachable while the harness arm owns this layout; kept so a future
+        # classifier change degrades to a visible line, never a silent drop.
+        WT_LINES="${WT_LINES}  OK           $wt"$'\n'
+        ;;
+    esac
+  done < <(find "${c}/${HARNESS_WT_SUBDIR}" -mindepth 1 -maxdepth 1 -type d 2>/dev/null)
 done
 
 AGENT_LINES=""
