@@ -16,9 +16,11 @@
 # $XDG_CONFIG_HOME/temperloop/ a human hand-edited after install — see
 # bin/README.md's Uninstall section for the worked example).
 #
-# FIVE SEPARATE REMOVAL SCOPES (bin/README.md § Uninstall has the full
+# SEVEN SEPARATE REMOVAL SCOPES (bin/README.md § Uninstall has the full
 # table; eject.sh's print_uninstall_bullet prints the same delineation) —
-# this subcommand is exactly the SECOND one:
+# this subcommand is exactly the SECOND one. Six of the seven are listed
+# below; scope (e), the first-epic substrate, has no script behind it and
+# this file has never printed anything about it (see (f)'s own note):
 #   (a) the bootstrap footprint (~/.local/bin/temperloop + the `foundation`
 #       compat shim + ~/.local/share/temperloop) — written by
 #       bin/bootstrap.sh BEFORE any manifest existed, so this manifest
@@ -61,6 +63,27 @@
 #       and never removes the record entry either (removing the pointer
 #       without removing the repo would convert a recoverable artifact into
 #       an unrecoverable one).
+#   (g) the knowledge-search backend home
+#       (${KNOWLEDGE_SEARCH_BM_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/
+#       foundation/basic-memory-home}, workflows/scripts/lib/
+#       knowledge_search.sh's _ks_bm_home) — the pinned `basic-memory` uv
+#       tool, uv's own cache and any managed CPython it downloaded, and the
+#       derived search index, all pinned inside that ONE directory
+#       (temperloop#1113 made it an installed tool; temperloop#1658 gave the
+#       residue a disposition). DELIBERATELY not folded into the manifest
+#       above, for the same reason as scope (d): `temperloop install` never
+#       writes a byte of it — it is materialised later and lazily, by
+#       `doctor.sh`'s advisory check_bm_tool_install or by the first
+#       `ks_search` on a host that never ran doctor — and every byte is
+#       regenerable from the pin, so "restore its original content" is the
+#       wrong verb for it. Not user data either (nothing in it is
+#       human-authored, unlike the knowledge STORE, which this script also
+#       never touches); it is kept rather than removed only because
+#       rebuilding it re-downloads an interpreter and a ~380 MB virtualenv.
+#       Print-only, and — unlike scopes (a)/(d) — printed only when the tree
+#       is really on disk, since a host with no `uv` never grows one
+#       (print_bm_tool_home_bullet below, same "say nothing when there is
+#       nothing to say" posture as scope (f)).
 #
 # Usage:
 #   uninstall.sh [--yes] [--dry-run]
@@ -160,6 +183,53 @@ Issue-cache store root (deliberately unmanaged — not tracked by this
   Created by 'temperloop install' and grown by ongoing board cache reads —
   everything in it is regenerable, so removing it is safe but optional:
   rm -rf "$cache_root"
+EOF
+}
+
+# print_bm_tool_home_bullet — scope (g): the knowledge-search backend home
+# (temperloop#1658). See this file's header for the full disposition
+# rationale; the short version is that it is scope (d)'s twin — regenerable
+# tool state, not install state and not user data — with one difference that
+# changes how it prints.
+#
+# THE DIFFERENCE: scope (d)'s root is created unconditionally by `temperloop
+# install`, so its bullet can always print. This tree is created LAZILY and
+# only where `uv` exists (doctor.sh's advisory check_bm_tool_install, or the
+# first ks_search on a host that never ran doctor). On a host with no uv it
+# never exists at all, and an unconditional "here is your leftover tree"
+# naming a path that was never written would be a false disclosure. So this
+# bullet takes scope (f)'s posture instead: PRINT NOTHING when there is
+# nothing to say. bin/README.md's Uninstall table carries the unconditional
+# half of the disclosure, for a reader who wants to know before running
+# anything.
+#
+# Print-only in the strong sense: this function never removes the tree, and
+# `temperloop uninstall` never does either — it holds no manifest entry, so
+# the manifest's own "a path with NO entry is INVISIBLE" discipline already
+# forbids it. Removing it is the operator's call, and the exact command is
+# printed for them.
+print_bm_tool_home_bullet() {
+  # Same precedence knowledge_search.sh's _ks_bm_home() resolves it with: an
+  # explicit KNOWLEDGE_SEARCH_BM_HOME override wins outright, THEN the
+  # XDG_STATE_HOME/$HOME/.local/state fallback. Printing anything else would
+  # hand an operator who has that knob set a wrong rm -rf path.
+  local bm_home="${KNOWLEDGE_SEARCH_BM_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/foundation/basic-memory-home}"
+  [ -d "$bm_home" ] || return 0
+  cat <<EOF
+Knowledge-search backend home (deliberately unmanaged — not tracked by this
+  manifest, never touched by 'temperloop uninstall'; scope (g) of
+  bin/README.md's Uninstall section):
+  $bm_home
+  The pinned 'basic-memory' uv tool, uv's own cache and any managed CPython
+  it downloaded, and the derived search index. Written lazily on first use
+  (or by 'make doctor'), never by 'temperloop install'. Everything in it is
+  regenerable from the pin, so removing it is safe but optional — the only
+  cost of removing it is that the next search re-downloads an interpreter
+  and rebuilds a ~380 MB virtualenv:
+  rm -rf "$bm_home"
+  (Your notes are NOT in here — the knowledge STORE is a separate directory
+  under \$XDG_DATA_HOME that 'temperloop uninstall' also never touches.)
+
 EOF
 }
 
@@ -290,6 +360,7 @@ if [ "$n_paths" -eq 0 ]; then
   echo
   print_cache_store_bullet
   echo
+  print_bm_tool_home_bullet
   print_eject_reminder
   echo
   print_testbed_record_bullet
@@ -374,6 +445,7 @@ if [ "$n_failed" -eq 0 ]; then
   echo
   print_cache_store_bullet
   echo
+  print_bm_tool_home_bullet
   print_eject_reminder
   echo
   print_testbed_record_bullet
