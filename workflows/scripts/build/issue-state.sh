@@ -118,6 +118,7 @@
 #   $FIXTURE/rebase-<pr>.json           — the pr.sh `rebase` verdict for a BEHIND
 #                                         base: {"outcome":"REBASED","sha":"..."}
 #                                         | {"outcome":"REBASE_CONFLICT"}
+#                                         | {"outcome":"DIRTY_WORKTREE"}
 #   $FIXTURE/ci-poll-rebased-<pr>.json  — the ci-poll.sh verdict returned by the
 #                                         SECOND (rebased-sha-pinned) re-poll,
 #                                         same shape as ci-poll-<pr>.json
@@ -584,6 +585,7 @@ Verdict precedence (first decisive condition wins):
   4. merge_state BEHIND -> rebase (pr.sh rebase) + re-poll (rebased sha):
        clean rebase + green re-poll -> ready:true "rebased"
        rebase conflict              -> ready:false "stale-base-conflict"
+       dirty worktree (not a clash) -> ready:false "dirty-worktree"
   5. otherwise (OPEN, MERGEABLE/CLEAN, CI green) -> ready:true "green-ready"
 
   --dry-run --fixture <dir>   Offline fixture mode (see this file's header
@@ -751,6 +753,12 @@ cmd_reattach() {
     case "$rb_outcome" in
       REBASE_CONFLICT)
         reattach_emit "$repo" "$pr" "$state" "$mergeable" "$merge_state" "$ci" false "stale-base-conflict"
+        return 0 ;;
+      DIRTY_WORKTREE)
+        # NOT a content clash (temperloop#735): pr.sh never started the rebase
+        # because the worktree carries uncommitted tracked-file edits. Reporting
+        # it as "stale-base-conflict" would name work-in-hand as a conflict.
+        reattach_emit "$repo" "$pr" "$state" "$mergeable" "$merge_state" "$ci" false "dirty-worktree"
         return 0 ;;
       NEEDS_UPDATE)
         reattach_emit "$repo" "$pr" "$state" "$mergeable" "$merge_state" "$ci" false "stale-base — needs update"

@@ -9,6 +9,11 @@
 #   - scan: clean commit messages → SCAN_CLEAN; a `Closes #153` commit (the
 #     ec8d5fd class) → SCAN_BLOCKED + offending line + non-zero exit
 #   - base-check: BASE_CURRENT on a current base; BASE_STALE once upstream advances
+#   - rebase (temperloop#735): the dirty-vs-conflict split — a genuine content
+#     clash is REBASE_CONFLICT, an uncommitted tracked-file edit is DIRTY_WORKTREE
+#     (edit preserved, HEAD unmoved, `rebase_needed` telling base==tip from a real
+#     stale base), untracked files are not dirt, and the SAME conflicting fixture
+#     flips between the two outcomes purely on whether the tree is clean
 #   - push: push-by-SHA places the branch on a local bare remote → PUSHED;
 #     non-fast-forward → PUSH_REJECTED + non-zero; --force recovers
 #   - open --body-only: per-entry bare `Closes` emission (gh_issue=278 +
@@ -106,6 +111,8 @@ out="$(bash "$SCRIPT" rebase "$REPO")"
   || fail "rebase did not bring HEAD's base onto the advanced origin/main tip"
 [ "$(jq -r .sha <<<"$out")" = "$(git -C "$REPO" rev-parse HEAD)" ] \
   || fail "REBASED .sha != post-rebase HEAD (got: $out)"
+[ "$(jq -r .rebase_needed <<<"$out")" = "true" ] \
+  || fail "a stale base did not report rebase_needed:true (got: $out)"
 # The cumulative diff vs the new tip is ONLY the worker's own commit (no revert of
 # the intervening merge): exactly one commit ahead of origin/main.
 [ "$(git -C "$REPO" rev-list --count origin/main..HEAD)" -eq 1 ] \
@@ -122,7 +129,62 @@ cur_sha="$(git -C "$REPO" rev-parse HEAD)"
 out="$(bash "$SCRIPT" rebase "$REPO")"
 [ "$(jq -r .outcome <<<"$out")" = "REBASED" ] || fail "current-base rebase not REBASED (got: $out)"
 [ "$(jq -r .sha <<<"$out")" = "$cur_sha" ] || fail "no-op rebase changed HEAD (got: $out)"
-echo "PASS: rebase → REBASED no-op when the worker's base is already current"
+# temperloop#735: base == tip is reported as such — the rebase is SKIPPED, not run.
+[ "$(jq -r .rebase_needed <<<"$out")" = "false" ] \
+  || fail "current-base REBASED did not report rebase_needed:false (got: $out)"
+[ "$(jq -r .base <<<"$out")" = "$(jq -r .tip <<<"$out")" ] \
+  || fail "rebase_needed:false but base != tip (got: $out)"
+echo "PASS: rebase → REBASED no-op (rebase_needed:false) when the worker's base is already current"
+
+# --- rebase: untracked files are NOT dirt ------------------------------------------
+# git rebases straight past untracked files, and every build worktree carries at
+# least the untracked `.build-guard` marker — so an untracked file must never be
+# read as a dirty worktree (temperloop#735).
+printf 'scratch\n' > "$REPO/untracked-scratch.txt"
+out="$(bash "$SCRIPT" rebase "$REPO")"
+[ "$(jq -r .outcome <<<"$out")" = "REBASED" ] \
+  || fail "untracked file read as dirt (got: $out)"
+rm -f "$REPO/untracked-scratch.txt"
+echo "PASS: rebase → REBASED with an untracked file present (untracked ≠ dirty)"
+
+# --- rebase: dirty worktree, base already current → DIRTY_WORKTREE -----------------
+# The temperloop#735 case, verbatim: a FINISHED worker (commit made) that left one
+# tracked file unstaged, on a base that is already current — so no rebase was ever
+# needed and no conflict exists anywhere. git refuses to start the rebase; that
+# refusal must NOT be reported as REBASE_CONFLICT, and the worker's uncommitted
+# edit must be left exactly where it is (this run would otherwise be discarded).
+git -C "$REPO" fetch -q origin
+git -C "$REPO" checkout -q -b dirty-current origin/main
+printf 'committed\n' > "$REPO/worker.txt"
+git -C "$REPO" add worker.txt
+git -C "$REPO" commit -q -m "worker commits worker.txt"
+dirty_sha="$(git -C "$REPO" rev-parse HEAD)"
+printf 'forgotten unstaged edit\n' >> "$REPO/worker.txt"     # the load-bearing leftover
+rc=0; out="$(bash "$SCRIPT" rebase "$REPO" 2>/dev/null)" || rc=$?
+[ "$rc" -ne 0 ] || fail "DIRTY_WORKTREE did not exit non-zero"
+[ "$(jq -r .outcome <<<"$out")" = "DIRTY_WORKTREE" ] \
+  || fail "unstaged-changes refusal not DIRTY_WORKTREE (got: $out)"
+[ "$(jq -r .rebase_needed <<<"$out")" = "false" ] \
+  || fail "DIRTY_WORKTREE on a current base did not report rebase_needed:false (got: $out)"
+[ "$(jq -r .base <<<"$out")" = "$(jq -r .tip <<<"$out")" ] \
+  || fail "the #735 base==tip fact is not visible in the payload (got: $out)"
+[ "$(jq -r .dirty_files <<<"$out")" = "1" ] || fail "dirty_files != 1 (got: $out)"
+jq -e '.dirty_paths | join(" ") | test("worker[.]txt")' <<<"$out" >/dev/null \
+  || fail "the offending path is not named in .dirty_paths (got: $out)"
+# Nothing was attempted, so nothing was aborted: HEAD intact AND the edit intact.
+[ ! -d "$REPO/.git/rebase-merge" ] && [ ! -d "$REPO/.git/rebase-apply" ] \
+  || fail "DIRTY_WORKTREE left a rebase in progress"
+[ "$(git -C "$REPO" rev-parse HEAD)" = "$dirty_sha" ] \
+  || fail "DIRTY_WORKTREE moved HEAD"
+grep -q 'forgotten unstaged edit' "$REPO/worker.txt" \
+  || fail "DIRTY_WORKTREE destroyed the worker's uncommitted edit"
+# Committing the leftover is all it takes: the same tree then rebases clean.
+git -C "$REPO" add worker.txt
+git -C "$REPO" commit -q -m "amend in the leftover"
+out="$(bash "$SCRIPT" rebase "$REPO")"
+[ "$(jq -r .outcome <<<"$out")" = "REBASED" ] \
+  || fail "committing the leftover did not clear DIRTY_WORKTREE (got: $out)"
+echo "PASS: rebase → DIRTY_WORKTREE (rebase_needed:false, edit preserved) on an unstaged-changes refusal"
 
 # --- rebase: conflicting base → REBASE_CONFLICT + abort (worktree left clean) ------
 # A worker that edits the SAME line the intervening merge edited conflicts on
@@ -151,6 +213,29 @@ rc=0; out="$(bash "$SCRIPT" rebase "$REPO" 2>/dev/null)" || rc=$?
 [ "$(cat "$REPO/shared.txt")" = "worker line" ] \
   || fail "conflict abort did not restore the worker's content (silent revert)"
 echo "PASS: rebase → REBASE_CONFLICT aborts the rebase (clean worktree, no silent revert) + non-zero exit"
+
+# --- rebase: the discriminating twin — SAME conflicting base, but dirty -----------
+# Identical repo state to the case just above (a genuine content conflict is
+# waiting), plus an uncommitted tracked-file edit. git refuses BEFORE it can ever
+# reach the conflict, so the honest answer is DIRTY_WORKTREE — even though a real
+# conflict does exist here. Without this pair, a pre-check that simply relabelled
+# every rebase failure would pass the case above just as happily (temperloop#735).
+printf 'worker line\nuncommitted tail\n' > "$REPO/shared.txt"
+rc=0; out="$(bash "$SCRIPT" rebase "$REPO" 2>/dev/null)" || rc=$?
+[ "$rc" -ne 0 ] || fail "dirty-over-conflict did not exit non-zero"
+[ "$(jq -r .outcome <<<"$out")" = "DIRTY_WORKTREE" ] \
+  || fail "dirty tree over a conflicting base not DIRTY_WORKTREE (got: $out)"
+[ "$(jq -r .rebase_needed <<<"$out")" = "true" ] \
+  || fail "DIRTY_WORKTREE on a STALE base did not report rebase_needed:true (got: $out)"
+grep -q 'uncommitted tail' "$REPO/shared.txt" \
+  || fail "dirty-over-conflict destroyed the uncommitted edit"
+# Drop the dirt and the SAME tree reports the genuine conflict again — the
+# conflict path is narrowed, not disabled.
+git -C "$REPO" checkout -q -- shared.txt
+rc=0; out="$(bash "$SCRIPT" rebase "$REPO" 2>/dev/null)" || rc=$?
+[ "$rc" -ne 0 ] && [ "$(jq -r .outcome <<<"$out")" = "REBASE_CONFLICT" ] \
+  || fail "genuine conflict no longer reports REBASE_CONFLICT once the tree is clean (got: $out)"
+echo "PASS: rebase → dirty-over-a-conflicting-base is DIRTY_WORKTREE; clean the tree and it is REBASE_CONFLICT again"
 
 # Restore to a clean detached-from-conflict state for the push tests below, which
 # expect clean-br checked out on the (now twice-advanced) main lineage.

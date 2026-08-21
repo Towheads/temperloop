@@ -838,6 +838,47 @@ console.log(JSON.stringify({ ok: true }));
 "
 
 # ============================================================================
+# TEST 9c: DIRTY_WORKTREE → dirty-worktree escalation (temperloop#735)
+# The finished-worker case: pr.sh reports base == tip (no rebase was needed)
+# and a tracked file left uncommitted. That is NOT a conflict, so it must NOT
+# escalate as rebase-conflict — whose discard-and-respawn disposition would
+# throw the finished work away. It gets its own kind, and the payload keeps the
+# base==tip / dirty_paths evidence so the disposition can be 'commit and
+# re-drive'. The scan/push still never run.
+# ============================================================================
+run_node_case "dirty-worktree: DIRTY_WORKTREE → dirty-worktree escalation (temperloop#735)" "
+$PREAMBLE
+
+setMachinery('item-dw',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/item-dw' },
+  { outcome: 'REVIEW_DIFF' },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'DIRTY_WORKTREE', base: 'x', tip: 'x', rebase_needed: false,
+    dirty_files: 1, dirty_paths: [' M workflows/scripts/config/setting-registry.tsv'] },
+  // No SCAN/PUSH entries — same desync guard as 9b: the item must halt here.
+);
+happyWorker('item-dw');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'item-dw', branch: 'build/item-dw', title: 'Dirty Worktree Item', kind: 'impl' },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+
+if ((result.escalations ?? []).length !== 1)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected 1 escalation: ' + JSON.stringify(result) })); process.exit(0); }
+if (result.escalations[0].kind !== 'dirty-worktree')
+  { console.log(JSON.stringify({ ok: false, reason: 'escalation kind wrong: ' + result.escalations[0].kind })); process.exit(0); }
+if (result.escalations[0].payload?.rebaseOut?.dirty_paths?.length !== 1)
+  { console.log(JSON.stringify({ ok: false, reason: 'dirty_paths evidence not carried into the payload' })); process.exit(0); }
+if ((result.parked ?? []).length !== 0)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected 0 parked: ' + JSON.stringify(result) })); process.exit(0); }
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+# ============================================================================
 # TEST 10: spike kind — skip push/PR/CI, park with null pr/pushed_sha
 # ============================================================================
 run_node_case "spike kind: spike items park with null pr/pushed_sha (no push/PR/CI)" "

@@ -44,8 +44,15 @@
 #   scan       → {"outcome":"SCAN_CLEAN"} |
 #                {"outcome":"SCAN_BLOCKED","matches":[…]} + non-zero exit
 #   base-check → {"outcome":"BASE_CURRENT"|"BASE_STALE","merge_base":…,"tip":…}
-#   rebase     → {"outcome":"REBASED","base":…,"tip":…,"sha":…} |
-#                {"outcome":"REBASE_CONFLICT","base":…,"tip":…} + non-zero exit
+#   rebase     → {"outcome":"REBASED","base":…,"tip":…,"sha":…,"rebase_needed":bool} |
+#                {"outcome":"REBASE_CONFLICT","base":…,"tip":…,"error":…} + non-zero exit |
+#                {"outcome":"DIRTY_WORKTREE","base":…,"tip":…,"rebase_needed":bool,
+#                 "dirty_files":N,"dirty_paths":[…]} + non-zero exit
+#                (DIRTY_WORKTREE = git REFUSED to start the rebase because the
+#                 tree carries uncommitted TRACKED-file edits — a distinct state
+#                 from a content conflict, which REBASE_CONFLICT now means and
+#                 only means; rebase_needed=false says base == tip, i.e. no
+#                 rebase was required at all — temperloop#735)
 #   push       → {"outcome":"PUSHED","sha":…,"branch":…,"forced":bool} |
 #                {"outcome":"PUSH_REJECTED","sha":…,"branch":…,"error":…} + non-zero exit
 #                (forced=true only when a genuine rewrite needed --force; a
@@ -197,14 +204,39 @@ cmd_base_check() {
 # base is stale and the PR's cumulative diff REVERTS whatever merged in between
 # (W49 PR#82 / W52 PR#83). Fetch the default fresh, then rebase the worktree's
 # HEAD onto its tip so the PR diff carries ONLY the worker's own changes:
-#   - already current (merge-base == tip) → no-op rebase, REBASED
+#   - DIRTY worktree  → git would REFUSE to rebase at all ("cannot rebase: You
+#                       have unstaged changes") → DIRTY_WORKTREE + non-zero exit
+#                       (see below — never attempted, so never a conflict)
+#   - already current (merge-base == tip) → nothing to replay; the rebase is
+#                       SKIPPED entirely → REBASED, rebase_needed:false
 #   - behind          → replay the worker's commits onto the new tip, REBASED
 #   - CONFLICT        → `git rebase --abort` (leave the worktree clean, NEVER a
 #                       half-rebased tree and NEVER a silent revert) → REBASE_CONFLICT
 #                       + non-zero exit. The orchestrator escalates this as a
 #                       rebase conflict for a human to resolve.
+#
+# DIRTY_WORKTREE vs REBASE_CONFLICT — two states, two outcomes (temperloop#735).
+# git refuses to START a rebase while tracked files carry uncommitted edits, and
+# that refusal is a NON-ZERO exit exactly like a content conflict. Branching on
+# the exit code alone collapsed the two: a worker that FINISHED (commit made,
+# gates green) but left one tracked file unstaged was reported
+# {"outcome":"REBASE_CONFLICT","base":X,"tip":X} — base == tip, so no rebase was
+# even needed and no conflict existed anywhere — and the orchestrator's
+# rebase-conflict escalation would have discarded that finished work.
+# The two cases are separable from git's OWN state rather than from its exit
+# code or its (localised, reworded-between-releases) stderr prose: `git status
+# --porcelain --untracked-files=no` is non-empty iff the tree carries the
+# tracked-file edits that make git refuse. So the dirtiness is probed FIRST and
+# reported as its own outcome, the rebase is never attempted (nothing to abort,
+# and the worker's uncommitted edits are left exactly where they are), and
+# REBASE_CONFLICT is left meaning only what it says: a rebase was attempted and
+# its replay failed. `rebase_needed` (base != tip) rides both outcomes so the
+# orchestrator can see that a DIRTY_WORKTREE with rebase_needed:false is a
+# finished worker needing its edits COMMITTED — never a discard.
+# Untracked files are deliberately not dirt here: git rebases straight past
+# them, and the worktree always carries at least the untracked `.build-guard`.
 cmd_rebase() {
-  local wt default base tip out sha
+  local wt default base tip out sha dirty dirty_files rebase_needed
   wt="$(resolve_worktree "$1")"
   default="$(default_branch "$wt")" || die "cannot resolve origin's default branch in '$wt'"
   out="$(git -C "$wt" fetch origin "$default" 2>&1)" \
@@ -212,10 +244,36 @@ cmd_rebase() {
   tip="$(git -C "$wt" rev-parse "origin/$default")" || die "cannot resolve origin/$default tip"
   base="$(git -C "$wt" merge-base HEAD "origin/$default" 2>/dev/null)" \
     || die "no merge base between HEAD and origin/$default in '$wt'"
+  if [ "$base" = "$tip" ]; then rebase_needed=false; else rebase_needed=true; fi
+
+  # The dirty-vs-conflict split, probed before anything is attempted.
+  # stdout ONLY (stderr discarded rather than folded in): a git warning on
+  # stderr must never be counted as one of the dirty paths.
+  dirty="$(git -C "$wt" status --porcelain --untracked-files=no 2>/dev/null)" \
+    || die "git status --porcelain failed in '$wt'"
+  if [ -n "$dirty" ]; then
+    dirty_files="$(printf '%s\n' "$dirty" | wc -l | tr -d ' ')"
+    case "$dirty_files" in ''|*[!0-9]*) dirty_files=0 ;; esac
+    jq -cn --arg base "$base" --arg tip "$tip" --argjson rebase_needed "$rebase_needed" \
+      --argjson dirty_files "$dirty_files" --arg paths "$dirty" \
+      '{outcome:"DIRTY_WORKTREE", base:$base, tip:$tip,
+        rebase_needed:$rebase_needed, dirty_files:$dirty_files,
+        dirty_paths:($paths|split("\n"))}'
+    exit 1
+  fi
+
+  # Base already current: there is nothing to replay, so skip the rebase.
+  if [ "$rebase_needed" = false ]; then
+    sha="$(git -C "$wt" rev-parse HEAD 2>/dev/null)" || die "cannot resolve HEAD in '$wt'"
+    jq -cn --arg base "$base" --arg tip "$tip" --arg sha "$sha" \
+      '{outcome:"REBASED", base:$base, tip:$tip, sha:$sha, rebase_needed:false}'
+    return 0
+  fi
+
   if out="$(git -C "$wt" rebase "origin/$default" 2>&1)"; then
     sha="$(git -C "$wt" rev-parse HEAD 2>/dev/null)" || die "cannot resolve HEAD after rebase in '$wt'"
     jq -cn --arg base "$base" --arg tip "$tip" --arg sha "$sha" \
-      '{outcome:"REBASED", base:$base, tip:$tip, sha:$sha}'
+      '{outcome:"REBASED", base:$base, tip:$tip, sha:$sha, rebase_needed:true}'
   else
     # Conflict (or any rebase failure): abort so the worktree is left clean and
     # the worker's commits are intact — NEVER leave a half-applied rebase, and

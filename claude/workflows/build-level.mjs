@@ -252,7 +252,7 @@ const SPINE_OUTCOME_SCHEMA = {
         'CREATED', 'REMOVED', 'NOT_FOUND', 'PRUNED', 'SKIPPED_FRESH', 'SKIPPED_DIRTY', 'SKIPPED_UNMERGED',
         'SCAN_CLEAN', 'SCAN_BLOCKED',
         'BASE_CURRENT', 'BASE_STALE',
-        'REBASED', 'REBASE_CONFLICT',
+        'REBASED', 'REBASE_CONFLICT', 'DIRTY_WORKTREE',
         'PUSHED', 'PUSH_REJECTED',
         'PR_OPENED', 'EXISTS',
         'CI_GREEN', 'CI_FAILED', 'NO_CI', 'TIMEOUT',
@@ -3037,6 +3037,16 @@ async function driveItem(item) {
     // 3f-0a branch — the rebase decision, unchanged, read off the batch.
     if (prAt.rebase !== undefined) {
       const rebaseOut = batchStep(prb, prAt.rebase);
+      // DIRTY_WORKTREE is NOT a conflict (temperloop#735): git refused to start
+      // the rebase because the worker left tracked-file edits uncommitted —
+      // often with base == tip, i.e. no rebase was needed at all. It escalates
+      // under its OWN kind so the disposition is "commit the edits and re-drive"
+      // rather than the rebase-conflict path, whose discard-and-respawn arm
+      // would throw a FINISHED worker's work away. Checked before
+      // REBASE_CONFLICT so the two can never collapse back into one.
+      if (rebaseOut.outcome === 'DIRTY_WORKTREE') {
+        return escalate(item.slug, 'dirty-worktree', { rebaseOut });
+      }
       if (rebaseOut.outcome === 'REBASE_CONFLICT') {
         return escalate(item.slug, 'rebase-conflict', { rebaseOut });
       }
