@@ -58,6 +58,44 @@
 #               # way the idiom now fails closed even if the explicit
 #               # `return` after it is someday dropped by mistake.
 #
+# ── THE BOOTSTRAP TIER: THIS EMITTER DOES NOT REQUIRE jq (temperloop#1487) ─
+# Every model-comparison entry point opens with a `command -v jq` guard, and
+# that guard's own refusal IS a cannot-evaluate — the first one a run can
+# hit. Until temperloop#1487 those four guards could not use this helper for
+# the obvious reason that it built its JSON with `jq -cn`, i.e. with the very
+# tool that was missing, so each guard hand-rolled its own shape and they
+# drifted apart: batch.sh put the machine JSON on STDERR with no human line,
+# replay.sh emitted `outcome:"ERROR"` (not CANNOT_EVALUATE) on stderr, and
+# judge.sh/score.sh got it right by hand. A consumer parsing stdout for the
+# verdict saw nothing from two of the four.
+#
+# The fix is to make the ONE path work WITHOUT jq rather than to carve the
+# bootstrap tier out of it: `_cannot_evaluate_json` below encodes with `jq`
+# when jq is present and with a pure-shell escaper when it is not, and
+# `cannot_evaluate_emit` is otherwise unchanged. The four guards now source
+# this file FIRST and call `cannot_evaluate_emit` like every other site, so
+# the "ONE emission path" claim in claude/presentation-plane.md covers the
+# bootstrap tier too.
+#
+# The pure-shell branch escapes `\` and `"` — sufficient for the single-line
+# ASCII diagnostics this tier emits ("jq not found"). It does NOT escape
+# control characters or newlines; a caller that needs those is running with
+# jq present and gets the jq encoder anyway. This limit is deliberate: the
+# alternative is a full JSON string encoder in shell, which is exactly the
+# kind of reinvention this file exists to prevent.
+#
+# ── THE ONE NAMED EXCEPTION ──────────────────────────────────────────────
+# `workflows/scripts/model-comparison/tagging.sh`'s `crosscheck` subcommand
+# deliberately does NOT route through this helper, and that carve-out is
+# registered in claude/presentation-plane.md rather than left implicit.
+# Reason: crosscheck's STDOUT is its own human verdict stream (`OK —` /
+# `FAIL —` / `CANNOT EVALUATE —`, one line, documented in that file's usage
+# block and asserted by test_live_tagging.sh), so writing this helper's
+# machine JSON to stdout there would corrupt the very channel its verdict
+# rides. crosscheck emits the frozen HUMAN line verbatim and nothing else,
+# and keeps its documented `exit 1` rather than RC_CANNOT_EVALUATE. It is a
+# human-report command, not a machine-verdict emitter.
+#
 # Kept bash-3.2-portable (no associative arrays / mapfile), matching the rest
 # of workflows/scripts/lib/.
 
@@ -74,7 +112,22 @@ RC_CANNOT_EVALUATE=2
 # command refused.
 cannot_evaluate_emit() {
   local prefix="$1" msg="$2"
-  jq -cn --arg e "$msg" '{outcome:"CANNOT_EVALUATE",error:$e}'
+  _cannot_evaluate_json "$msg"
   printf '%s: CANNOT EVALUATE — %s\n' "$prefix" "$msg" >&2
   return "$RC_CANNOT_EVALUATE"
+}
+
+# _cannot_evaluate_json <message> — INTERNAL. Prints the frozen machine
+# verdict object on stdout, byte-identically with or without jq. See § THE
+# BOOTSTRAP TIER in this file's header for why the jq-free branch exists and
+# what it deliberately does not escape.
+_cannot_evaluate_json() {
+  local msg="$1" esc
+  if command -v jq >/dev/null 2>&1; then
+    jq -cn --arg e "$msg" '{outcome:"CANNOT_EVALUATE",error:$e}'
+    return 0
+  fi
+  esc="${msg//\\/\\\\}"
+  esc="${esc//\"/\\\"}"
+  printf '{"outcome":"CANNOT_EVALUATE","error":"%s"}\n' "$esc"
 }
