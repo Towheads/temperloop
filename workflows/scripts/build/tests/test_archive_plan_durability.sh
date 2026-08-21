@@ -162,11 +162,18 @@ pass "3. a failed 'gh pr merge --auto' reports failure, naming the PR that will 
 # --- 3b. an ALREADY-queued PR is still a success ------------------------------
 # gh reports a redundant enqueue as an error; the desired end state holds, so the
 # fix must not turn idempotence into a false failure.
+#
+# The stub answers `pr view --json autoMergeRequest,mergeQueueEntry` because that
+# is what land__enqueue now PROBES. It deliberately no longer keys on gh's error
+# prose (the §3e MEDIUM on this branch): that text is not a contract, it is
+# localised and reworded between gh releases, so a glob over it becomes a false
+# verdict the first time the wording moves. The end state is the contract.
 setup_case enqueue-idempotent '
 case "$1 $2" in
   "pr list")   exit 0 ;;
   "pr create") echo "'"$ORIGIN_URL"'/pull/777" ;;
   "pr merge")  echo "! Pull request #777 is already queued to merge" >&2; exit 1 ;;
+  "pr view")   echo "{\"number\":777}" ;;
   *)           exit 0 ;;
 esac
 '
@@ -174,6 +181,24 @@ out="$(archive "$NOTE_A" 1401)"
 [[ "$out" == *"plan-archive-pending: 777"* ]] \
   || fail "an already-queued PR must still report pending (got: $out)"
 pass "3b. 'already queued to merge' is treated as an armed queue, not a failure"
+
+# --- 3c. a failed enqueue whose END STATE does not hold is still a failure ----
+# The discriminating twin of 3b. Same non-zero `gh pr merge`, but the probe finds
+# neither auto-merge armed nor a queue entry — so the run must NOT report pending.
+# Without this, 3b alone would pass just as happily if the probe always said yes.
+setup_case enqueue-genuinely-failed '
+case "$1 $2" in
+  "pr list")   exit 0 ;;
+  "pr create") echo "'"$ORIGIN_URL"'/pull/778" ;;
+  "pr merge")  echo "! something went wrong" >&2; exit 1 ;;
+  "pr view")   echo "" ;;
+  *)           exit 0 ;;
+esac
+'
+out="$(archive "$NOTE_A" 1402)"
+[[ "$out" == *"plan-archive-failed:"* ]] \
+  || fail "a failed enqueue with no armed queue must report failure (got: $out)"
+pass "3c. a failed enqueue whose end state does NOT hold still reports failure"
 
 # --- 4. a snapshot git refuses to STAGE reports failure -----------------------
 # Injected failure: Plans-archive/ is .gitignore'd, so `git add` takes nothing and

@@ -42,6 +42,10 @@
 #     LAND_PR      PR number          (pr-queued, pr-open)
 #     LAND_DETAIL  pushed | already on origin | already current |
 #                  enqueued | already on the open archive PR | <why> | ""
+#     LAND_ENQUEUE_ERR  why the queue did not take the PR — set ONLY on the
+#                  `pr-open` arm, empty otherwise (#1523). A consuming `case`
+#                  that predates the `pr-open` result will fall through its
+#                  default arm; see the vendored archive-session.sh note below.
 #
 # The four results, and what each one PROVES (#1523 — a verdict never outruns its
 # own payload; a caller must not fold the middle two into "success"):
@@ -216,9 +220,18 @@ land__enqueue() {  # <pr>
   LAND_ENQUEUE_ERR=""
   out="$(land__gh_pr pr merge "$pr" --auto 2>&1)" || rc=$?
   [ "$rc" -eq 0 ] && return 0
-  case "$out" in
-    *already*queued*|*already*enabled*|*"already set to auto merge"*) return 0 ;;
-  esac
+  # Re-PROBE the desired end state rather than pattern-matching gh's
+  # human-facing prose: that text is not a contract, it is localised and
+  # reworded between gh releases, and a glob over it silently turns into a
+  # false "enqueued" (or a false failure) the first time the wording moves.
+  # Auto-merge armed OR a live queue entry both mean the end state holds,
+  # whatever gh chose to say about how it got there.
+  if [ -n "$(land__gh_pr pr view "$pr" \
+               --json autoMergeRequest,mergeQueueEntry \
+               --jq '[.autoMergeRequest, .mergeQueueEntry] | map(select(. != null)) | .[0] // empty' \
+               2>/dev/null)" ]; then
+    return 0
+  fi
   out="${out//$'\n'/ }"
   LAND_ENQUEUE_ERR="${out:0:200}"
   return 1
@@ -233,20 +246,44 @@ land__enqueue() {  # <pr>
 # fetch the remote branch, and if it carries commits the default branch does not,
 # build ON TOP of it. Prints "<base-ref> <pending 0|1>".
 land__pr_base() {
-  local rref="refs/remotes/origin/$LAND_BRANCH"
-  if git -C "$LAND_ROOT" fetch -q origin \
-       "+refs/heads/$LAND_BRANCH:$rref" 2>/dev/null; then
+  local rref="refs/remotes/origin/$LAND_BRANCH" rc=0
+  LAND__PR_BASE=""; LAND__PR_PENDING=0
+
+  # ABSENT vs INDETERMINATE — the distinction the never-destroy guarantee rests on.
+  #
+  # This used to branch on `git fetch`'s exit code alone, and treat ANY non-zero
+  # as "the remote branch is gone". A transient network/auth/rate-limit failure
+  # therefore read as absence: the tracking ref was deleted, pending came back 0,
+  # and the caller force-pushed the archive branch rebuilt from the default
+  # branch — discarding every un-merged snapshot on it. That is exactly the data
+  # loss #1523 exists to prevent, so the guarantee has to be mechanical rather
+  # than a comment.
+  #
+  # `ls-remote --exit-code` separates the two: exit 2 means the ref genuinely
+  # does not exist on origin, any other non-zero means we could not find out.
+  # Only the first is safe to treat as absence.
+  git -C "$LAND_ROOT" ls-remote --exit-code --heads origin "$LAND_BRANCH" >/dev/null 2>&1 || rc=$?
+
+  if [ "$rc" -eq 0 ]; then
+    # The branch EXISTS. A fetch failure here is never absence — refuse rather
+    # than rebuild over a payload we cannot see.
+    git -C "$LAND_ROOT" fetch -q origin "+refs/heads/$LAND_BRANCH:$rref" 2>/dev/null || return 1
     # Unlanded commits on the branch => a pending payload to preserve.
     if [ -n "$(git -C "$LAND_ROOT" rev-list -n 1 \
                  "origin/$LAND_DEFAULT_BRANCH..origin/$LAND_BRANCH" 2>/dev/null)" ]; then
-      printf '%s 1' "origin/$LAND_BRANCH"; return 0
+      LAND__PR_BASE="origin/$LAND_BRANCH"; LAND__PR_PENDING=1; return 0
     fi
-  else
-    # The remote branch is gone (merged + auto-deleted, or never existed). Drop the
-    # stale tracking ref so a later run cannot base on a branch origin no longer has.
-    git -C "$LAND_ROOT" update-ref -d "$rref" 2>/dev/null || true
+    LAND__PR_BASE="origin/$LAND_DEFAULT_BRANCH"; return 0
   fi
-  printf '%s 0' "origin/$LAND_DEFAULT_BRANCH"
+
+  if [ "$rc" -eq 2 ]; then
+    # Genuinely no such branch on origin (merged + auto-deleted, or never
+    # existed). Drop the stale tracking ref so a later run cannot base on it.
+    git -C "$LAND_ROOT" update-ref -d "$rref" 2>/dev/null || true
+    LAND__PR_BASE="origin/$LAND_DEFAULT_BRANCH"; return 0
+  fi
+
+  return 1  # could not determine — the caller must not land
 }
 
 # Tear down a throwaway worktree + its mktemp parent dir.
@@ -262,13 +299,16 @@ land__finish_wt() {  # <wt>
 # the diff-against-base short-circuit converge repeated runs onto ONE PR, then
 # auto-flip to `committed (already on origin)` once it merges.
 land__via_pr() {  # <populate_fn>
-  local populate_fn="$1" branch wt rev base base_spec pending
+  local populate_fn="$1" branch wt rev base pending
   branch="$LAND_BRANCH"
   git -C "$LAND_ROOT" worktree prune >/dev/null 2>&1 || true
   git -C "$LAND_ROOT" fetch -q origin "$LAND_DEFAULT_BRANCH" 2>/dev/null || true
   # #1523: extend a PENDING archive branch instead of force-rebuilding over it.
-  base_spec="$(land__pr_base)"
-  base="${base_spec% *}"; pending="${base_spec##* }"
+  if ! land__pr_base; then
+    land__set uncommitted "" "" "could not determine the state of origin/$LAND_BRANCH — refusing to force-rebuild the archive branch over a payload that may be pending"
+    return 0
+  fi
+  base="$LAND__PR_BASE"; pending="$LAND__PR_PENDING"
   wt="$(mktemp -d "${TMPDIR:-/tmp}/land-wt-XXXXXX")/wt"
   if ! git -C "$LAND_ROOT" worktree add -q -B "$branch" "$wt" "$base" 2>/dev/null; then
     rm -rf "$(dirname "$wt")"
