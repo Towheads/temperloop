@@ -19,6 +19,16 @@
 # too (firing on prose about the shape is the temperloop#1152 defect class this
 # same epic fixes) — while a `#` inside a quoted grep PATTERN must NOT buy a
 # real site an exemption.
+#
+# T3 was widened by temperloop#1420 to the PRINTED-TEXT half of the same #1152
+# class: the shape inside an `echo`/`printf` help string, or inside a `cat
+# <<EOF` usage block, is emitted rather than executed and must stay silent —
+# that false positive fired on the linter's OWN usage text and blocked the
+# v0.29.0 vendor. The exemption is by PARSE POSITION, so the fixtures fence both
+# sides of it: a string handed to a SHELL (`bash -c`, `eval`, `ssh`, a `bash
+# <<EOF` heredoc) is still code and must still FIRE, and T8 asserts the
+# discrimination directly — the same byte-identical text, code line named,
+# string line not.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -34,6 +44,9 @@ trap 'rm -rf "$WORK"' EXIT
 
 # A single-quote character, kept out of the fixtures' own quoting by name.
 Q="'"
+# A literal tab, for the `<<-` heredoc fixture whose terminator must be
+# tab-indented (and which an editor's trailing-whitespace strip would eat).
+TAB="$(printf '\t')"
 
 FIXN=0
 FIX_NAME=(); FIX_EXPECT=(); FIX_PATH=()
@@ -63,6 +76,25 @@ fixture inside_bash_c     fail "bash -c \"jq -r ${Q}.id${Q} f | grep -qx 1175\""
 # The quote-aware comment strip must NOT hand this real site an exemption just
 # because a `#` appears earlier inside a single-quoted grep pattern.
 fixture hash_in_pattern   fail "grep -nE ${Q}^[0-9]+:[[:space:]]*#${Q} f | grep -q ."
+# temperloop#1420: the printed-text exemption is by PARSE POSITION, so a string
+# handed to a SHELL is still code and must still fire — at every executor shape.
+fixture in_eval_string    fail "eval \"jq -r ${Q}.id${Q} f | grep -qx 1175\""
+fixture in_ssh_string     fail "ssh host \"tail -n 100 log | grep -q ready\""
+fixture in_sh_c_string    fail "find . -exec /bin/sh -c \"cat {} | grep -q x\" \\;"
+fixture heredoc_to_shell  fail "bash <<${Q}EOF${Q}
+echo x | grep -q foo
+EOF
+echo done"
+# A `<<<` herestring is NOT a heredoc: misreading one would swallow the rest of
+# the file and silently un-scan the real site below it.
+fixture after_herestring  fail "grep -q foo <<< \"\$v\"
+echo x | grep -q bar"
+# Nor is an arithmetic left-shift, even with a SHOUT_CASE right operand.
+fixture after_shift       fail "n=\$(( a << B ))
+echo x | grep -q bar"
+# The quote strip is CONTENT-only: the delimiters survive, so a pipeline that
+# merely passes THROUGH a quoted argument still reads as a pipeline.
+fixture pipe_after_string fail "echo \"hello world\" | grep -q hello"
 
 # ── Must STAY SILENT ────────────────────────────────────────────────────────
 # The sanctioned fix, at each cluster shape the sweep produced.
@@ -83,6 +115,29 @@ fixture piped_no_q        ok   "echo x | grep -vE ${Q}^foo${Q}"
 fixture piped_count       ok   "n=\$(echo x | grep -c foo)"
 # `pgrep` is not grep; its trailing letters must not be misread as one.
 fixture pgrep             ok   "echo x | pgrep -q foo"
+# ── temperloop#1420: PRINTED TEXT that merely SHOWS the shape ───────────────
+# (1) The verbatim overlay site from the issue — an echoed probe instruction.
+fixture echoed_help       ok   "echo \"      curl -s  http://127.0.0.1:9080/ | grep -q ${Q}Directory listing${Q} && echo ROOT-BROKEN || echo root-ok\""
+# (2) The linter's OWN usage text, the line that blocked the v0.29.0 vendor.
+fixture printf_own_help   ok   "echo \"     <writer> | grep -Fxq \\\"\\\$needle\\\"\" >&2"
+# (3) A message handed to a non-shell command (a logging/abort helper).
+fixture die_message       ok   "die \"usage: <writer> | grep -q <pat> is banned — see temperloop#1050\""
+# (4) The same text merely stored in a variable.
+fixture assigned_help     ok   "msg=\"see: printf x | grep -qx y\""
+# (5) A heredoc usage block, in all three delimiter forms. The body is printed,
+#     never executed, so it carries no pipeline and no writer to signal.
+fixture heredoc_quoted    ok   "cat <<${Q}USAGE${Q}
+  probe:  curl -s http://x/ | grep -q ready && echo up
+USAGE
+echo done"
+fixture heredoc_bare      ok   "cat <<USAGE
+  probe:  curl -s http://x/ | grep -q ready && echo up
+USAGE
+echo done"
+fixture heredoc_dash      ok   "cat <<-USAGE
+${TAB}probe:  curl -s http://x/ | grep -q ready && echo up
+${TAB}USAGE
+echo done"
 
 run_lint() { bash "$LINT" "$1" >/dev/null 2>&1; }
 
@@ -394,6 +449,108 @@ if (cd "$SYNTH" && bash scripts/lint-pipe-grep-q.sh >/dev/null 2>&1); then
 else
   fail "T7: overlay tree still fails after removing the one genuine violation:"
   (cd "$SYNTH" && bash scripts/lint-pipe-grep-q.sh) 2>&1 | sed 's/^/      | /'
+fi
+
+rm -rf "$SYNTH"
+
+# ---------------------------------------------------------------------------
+# T8 — DISCRIMINATION (temperloop#1420). The fixtures above prove each side
+# separately, which a lint that had simply gone blind would also satisfy. This
+# proves the two sides apart on ONE file whose text is byte-identical in both
+# positions: the same `printf x | grep -qx y` appears once inside a printed
+# help string, once inside a `cat <<EOF` usage block, and once as an executed
+# pipeline. The lint must FAIL, and its report must name the executable line
+# and ONLY it — a line-number assertion, not just an exit code.
+# ---------------------------------------------------------------------------
+echo "T8 — discrimination: identical text, code line named, printed/heredoc lines not"
+cat > "$WORK/discriminate.sh" <<'DISC_EOF'
+#!/usr/bin/env bash
+usage() {
+  echo "  probe:  printf x | grep -qx y"
+  cat <<'USAGE'
+  probe:  printf x | grep -qx y
+USAGE
+}
+printf x | grep -qx y
+DISC_EOF
+
+disc_out="$(bash "$LINT" "$WORK/discriminate.sh" 2>&1)"
+if bash "$LINT" "$WORK/discriminate.sh" >/dev/null 2>&1; then
+  fail "T8: the executed \`printf x | grep -qx y\` on line 8 was not flagged at all (the lint has gone blind, not selective)"
+else
+  pass "T8: still FAILS on the file (the executed pipeline is caught)"
+fi
+if printf '%s\n' "$disc_out" | grep -F 'discriminate.sh:8:' >/dev/null; then
+  pass "T8: names line 8 — the executed pipeline"
+else
+  fail "T8: did NOT name line 8 (the executed pipeline):"
+  printf '%s\n' "$disc_out" | sed 's/^/      | /'
+fi
+for textline in 3 5; do
+  if printf '%s\n' "$disc_out" | grep -F "discriminate.sh:$textline:" >/dev/null; then
+    fail "T8: wrongly named line $textline — that occurrence is printed text, not code:"
+    printf '%s\n' "$disc_out" | sed 's/^/      | /'
+  else
+    pass "T8: does not name line $textline (printed text stays silent)"
+  fi
+done
+
+# ---------------------------------------------------------------------------
+# T9 — the temperloop#1420 report reproduced on a COMPOSED/VENDORING OVERLAY
+# layout, which is where it actually fired and where it blocked the v0.29.0
+# vendor. Same synthetic overlay shape T7 builds (vendored kernel/ subtree +
+# compat symlinks), plus an OVERLAY-OWNED script carrying the issue's second
+# instance verbatim: an `echo` of a probe instruction that names the shape.
+# That file is not self-exempt and no filename allowlist can reach it, so it is
+# the honest test of the parse-position rule. Then a genuinely EXECUTED
+# `curl … | grep -q …` is added to the same overlay tree and must fire — the
+# discrimination, asserted where the defect lived.
+# ---------------------------------------------------------------------------
+echo "T9 — composed/vendoring overlay: printed help clean, executed pipeline flagged"
+SYNTH="$(mktemp -d "${TMPDIR:-/tmp}/lint-pipe-grep-q-vendor.XXXXXX")"
+(
+  set -e
+  mkdir -p "$SYNTH/kernel/scripts/tests" "$SYNTH/scripts" "$SYNTH/infra/launchd"
+  cp "$LINT" "$SYNTH/kernel/scripts/lint-pipe-grep-q.sh"
+  cp "$ROOT/scripts/tests/test_lint_pipe_grep_q.sh" "$SYNTH/kernel/scripts/tests/test_lint_pipe_grep_q.sh"
+  ln -s ../kernel/scripts/lint-pipe-grep-q.sh "$SYNTH/scripts/lint-pipe-grep-q.sh"
+  ln -s ../kernel/scripts/tests "$SYNTH/scripts/tests"
+  # temperloop#1420's second instance, verbatim: overlay code that merely
+  # PRINTS an instruction naming the shape.
+  {
+    printf '#!/usr/bin/env bash\n'
+    printf 'echo "      curl -s  http://127.0.0.1:9080/ | grep -q %sDirectory listing%s && echo ROOT-BROKEN || echo root-ok"\n' "$Q" "$Q"
+  } > "$SYNTH/infra/launchd/install-dashboard-serve.sh"
+  git -C "$SYNTH" init -q
+  git -C "$SYNTH" add -A
+  git -c user.name=test -c user.email=test@test -C "$SYNTH" commit -q -m synth
+)
+
+if (cd "$SYNTH" && bash scripts/lint-pipe-grep-q.sh >/dev/null 2>&1); then
+  pass "T9: overlay tree lints CLEAN — neither the vendored kernel/ help text nor the overlay's echoed instruction is flagged"
+else
+  fail "T9: overlay tree still fails on printed help text (the v0.29.0 vendor blocker):"
+  (cd "$SYNTH" && bash scripts/lint-pipe-grep-q.sh) 2>&1 | sed 's/^/      | /'
+fi
+
+# The other half: a genuinely EXECUTED pipeline in the same overlay tree — the
+# third hit of the real v0.29.0 run, which was correct and must stay correct.
+printf '#!/usr/bin/env bash\ncurl -s http://127.0.0.1:9080/ | grep -q ready && echo up\n' \
+  > "$SYNTH/infra/launchd/serve-dashboard.sh"
+git -C "$SYNTH" add -A
+git -c user.name=test -c user.email=test@test -C "$SYNTH" commit -q -m synth-exec
+vendor_out="$(cd "$SYNTH" && bash scripts/lint-pipe-grep-q.sh 2>&1 || true)"
+if printf '%s\n' "$vendor_out" | grep -F 'infra/launchd/serve-dashboard.sh:2:' >/dev/null; then
+  pass "T9: the executed \`curl … | grep -q …\` in the overlay tree IS flagged"
+else
+  fail "T9: the executed overlay pipeline was not flagged — the gate has gone blind on a vendored tree:"
+  printf '%s\n' "$vendor_out" | sed 's/^/      | /'
+fi
+if printf '%s\n' "$vendor_out" | grep -F 'install-dashboard-serve.sh' >/dev/null; then
+  fail "T9: the echoed instruction was flagged alongside the real site:"
+  printf '%s\n' "$vendor_out" | sed 's/^/      | /'
+else
+  pass "T9: and the echoed instruction beside it stays silent"
 fi
 
 rm -rf "$SYNTH"

@@ -46,6 +46,28 @@
 #     defect class (a guard that fires on documentation of the thing it guards).
 #     The comment strip is quote-aware, so a `#` inside a quoted grep PATTERN —
 #     `grep -vE '^[0-9]+:[[:space:]]*#' | grep -q .` — is NOT mistaken for one.
+#   * PRINTED TEXT that merely SHOWS the shape: the contents of a quoted string
+#     literal, or of a heredoc body, whose consuming command is not a shell —
+#     `echo "  <writer> | grep -Fxq …"`, a `cat <<'EOF'` usage block, a
+#     `die "usage: … | grep -q …"` message. That text is emitted, never
+#     executed: there is no pipeline, so there is no writer to take SIGPIPE.
+#     Same temperloop#1152 class as the comment case above, and it is what
+#     blocked the v0.29.0 vendor (temperloop#1420) — this script's OWN help
+#     text, and an overlay script that merely echoes a `curl … | grep -q …`
+#     instruction, were both read as executable code.
+#
+#     THE EXEMPTION IS BY PARSE POSITION, NEVER BY FILENAME. A filename
+#     allowlist would only move the problem to the next file that documents the
+#     shape. What decides is the simple command CONSUMING the string: if it
+#     hands the string to a shell — `bash -c`/`sh -c`, `eval`, `ssh`, `env`,
+#     `xargs`, `timeout`, a `bash <<EOF` heredoc — the string IS code and is
+#     still scanned, which is why the real in-a-string sites the temperloop#1050
+#     sweep found (`bash -c "jq … | grep -qx 1175"`) stay flagged.
+#
+#     Both strips err in the same direction, deliberately: an unrecognised
+#     executor (some `run_remote "cmd | grep -q x"` wrapper) yields a MISSED
+#     site, never a false alarm on prose. That is the safe direction for a guard
+#     whose false positives land on documentation and block a release.
 #   * this script and its own regression test, which necessarily contain the
 #     shape as data.
 #
@@ -180,28 +202,101 @@ if [ "$LIST_ONLY" -eq 1 ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# The scanner. Per line: strip any `#` comment that is genuinely a comment (a
-# `#` at a word boundary, outside single/double quotes), then match the piped
-# `grep -<cluster containing q>` shape against what is left.
+# The scanner. Per line, reduce the line to its EXECUTABLE part — drop any `#`
+# comment, and blank the CONTENTS of every quoted string literal that is not
+# handed to a shell — then match the piped `grep -<cluster containing q>` shape
+# against what is left. A heredoc body is subject to the same test at the level
+# of the whole body (a `cat <<EOF` block is text; a `bash <<EOF` block is code).
 #
-# The quote tracking is what separates a real comment from a `#` inside a grep
-# PATTERN. It is intentionally per-line: a `#` inside an unterminated multi-line
-# string could truncate early, which can only ever cause a MISSED site, never a
-# false alarm — the safe direction for a guard whose false positives would land
-# on prose.
+# WHY THE QUOTE STRIP IS CONTENT-ONLY. The opening and closing quote CHARACTERS
+# are preserved, only the bytes between them are dropped, so the pipeline
+# structure around a string survives intact: `echo "x" | grep -q y` still reads
+# as `echo "" | grep -q y` and still fires. Only text that lives INSIDE the
+# quotes disappears — which is exactly the printed-help case (temperloop#1420).
+#
+# WHY IT IS PER-LINE. Comment and quote tracking both reset at each newline: a
+# `#` or a quote inside an unterminated multi-line string could truncate early,
+# which can only ever cause a MISSED site, never a false alarm — the safe
+# direction for a guard whose false positives would land on prose. Heredoc
+# tracking is the one deliberately multi-line piece of state, because a heredoc
+# body has no other way to be recognised; it resets at every file boundary.
+#
+# THE HEREDOC TRADE-OFF, STATED. Treating every non-executor heredoc body as
+# text also un-scans a body that is being WRITTEN somewhere rather than printed
+# — `cat > "$f" <<EOF` generating a script. Measured on this tree that is ~3.8%
+# of the shell corpus (6169 of 160264 lines), almost all of it test fixtures,
+# and it hides no site that exists today: the tree lints clean either way. The
+# alternative — scanning a heredoc that is redirected to a file — buys that
+# coverage back and immediately re-opens this very defect one file over, on a
+# generated MARKDOWN doc that merely documents the shape. Given a guard whose
+# false positives land on prose and blocked a release, the deliberate choice is
+# the missed-site direction, consistent with the per-line rule above. Two
+# things keep the loss bounded: a heredoc handed to a shell (`bash <<EOF`) is
+# still scanned, and a generated script that is itself tracked is still linted
+# as a file in its own right.
 # ---------------------------------------------------------------------------
 report="$(
   awk '
-    # Return the line with any trailing `#` comment removed.
-    function strip_comment(s,   n, i, c, sq, dq, prev) {
-      n = length(s); i = 1; sq = 0; dq = 0
+    # The executor allowlist: commands that take a STRING (or a heredoc body)
+    # and hand it to a shell. Text consumed by one of these is CODE and stays
+    # scanned; everything else is printed text. See the header block.
+    BEGIN {
+      split("eval bash sh zsh ksh dash ash ssh env xargs timeout gtimeout " \
+            "nohup flock watch su sudo docker podman kubectl", _x, " ")
+      for (_i in _x) EXEC[_x[_i]] = 1
+      # A bracket class matching the three characters that may quote a heredoc
+      # word: backslash, single quote, double quote. Built as a STRING (\047 is
+      # a portable octal escape there) because a literal single quote cannot
+      # appear inside this single-quoted awk program.
+      QCH = "[\\\\\047\"]"
+    }
+
+    # is_executor(prefix) — does the simple command that consumes the upcoming
+    # string invoke a shell? Any token of the command (basename-normalised, so
+    # `/bin/sh` counts) matching the allowlist answers yes. Token-wise rather
+    # than first-word-only so `if bash -c "…"`, `VAR=1 eval "…"` and
+    # `find . -exec sh -c "…" \;` are all recognised.
+    function is_executor(prefix,   n, i, parts, w) {
+      n = split(prefix, parts, /[^A-Za-z0-9_.\/-]+/)
+      for (i = 1; i <= n; i++) {
+        w = parts[i]
+        sub(/^.*\//, "", w)
+        if (w in EXEC) return 1
+      }
+      return 0
+    }
+
+    # strip_text(s) — return s reduced to its executable part: any real `#`
+    # comment removed, and the CONTENTS of every non-executed quoted string
+    # blanked (delimiters kept).
+    function strip_text(s,   n, i, c, q, out, cmd, keep, prev, body) {
+      n = length(s); i = 1; out = ""; cmd = ""
       while (i <= n) {
         c = substr(s, i, 1)
-        if (sq) { if (c == "\047") sq = 0; i++; continue }
-        if (c == "\\") { i += 2; continue }
-        if (dq) { if (c == "\"") dq = 0; i++; continue }
-        if (c == "\047") { sq = 1; i++; continue }
-        if (c == "\"")   { dq = 1; i++; continue }
+        if (c == "\\") { out = out c substr(s, i + 1, 1); i += 2; continue }
+        if (c == "\047" || c == "\"") {
+          q = c
+          # A quoted HEREDOC WORD (`<<EOF` written as `<<\047EOF\047` or
+          # `<<"EOF"`) is not a string literal at all — the quotes only suppress
+          # expansion of the delimiter. Keep it, or heredoc_open below could
+          # never see the terminator and every quoted-delimiter heredoc (the
+          # commonest usage-block form) would go undetected.
+          keep = is_executor(cmd) || cmd ~ /<<-?[[:space:]]*$/
+          out = out q; cmd = cmd q
+          i++
+          body = ""
+          while (i <= n) {
+            c = substr(s, i, 1)
+            # Inside single quotes a backslash is literal; inside double quotes
+            # it escapes, so a \" does not close the string.
+            if (q == "\"" && c == "\\") { body = body c substr(s, i + 1, 1); i += 2; continue }
+            if (c == q) break
+            body = body c; i++
+          }
+          if (keep) { out = out body; cmd = cmd body }
+          if (i <= n) { out = out q; cmd = cmd q; i++ }
+          continue
+        }
         if (c == "#") {
           # `#` opens a comment only at a word boundary — this is what keeps
           # `${#arr}`, `$#` and `a#b` from truncating the line.
@@ -209,16 +304,63 @@ report="$(
           if (i == 1 || prev == " " || prev == "\t" || prev == ";" ||
               prev == "|" || prev == "&" || prev == "(" || prev == ")" ||
               prev == "<" || prev == ">") {
-            return substr(s, 1, i - 1)
+            return out
           }
         }
-        i++
+        # A simple-command boundary: the command word consuming the NEXT string
+        # starts here. Redirections deliberately do not reset it.
+        if (c == "|" || c == ";" || c == "&" || c == "(" || c == ")" ||
+            c == "{" || c == "}" || c == "\140") {
+          out = out c; cmd = ""; i++; continue
+        }
+        out = out c; cmd = cmd c; i++
       }
-      return s
+      return out
     }
 
+    # heredoc_open(code) — if `code` opens a heredoc, set HD_DELIM (terminator),
+    # HD_DASH (`<<-` strips leading tabs from the terminator) and HD_SCAN (the
+    # body is code, not text). Otherwise leave HD_DELIM empty.
+    #
+    # Detection is deliberately TIGHT, because a false heredoc would swallow the
+    # rest of the file and cost real sites: `<<<` (a herestring) is rejected by
+    # the preceding-character check, and the delimiter must be quoted or
+    # SHOUT_CASE, which is what keeps an arithmetic `$(( a << b ))` shift out.
+    function heredoc_open(code,   tok, delim, quoted) {
+      HD_DELIM = ""; HD_DASH = 0; HD_SCAN = 0
+      # Dynamic (string) regexes, not /…/ constants: a single quote cannot be
+      # written literally inside this single-quoted awk program, and \047 is
+      # only reliably an octal escape in a STRING, not in a regex constant.
+      if (!match(code, "<<-?[[:space:]]*" QCH "?[A-Za-z_][A-Za-z0-9_]*" QCH "?")) return
+      if (RSTART > 1 && substr(code, RSTART - 1, 1) == "<") return   # `<<<` herestring
+      if (substr(code, 1, RSTART) ~ /\$\(\(/) return                 # `$(( a << B ))` shift
+      tok = substr(code, RSTART, RLENGTH)
+      HD_DASH = (substr(tok, 3, 1) == "-")
+      quoted = (tok ~ QCH)
+      delim = tok
+      sub(/^<<-?[[:space:]]*/, "", delim)
+      gsub(QCH, "", delim)
+      # SHOUT_CASE or explicitly quoted, else it is not a heredoc word — this is
+      # what keeps an arithmetic `$(( a << b ))` shift from swallowing the file.
+      if (!quoted && delim !~ /^[A-Z_][A-Z0-9_]*$/) return
+      HD_DELIM = delim
+      HD_SCAN = is_executor(code)
+    }
+
+    FNR == 1 { HD_DELIM = ""; HD_DASH = 0; HD_SCAN = 0 }
+
     {
-      code = strip_comment($0)
+      if (HD_DELIM != "") {
+        term = $0
+        if (HD_DASH) sub(/^\t+/, "", term)
+        sub(/[[:space:]]+$/, "", term)
+        if (term == HD_DELIM) { HD_DELIM = ""; next }
+        if (!HD_SCAN) next
+        code = $0
+      } else {
+        code = strip_text($0)
+        heredoc_open(code)
+      }
       if (code ~ /\|[[:space:]]*(command[[:space:]]+)?(e|f|z)?grep[[:space:]]+-[a-zA-Z]*q/) {
         printf "%s:%d: piped `grep -q` — SIGPIPEs the writer; drop the q and redirect instead\n", FILENAME, FNR
         printf "%s:%d:     %s\n", FILENAME, FNR, $0
