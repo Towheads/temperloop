@@ -287,7 +287,7 @@ pass "7: every claude/workflows/*.mjs is compared, not just build-level.mjs"
 # ---------------------------------------------------------------------------
 grep -q 'check_installed_workflow_drift || workflow_drift_status=\$?' "$DOCTOR_SH" \
   || fail "8: doctor.sh must capture check_installed_workflow_drift's status into workflow_drift_status"
-sed -n '/^if (( non_ok > 0/,/then$/p' "$DOCTOR_SH" | grep -q 'workflow_drift_status != 0' \
+sed -n '/^if (( non_ok > 0/,/then$/p' "$DOCTOR_SH" | grep 'workflow_drift_status != 0' >/dev/null \
   || fail "8: workflow_drift_status must be read by doctor.sh's final exit condition"
 pass "8: the check's verdict is wired into doctor's own exit code"
 
