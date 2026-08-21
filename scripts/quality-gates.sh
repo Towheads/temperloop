@@ -195,6 +195,15 @@ KERNEL_GATES=(
   # reviewer-activation-coverage/project-agents gates above (kernel Makefile
   # is generator-owned; no new target added here).
   "bash workflows/scripts/tests/test_reviewer_activate.sh"
+  # Model-tier invariant for the four review seats /build §3e spawns
+  # (temperloop#1456, epic #1616). runReviewers() passes no `model` override
+  # because "the reviewer's OWN agent definition sets its tier" — which holds
+  # only while every one of those definitions declares a tier at all. A seat
+  # declaring `model: inherit` takes the CALLING context's tier, so an
+  # autonomous drive on the cheap $PIPELINE_DRIVE_MODEL silently down-tiers it
+  # and nothing anywhere records that it happened. The declaration is the only
+  # observable surface, so it is the one that gets checked.
+  "bash workflows/scripts/tests/test_reviewer_seat_tiers.sh"
   # Advisory `make doctor` reviewer-coverage check (temperloop#550, ADR
   # 0007/0008): workflows/scripts/install/doctor.sh's check_reviewer_
   # coverage() — WARN-level, strictly per-checkout, reusing #548's

@@ -81,9 +81,20 @@ Five agents currently make up the family:
 
 Each agent's own spec states which model tier it should run on and why: an
 agent whose findings gate something downstream (nothing else double-checks
-its call) stays on the calling session's own model; an agent whose findings
-are filtered by a human or another process before they take effect can
-safely run on a smaller, cheaper tier.
+its call) pins the strong tier outright; an agent whose findings are
+filtered by a human or another process before they take effect can safely
+run on a smaller, cheaper tier. Either way the tier is **declared in the
+agent's frontmatter, not inherited from whoever spawned it** — a gating
+seat that inherited would run at whatever tier the caller happened to be
+on, and an autonomous drive runs cheap by design (temperloop#1456). That is
+worth stating as a *mechanical* property rather than a habit, because a
+down-tier leaves no trace: the review still runs, still returns findings, and
+nothing in the PR body or the telemetry records which tier produced them. So
+`workflows/scripts/tests/test_reviewer_seat_tiers.sh` asserts it — every seat
+`/build` §3e routes declares a tier, `architecture-reviewer`'s is never
+`inherit`, its charter prose names the tier it actually declares, and
+`runReviewers()` still passes no `model` override that would compete with the
+frontmatter.
 
 **The capability probe.** Not every project that could use one of these
 agents has it available — a project may not declare the agent, or the agent
@@ -315,8 +326,8 @@ workflows/scripts/install/project-agents.sh to enable` path above.
 
 Each invocation is a single subagent call scoped to read-only tools, priced
 like any other model call at whichever tier that agent's definition
-specifies (session-tier for a gating review, a cheaper fixed tier for a
-purely advisory one). There is no added storage or background process — the
+specifies (the strong tier for a gating review, a cheaper tier for a purely
+advisory one). There is no added storage or background process — the
 cost is bounded to the review pass itself, and skipped (unavailable) reviews
 cost nothing beyond the one-line notice.
 

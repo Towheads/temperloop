@@ -105,8 +105,18 @@ human filter, so a mechanical gate stands behind them:
 `workflow-reviewer`, and the five adopter-catalog language reviewers
 (`go`, `java`, `rust`, `swift`, `typescript`).
 
-Declaring **`inherit`** — justified inherit, reason written at the seat:
-`architecture-reviewer` (its boundary calls *are* the gate).
+Declaring **`opus`** — the seat's own output *is* the gate, so no cheaper tier
+is admissible under rule 3: `architecture-reviewer`.
+
+This seat was a **justified inherit** until temperloop#1456, which found the
+justification and the mechanism disagreeing: the seat's own charter said it is
+"never down-tiered", but `inherit` resolves to whatever tier the *calling*
+context runs on — so an autonomous drive on a cheap tier down-tiered it
+silently. Justified inherit is only sound where the caller is guaranteed to be
+the top tier; for a never-down-tier seat it is not, and a declared tier is.
+Note the direction of the fix: the seat's *intent* was authoritative and the
+mechanism was corrected to match it — the tier moved from caller-dependent to
+declared, not from strong to cheap.
 
 These cover the review panels spawned by `/workshop` Step 3.2/3.3/3.5,
 `/assess` Step 3, `/triage` Step 3, and `/build` 3e. **All of those panels
@@ -135,6 +145,20 @@ every spend figure are `.py`), while the other five are **adopter-catalog**
 entries for languages this repo does not itself ship. A false negative in a
 kernel-native reviewer ships a defect into the pipeline itself, and no second
 reviewer stands behind it. The justification is now written at both seats.
+
+**Open, since temperloop#1456: is that justification enough on its own?** It
+is the same "no second reviewer stands behind it" argument
+`architecture-reviewer` ran on, and there it turned out to argue for a
+*declared* tier rather than an inherited one — a caller can be a cheap
+autonomous drive, so `inherit` cannot deliver "not down-tiered" (§ B2). These
+two were left as-is rather than swept along: unlike `architecture-reviewer`
+they are inert catalog entries that run only in an adopter repo that opted in,
+so the tier they resolve to depends on that adopter's session rather than on
+this repo's pipeline, and re-tiering them is a change to somebody else's spend
+that this repo should decide deliberately rather than as a side effect. Worth
+noting the asymmetry cuts both ways: an adopter driving them from a cheap
+autonomous session gets the same silent down-tier, with even less visibility
+into it than the kernel had.
 
 ## C. Headless `claude -p` seats under `bin/` — the find
 
@@ -328,7 +352,12 @@ weighted-units saving available at this seat at any tier that completes the job.
    `workflows/scripts/config/setting-registry.tsv`.
 2. Or, if it inherits, **write the reason at the seat.** An undocumented
    `inherit` is a silent inherit, and the next sweep will correctly flag it
-   (§ B3 is exactly this case).
+   (§ B3 is exactly this case). One reason is never sufficient on its own:
+   *"this seat must never be down-tiered."* `inherit` delegates the tier to
+   the caller, and a caller can be a cheap autonomous drive — so a
+   never-down-tier seat needs a **declared** tier, not a justified inherit
+   (§ B2, temperloop#1456). Justified inherit is for seats that genuinely
+   want to track whatever the caller is running.
 3. If you propose a cheaper tier, price the **whole job including repairs** —
    and measure both axes, because dollars and weighted units can disagree by
    5x (§ Measurement).

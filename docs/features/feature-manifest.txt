@@ -562,6 +562,7 @@ review-agents workflows/scripts/tests/test_reviewer_activation_coverage.sh
 review-agents workflows/scripts/install/reviewer-activate.sh
 review-agents workflows/scripts/tests/test_reviewer_activate.sh
 review-agents workflows/scripts/tests/test_doctor_reviewer_coverage.sh
+review-agents workflows/scripts/tests/test_reviewer_seat_tiers.sh
 
 # ── engineering-principles — kernel cross-language review/authoring
 #    criteria (temperloop#599/#419): the seven flaggable principles, their
