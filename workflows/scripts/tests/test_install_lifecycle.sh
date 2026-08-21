@@ -508,7 +508,7 @@ fi
 # the surface under test. (Run after the 7a-7e snapshots regardless, so it
 # cannot perturb them.)
 # ===========================================================================
-disclose_out="$(sandbox_run bash "$REPO_ROOT/bin/subcommands/uninstall.sh" --yes 2>&1)"
+disclose_out="$(sandbox_run bash "$REPO_ROOT/bin/subcommands/uninstall.sh" --yes </dev/null 2>&1)"
 disclose_rc=$?
 [ "$disclose_rc" -eq 0 ] || fail "7f: this tree's uninstall.sh exited $disclose_rc on the post-uninstall no-op path (output: $disclose_out)"
 grep -q 'nothing recorded' <<<"$disclose_out" \

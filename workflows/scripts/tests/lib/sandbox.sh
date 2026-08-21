@@ -290,8 +290,18 @@ _sandbox_pin() {
 # ---------------------------------------------------------------------------
 sandbox_env() {
   : "${SANDBOX_ROOT:?sandbox_env: call sandbox_up first}"
-  local _sb_cache_store_root _sb_temperloop_home _sb_temperloop_bin_dir
+  local _sb_cache_store_root _sb_temperloop_home _sb_temperloop_bin_dir _sb_bm_home
   _sb_cache_store_root="$(_sandbox_pin CACHE_STORE_ROOT "$SANDBOX_CACHE_STORE_ROOT")"
+  # KNOWLEDGE_SEARCH_BM_HOME (temperloop#1658). A FOURTH documented public
+  # knob (workflows/scripts/lib/knowledge_search.sh) whose whole purpose is
+  # relocating the ~380MB basic-memory tool home — so an operator exporting
+  # it is expected, not exotic. Unpinned, the additive-env rule this block
+  # already states applies in its most damaging form: a sandbox test that
+  # seeds a fixture at ${KNOWLEDGE_SEARCH_BM_HOME:-...} writes to the REAL
+  # tool home, and sandbox_down (which removes only $SANDBOX_ROOT) leaves
+  # the damage in place. Caught by the §3e shell-reviewer before the first
+  # such test shipped.
+  _sb_bm_home="$(_sandbox_pin KNOWLEDGE_SEARCH_BM_HOME "$SANDBOX_XDG_STATE_HOME/foundation/basic-memory-home")"
   _sb_temperloop_home="$(_sandbox_pin TEMPERLOOP_HOME "$SANDBOX_TEMPERLOOP_HOME")"
   _sb_temperloop_bin_dir="$(_sandbox_pin TEMPERLOOP_BIN_DIR "$SANDBOX_TEMPERLOOP_BIN_DIR")"
   SANDBOX_ENV_ARGS=(
@@ -322,6 +332,7 @@ sandbox_env() {
     "CACHE_STORE_ROOT=$_sb_cache_store_root"
     "TEMPERLOOP_HOME=$_sb_temperloop_home"
     "TEMPERLOOP_BIN_DIR=$_sb_temperloop_bin_dir"
+    "KNOWLEDGE_SEARCH_BM_HOME=$_sb_bm_home"
   )
   if [[ -n "${SANDBOX_GH_CALL_LOG:-}" ]]; then
     SANDBOX_ENV_ARGS+=("CALL_LOG=$SANDBOX_GH_CALL_LOG")
