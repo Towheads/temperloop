@@ -167,6 +167,37 @@ j="$(run --days 28 --json)"
 ok "a §3e record naming a non-mandatory reviewer counts as 'ran' but not as workflow-reviewer coverage"
 
 at
+# --- 4b. A SKIP CLAUSE ON THE SAME LINE IS NOT A RUN ---------------------------
+# REGRESSION (§3e shell-reviewer, HIGH). build-level.mjs joins the ran-tally and
+# the skip notes into ONE line with `parts.join(" · ")`, so a real emitted body
+# reads:
+#
+#   §3e review — ran: docs-reviewer · skipped — workflow-reviewer available as …
+#
+# The names capture ran to end-of-line, swallowing the skip clause, and the
+# workflow-reviewer test then matched the SKIP — scoring a PROVABLE non-run as
+# covered. That is the exact false positive this rewrite exists to remove,
+# reintroduced one layer down.
+#
+# ISOLATED FIXTURE on purpose: adding a ninth PR to the shared set would shift
+# every count-based assertion above, so this case brings its own one-PR world.
+mkdir -p "$TMP/fix4b"
+jq -n '
+  def pr($n; $body; $paths): {number:$n, body:$body, files:[$paths[] | {path:.}]};
+  [ pr(1;
+       "Adjust next.md wording.\n\n§3e review — ran: docs-reviewer · skipped — workflow-reviewer available as source; run workflows/scripts/install/project-agents.sh to enable\n";
+       ["claude/commands/next.md"]) ]' > "$TMP/fix4b/pr-list.json"
+j4b="$(env PATH="$TMP/bin:$PATH" WFR_COVERAGE_GH_BIN="$TMP/bin/gh" GH_FIXTURE_DIR="$TMP/fix4b" \
+        bash "$SCRIPT" --days 28 --json)"
+[ "$(jqf "$j4b" '.command_doc_prs')" = "1" ] \
+  || bad "4b: fixture did not load ($j4b)"
+[ "$(jqf "$j4b" '.with_workflow_reviewer')" = "0" ] \
+  || bad "4b: a same-line workflow-reviewer SKIP must not enter the numerator ($j4b)"
+[ "$(jqf "$j4b" '.any_reviewer_ran')" = "1" ] \
+  || bad "4b: docs-reviewer DID run on that line, so any_reviewer_ran must be 1 ($j4b)"
+ok "4b: a same-line skip clause naming workflow-reviewer does not score as a run"
+
+at
 # --- 5. DISCRIMINATION: the marker is what drives the verdict ------------------
 # Both directions are re-run against MUTATED fixtures. If the classification
 # were keyed on anything other than the emitted marker, these two would not move.

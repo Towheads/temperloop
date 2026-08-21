@@ -136,16 +136,30 @@ fi
 #               the numerator. Matching it is what stops the old regex's worst
 #               false positive: a provable non-run scoring as a pass.
 report="$(printf '%s' "$prs_json" | jq -c --arg since "$since" '
-  def ran_tally: capture("(^|\n)§3e review[ \t]*[—–-][ \t]*ran:[ \t]*(?<names>[^\n]*)");
+  # NAMES STOP AT THE ` · ` SEPARATOR, not at end-of-line. build-level.mjs
+  # joins the ran-tally and the skip notes into ONE summary string with
+  # `parts.join(" · ")`, so a real emitted line reads:
+  #
+  #   §3e review — ran: docs-reviewer · skipped — workflow-reviewer available …
+  #
+  # A greedy `[^\n]*` capture swallows that whole skip clause into `names`, and
+  # the `\bworkflow-reviewer\b` test below then matches the SKIP — scoring a
+  # provable non-run as covered. That is precisely the false positive this
+  # rewrite exists to remove, reintroduced one layer down; caught by the §3e
+  # shell-reviewer, which reproduced it hermetically.
+  #
+  # `\r?` throughout: a body with CRLF endings must not silently drop out of
+  # the numerator while still counting in the denominator.
+  def ran_tally: capture("(^|\n)§3e review[ \t]*[—–-][ \t]*ran:[ \t]*(?<names>[^\n·]*)");
   def any_ran:   test("(^|\n)§3e review[ \t]*[—–-][ \t]*ran:[ \t]*\\S")
-               or test("(^|\n)###[ \t]+[A-Za-z][A-Za-z0-9-]*-reviewer[ \t]*(\n|$)")
-               or test("(^|\n)###[ \t]+(congruence-lens|requirements-auditor)[ \t]*(\n|$)");
+               or test("(^|\n)###[ \t]+[A-Za-z][A-Za-z0-9-]*-reviewer[ \t\r]*(\n|$)")
+               or test("(^|\n)###[ \t]+(congruence-lens|requirements-auditor)[ \t\r]*(\n|$)");
   # `capture` yields NOTHING (not null) when it does not match, so its result is
   # collected into an ARRAY first: an `empty` reaching the enclosing `map` below
   # would silently DROP that PR from the object being built, shrinking the
   # DENOMINATOR instead of scoring the PR uncovered.
   def wfr_ran:   ([ran_tally.names] | any(test("\\bworkflow-reviewer\\b")))
-               or test("(^|\n)###[ \t]+workflow-reviewer[ \t]*(\n|$)");
+               or test("(^|\n)###[ \t]+workflow-reviewer[ \t\r]*(\n|$)");
   def skip_notice: test("skipped[ \t]*[—–-][ \t]*`?workflow-reviewer\\b");
 
   [ .[] | select(any(.paths[]?; test("^claude/commands/.*\\.md$"))) ]
