@@ -606,8 +606,44 @@ ok "18 validator: an absent committed ceiling is COMMITTED-MISSING"
 #     $TMPDIR worktree the old .temperloop/ fixture produced ONLY the
 #     location line, and this case failed for a reason unrelated to the
 #     property it pins).
+#
+#     ROOT-CAUSE NOTE (temperloop#1549, verified — and NOT the mechanism
+#     that issue hypothesised). The old failure was never "the location
+#     check fires BEFORE the not-tracked check": COMMITTED-LOCATION fired
+#     in BOTH root locations, and the not-tracked check did not run later,
+#     it did not run AT ALL. The fixture path arrived LOGICAL
+#     (/var/folders/…) while the validator resolves its own repo root
+#     PHYSICALLY (/private/var/folders/…), so the validator's repo-root
+#     prefix match missed and its git-tracked check was SKIPPED — leaving
+#     the location line as the only output. Both halves of the fix this
+#     case now rests on are therefore load-bearing: the fixture is built
+#     from $REPO_ROOT_PHYS so the two paths agree in either root, AND the
+#     validator normalizes the committed file to its physical form before
+#     the prefix match (temperloop#1333, pinned by case 31 — that half
+#     closes the underlying FAIL-OPEN, where a genuinely untracked ceiling
+#     passes the tracked check unexamined under a symlinked root). A
+#     /Users or /home root is already physical, which is exactly why this
+#     reproduced only under a $TMPDIR-rooted worktree — the shape
+#     combined-tree-precheck.sh builds for every multi-PR merge gate.
 # ---------------------------------------------------------------------------
 count
+# The fixture MUST be built from a PHYSICALLY-resolved repo root, so that it
+# prefix-matches the validator's own physically-resolved root BY CONSTRUCTION
+# rather than by relying on the validator to normalize a mismatched path back
+# into range. That isolation is the whole point: with a physical fixture,
+# reverting the validator's normalization (temperloop#1333) reddens case 31
+# ALONE and leaves this case green — case 19 keeps testing git-tracked-ness
+# and stops double-duty as a second, accidental test of #1333. Let the
+# fixture path go logical and the two couple again: under a symlink-aliased
+# $TMPDIR root the prefix match misses, the git-tracked check is SKIPPED, and
+# case 19 fails for a reason that is not its own — temperloop#1549, green on
+# a /Users or /home root and on Linux CI, red only on macOS, and therefore a
+# false GATE_FAILED for every multi-PR merge gate combined-tree-precheck.sh
+# runs. Assert the premise rather than trusting the derivation to stay
+# physical; a named setup failure here beats a bare "validator should FAIL".
+REPO_ROOT_PHYS_CHECK="$(cd -P "$REPO_ROOT" && pwd)"
+[[ "$REPO_SCRATCH" == "$REPO_ROOT_PHYS_CHECK"/* ]] \
+  || fail "19: fixture setup: $REPO_SCRATCH is not under the PHYSICAL repo root $REPO_ROOT_PHYS_CHECK — a logical fixture path re-opens temperloop#1549 (the validator's prefix match misses and its git-tracked check is SKIPPED, so COMMITTED-NOT-TRACKED never fires)"
 mkdir -p "$REPO_SCRATCH"
 c19="$REPO_SCRATCH/untracked-allowlist.txt"
 case "$c19" in
@@ -1016,6 +1052,13 @@ vout="$(env PROVIDER_ALLOWLIST_TEST_SEAM=1 \
 [[ "$vrc" -ne 0 ]] || fail "31: validator should FAIL on an in-repo but untracked ceiling reached through a symlinked ancestor:
 $vout"
 case "$vout" in *COMMITTED-NOT-TRACKED*) ;; *) fail "31: expected a COMMITTED-NOT-TRACKED line through a symlinked repo-root ancestor, got:
+$vout" ;; esac
+# The comment above states COMMITTED-LOCATION "stays silent" and relies on it
+# for `vrc -ne 0` to discriminate. Assert it instead of stating it: a future
+# move of $c31 under .temperloop/ would satisfy both assertions above on a
+# FIXED and an UNFIXED validator alike, silently hollowing this case out —
+# which is precisely the shadowing that made temperloop#1549 unreadable.
+case "$vout" in *COMMITTED-LOCATION*) fail "31: fixture is not isolating — COMMITTED-LOCATION also fired, so COMMITTED-NOT-TRACKED is no longer the sole discriminator:
 $vout" ;; esac
 ok "31 validator: a symlinked ancestor between the script and its repo root does not skip the git-tracked check"
 
