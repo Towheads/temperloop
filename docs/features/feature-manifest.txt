@@ -415,6 +415,13 @@ quality-gates scripts/tests/test_lint_bash32_cmdsubst_comment.sh
 # reliably, so the guard has to be textual.
 quality-gates scripts/lint-pipe-grep-q.sh
 quality-gates scripts/tests/test_lint_pipe_grep_q.sh
+# bash marker-byte IFS lint (temperloop#1649) — third member of the same family,
+# and textual for the same reason: `IFS=$'\x01'` (0x01 is bash's own CTLESC) is
+# valid to shellcheck and to `bash -n`, works correctly under the bash 5.x the
+# ubuntu-only pre-merge leg runs, and does not split at all under the bash 3.2
+# every macOS host ships. It cost eight consecutive red nightly-macos runs.
+quality-gates scripts/lint-bash32-ctlesc-ifs.sh
+quality-gates scripts/tests/test_lint_bash32_ctlesc_ifs.sh
 quality-gates scripts/ensure-shellcheck.sh
 quality-gates scripts/tests/test_ensure_shellcheck.sh
 quality-gates workflows/scripts/config/*

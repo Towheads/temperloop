@@ -277,15 +277,32 @@ _CSD_ANCHOR_MIN_LEN=12
 # every field after it left instead of parsing as empty. `awk -F'\t'` does
 # NOT collapse a single-character field separator, so every parse below goes
 # through this helper: read the file/string through awk once, re-joining
-# fields on \x01 (a byte that cannot appear in a text TSV), then `IFS=$'\x01'
-# read` — which does NOT collapse (\x01 is not IFS whitespace) — over the
-# result.
+# fields on \x1f (ASCII US, a byte that cannot appear in a text TSV), then
+# `IFS=$'\x1f' read` — which does NOT collapse (\x1f is not IFS whitespace) —
+# over the result.
+#
+# WHY \x1f AND NOT \x01 (temperloop#1649). The first cut of this helper joined
+# on \x01, which is CORRECT on bash 4+ and SILENTLY BROKEN on bash 3.2 — the
+# system /bin/bash on every macOS host, and what `bash scripts/quality-gates.sh`
+# resolves to on the macos-latest runner. Bash uses 0x01 internally as CTLESC
+# (its own quoting marker) and 0x7f as CTLNUL; bash 3.2's word splitting is not
+# 8-bit clean for either, so `IFS=$'\x01' read -r a b c` on `a<0x01>b<0x01>c`
+# does NOT split: it returns the WHOLE line, 0x01 bytes and all, in `$a`, and
+# leaves `$b`/`$c` empty. Every registry row then parsed as one field, this
+# gate reported "Checked 0 registered surface(s)" plus a BAD-CASE per row, and
+# nightly-macos was red for seven consecutive nights while ubuntu (bash 5.x)
+# stayed green. This is a BASH-VERSION defect, NOT the BSD-vs-GNU dialect
+# family (temperloop#1549/#1422): the awk stage above emits byte-identical
+# output on BSD and GNU awk alike — holding awk fixed and swapping only the
+# bash binary flips the result. \x1f and \x1e are not bash marker bytes and
+# split correctly on 3.2 and 5.x alike. scripts/lint-bash32-ctlesc-ifs.sh is
+# the mechanical guard that keeps 0x01/0x7f from being reached for again.
 # ---------------------------------------------------------------------------
-_csd_tsv_file() { # <file> -> \x01-joined lines on stdout
-  awk -F'\t' 'BEGIN{OFS="\x01"} {$1=$1; print}' "$1"
+_csd_tsv_file() { # <file> -> \x1f-joined lines on stdout
+  awk -F'\t' 'BEGIN{OFS="\x1f"} {$1=$1; print}' "$1"
 }
-_csd_tsv_string() { # <string> -> \x01-joined lines on stdout
-  printf '%s' "$1" | awk -F'\t' 'BEGIN{OFS="\x01"} {$1=$1; print}'
+_csd_tsv_string() { # <string> -> \x1f-joined lines on stdout
+  printf '%s' "$1" | awk -F'\t' 'BEGIN{OFS="\x1f"} {$1=$1; print}'
 }
 
 # _csd_surface_script <surface> -> the script-path half of a SURFACE token,
@@ -375,7 +392,7 @@ known_surfaces=""
 surface_cases_seen=""
 current_registry_status=""
 
-while IFS=$'\x01' read -r surface case_ status test_file detail || [[ -n "${surface:-}" ]]; do
+while IFS=$'\x1f' read -r surface case_ status test_file detail || [[ -n "${surface:-}" ]]; do
   [[ -z "${surface:-}" ]] && continue
   case "$surface" in \#*) continue ;; esac
 
@@ -493,7 +510,7 @@ fi
 # ---------------------------------------------------------------------------
 allowlist_surfaces=""
 if [[ -f "$CHECK_SURFACE_ALLOWLIST_FILE" ]]; then
-  while IFS=$'\x01' read -r a_surface a_reason || [[ -n "${a_surface:-}" ]]; do
+  while IFS=$'\x1f' read -r a_surface a_reason || [[ -n "${a_surface:-}" ]]; do
     [[ -z "${a_surface:-}" ]] && continue
     case "$a_surface" in \#*) continue ;; esac
     trimmed_reason="$(printf '%s' "${a_reason:-}" | awk '{ gsub(/^[ \t]+|[ \t]+$/, ""); print }')"
@@ -666,7 +683,7 @@ if [[ -z "$_csd_ratchet_skip_reason" ]]; then
     prev_content="$(git -C "$CHECK_SURFACE_GIT_REPO_ROOT" show "${_csd_ratchet_base_ref}:${allowlist_relpath}" 2>/dev/null)" || prev_content=""
     prev_surfaces=""
     if [[ -n "$prev_content" ]]; then
-      while IFS=$'\x01' read -r p_surface _rest || [[ -n "${p_surface:-}" ]]; do
+      while IFS=$'\x1f' read -r p_surface _rest || [[ -n "${p_surface:-}" ]]; do
         [[ -z "${p_surface:-}" ]] && continue
         case "$p_surface" in \#*) continue ;; esac
         prev_surfaces="$prev_surfaces$p_surface
@@ -677,7 +694,7 @@ if [[ -z "$_csd_ratchet_skip_reason" ]]; then
     upstream_content="$(git -C "$CHECK_SURFACE_GIT_REPO_ROOT" show "${kernel_squash}:${kernel_inner_path}" 2>/dev/null)" || upstream_content=""
     upstream_surfaces=""
     if [[ -n "$upstream_content" ]]; then
-      while IFS=$'\x01' read -r u_surface _rest || [[ -n "${u_surface:-}" ]]; do
+      while IFS=$'\x1f' read -r u_surface _rest || [[ -n "${u_surface:-}" ]]; do
         [[ -z "${u_surface:-}" ]] && continue
         case "$u_surface" in \#*) continue ;; esac
         upstream_surfaces="$upstream_surfaces$u_surface
@@ -703,7 +720,7 @@ if [[ -z "$_csd_ratchet_skip_reason" ]]; then
     prev_content="$(git -C "$CHECK_SURFACE_GIT_REPO_ROOT" show "${_csd_ratchet_base_ref}:${allowlist_relpath}" 2>/dev/null)" || prev_content=""
     prev_surfaces=""
     if [[ -n "$prev_content" ]]; then
-      while IFS=$'\x01' read -r p_surface _rest || [[ -n "${p_surface:-}" ]]; do
+      while IFS=$'\x1f' read -r p_surface _rest || [[ -n "${p_surface:-}" ]]; do
         [[ -z "${p_surface:-}" ]] && continue
         case "$p_surface" in \#*) continue ;; esac
         prev_surfaces="$prev_surfaces$p_surface
@@ -737,7 +754,7 @@ if [[ -z "$_csd_ratchet_skip_reason" ]]; then
   else
     prev_reg_content="$(git -C "$CHECK_SURFACE_GIT_REPO_ROOT" show "${_csd_ratchet_base_ref}:${registry_relpath}" 2>/dev/null)" || prev_reg_content=""
     if [[ -n "$prev_reg_content" ]]; then
-      while IFS=$'\x01' read -r p_surface p_case p_status _rest || [[ -n "${p_surface:-}" ]]; do
+      while IFS=$'\x1f' read -r p_surface p_case p_status _rest || [[ -n "${p_surface:-}" ]]; do
         [[ -z "${p_surface:-}" ]] && continue
         case "$p_surface" in \#*) continue ;; esac
         [[ -z "${p_case:-}" || -z "${p_status:-}" ]] && continue

@@ -1038,6 +1038,47 @@ echo "── 47. MUTATION (temperloop#1370 review, LOW): 'set +o posix' keeps th
 # lost DIAGNOSTIC, never a lost failure), but INVISIBLE when it happens. Same
 # "$src"-mutation technique as section 46, so this isolates the posix guard's
 # own effect rather than any difference in how the failure is provoked.
+#
+# BASH-VERSION CAPABILITY PROBE (temperloop#1649). "a redirection error on a
+# special builtin exits a non-interactive posix-mode shell" is a bash 4+
+# behaviour. Bash 3.2 — the system /bin/bash on macOS, and therefore the `bash`
+# that `scripts/quality-gates.sh` resolves to on the macos-latest runner — does
+# NOT abort here: it falls into the `if !` arm and prints the diagnostic with or
+# without the guard, so on 3.2 the guard is provably INERT and the strict
+# "diagnostic is now lost" assertion below is simply false. That asymmetry made
+# this one check the fifth red gate on seven consecutive nightly-macos runs.
+#
+# The fix is NOT to skip the check on macOS. It is to MEASURE the host shell's
+# actual behaviour with a minimal reproduction of the exact production shape,
+# and then assert the correct thing for that shell — BOTH branches assert, and
+# the branch taken is printed, so nothing degrades silently:
+#   * bash aborts (4+)     -> the guard MUST be load-bearing: tampering it away
+#                             must LOSE the diagnostic (the original check).
+#   * bash does not (3.2)  -> the guard MUST be inert: tampering it away must
+#                             LEAVE the diagnostic intact. The inverse claim,
+#                             equally falsifiable — a 3.2 that silently dropped
+#                             the diagnostic would still fail this suite.
+# Where the PRODUCTION guard's own discrimination is enforced: on the bash-4+
+# leg. Deleting `set +o posix` from validate-model-usage-emit.sh takes this suite
+# RED under bash 5.x (measured: `FAILED 1 of 195`) — and that is the ubuntu-only
+# pre-merge `checks` gate, i.e. the leg that actually blocks a merge. On bash 3.2
+# the same deletion is undetectable BECAUSE the guard genuinely does nothing
+# there; asserting otherwise is what made this gate red for seven nights.
+POSIX_PROBE="$TMP/posix-special-builtin-abort-probe.sh"
+cat >"$POSIX_PROBE" <<'PROBEEOF'
+set -uo pipefail
+if ! { exec 3< "/tmp/temperloop-1649-does-not-exist-$$"; } 2>/dev/null; then
+  echo DIAGNOSTIC_ARM_REACHED >&2
+fi
+PROBEEOF
+POSIX_PROBE_ERR="$(POSIXLY_CORRECT=1 bash "$POSIX_PROBE" 2>&1 1>/dev/null || true)"
+if [ -n "$POSIX_PROBE_ERR" ]; then
+  POSIX_ABORTS_ON_SPECIAL_BUILTIN=0
+else
+  POSIX_ABORTS_ON_SPECIAL_BUILTIN=1
+fi
+echo "  probe  this bash ($(bash -c 'echo "$BASH_VERSION"')) aborts a posix-mode shell on a special-builtin redirection error: $([ "$POSIX_ABORTS_ON_SPECIAL_BUILTIN" -eq 1 ] && echo yes || echo 'no — guard is inert here, asserting the inverse')"
+
 cp "$LINT" "$FIXR/workflows/scripts/validate-model-usage-emit.sh"
 python3 - "$FIXR/workflows/scripts/validate-model-usage-emit.sh" <<'PYEOF'
 import sys
@@ -1072,8 +1113,13 @@ chmod +x "$FIXR/workflows/scripts/validate-model-usage-emit.sh"
 POSIX_TAMPER_ERR="$(POSIXLY_CORRECT=1 bash "$FIXR/workflows/scripts/validate-model-usage-emit.sh" --file "$TMP/good.jsonl" 2>&1 1>/dev/null)"
 POSIX_TAMPER_RC=$?
 check_eq "AFTER tamper (posix guard removed): rc is STILL 1 (fail-closed is unaffected)" "1" "$POSIX_TAMPER_RC"
-check_not "AFTER tamper (posix guard removed): the CANNOT EVALUATE diagnostic is now SILENTLY LOST under POSIXLY_CORRECT=1 — proves the guard is genuinely load-bearing" \
-  bash -c "grep -Fq 'CANNOT EVALUATE' <<<\"\$1\"" _ "$POSIX_TAMPER_ERR"
+if [ "$POSIX_ABORTS_ON_SPECIAL_BUILTIN" -eq 1 ]; then
+  check_not "AFTER tamper (posix guard removed): the CANNOT EVALUATE diagnostic is now SILENTLY LOST under POSIXLY_CORRECT=1 — proves the guard is genuinely load-bearing" \
+    bash -c "grep -Fq 'CANNOT EVALUATE' <<<\"\$1\"" _ "$POSIX_TAMPER_ERR"
+else
+  check "AFTER tamper (posix guard removed): the CANNOT EVALUATE diagnostic SURVIVES on this bash — it does not abort a posix-mode shell on a special-builtin redirection error, so the guard is inert here (the inverse claim, asserted not skipped)" \
+    bash -c "grep -Fq 'CANNOT EVALUATE' <<<\"\$1\"" _ "$POSIX_TAMPER_ERR"
+fi
 cp "$LINT" "$FIXR/workflows/scripts/validate-model-usage-emit.sh"
 chmod +x "$FIXR/workflows/scripts/validate-model-usage-emit.sh"
 check "RESTORED: fixture passes cleanly again" \

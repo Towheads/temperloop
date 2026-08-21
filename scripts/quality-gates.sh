@@ -418,6 +418,21 @@ KERNEL_GATES=(
   # it stays silent on a comment that merely names the shape.
   "bash scripts/lint-pipe-grep-q.sh"
   "bash scripts/tests/test_lint_pipe_grep_q.sh"
+  # Bash marker-byte IFS guard + its regression (temperloop#1649). Third member
+  # of the same STATIC-lint family, and for the same structural reason as
+  # lint-bash32-cmdsubst-comment.sh above: bash reserves 0x01 (CTLESC) and 0x7f
+  # (CTLNUL) for its own quoting protocol, and bash 3.2 — every macOS system
+  # /bin/bash, and the `bash` THIS script resolves to on the macos-latest runner
+  # — does not split on either, so `IFS=$'\x01' read -r a b c` returns the whole
+  # line in `$a`. Bash 4+ splits correctly, so shellcheck, `bash -n`, and every
+  # runtime test on the ubuntu-only pre-merge leg (temperloop#963) all pass while
+  # the code is broken; nightly-macos.yml caught it a day late and stayed red for
+  # seven nights. Its test asserts the lint fires on the VERBATIM pre-fix lines
+  # of validate-check-surface-degenerate-coverage.sh, stays silent on the awk
+  # side (measurably correct, and live in validate-activation-registry.sh), and —
+  # where a real bash 3.2 exists — re-measures the premise itself.
+  "bash scripts/lint-bash32-ctlesc-ifs.sh"
+  "bash scripts/tests/test_lint_bash32_ctlesc_ifs.sh"
   # Main knowledge_store interface + plain-files backend suite (foundation
   # #771) — root resolution, doc-id normalization, write/read round-trip,
   # --no-clobber, atomic write, list, and (temperloop#1308) the ks_append
