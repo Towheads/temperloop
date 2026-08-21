@@ -82,6 +82,16 @@
 #              pin, fails rather than skipping on the first probe
 #  34. HELP  — `--help` reaches the usage block and the exit-code table (the
 #              header grew past the old fixed line range)
+#  35. REAL  — a change to the changelog machinery itself resolves against the
+#              REAL contract-surface table and comes back RED (temperloop#1353)
+#  36. RED   — no VERSIONING.md AND no .kernel-pin => FAIL LOUDLY. The THIRD
+#              application of the same discriminator (temperloop#1494): this
+#              probe was the odd one out, a bare skip at exit 0 regardless of
+#              the pin, so a kernel checkout that lost the file that DEFINES
+#              its contract surface reported a clean run
+#  37. SKIP  — no VERSIONING.md but .kernel-pin present => the actionable skip
+#              (a vendoring consumer legitimately keeps no VERSIONING.md at its
+#              repo root — see the KERNEL_ROOT resolution above)
 #
 # Usage: bash workflows/scripts/tests/test_check_changelog_entry.sh
 
@@ -1104,6 +1114,47 @@ run_gate "$D" "$BASE_NOROW"
 assert_status 0 "$RUN_STATUS" "GREEN once the row is removed — the row is what discriminates"
 assert_has "$RUN_OUT" "no contract-surface path changed" "reproduces the pre-fix verdict verbatim"
 
+
+# ── 36. RED: no VERSIONING.md AND no .kernel-pin => FAIL LOUDLY ─────────────
+# temperloop#1494. The THIRD application of the discriminator cases 26 and 31
+# already establish for `changelog.d/` and `CHANGELOG.md`. This probe was the
+# odd one out — `say "skipped …"; exit 0`, unconditionally — so a kernel
+# checkout that renamed, moved or lost VERSIONING.md stopped enforcing property
+# (1) entirely and STILL REPORTED SUCCESS. VERSIONING.md § The contract surface
+# is the table this gate parses to decide what a PR owes an entry for: absent,
+# the enforced surface set is empty and every PR passes by default.
+#
+# The fixture touches contract surface and carries NO fragment, so under the
+# pre-fix code this exact tree exited 0 ("skipped — …"); it must now exit 1.
+echo "36. no VERSIONING.md and no .kernel-pin fails loudly"
+D="$TMP/r36"; BASE="$(new_repo "$D")"
+git -C "$D" rm -q VERSIONING.md >/dev/null
+echo "# build v2" > "$D/claude/commands/build.md"
+git -C "$D" commit -aqm "lose VERSIONING.md"
+run_gate "$D" "$BASE"
+assert_status 1 "$RUN_STATUS" "fails loudly rather than skipping"
+assert_has "$RUN_OUT" "no VERSIONING.md at" "names the missing file"
+assert_has "$RUN_OUT" ".kernel-pin" "names the discriminator"
+assert_has "$RUN_OUT" "narrows to zero" "states why an absent surface definition is not a pass"
+assert_not_has "$RUN_OUT" "skipped —" "never reports the old unconditional skip"
+
+# ── 37. SKIP: no VERSIONING.md but .kernel-pin present => actionable skip ───
+# The legitimate consuming-repo layout this fix must NOT break: a composed
+# overlay checkout does not run the kernel's release workflow at its root and so
+# carries no VERSIONING.md there (the same layout the KERNEL_ROOT resolution at
+# the top of this file exists for, temperloop#1543). The pin says it is a
+# consumer; it keeps building green, and the skip is VISIBLE and names the
+# pinned kernel tag rather than being swallowed.
+echo "37. a pinned consumer with no VERSIONING.md gets an actionable skip"
+D="$TMP/r37"; BASE="$(new_repo "$D" frag-pin)"
+git -C "$D" rm -q VERSIONING.md >/dev/null
+echo "# build v2" > "$D/claude/commands/build.md"
+git -C "$D" commit -aqm "a consumer that keeps no VERSIONING.md"
+run_gate "$D" "$BASE"
+assert_status 0 "$RUN_STATUS" "skips instead of failing"
+assert_has "$RUN_OUT" "skipped —" "the skip is legible, never silent"
+assert_has "$RUN_OUT" "nothing defines this tree's contract surface" "says what is missing"
+assert_has "$RUN_OUT" "v0.42.0" "names the pinned kernel release from .kernel-pin"
 
 echo
 echo "test_check_changelog_entry: $pass passed, $fail failed"
