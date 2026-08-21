@@ -274,5 +274,22 @@ has '^  OK .*build-level\.mjs' \
 [ "$DOCTOR_EXIT" -ne 0 ] || fail "7: drift in a second workflow should still exit non-zero"
 pass "7: every claude/workflows/*.mjs is compared, not just build-level.mjs"
 
+# ---------------------------------------------------------------------------
+# Case 8 (EXIT-CODE WIRING, structural): cases 2/5/7 above assert a non-zero
+# exit, but they cannot ISOLATE this check's own contribution — a minimal
+# fixture's overall exit is non-zero anyway (links_enumerate unconditionally
+# enumerates ~/.local/bin targets no fixture provisions), so those assertions
+# only pin that DRIFT is never SWALLOWED into a clean exit. This case closes
+# the remaining gap structurally: the check's status variable must actually be
+# read by doctor.sh's final exit condition. Without it the function could
+# return 1 forever and doctor would still exit 0 on an otherwise-clean host —
+# the exact silent-green shape this whole check exists to prevent.
+# ---------------------------------------------------------------------------
+grep -q 'check_installed_workflow_drift || workflow_drift_status=\$?' "$DOCTOR_SH" \
+  || fail "8: doctor.sh must capture check_installed_workflow_drift's status into workflow_drift_status"
+sed -n '/^if (( non_ok > 0/,/then$/p' "$DOCTOR_SH" | grep -q 'workflow_drift_status != 0' \
+  || fail "8: workflow_drift_status must be read by doctor.sh's final exit condition"
+pass "8: the check's verdict is wired into doctor's own exit code"
+
 echo
 echo "All check_installed_workflow_drift() tests passed."

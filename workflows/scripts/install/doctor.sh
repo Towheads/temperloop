@@ -999,7 +999,7 @@ check_installed_workflow_drift() {
     fi
 
     printf '           WHY IT MATTERS: /build Step 3, /sweep Step 0.3 and /fix Step 3 all\n'
-    printf '           invoke scriptPath="$HOME/.claude/workflows/%s", so THAT copy is\n' "$base"
+    printf '           invoke it by scriptPath at ~/.claude/workflows/%s, so THAT copy is\n' "$base"
     printf '           what executes — not the one in this checkout.\n'
     printf '           REMEDY (operator-run, never automatic): re-run the install from the\n'
     printf '           checkout you intend to be canonical, or point scriptPath at the\n'
