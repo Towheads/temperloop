@@ -1107,14 +1107,38 @@ _harness_worktree_verdict() {
 # half of the leak (they survive the directory), so a remedy that removed only
 # the directory would leave the report clean and the repo still accumulating.
 _harness_worktree_remedy() {
-  local repo="$1" wt="$2" branch
+  local repo="$1" wt="$2" branch merged
   if branch="$(_worktree_branch_of "$repo" "$wt")" && [ -n "$branch" ]; then
-    printf 'git -C %s worktree remove %s && git -C %s branch -D %s' \
+    # NEVER hand a consumer a FORCE delete for a branch whose merged-ness is
+    # not established. `/tidy` runs this remedy VERBATIM and UNATTENDED as
+    # auto-heal, and `git branch -D` deliberately bypasses the "not fully
+    # merged" refusal — the only thing standing between an automated sweep and
+    # somebody's unmerged commits.
+    #
+    # This is the same never-destroy-on-an-unestablished-verdict rule
+    # _harness_worktree_verdict already applies to DIRT (an unprobeable tree
+    # downgrades to report-only rather than removable), and the same one the
+    # sibling <repo>.wt ladder applies through merged_detect_is_merged below.
+    # The harness arm was the one place that skipped it. Caught by §3e —
+    # independently, by both the shell and workflow reviewers.
+    merged="$(merged_detect_is_merged "$repo" "$branch" 2>/dev/null)" || merged="false"
+    if [ "$merged" = "true" ]; then
+      # Confirmed merged. Still `-d`, not `-D`: if merged-detection is ever
+      # wrong, git's own refusal is the backstop rather than nothing at all.
+      printf 'git -C %s worktree remove %s && git -C %s branch -d %s' \
+        "$repo" "$wt" "$repo" "$branch"
+      return 0
+    fi
+    # Unmerged, or merged-ness indeterminate. Reclaim the directory — always
+    # safe — but KEEP the branch and SAY so. A remedy that silently drops half
+    # its job reads as complete; one that names what it left behind lets the
+    # operator finish it deliberately.
+    printf 'git -C %s worktree remove %s && git -C %s worktree prune  # branch %s KEPT: not confirmed merged — inspect, then delete by hand' \
       "$repo" "$wt" "$repo" "$branch"
-  else
-    printf 'git -C %s worktree remove %s && git -C %s worktree prune' \
-      "$repo" "$wt" "$repo"
+    return 0
   fi
+  printf 'git -C %s worktree remove %s && git -C %s worktree prune' \
+    "$repo" "$wt" "$repo"
 }
 
 # ── classify_worktree <repo> <wt_dir> ─────────────────────────────────────────

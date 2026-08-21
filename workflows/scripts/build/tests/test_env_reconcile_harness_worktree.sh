@@ -160,6 +160,12 @@ call() {  # <fn> <arg1> [arg2] [mutation]
     bash "$TMP/call.sh" "$SCRIPT" "$@"
 }
 
+call_with_merged() {  # <merged-set> <fn> <arg1> [arg2] [mutation]
+  local merged="$1"; shift
+  PATH="$TMP/bin:$PATH" GH_MOCK_MERGED_BRANCHES="$merged" \
+    bash "$TMP/call.sh" "$SCRIPT" "$@"
+}
+
 classify_h() {  # <checkout> <agent-id> [mutation] -> class token
   backdate "$1/$HARNESS_SUBDIR/agent-$2"
   call classify_worktree "$1" "$1/$HARNESS_SUBDIR/agent-$2" "${3:-none}"
@@ -201,13 +207,47 @@ case "$got" in
 esac
 echo "PASS: real dirt beside $HARNESS_SUBDIR/ still reports DIRTY (exclusion is path-scoped)"
 
-# ── 4. The remedy pointer names the directory AND the leftover branch ───────
+# ── 4. The remedy NEVER force-deletes an unconfirmed branch ─────────────────
+# §3e caught this independently in BOTH the shell and workflow reviewers: the
+# remedy emitted an unconditional `git branch -D`, and /tidy runs it VERBATIM,
+# UNATTENDED, as auto-heal. `-D` is git's FORCE delete — it deliberately
+# bypasses the not-fully-merged refusal that is the only thing between an
+# automated sweep and somebody's unmerged commits.
+#
+# 4a: branch NOT confirmed merged -> the directory is still reclaimed, the
+# branch is KEPT, and the remedy SAYS so. 4b: confirmed merged -> the branch
+# is offered for deletion, and even then with `-d`, so git's own refusal stays
+# as a backstop if merged-detection is ever wrong.
+
+# 4a — unmerged (the default MERGED_BRANCHES set does not contain it)
 got="$(call _harness_worktree_remedy "$CRON" "$CRON/$HARNESS_SUBDIR/agent-stale")"
 case "$got" in
-  *"worktree remove $CRON/$HARNESS_SUBDIR/agent-stale"*"branch -D worktree-agent-stale"*) ;;
+  *"branch -D"*) fail "4a: an UNMERGED branch must never be handed a force-delete; got '$got'" ;;
+esac
+case "$got" in
+  *"worktree remove $CRON/$HARNESS_SUBDIR/agent-stale"*"KEPT"*) ;;
+  *) fail "4a: the remedy must still reclaim the directory and SAY the branch was kept, got '$got'" ;;
+esac
+echo "PASS: 4a remedy for an UNMERGED branch reclaims the directory and keeps the branch, explicitly"
+
+# 4b — confirmed merged
+got="$(call_with_merged "worktree-agent-stale" _harness_worktree_remedy "$CRON" "$CRON/$HARNESS_SUBDIR/agent-stale")"
+case "$got" in
+  *"branch -d worktree-agent-stale"*) ;;
+  *) fail "4b: a CONFIRMED-MERGED branch should be offered for safe (-d) deletion, got '$got'" ;;
+esac
+case "$got" in
+  *"branch -D"*) fail "4b: even a merged branch must not be force-deleted; git's refusal is the backstop, got '$got'" ;;
+esac
+echo "PASS: 4b remedy for a CONFIRMED-MERGED branch offers -d, never -D"
+
+# 4c — the original assertion, minus the force flag: both halves still named
+got="$(call_with_merged "worktree-agent-stale" _harness_worktree_remedy "$CRON" "$CRON/$HARNESS_SUBDIR/agent-stale")"
+case "$got" in
+  *"worktree remove $CRON/$HARNESS_SUBDIR/agent-stale"*"branch -d worktree-agent-stale"*) ;;
   *) fail "the remedy must name both the worktree removal and its leftover branch, got '$got'" ;;
 esac
-echo "PASS: remedy pointer names the removal AND the leftover worktree-agent-* branch"
+echo "PASS: 4c remedy pointer still names the removal AND the leftover worktree-agent-* branch"
 
 # ── 5. End-to-end: report + entry carry the class and the remedy ────────────
 run_reconcile() {  # <format>
