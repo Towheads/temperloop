@@ -519,27 +519,48 @@ this step produced was actually disposed of.
 
 ### 3.3 — Capability-probed adversarial panel
 
-1. **Availability predicate.** A review subagent is available iff this
-   project declares it in `CLAUDE.md § Subagents` or `.claude/agents/`
+1. **Availability predicate — run the helper, don't eyeball the surfaces.**
+   A review subagent is available iff this project declares it in
+   `CLAUDE.md § Subagents` or `.claude/agents/`
    ([[Decisions/foundation - Project capability probes]]) — the same
    predicate `/assess` Step 3 and `/triage` Step 3 apply to their own
-   panels. Probe each candidate lens right before it would be spawned;
-   absence is never fatal to the walk.
+   panels. **Evaluate it mechanically**, by sourcing
+   `workflows/scripts/lib/agent_declared.sh` and reading
+   `agent_declared_state <lens>`, which prints exactly one of `installed`,
+   `source-only`, or `absent` (ADR 0029,
+   `docs/adr/0029-agent-declared-probe.md`). `installed` is the spawn gate;
+   the other two select the two skip-line forms in 1a, one each. Reading
+   the predicate's two named surfaces *literally* is what temperloop#1462
+   caught: on the kernel's own checkout `.claude/agents/` is gitignored and
+   `CLAUDE.md` carries no `## Subagents` heading, yet every lens is
+   installed at `$HOME/.claude/agents/` — so an eyeballed probe skipped the
+   whole panel while every lens would have spawned fine. A skip line that
+   fires for an *available* lens is a review that silently didn't happen,
+   which is worse than the panel not existing. Probe each candidate lens
+   right before it would be spawned; absence is never fatal to the walk.
 1a. **Two skip-line forms — the single definition every later mention below <!-- cite: W.11 incident:K#290 -->
-   defers to.** When the predicate is false, the skip line takes one of two
-   forms per `claude/message-schema.md` § Degradation notice (the contract
-   home; kernel wording owner is `CLAUDE.kernel.md` § Legible agent-gate
-   degradation) — distinguish *why* before emitting it:
-   - **Not shipped** — no `claude/agents/<agent>.md` source file exists in
-     this checkout. Nothing to install → bare `skipped — <agent> unavailable`.
-   - **Shipped but not installed** — a `claude/agents/<agent>.md` source file
-     *does* exist but the lens isn't resolvable live (no
-     `.claude/agents/<agent>.md`, no `CLAUDE.md § Subagents` declaration) →
-     the remedy-bearing form `skipped — <agent> available as source; run
-     workflows/scripts/install/project-agents.sh to enable` (temperloop#290).
+   defers to.** When the state is not `installed`, the skip line takes one
+   of two forms per `claude/message-schema.md` § Degradation notice (the
+   contract home; kernel wording owner is `CLAUDE.kernel.md` § Legible
+   agent-gate degradation). The state from item 1 *selects* the form —
+   distinguish *why* before emitting it, and take the answer from the
+   helper rather than re-deriving it:
+   - **Not shipped** (`absent`) — no `claude/agents/<agent>.md` source file
+     exists in this checkout. Nothing to install → bare
+     `skipped — <agent> unavailable`.
+   - **Shipped but not installed** (`source-only`) — a
+     `claude/agents/<agent>.md` source file *does* exist but the lens isn't
+     resolvable live (no `.claude/agents/<agent>.md`, no
+     `$HOME/.claude/agents/<agent>.md`, no `CLAUDE.md § Subagents`
+     declaration) → the remedy-bearing form `skipped — <agent> available as
+     source; run workflows/scripts/install/project-agents.sh to enable`
+     (temperloop#290).
      This is the recurring fresh-standalone-clone case — every lens ships as
      source under `claude/agents/` but no live `.claude/` exists yet — so the
      operator sees the one-command fix on the live line, not a bare dead-end.
+     Note it is **not** the kernel maintainer's own case: a host with the
+     lenses installed at `$HOME/.claude/agents/` reads `installed`, and
+     emitting this line there would be the temperloop#1462 false negative.
    Every other reference to `skipped — <agent> unavailable` in this file —
    before or after this item, including the § 3.2 persona-agent skip — is
    shorthand for whichever of these two forms the probe selects; the skip is

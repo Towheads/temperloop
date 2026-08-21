@@ -560,6 +560,23 @@ KERNEL_GATES=(
   # stands in for the checkout-surface case). Same direct-`bash` form as the
   # issue-marker-probe gate above (kernel Makefile is generator-owned).
   "bash workflows/scripts/lib/tests/test_command_declared.sh"
+  # Subagent-availability probe (temperloop#1462, ADR 0029): the SUBAGENT
+  # half of the capability probe ADR 0008 explicitly said it did not cover —
+  # `agent_declared` plus the three-valued `agent_declared_state`
+  # (installed / source-only / absent) over the same three file surfaces as
+  # command_declared, with `agents/` for `commands/`, plus the canonical
+  # predicate's own `CLAUDE.md § Subagents` clause. Read literally, the old
+  # two-surface predicate reported EVERY reviewer unavailable on this very
+  # checkout (agents live only in $HOME/.claude/agents/), so build.md §3e's
+  # MANDATORY workflow-reviewer pass emitted an all-skip line for an agent
+  # that spawns fine. The suite pins each surface independently AND the two
+  # answers that must stay distinguishable: a genuinely-absent agent still
+  # reports absent, and a source-only one is never reported spawnable. Zero
+  # network, zero mutation of the real HOME/checkout (a throwaway git repo
+  # under a tmpdir stands in for the checkout surface). Same direct-`bash`
+  # form as the command-declared gate above (kernel Makefile is
+  # generator-owned).
+  "bash workflows/scripts/lib/tests/test_agent_declared.sh"
   # token_sum.sh (temperloop#828, epic #810 "realized-session-context
   # probe"): the ONE shared jq expression claude/status-line.sh's "Tokens:
   # NNk" display and workflows/scripts/emit-session-context.sh's SessionEnd
