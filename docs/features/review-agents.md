@@ -107,6 +107,34 @@ project-level configuration section, or present as a file under
 that wants a review pass runs the same check rather than each reinventing
 its own availability logic.
 
+That check is **mechanical**, not a judgment call: `agent_declared_state
+<agent>`, in `workflows/scripts/lib/agent_declared.sh`, is the one
+implementation every call site runs (ADR 0029,
+`docs/adr/0029-agent-declared-probe.md`). It answers in three values, because
+two would not be enough:
+
+- **installed** — the agent is live here: the project names it in its own
+  configuration section, or a definition file sits in the project's
+  `.claude/agents/` or in the machine-wide `~/.claude/agents/`. This is the
+  only state that permits a spawn.
+- **source-only** — the agent ships in this checkout's tracked
+  `claude/agents/` tree but has not been deployed anywhere live. It is real
+  and one command away — and that command is what its skip line names.
+- **absent** — no surface carries it at all. Nothing to install, nothing to
+  suggest.
+
+The three-way split exists because the two skip-line forms below are chosen
+by it, and because collapsing it is a real defect in *both* directions.
+Reporting a shipped-but-undeployed agent as available makes a workflow try to
+spawn something that isn't there. Reporting a *deployed* agent as unavailable
+makes a mandatory review silently not run — which is what happened when the
+predicate was read as naming only its first two surfaces: on the kernel's own
+development checkout the project-level directory is deliberately not
+committed and the configuration section does not exist, yet every agent is
+deployed machine-wide, so a literal reading called all eleven unavailable and
+the mandatory workflow review skipped itself on every change
+(temperloop#1462).
+
 **Legible degradation.** When the probe says an agent isn't available, the
 calling workflow does not silently skip the review step and proceed as if
 nothing happened — that would make a skipped gate look identical to a passed

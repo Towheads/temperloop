@@ -291,6 +291,7 @@ make validate-knowledge-search-emit	workflows/scripts/validate-knowledge-search-
 bash workflows/scripts/lib/tests/test_issue_corpus.sh	workflows/scripts/lib/** claude/commands/**
 bash workflows/scripts/lib/tests/test_issue_marker_probe.sh	workflows/scripts/lib/issue-marker-probe.sh workflows/scripts/lib/tests/test_issue_marker_probe.sh claude/commands/**
 bash workflows/scripts/lib/tests/test_command_declared.sh	workflows/scripts/lib/command_declared.sh workflows/scripts/lib/tests/test_command_declared.sh claude/commands/**
+bash workflows/scripts/lib/tests/test_agent_declared.sh	workflows/scripts/lib/agent_declared.sh workflows/scripts/lib/tests/test_agent_declared.sh claude/agents/** claude/commands/**
 
 # ── Telemetry / spend / session context ─────────────────────────────────────
 bash workflows/scripts/tests/test_telemetry_brief.sh	workflows/scripts/telemetry-brief.sh workflows/scripts/tests/test_telemetry_brief.sh claude/commands/check-in.md workflows/scripts/async-workflow-health.sh
