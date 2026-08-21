@@ -378,6 +378,16 @@ knowledge-store docs/validation/clean-host-ks-search.md
 command-declared workflows/scripts/lib/command_declared.sh
 command-declared workflows/scripts/lib/tests/test_command_declared.sh
 
+# ── agent-declared — the SUBAGENT half of the same capability probe (ADR 0029) ─
+# `agent_declared_state <agent>` answers installed | source-only | absent across
+# the same three surfaces command_declared walks, with `agents/` for `commands/`
+# (temperloop#1462). Claimed under the existing `review-agents` slug rather than
+# a new one: the doc that describes it is docs/features/review-agents.md, and a
+# feature's files belong with the doc a reader would look in. Exact-path claims,
+# same style as the command-declared sibling above.
+review-agents workflows/scripts/lib/agent_declared.sh
+review-agents workflows/scripts/lib/tests/test_agent_declared.sh
+
 # ── quality-gates — the static gate set, lints, kernel scrubs, setting registry ─
 quality-gates workflows/scripts/validate-docs-footer.sh
 quality-gates workflows/scripts/tests/test_validate_docs_footer.sh
