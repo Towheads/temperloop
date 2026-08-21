@@ -63,6 +63,15 @@ none exists. It is implemented as `claude/commands/fix.md`.
   (open, unclaimed, none of the above), and `ambiguous` (multiple open
   linked PRs found — `resolve` surfaces this rather than silently
   picking one, unlike funnel-tick's tick loop, which takes the first).
+  **Amended (temperloop#1591 / #1518, epic #1626):** the route set above
+  was incomplete in a way that let `resolve` fabricate a `fresh` verdict
+  for a target it had never successfully read. Three routes were added,
+  all TERMINAL and all ahead of the others in precedence — `not-found`
+  (the number does not exist), `probe-failed` (the `gh` read failed for a
+  non-404 reason, so the state is genuinely unknown rather than open),
+  and `not-an-issue` (the number is a pull request) — and `already-done`
+  was widened from `state == closed` to any non-open state. See
+  `issue-state.sh`'s own header for the invariants that ordering holds.
 - **`reattach`** — open PR in, `{ready|not-ready, reason}` verdict out.
   It **never merges**; the caller (`/fix`, or any other adopter) owns the
   merge decision.
