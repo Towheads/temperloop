@@ -6,7 +6,7 @@
 #                                       vs. the local tmux @claimed_issue markers
 #                                       for THIS host. Read-only.
 #          ... --fix                    also auto-applies the one SAFE marker
-#                                       repair (THIS window's stale marker whose
+#                                       repair (EVERY window's stale marker whose
 #                                       issue is provably closed/merged).
 #   reconcile.sh [--board N] --status   STATUS drift — board Status vs. GitHub
 #                                       reality (closed/merged backing issues/PRs,
@@ -45,41 +45,70 @@
 #      host, but no live tmux window holds its @claimed_issue marker. Claimed on
 #      the board with no local marker (e.g. after release.sh, or a dead session).
 #
-# ─── Lens 1 repair: --fix (temperloop#748) ───────────────────────────────────
+# ─── Lens 1 repair: --fix (temperloop#748, widened by temperloop#1037) ───────
 # `--fix` on the marker lens applies ONE narrowly-scoped, provably-safe repair:
-# it clears THIS WINDOW's own claim marker, and only when that marker names an
-# issue that is BOTH (a) marker-without-board drift and (b) PROVABLY TERMINAL
-# (its backing issue/PR reads CLOSED or MERGED on GitHub). The clear routes
-# through lib/claim_marker.sh's `claim_marker_clear` — the same primitive
-# release.sh uses — so there is exactly one marker-clearing implementation.
+# it clears a claim marker only when that marker names an issue that is BOTH
+# (a) marker-without-board drift and (b) PROVABLY TERMINAL (its backing issue/PR
+# reads CLOSED or MERGED on GitHub). The clear routes through
+# lib/claim_marker.sh's `claim_marker_clear_window` — the same primitive
+# `claim_marker_clear` (and therefore release.sh) uses under the hood — so there
+# is exactly one marker-clearing implementation.
+#
+# ─── Why the repair sweeps EVERY window (temperloop#1037) ────────────────────
+# #748 confined the repair to the CALLER'S OWN window. That left the actual
+# defect standing: nothing clears a marker on session death, issue close, or
+# merge, and a marker in a window nobody happens to run `--fix` from therefore
+# survives indefinitely — observed live as a marker branding all four windows of
+# a session for over a month after its issue had closed. A repair the operator
+# must notice and hand-run in each affected window is not a repair for drift
+# that is, by definition, unnoticed. So the repair now sweeps every window on
+# the tmux server, applying the SAME per-marker gates to each.
+#
+# That widening does not reintroduce GH #297. #297 is about touching a window
+# you cannot prove is yours; what makes a cross-window clear safe here is the
+# PROOF, not the ownership — a marker naming a CLOSED/MERGED issue is dead
+# information in every window, including a concurrent session's, and the gates
+# below refuse anything short of that proof. "Looks stale" is never enough: an
+# OPEN issue, an unreadable state, and a live same-host board claim are each
+# refused in EVERY window, exactly as they were in the caller's own.
+#
+# The converse — WRITING (branding) a window you do not own — is untouched and
+# still forbidden: lib/claim_marker.sh deliberately ships no targeted `set`.
 #
 # Three boundaries are deliberate and NOT negotiable:
 #
 #   * OPT-IN. Without `--fix` this lens still only reports; it mutates nothing.
 #
-#   * THIS WINDOW ONLY. The report scans every window on the tmux server, but
-#     the repair touches only the caller's own window ($TMUX_PANE / the caller's
-#     own cmux workspace) — the GH #297 doctrine every marker write in this
-#     toolkit obeys: never brand or un-brand a window you do not own, because a
-#     concurrent session may be living in it. A stale marker in another window
-#     is still REPORTED; clearing it means running this from that window.
+#   * PROVABLY-TERMINAL ONLY, in every window. A marker whose issue is still
+#     OPEN is left alone (the work may be live), as is one whose state could not
+#     be read at all. There is no "stale-looking" or age-based clear.
 #
-#   * PROVABLY-TERMINAL ONLY, and never the converse class. A marker whose
-#     issue is still OPEN is left alone (the work may be live). The entire
-#     `board-without-marker` class is NEVER repaired — not cleared, and above
-#     all never re-stamped: temperloop#719 showed that class produces FALSE
-#     stranded-claim signals (a demonstrably LIVE session's window marker had
-#     simply been clobbered by a later claim), so acting on it risks stomping a
-#     live peer session. Detect and report it; never repair it.
+#   * NEVER THE CONVERSE CLASS. The entire `board-without-marker` class is NEVER
+#     repaired — not cleared, and above all never re-stamped: temperloop#719
+#     showed that class produces FALSE stranded-claim signals (a demonstrably
+#     LIVE session's window marker had simply been clobbered by a later claim),
+#     so acting on it risks stomping a live peer session. Detect and report it;
+#     never repair it. It is structurally unreachable from the sweep, which
+#     starts from markers that EXIST.
+#
+# The cmux surface is NOT widened, because there is nothing to widen: cmux
+# auto-targets the caller's own workspace, so the caller's own chip is the only
+# one addressable. It is swept under the same gates, after the tmux windows.
 #
 # This is the LOCAL-MARKER half of the post-terminal claim rot only. The board
 # half — a closed issue retaining `fnd:status:in-progress` / `fnd:host/session:*`
 # — is Lens 3 (--labels) classes (h)/(j), deliberately separate (temperloop#744).
 #
 # K#275 is untouched: `release.sh <n>` still refuses to clear a non-latest
-# claim. This repair never forces such a release — it clears whatever THIS
-# window holds, exactly like an argument-less `release.sh`, and only after
-# proving that marker names terminal work.
+# claim. This repair never forces such a release — it clears a marker whose
+# issue it has proved terminal, which is not a claim anyone still holds.
+#
+# ─── Reachability: the repair does not require being inside tmux (#1037) ─────
+# Marker reads and the targeted clears address the tmux server directly, so a
+# periodic sweep that runs OUTSIDE tmux (the `/tidy` nightly) still sees and
+# repairs the operator's windows — which is what makes the clear automatic
+# rather than hand-run. With no tmux server reachable, every tmux read returns
+# nothing and the lens degrades to the board-side report, exactly as before.
 #
 # "THIS host" matches claim.sh's logic — the shared board_host_label() helper
 # (workflows/scripts/board/lib/board.sh) — and the board stamp format
@@ -254,8 +283,8 @@
 #
 # Usage:
 #   scripts/reconcile.sh                       # marker drift report; exits 0
-#   scripts/reconcile.sh --fix                 # + clear THIS window's marker if
-#                                              #   it names provably-terminal work
+#   scripts/reconcile.sh --fix                 # + clear EVERY window's marker
+#                                              #   that names provably-terminal work
 #   scripts/reconcile.sh --board 4 --status    # status drift report; exits 0
 #   scripts/reconcile.sh --board 4 --status --fix   # + apply terminal→Done
 #   scripts/reconcile.sh --board 7 --labels    # label hygiene report; exits 0
@@ -288,9 +317,11 @@ SCRIPT_DIR="$(cd -P "$(dirname "$src")" && pwd)"
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/lib/board.sh"
 # The marker-repair path (--fix on Lens 1) clears markers through the SAME
-# primitive release.sh uses — claim_marker_clear — rather than reimplementing a
-# second marker-clearing code path. claim_marker_peek reads this window's marker
-# without clearing it, for the safety gates. Sourcing is side-effect-free.
+# primitive release.sh uses — claim_marker_clear_window, which claim_marker_clear
+# itself calls for the caller's own window — rather than reimplementing a second
+# marker-clearing code path. claim_marker_peek_window / claim_marker_peek_cmux
+# read a marker without clearing it, for the safety gates. Sourcing is
+# side-effect-free.
 # shellcheck source=scripts/lib/claim_marker.sh
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/lib/claim_marker.sh"
@@ -405,16 +436,29 @@ _reconcile_epoch_of() {
   return 0
 }
 
-# Emit every live window's @claimed_issue value, one per line (blanks dropped).
-# Outside tmux this prints nothing (no server to query). list-windows -a spans
-# ALL sessions/windows on the server; -F '#{@claimed_issue}' yields the option
-# (empty string for unset). The grep drops empties so only set markers remain.
+# Emit "<window_id>\t<@claimed_issue>" for every live window that HAS a marker
+# set. list-windows -a spans ALL sessions/windows on the server; the format
+# yields the stable `@N` window id (the target the repair clears through) and the
+# option value (empty string when unset). The awk drops rows with an empty marker.
+#
+# NOT GUARDED ON $TMUX (temperloop#1037). The pre-#1037 guard returned early
+# outside tmux on the reasoning that there is "no server to query" — but the
+# server is a socket, not the caller's environment, so a sweep running outside
+# tmux (the /tidy nightly, which is what makes the repair automatic rather than
+# hand-run) could see the operator's windows all along and was simply refusing
+# to look. With genuinely no server running, `tmux list-windows` fails and the
+# 2>/dev/null + `|| true` degrade this to empty output — the same result the
+# guard produced, reached by measurement instead of assumption.
+reconcile_marker_rows() {
+  _reconcile_tmux list-windows -a -F $'#{window_id}\t#{@claimed_issue}' 2>/dev/null |
+    awk -F'\t' 'NF >= 2 && $2 != ""' || true
+}
+
+# Emit every live window's @claimed_issue value, one per line (blanks dropped) —
+# the marker-only projection of reconcile_marker_rows, for the drift report,
+# which counts issue numbers and does not care which window holds them.
 reconcile_markers() {
-  if [ -z "${TMUX:-}" ]; then
-    return 0
-  fi
-  _reconcile_tmux list-windows -a -F '#{@claimed_issue}' 2>/dev/null |
-    grep -v '^$' || true
+  reconcile_marker_rows | cut -f2-
 }
 
 # Extract the leading issue number from a marker display string. claim.sh stores
@@ -435,9 +479,11 @@ in_list() {
 # upper-cased state, or nothing when it cannot be established. Routes through
 # `_board_gh` so a test replays it offline with zero network, like every other
 # GitHub read in this file. Single-item reads, NOT the Lens 2 bulk lists: the
-# repair has at most ONE candidate (this window's own marker), so one targeted
-# read is strictly cheaper than two whole-repo pages — and these are REST reads,
-# never Projects-v2 GraphQL, so they cost nothing against the board budget.
+# repair's candidate set is the handful of windows on one tmux server that
+# actually hold a marker (usually one, rarely more than a few), so a targeted
+# read per candidate is still cheaper than two whole-repo pages — and these are
+# REST reads, never Projects-v2 GraphQL, so they cost nothing against the board
+# budget.
 #
 # FAIL-SAFE BY CONSTRUCTION: any failure — a missing issue, an auth error, an
 # unparseable payload — yields an empty string, which the caller treats as "not
@@ -459,72 +505,186 @@ _reconcile_issue_state() {
   printf '%s' "$(printf '%s' "$state" | tr '[:lower:]' '[:upper:]')"
 }
 
-# --- Lens 1 repair: the one safe marker repair (temperloop#748) --------------
-# Clear THIS WINDOW's claim marker, and only when it is provably safe to do so.
-# See the "Lens 1 repair" header section for the full rationale; the gates are:
+# --- Lens 1 repair: per-marker gates (temperloop#748) ------------------------
+# Decide whether ONE marker may be cleared, and say why when it may not. Applied
+# identically to every window on the server and to the cmux chip — the gates ARE
+# the safety, so widening the sweep (temperloop#1037) changed only how many
+# markers they run over, never what they permit.
 #
-#   gate 0 — a marker is actually set in THIS window (claim_marker_peek), and it
-#            carries a leading "#<n>".
+#   gate 0 — the marker carries a leading "#<n>" (checked by the caller, which
+#            has the display string in hand).
 #   gate 1 — that #<n> is marker-without-board DRIFT: the board does NOT have it
 #            In Progress stamped to this host. A live same-host claim is never
 #            touched (that is the K#275 claim-until-Done case).
+#   gate 1b— #<n> is not a live same-host claim on ANY OTHER registered board
+#            either (the cross-board number-collision guard below).
 #   gate 2 — #<n> is PROVABLY TERMINAL on GitHub (CLOSED or MERGED). An OPEN
 #            issue — or a state we could not read — is reported, never cleared.
 #
-# Only after all three does it call `claim_marker_clear` (release.sh's own
-# primitive). The `board-without-marker` class never reaches here at all: this
-# function starts from a marker that EXISTS, so a board claim with no marker has
-# nothing for it to act on — it is structurally unreachable, not merely skipped.
-#   _reconcile_marker_repair <host> <board-in-progress-tsv>
-_reconcile_marker_repair() {
-  local host="$1" board_ip_tsv="$2"
-  local cur n row ip_host repo state prev
-
-  echo "--fix (marker lens): repairing THIS window's marker only, provably-terminal claims only."
-  echo "  (board-without-marker is never repaired — report-only by design, temperloop#719)"
-
-  cur="$(claim_marker_peek)"
-  if [ -z "$cur" ]; then
-    echo "  nothing to repair: no claim marker is set in this window."
-    echo "  A stale marker in ANOTHER window is cleared by running this from that window."
-    return 0
-  fi
-
-  n="$(marker_issue_number "$cur")"
-  if [ -z "$n" ]; then
-    echo "  not repaired: this window's marker ('$cur') carries no leading '#<issue>'."
-    return 0
-  fi
+# Returns 0 when the clear is permitted, publishing the proven terminal state in
+# $_RECONCILE_GATE_STATE; returns 1 otherwise, having PRINTED the refusal reason.
+# The state rides a variable rather than stdout precisely so the refusal lines
+# reach the report — a caller capturing this function's stdout would swallow
+# them. Gate 1 is evaluated BEFORE gate 2 so a live claim is refused without
+# spending a GitHub read, and so no terminal answer can ever license clearing a
+# live claim.
+#   _reconcile_marker_gate <n> <host> <board-in-progress-tsv> <repo> <label> \
+#                          <cross-board-live-numbers>
+_RECONCILE_GATE_STATE=""
+_reconcile_marker_gate() {
+  local n="$1" host="$2" board_ip_tsv="$3" repo="$4" label="$5" live_elsewhere="${6:-}"
+  local row ip_host state
+  _RECONCILE_GATE_STATE=""
 
   # gate 1 — must be marker-without-board drift, not a live same-host claim.
   row="$(printf '%s\n' "$board_ip_tsv" | awk -F'\t' -v n="$n" '$1==n {print; exit}')"
   if [ -n "$row" ]; then
     ip_host="$(printf '%s' "$row" | cut -f2)"
     if [ "$ip_host" = "$host" ]; then
-      echo "  #$n — NOT repaired: it is In Progress on the board, stamped to this host '$host' (a live claim)."
-      return 0
+      echo "  #$n ($label) — NOT repaired: it is In Progress on the board, stamped to this host '$host' (a live claim)."
+      return 1
     fi
   fi
 
+  # gate 1b — the CROSS-BOARD number-collision guard. See
+  # _reconcile_live_claim_numbers for why this exists.
+  if [ -n "$live_elsewhere" ] && in_list "$n" "$live_elsewhere"; then
+    echo "  #$n ($label) — NOT repaired: #$n is a live In-Progress claim for this host on another registered board."
+    return 1
+  fi
+
   # gate 2 — must be provably terminal on GitHub.
-  repo="$(board_repo "$PROJECT_NUMBER")" || repo=""
   if [ -z "$repo" ]; then
-    echo "  #$n — NOT repaired: could not resolve the repo for board $PROJECT_NUMBER to check its state." >&2
-    return 0
+    echo "  #$n ($label) — NOT repaired: could not resolve the repo for board $PROJECT_NUMBER to check its state." >&2
+    return 1
   fi
   state="$(_reconcile_issue_state "$repo" "$n")"
   case "$state" in
-    CLOSED|MERGED) ;;
+    CLOSED|MERGED) _RECONCILE_GATE_STATE="$state"; return 0 ;;
     *)
-      echo "  #$n — NOT repaired: marker is stale, but #$n is not provably terminal (state '${state:-unknown}')."
-      return 0 ;;
+      echo "  #$n ($label) — NOT repaired: marker is stale, but #$n is not provably terminal (state '${state:-unknown}')."
+      return 1 ;;
   esac
+}
 
-  prev="$(claim_marker_clear)"
-  if [ -n "$prev" ]; then
-    echo "  ✓ cleared [$prev] — #$n is $state; status now shows 'No Issue Claimed'"
-  else
-    echo "  ✓ #$n is $state; no marker remained to clear (outside every multiplexer?)"
+# --- Lens 1 repair: cross-board live-claim guard (temperloop#1037) -----------
+# A tmux marker records only "#<n> <display title>" — never WHICH REPO the number
+# belongs to. It cannot be widened to carry one either: the stored value is a
+# frozen cross-file contract with the operator's `status-right`, which has no
+# parser (see lib/claim_marker.sh's § @claimed_issue → status-right contract).
+#
+# Every board's issue numbers live in the same small integer range, so resolving
+# a marker's #<n> against ONE board's repo silently MISATTRIBUTES any marker that
+# came from a different repo — and on a real host, windows for several repos share
+# one tmux server, which is exactly the population this sweep now walks. The
+# untreated consequence is severe and likely, not theoretical: a live stageFind
+# claim's marker reads as "not In Progress" on the foundation board, and its
+# number is almost certainly CLOSED in foundation (both repos number into the
+# thousands), so a foundation sweep would WIPE A LIVE CLAIM'S MARKER — the same
+# wrongful-clear class GH #297 is about, arriving through the number space instead
+# of through window targeting.
+#
+# The guard: collect the In-Progress-stamped-to-THIS-HOST issue numbers from
+# EVERY registered board, and refuse to clear any marker naming one of them, no
+# matter which board is being swept. A number that is a live claim anywhere is
+# never cleared here. That is exact — it compares numbers against the same
+# `<host>:<sess8>` stamp claim.sh writes — rather than fuzzy-matching the marker's
+# display title against the issue's (a title edited after the claim would then
+# read as a different issue, and the motivating incident's own markers carried a
+# title that matched no real issue at all).
+#
+# Deliberate residual, stated rather than gated away: a board that cannot be READ
+# (auth, rate limit, an adopter board absent from this host) is reported and
+# SKIPPED, not treated as a veto over the whole sweep. Refusing every clear
+# whenever any board is unreadable would return the sweep to the silent no-op this
+# issue exists to fix, and the bounded cost of the miss is one status-bar chip
+# cleared early — no board state, no claim stamp, and no work is touched, and
+# claim.sh restores the chip. A veto's cost (drift accumulating unseen again) is
+# strictly larger than the miss's.
+#
+# Cost: one whole-board list read per registered board, paid ONLY when the sweep
+# has at least one marker to adjudicate (the caller skips this entirely
+# otherwise). Flat, not per-marker.
+#   _reconcile_live_claim_numbers <host>   -> newline-separated issue numbers
+_reconcile_live_claim_numbers() {
+  local host="$1" b items
+  for b in $(board_registered_boards); do
+    if ! items="$(board_item_list "$b" 2>/dev/null)"; then
+      echo "  note: board $b could not be read — a live claim there cannot be excluded from this sweep." >&2
+      continue
+    fi
+    printf '%s' "$items" | jq -r --arg ip "$BOARD_OPT_INPROGRESS" --arg h "$host" '
+      .items[]
+      | select(.status == $ip)
+      | select(((.["host/Session"] // "") | split(":")[0]) == $h)
+      | (.content.number | tostring)
+    ' 2>/dev/null || true
+  done | sort -u
+}
+
+# --- Lens 1 repair: the safe marker sweep (temperloop#748, #1037) ------------
+# Clear every claim marker on this tmux server (plus the caller's own cmux chip)
+# that _reconcile_marker_gate proves safe to clear. See the "Lens 1 repair" and
+# "Why the repair sweeps EVERY window" header sections for the full rationale.
+#
+# Each tmux clear goes through lib/claim_marker.sh's `claim_marker_clear_window`
+# — the same primitive `claim_marker_clear` (and so release.sh) uses for the
+# caller's own window — so there remains exactly ONE marker-clearing
+# implementation, and every clear also restores that window's `automatic-rename`.
+#
+# The `board-without-marker` class never reaches here at all: this function
+# starts from markers that EXIST, so a board claim with no marker has nothing for
+# it to act on — structurally unreachable, not merely skipped.
+#   _reconcile_marker_repair <host> <board-in-progress-tsv>
+_reconcile_marker_repair() {
+  local host="$1" board_ip_tsv="$2"
+  local rows win cur n repo state prev acted=0 cmux_cur live_elsewhere=""
+
+  echo "--fix (marker lens): sweeping EVERY window on this tmux server; provably-terminal claims only."
+  echo "  (board-without-marker is never repaired — report-only by design, temperloop#719)"
+
+  repo="$(board_repo "$PROJECT_NUMBER")" || repo=""
+  rows="$(reconcile_marker_rows)"
+
+  # The cross-board live-claim guard is only worth its board reads when there is
+  # actually something to adjudicate — no marker anywhere means no clear to gate.
+  if [ -n "$rows" ] || { _claim_marker_cmux_targetable && [ -n "$(claim_marker_peek_cmux)" ]; }; then
+    live_elsewhere="$(_reconcile_live_claim_numbers "$host")"
+  fi
+
+  while IFS=$'\t' read -r win cur; do
+    [ -n "$win" ] || continue
+    [ -n "$cur" ] || continue
+    acted=1
+    n="$(marker_issue_number "$cur")"
+    if [ -z "$n" ]; then
+      echo "  window $win — not repaired: marker ('$cur') carries no leading '#<issue>'."
+      continue
+    fi
+    _reconcile_marker_gate "$n" "$host" "$board_ip_tsv" "$repo" "window $win" "$live_elsewhere" || continue
+    state="$_RECONCILE_GATE_STATE"
+    prev="$(claim_marker_clear_window "$win")"
+    echo "  ✓ cleared [${prev:-$cur}] in window $win — #$n is $state; status now shows 'No Issue Claimed'"
+  done < <(printf '%s\n' "$rows")
+
+  # cmux surface: one addressable chip (the caller's own workspace), same gates.
+  if _claim_marker_cmux_targetable; then
+    cmux_cur="$(claim_marker_peek_cmux)"
+    if [ -n "$cmux_cur" ]; then
+      acted=1
+      n="$(marker_issue_number "$cmux_cur")"
+      if [ -z "$n" ]; then
+        echo "  cmux chip — not repaired: marker ('$cmux_cur') carries no leading '#<issue>'."
+      elif _reconcile_marker_gate "$n" "$host" "$board_ip_tsv" "$repo" "cmux chip" "$live_elsewhere"; then
+        state="$_RECONCILE_GATE_STATE"
+        claim_marker_clear_cmux
+        echo "  ✓ cleared [$cmux_cur] from the cmux chip — #$n is $state; status now shows 'No Issue Claimed'"
+      fi
+    fi
+  fi
+
+  if [ "$acted" -eq 0 ]; then
+    echo "  nothing to repair: no claim marker is set in any window on this tmux server."
   fi
   return 0
 }
@@ -606,8 +766,12 @@ reconcile_main() {
 
   # --- report ----------------------------------------------------------------
   echo "Claim-marker reconcile — host '$HOST', board project $PROJECT_NUMBER"
-  if [ -z "${TMUX:-}" ]; then
-    echo "(not inside tmux: no local markers to read; only board→marker drift is meaningful)"
+  # The notice keys on whether any marker was actually READ, not on $TMUX: since
+  # temperloop#1037 the marker read addresses the tmux server directly, so a
+  # caller outside tmux still sees (and can repair) the operator's windows.
+  # Only a genuinely unreachable/empty server makes marker→board drift blind.
+  if [ -z "$marker_numbers" ] && [ -z "${TMUX:-}" ]; then
+    echo "(no tmux markers readable from here: no server reachable, or none set; only board→marker drift is meaningful)"
   fi
   echo
 
@@ -618,7 +782,7 @@ reconcile_main() {
     echo "marker-without-board (stale local marker):"
     printf '%s' "$marker_without_board"
     if [ "$FIX" != 1 ]; then
-      echo "  (pass --fix to clear THIS window's marker when its issue is closed/merged)"
+      echo "  (pass --fix to clear any window's marker whose issue is closed/merged)"
     fi
     echo
   fi
@@ -1286,7 +1450,7 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
     esac
   done
   # --fix now applies to BOTH repair-bearing lenses — the default marker lens
-  # (this window's provably-terminal stale marker, temperloop#748) and --status
+  # (every window's provably-terminal stale marker, temperloop#748/#1037) and --status
   # (terminal→Done). It is still meaningless on --labels, whose apply verb is
   # --apply/--unattended, so that combination stays a hard error rather than a
   # silently-ignored flag.

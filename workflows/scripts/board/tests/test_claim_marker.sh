@@ -183,7 +183,64 @@ cleared="$(T show-options -t "$WIN0" -wqv @claimed_issue || true)"
 cleared2="$(T show-options -t "$WIN0" -wqv @claimed_issue || true)"
 [ -z "$cleared2" ] || fail "release.sh (no arg) should clear (got: '$cleared2')"
 
+# --- temperloop#1037: automatic-rename restore --------------------------------
+# claim_marker_set brands the window with rename-window, and tmux turns that
+# window's `automatic-rename` OFF as a side effect. Before #1037 nothing turned
+# it back on, so a cleared window kept the claim string as its name forever.
+# The clear must REMOVE the window-local override (restoring inheritance from
+# the operator's global setting), not force `on` over their preference.
+# shellcheck disable=SC2030,SC2031
+( export TMUX="$SOCK,$$,0" TMUX_PANE="$PANE0"; unset CMUX_WORKSPACE_ID; claim_marker_set "#1037 rename test" )
+ar_set="$(T show-options -w -t "$WIN0" automatic-rename || true)"
+[ "$ar_set" = "automatic-rename off" ] \
+  || fail "setup: rename-window should have turned automatic-rename off on win0 (got: '$ar_set')"
+
+# shellcheck disable=SC2030,SC2031
+( export TMUX="$SOCK,$$,0" TMUX_PANE="$PANE0"; unset CMUX_WORKSPACE_ID; claim_marker_clear ) >/dev/null
+ar_local="$(T show-options -w -t "$WIN0" automatic-rename || true)"
+[ -z "$ar_local" ] \
+  || fail "clear did not remove win0's window-local automatic-rename (got: '$ar_local')"
+ar_eff="$(T show-options -A -w -t "$WIN0" automatic-rename || true)"
+case "$ar_eff" in
+  *on) ;;
+  *) fail "win0's effective automatic-rename should have fallen back to the global 'on' (got: '$ar_eff')" ;;
+esac
+
+# --- temperloop#1037: claim_marker_clear_window targets ANOTHER window ---------
+# The stale-marker sweep has to reach windows the caller is not sitting in — the
+# whole reason a stale chip could survive for a month. It must clear exactly the
+# named window and leave every other one alone, and it must work with NO
+# $TMUX/$TMUX_PANE in the environment at all (the /tidy nightly runs outside
+# tmux; the tmux server is a socket, not an environment variable).
+PANE1="$(T list-panes -t "$WIN1" -F '#{pane_id}')"
+[ -n "$PANE1" ] || fail "test setup: could not resolve win1's pane id"
+# shellcheck disable=SC2030,SC2031
+( export TMUX="$SOCK,$$,0" TMUX_PANE="$PANE0"; unset CMUX_WORKSPACE_ID; claim_marker_set "#1037 mine" )
+# shellcheck disable=SC2030,SC2031
+( export TMUX="$SOCK,$$,0" TMUX_PANE="$PANE1"; unset CMUX_WORKSPACE_ID; claim_marker_set "#1037 someone else" )
+
+# shellcheck disable=SC2030,SC2031
+prev_other="$( unset TMUX TMUX_PANE CMUX_WORKSPACE_ID; claim_marker_clear_window "$WIN1" )"
+[ "$prev_other" = "#1037 someone else" ] \
+  || fail "clear_window did not echo the targeted window's prior marker (got: '$prev_other')"
+other_after="$(T show-options -t "$WIN1" -wqv @claimed_issue || true)"
+[ -z "$other_after" ] || fail "clear_window did not clear win1 (got: '$other_after')"
+other_ar="$(T show-options -w -t "$WIN1" automatic-rename || true)"
+[ -z "$other_ar" ] || fail "clear_window did not restore win1's automatic-rename (got: '$other_ar')"
+mine_after="$(T show-options -t "$WIN0" -wqv @claimed_issue || true)"
+[ "$mine_after" = "#1037 mine" ] \
+  || fail "clear_window on win1 disturbed win0's marker (got: '$mine_after')"
+
+# A read of another window is likewise possible without being in tmux.
+# shellcheck disable=SC2030,SC2031
+peek_other="$( unset TMUX TMUX_PANE CMUX_WORKSPACE_ID; claim_marker_peek_window "$WIN0" )"
+[ "$peek_other" = "#1037 mine" ] \
+  || fail "peek_window could not read another window's marker (got: '$peek_other')"
+# shellcheck disable=SC2030,SC2031
+( unset TMUX TMUX_PANE CMUX_WORKSPACE_ID; claim_marker_clear_window "$WIN0" ) >/dev/null
+
 echo "PASS: claim_marker_{set,clear} target only the caller's own window (GH #297)"
 echo "PASS: claim_marker_{set,clear} fail safe (no-op) when \$TMUX_PANE is unset (GH #297)"
 echo "PASS: claim_marker_{set,clear} drive the cmux per-workspace status chip (GH #348)"
 echo "PASS: release.sh <issue#> refuses on mismatch, clears on match/no-arg; claim_marker_peek is read-only (#559)"
+echo "PASS: a clear restores the window's automatic-rename; claim_marker_{peek,clear}_window reach another window with no \$TMUX (temperloop#1037)"

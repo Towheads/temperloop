@@ -98,10 +98,19 @@ guard-install-worktree:
 # silently skipped test_issues_backend.sh in kernel CI). The glob matches
 # whatever tests are actually vendored, so kernel coverage can never trail
 # the tree it ships.
+# `env -u TMUX -u TMUX_PANE -u CMUX_WORKSPACE_ID` is a CONTAINMENT rail, not a
+# convenience (temperloop#1037): several of these tests drive the real
+# claim-marker helpers, and those helpers are no-ops outside a multiplexer. Run
+# from inside the operator's own tmux session — which is how a kernel dev runs
+# them — a test that misses an isolation seam brands or clears a REAL window on
+# the shared server. That is not hypothetical: a board test's `#502 Claim target`
+# fixture leaked into the live tmux server and sat in the operator's status bar
+# for over a month. Stripping the multiplexer environment at the runner makes the
+# whole suite structurally unable to reach it, whatever an individual test forgot.
 test-board:
 	@echo "==> Running board toolkit tests..."
 	@for t in $(BOARD_SRC)/tests/test_*.sh; do \
-		if out="$$(bash "$$t" 2>&1)"; then echo "  [ok] $$(basename $$t)"; else echo "  [FAIL] $$(basename $$t)"; printf '%s\n' "$$out" | sed 's/^/      /'; exit 1; fi; \
+		if out="$$(env -u TMUX -u TMUX_PANE -u CMUX_WORKSPACE_ID bash "$$t" 2>&1)"; then echo "  [ok] $$(basename $$t)"; else echo "  [FAIL] $$(basename $$t)"; printf '%s\n' "$$out" | sed 's/^/      /'; exit 1; fi; \
 	done
 
 test-build:

@@ -16,6 +16,19 @@
 #      In Progress for this host.
 #   2) board-without-marker  — board In Progress for this host, no live marker.
 #   3) in sync               — every marker matches a board claim and vice versa.
+# Covered — Lens 1 repair (--fix), including the temperloop#1037 widening:
+#   1)-7)  the pre-#1037 single-window gates, now expressed per window.
+#   8)     EVERY window's stale terminal marker clears in one sweep (the #1037
+#          repro: one closed issue branding four windows for over a month).
+#   9)     the gate still discriminates per window — a CLOSED marker clears while
+#          an OPEN one in another window survives the SAME sweep.
+#   10)    a peer session's LIVE same-host claim in another window is refused
+#          (GH #297's wrongful-clear class is not reintroduced).
+#   11)    the sweep reads and repairs the tmux server from OUTSIDE tmux — what
+#          makes the /tidy nightly's repair automatic rather than hand-run.
+#   12)13) the cross-board number-collision guard: a number that is a live
+#          same-host claim on ANOTHER registered board is never cleared, with a
+#          negative control proving the refusal comes from the guard.
 # Covered — Lens 2 (status drift):
 #   1) terminal-but-not-Done — closed/merged backing, flagged; --fix moves to Done.
 #   2) orphaned In-Progress + unresolved — reported, never auto-fixed.
@@ -90,6 +103,15 @@ EDITS="/dev/null"      # status lens: run_status repoints this to a temp file
 # nothing" (the not-found / unreadable case), which must fail safe to NO repair.
 ISSUE_VIEW_JSON=""     # e.g. '{"state":"CLOSED"}'
 PR_VIEW_JSON=""        # e.g. '{"state":"MERGED"}'
+# Per-issue override for the multi-window cases (temperloop#1037), where one
+# sweep must resolve DIFFERENT states for different markers: newline-separated
+# "<n><TAB><STATE>" rows. A number listed here wins over ISSUE_VIEW_JSON; a
+# number absent falls back to it, so every pre-#1037 case is unaffected.
+ISSUE_STATE_MAP=""
+# Item list replayed for every registered board OTHER than the swept one (board 3
+# / stageFind), for the cross-board live-claim guard. Empty = "no other board has
+# any In-Progress item", i.e. the pre-temperloop#1037 world.
+OTHER_BOARD_ITEMS_JSON='{"items":[]}'
 # Stubbed session-liveness oracle (GH #85): treat every session as LIVE except
 # those listed here (space-separated session ids). Default empty → all live, so
 # the pre-existing scases (whose stamped items are all "ok/live") pass unchanged;
@@ -130,11 +152,23 @@ _board_gh() {
       # (--state open, requesting title/labels/milestone) and the status lens's
       # own state read (--state all). Route by argv so each gets its fixture.
       case "$*" in
-        *"--state open"*labels*) _reconcile_board_items_as_issues ;;
+        # The cross-board guard (temperloop#1037) reads EVERY registered board's
+        # item list, so the whole-board read has to be repo-aware or every board
+        # would replay board 3's fixture and the guard could not be tested. Any
+        # repo other than the swept board's replays OTHER_BOARD_ITEMS_JSON, which
+        # defaults to empty — leaving every pre-#1037 case unaffected.
+        *"--state open"*labels*)
+          case "$*" in
+            *"/stageFind"*) _reconcile_board_items_as_issues ;;
+            *)              ITEM_LIST_JSON="$OTHER_BOARD_ITEMS_JSON" _reconcile_board_items_as_issues ;;
+          esac ;;
         *)                       printf '%s' "$ISSUE_LIST_JSON" ;;
       esac ;;
     "pr list")            printf '%s' "$PR_LIST_JSON" ;;
-    "issue view")         printf '%s' "$ISSUE_VIEW_JSON" ;;
+    "issue view")
+      # $3 is the issue number (`issue view <n> -R … --json state`).
+      local sv; sv="$(printf '%s\n' "$ISSUE_STATE_MAP" | awk -F'\t' -v n="$3" '$1==n {print $2; exit}')"
+      if [ -n "$sv" ]; then printf '{"state":"%s"}' "$sv"; else printf '%s' "$ISSUE_VIEW_JSON"; fi ;;
     "pr view")            printf '%s' "$PR_VIEW_JSON" ;;
     "api "*)
       # The single-issue read the issues-only writers do before every write.
@@ -152,9 +186,9 @@ _board_gh() {
   esac
 }
 
-# Override the tmux seam: emit canned `@claimed_issue` values, one per line, the
-# way `tmux list-windows -a -F '#{@claimed_issue}'` would (empty lines for
-# windows with no marker are included to mirror reality).
+# Override the tmux seam: emit canned "<window_id>\t<@claimed_issue>" rows, the
+# way `tmux list-windows -a -F '#{window_id}\t#{@claimed_issue}'` would (rows for
+# windows with no marker are included to mirror reality — reconcile drops them).
 _reconcile_tmux() {
   printf '%s' "$MARKER_LINES"
 }
@@ -172,8 +206,9 @@ ITEM_LIST_JSON='{"items":[
   {"id":"ISSUE_500","content":{"number":500,"title":"Claimed elsewhere"},"status":"In Progress","host/Session":"otherhost:dead1234"},
   {"id":"ISSUE_501","content":{"number":501,"title":"Just ready"},"status":"Ready"}
 ]}'
-MARKER_LINES='#500 Claimed elsewhere
-#777 phantom local claim
+MARKER_LINES='@0	#500 Claimed elsewhere
+@1	#777 phantom local claim
+@2	
 '
 run_case
 grep -q "marker-without-board" <<<"$OUT" \
@@ -214,7 +249,7 @@ ITEM_LIST_JSON='{"items":[
   {"id":"ISSUE_700","content":{"number":700,"title":"Working it now"},"status":"In Progress","host/Session":"testhost:beef5678"},
   {"id":"ISSUE_701","content":{"number":701,"title":"Someone else"},"status":"In Progress","host/Session":"otherhost:cafe9999"}
 ]}'
-MARKER_LINES='#700 Working it now
+MARKER_LINES='@0	#700 Working it now
 '
 run_case
 grep -q "In sync" <<<"$OUT" \
@@ -228,41 +263,75 @@ echo "PASS: case 3 fully in-sync all-clear (other host's claim not mis-flagged)"
 echo
 echo "=== Lens 1 repair: --fix marker repair (temperloop#748) ==="
 
-# The repair clears THIS window's marker through the REAL lib/claim_marker.sh
-# primitives release.sh uses (claim_marker_peek / claim_marker_clear) — so rather
-# than stubbing those functions (which would prove nothing about reuse), we stub
-# the ONE tmux seam beneath them, `_claim_marker_tmux`, with a file-backed fake
-# window-option store. File-backed, not a shell variable, because reconcile_main
-# runs inside a command substitution: a variable mutation there would die with the
+# The repair clears markers through the REAL lib/claim_marker.sh primitive
+# release.sh uses underneath (claim_marker_clear_window) — so rather than stubbing
+# those functions (which would prove nothing about reuse), we stub the ONE tmux
+# seam beneath them, `_claim_marker_tmux`, with a file-backed fake PER-WINDOW
+# option store. File-backed, not a shell variable, because reconcile_main runs
+# inside a command substitution: a variable mutation there would die with the
 # subshell, while a clear recorded to a file is observable from the test.
+#
+# Per-WINDOW (temperloop#1037): the repair now sweeps every window on the server,
+# so the stub has to distinguish targets — a single-window store could not tell a
+# correct two-window sweep from a bug that clears the same window twice.
 MARKER_STUB_DIR="$TEST_WORK_DIR/marker-stub"
 mkdir -p "$MARKER_STUB_DIR"
-WINDOW_MARKER_FILE="$MARKER_STUB_DIR/claimed_issue"
 MARKER_CLEARS_FILE="$MARKER_STUB_DIR/clears"
-: >"$WINDOW_MARKER_FILE"; : >"$MARKER_CLEARS_FILE"
+: >"$MARKER_CLEARS_FILE"
+
+# Store path for a window id ("@0" -> "$MARKER_STUB_DIR/win_0").
+_stub_win_file() { printf '%s/win_%s' "$MARKER_STUB_DIR" "$(printf '%s' "$1" | tr -c 'A-Za-z0-9' '_')"; }
 
 _claim_marker_tmux() {
-  case "$1" in
-    show-options)  cat "$WINDOW_MARKER_FILE" ;;
+  local verb="${1:-}"; shift || true
+  local target="" unset_form=0 optname="" f
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      -t)  target="${2:-}"; shift 2 ;;
+      -wu) unset_form=1; shift ;;
+      -w|-wqv) shift ;;
+      *)   optname="$1"; shift ;;
+    esac
+  done
+  f="$(_stub_win_file "$target")"
+  case "$verb" in
+    show-options) [ -f "$f" ] && cat "$f" ;;
     set-option)
-      # Only the unset form (`-wu @claimed_issue`) is reachable from the repair
-      # path; record it and empty the store. Prints nothing (its stdout would
-      # otherwise land in the captured report).
-      case " $* " in
-        *" -wu "*)
-          printf 'cleared:%s\n' "$(cat "$WINDOW_MARKER_FILE")" >>"$MARKER_CLEARS_FILE"
-          : >"$WINDOW_MARKER_FILE" ;;
-      esac ;;
+      # Two unset forms are reachable from the repair path: `-wu @claimed_issue`
+      # (the clear) and `-wu automatic-rename` (the restore, temperloop#1037).
+      # Each is recorded distinctly so a test can assert BOTH happened, and to
+      # the same window. Prints nothing (stdout would land in the report).
+      if [ "$unset_form" = 1 ]; then
+        case "$optname" in
+          @claimed_issue)
+            printf 'cleared:%s:%s\n' "$target" "$(cat "$f" 2>/dev/null)" >>"$MARKER_CLEARS_FILE"
+            : >"$f" ;;
+          automatic-rename)
+            printf 'autorename:%s\n' "$target" >>"$MARKER_CLEARS_FILE" ;;
+        esac
+      fi ;;
   esac
   return 0
 }
 
-# Per-case fixture reset: seed this window's marker, forget prior clears.
-set_window_marker() {
-  printf '%s' "$1" >"$WINDOW_MARKER_FILE"
+# Per-case fixture reset. Each argument is one "<window_id> <marker display>"
+# pair; it seeds that window's option store AND the `list-windows` fixture the
+# sweep reads, so the two can never disagree. Prior clears are forgotten.
+seed_windows() {
+  rm -f "$MARKER_STUB_DIR"/win_* 2>/dev/null || true
   : >"$MARKER_CLEARS_FILE"
+  MARKER_LINES=""
+  local pair win marker
+  for pair in "$@"; do
+    win="${pair%% *}"; marker="${pair#* }"
+    printf '%s' "$marker" >"$(_stub_win_file "$win")"
+    MARKER_LINES+="$win"$'\t'"$marker"$'\n'
+  done
 }
-cleared_count() { grep -c '^cleared:' "$MARKER_CLEARS_FILE" 2>/dev/null || true; }
+# Marker currently held by <window_id> in the fake store ("" once cleared).
+window_marker() { cat "$(_stub_win_file "$1")" 2>/dev/null || true; }
+cleared_count()    { grep -c '^cleared:'    "$MARKER_CLEARS_FILE" 2>/dev/null || true; }
+autorename_count() { grep -c '^autorename:' "$MARKER_CLEARS_FILE" 2>/dev/null || true; }
 
 # --- mcase 1: dry-run — no --fix mutates NOTHING ------------------------------
 # The exact temperloop#748 repro: this window's marker names #502, which is not
@@ -271,52 +340,53 @@ cleared_count() { grep -c '^cleared:' "$MARKER_CLEARS_FILE" 2>/dev/null || true;
 ITEM_LIST_JSON='{"items":[
   {"id":"ISSUE_503","content":{"number":503,"title":"Unrelated"},"status":"Ready"}
 ]}'
-MARKER_LINES='#502 Claim target
-'
 ISSUE_VIEW_JSON='{"state":"CLOSED"}'
 PR_VIEW_JSON=""
-set_window_marker '#502 Claim target'
+seed_windows '@0 #502 Claim target'
 FIX=0
 run_case
 grep -q "#502 — marker set locally, but #502 is NOT In Progress" <<<"$OUT" \
   || fail "mcase1: expected the #502 stale-marker drift line\n$OUT"
-grep -q -- "pass --fix to clear THIS window's marker" <<<"$OUT" \
+grep -q -- "pass --fix to clear any window's marker" <<<"$OUT" \
   || fail "mcase1: report should point at the repair flag\n$OUT"
 grep -q -- "--fix (marker lens)" <<<"$OUT" \
   && fail "mcase1: repair section must not run without --fix\n$OUT"
 [ "$(cleared_count)" = "0" ] || fail "mcase1: dry run must clear nothing (got $(cleared_count))"
-[ "$(cat "$WINDOW_MARKER_FILE")" = '#502 Claim target' ] \
-  || fail "mcase1: dry run must leave the marker intact (got '$(cat "$WINDOW_MARKER_FILE")')"
+[ "$(autorename_count)" = "0" ] || fail "mcase1: dry run must not touch automatic-rename (got $(autorename_count))"
+[ "$(window_marker @0)" = '#502 Claim target' ] \
+  || fail "mcase1: dry run must leave the marker intact (got '$(window_marker @0)')"
 echo "PASS: marker case 1 report-only without --fix (mutates nothing)"
 
 # --- mcase 2: safe clear — stale marker naming a CLOSED issue -----------------
 # Same fixture, FIX=1: both gates pass (marker-without-board drift + provably
 # terminal), so claim_marker_clear fires exactly once and the marker is gone.
-set_window_marker '#502 Claim target'
+seed_windows '@0 #502 Claim target'
 FIX=1
 run_case
 grep -q -- "--fix (marker lens)" <<<"$OUT" \
   || fail "mcase2: expected the repair section\n$OUT"
-grep -q "✓ cleared \[#502 Claim target\] — #502 is CLOSED" <<<"$OUT" \
+grep -q "✓ cleared \[#502 Claim target\] in window @0 — #502 is CLOSED" <<<"$OUT" \
   || fail "mcase2: expected #502 to be cleared as CLOSED\n$OUT"
 [ "$(cleared_count)" = "1" ] || fail "mcase2: expected exactly one clear (got $(cleared_count))\n$OUT"
-[ -z "$(cat "$WINDOW_MARKER_FILE")" ] \
-  || fail "mcase2: marker should be gone (got '$(cat "$WINDOW_MARKER_FILE")')"
+[ -z "$(window_marker @0)" ] \
+  || fail "mcase2: marker should be gone (got '$(window_marker @0)')"
+# temperloop#1037: the same clear must restore that window's automatic-rename,
+# or the window name stays frozen at the claim string forever.
+grep -qx 'autorename:@0' "$MARKER_CLEARS_FILE" \
+  || fail "mcase2: the clear must also unset automatic-rename on @0\n$(cat "$MARKER_CLEARS_FILE")"
 FIX=0
-echo "PASS: marker case 2 safe clear fires for a CLOSED-issue stale marker"
+echo "PASS: marker case 2 safe clear fires for a CLOSED-issue stale marker (+ automatic-rename restored)"
 
 # --- mcase 3: PR fallback — a MERGED PR number is terminal too ----------------
 # `gh issue view` finds nothing (empty payload); the pr-view fallback reports
 # MERGED, which is equally terminal.
 ITEM_LIST_JSON='{"items":[]}'
-MARKER_LINES='#740 Merged PR
-'
 ISSUE_VIEW_JSON=""
 PR_VIEW_JSON='{"state":"MERGED"}'
-set_window_marker '#740 Merged PR'
+seed_windows '@0 #740 Merged PR'
 FIX=1
 run_case
-grep -q "✓ cleared \[#740 Merged PR\] — #740 is MERGED" <<<"$OUT" \
+grep -q "✓ cleared \[#740 Merged PR\] in window @0 — #740 is MERGED" <<<"$OUT" \
   || fail "mcase3: expected the pr-view fallback to prove #740 MERGED\n$OUT"
 [ "$(cleared_count)" = "1" ] || fail "mcase3: expected exactly one clear (got $(cleared_count))\n$OUT"
 FIX=0
@@ -326,20 +396,19 @@ echo "PASS: marker case 3 MERGED PR resolves terminal via the pr-view fallback"
 # marker-without-board drift, but #800 is OPEN: the work may be live, so it is
 # reported and NEVER cleared.
 ITEM_LIST_JSON='{"items":[]}'
-MARKER_LINES='#800 Still open
-'
 ISSUE_VIEW_JSON='{"state":"OPEN"}'
 PR_VIEW_JSON=""
-set_window_marker '#800 Still open'
+seed_windows '@0 #800 Still open'
 FIX=1
 run_case
-grep -q "#800 — NOT repaired" <<<"$OUT" \
+grep -q "#800 (window @0) — NOT repaired" <<<"$OUT" \
   || fail "mcase4: an OPEN issue's marker must be refused\n$OUT"
 grep -q "not provably terminal (state 'OPEN')" <<<"$OUT" \
   || fail "mcase4: refusal should name the non-terminal state\n$OUT"
 grep -q "✓ cleared" <<<"$OUT" && fail "mcase4: nothing may be cleared\n$OUT"
 [ "$(cleared_count)" = "0" ] || fail "mcase4: OPEN issue must not be cleared (got $(cleared_count))"
-[ "$(cat "$WINDOW_MARKER_FILE")" = '#800 Still open' ] \
+[ "$(autorename_count)" = "0" ] || fail "mcase4: a refusal must not touch automatic-rename (got $(autorename_count))"
+[ "$(window_marker @0)" = '#800 Still open' ] \
   || fail "mcase4: the marker must survive untouched"
 FIX=0
 echo "PASS: marker case 4 no clear for an OPEN-issue marker"
@@ -348,11 +417,9 @@ echo "PASS: marker case 4 no clear for an OPEN-issue marker"
 # Neither view returns anything (not found / auth error). "Not provably terminal"
 # → no repair. A read failure can only ever make the repair do LESS.
 ITEM_LIST_JSON='{"items":[]}'
-MARKER_LINES='#999 Unknown to GitHub
-'
 ISSUE_VIEW_JSON=""
 PR_VIEW_JSON=""
-set_window_marker '#999 Unknown to GitHub'
+seed_windows '@0 #999 Unknown to GitHub'
 FIX=1
 run_case
 grep -q "not provably terminal (state 'unknown')" <<<"$OUT" \
@@ -369,22 +436,21 @@ echo "PASS: marker case 5 unreadable GitHub state fails safe (no clear)"
 ITEM_LIST_JSON='{"items":[
   {"id":"ISSUE_600","content":{"number":600,"title":"Claimed here, marker clobbered"},"status":"In Progress","host/Session":"testhost:e4e906b5"}
 ]}'
-MARKER_LINES=''
 ISSUE_VIEW_JSON='{"state":"CLOSED"}'   # even a terminal answer must not license a repair here
 PR_VIEW_JSON=""
-set_window_marker ''
+seed_windows          # no window on the server holds a marker at all
 FIX=1
 run_case
 grep -q "board-without-marker (claimed on board, no local marker — REPORT-ONLY, never repaired)" <<<"$OUT" \
   || fail "mcase6: expected the board-without-marker section, marked report-only\n$OUT"
 grep -q "#600 — In Progress on the board (this host) but NO live tmux marker" <<<"$OUT" \
   || fail "mcase6: #600 should still be reported\n$OUT"
-grep -q "nothing to repair: no claim marker is set in this window" <<<"$OUT" \
-  || fail "mcase6: repair should no-op with no marker in this window\n$OUT"
+grep -q "nothing to repair: no claim marker is set in any window" <<<"$OUT" \
+  || fail "mcase6: repair should no-op with no marker anywhere on the server\n$OUT"
 grep -q "✓ cleared" <<<"$OUT" && fail "mcase6: board-without-marker must never be cleared\n$OUT"
 [ "$(cleared_count)" = "0" ] || fail "mcase6: board-without-marker must clear nothing (got $(cleared_count))"
-[ -z "$(cat "$WINDOW_MARKER_FILE")" ] \
-  || fail "mcase6: board-without-marker must never RE-STAMP a marker (got '$(cat "$WINDOW_MARKER_FILE")')"
+[ -z "$(window_marker @0)" ] \
+  || fail "mcase6: board-without-marker must never RE-STAMP a marker (got '$(window_marker @0)')"
 FIX=0
 echo "PASS: marker case 6 board-without-marker never repaired (no clear, no re-stamp)"
 
@@ -395,23 +461,149 @@ echo "PASS: marker case 6 board-without-marker never repaired (no clear, no re-s
 ITEM_LIST_JSON='{"items":[
   {"id":"ISSUE_700","content":{"number":700,"title":"Working it now"},"status":"In Progress","host/Session":"testhost:beef5678"}
 ]}'
-MARKER_LINES='#700 Working it now
-'
 ISSUE_VIEW_JSON='{"state":"CLOSED"}'
 PR_VIEW_JSON=""
-set_window_marker '#700 Working it now'
+seed_windows '@0 #700 Working it now'
 FIX=1
 run_case
-grep -q "#700 — NOT repaired: it is In Progress on the board, stamped to this host" <<<"$OUT" \
+grep -q "#700 (window @0) — NOT repaired: it is In Progress on the board, stamped to this host" <<<"$OUT" \
   || fail "mcase7: a live same-host claim must be refused by gate 1\n$OUT"
 [ "$(cleared_count)" = "0" ] || fail "mcase7: a live claim must not be cleared (got $(cleared_count))"
-[ "$(cat "$WINDOW_MARKER_FILE")" = '#700 Working it now' ] \
+[ "$(window_marker @0)" = '#700 Working it now' ] \
   || fail "mcase7: the live claim's marker must survive"
 FIX=0
 echo "PASS: marker case 7 a live same-host claim is refused before the terminality check"
 
+echo
+echo "=== Lens 1 repair widened to every window (temperloop#1037) ==="
+
+# --- mcase 8: the #1037 repro — a stale marker in EVERY window is cleared ------
+# The live defect: one closed issue's marker branded four windows and survived
+# for over a month, because the pre-#1037 repair only ever reached the window the
+# operator happened to run it from. All four must now clear in ONE sweep, and
+# each must have its automatic-rename restored.
+ITEM_LIST_JSON='{"items":[]}'
+ISSUE_VIEW_JSON='{"state":"CLOSED"}'
+PR_VIEW_JSON=""
+seed_windows '@0 #502 Claim target' '@1 #502 Claim target' \
+             '@2 #502 Claim target' '@3 #502 Claim target'
+FIX=1
+run_case
+for w in @0 @1 @2 @3; do
+  grep -q "✓ cleared \[#502 Claim target\] in window $w — #502 is CLOSED" <<<"$OUT" \
+    || fail "mcase8: window $w was not cleared\n$OUT"
+  [ -z "$(window_marker "$w")" ] || fail "mcase8: window $w still holds '$(window_marker "$w")'"
+  grep -qx "autorename:$w" "$MARKER_CLEARS_FILE" \
+    || fail "mcase8: automatic-rename not restored on $w\n$(cat "$MARKER_CLEARS_FILE")"
+done
+[ "$(cleared_count)" = "4" ] || fail "mcase8: expected four clears (got $(cleared_count))\n$OUT"
+FIX=0
+echo "PASS: marker case 8 every window's stale marker is cleared in one sweep (#1037 repro)"
+
+# --- mcase 9: the gate still discriminates PER WINDOW --------------------------
+# Widening must not degrade into "clear everything": in the SAME sweep, @0's
+# CLOSED issue clears while @1's OPEN issue is refused and survives. This is the
+# discriminating case for "never on 'looks stale'" — both markers look equally
+# stale locally; only the GitHub proof separates them.
+ITEM_LIST_JSON='{"items":[]}'
+ISSUE_VIEW_JSON=""
+PR_VIEW_JSON=""
+ISSUE_STATE_MAP="$(printf '502\tCLOSED\n800\tOPEN\n')"
+seed_windows '@0 #502 Claim target' '@1 #800 Still open'
+FIX=1
+run_case
+grep -q "✓ cleared \[#502 Claim target\] in window @0 — #502 is CLOSED" <<<"$OUT" \
+  || fail "mcase9: the CLOSED-issue marker in @0 should have cleared\n$OUT"
+grep -q "#800 (window @1) — NOT repaired" <<<"$OUT" \
+  || fail "mcase9: the OPEN-issue marker in @1 must be refused, naming its window\n$OUT"
+[ -z "$(window_marker @0)" ] || fail "mcase9: @0 should be cleared"
+[ "$(window_marker @1)" = '#800 Still open' ] || fail "mcase9: @1's OPEN marker must survive"
+[ "$(cleared_count)" = "1" ] || fail "mcase9: exactly one clear expected (got $(cleared_count))\n$OUT"
+[ "$(autorename_count)" = "1" ] || fail "mcase9: only the cleared window's automatic-rename may be touched"
+FIX=0
+echo "PASS: marker case 9 an OPEN-issue marker in another window survives the sweep"
+
+# --- mcase 10: a peer session's LIVE claim in another window is never cleared --
+# The GH #297 hazard the widening had to not reintroduce: @1 belongs to a
+# concurrent session that legitimately holds #700 In Progress on this host. Gate 1
+# refuses it even while @0's terminal marker clears in the same pass.
+ITEM_LIST_JSON='{"items":[
+  {"id":"ISSUE_700","content":{"number":700,"title":"Peer session working it"},"status":"In Progress","host/Session":"testhost:beef5678"}
+]}'
+ISSUE_VIEW_JSON=""
+PR_VIEW_JSON=""
+ISSUE_STATE_MAP="$(printf '502\tCLOSED\n700\tCLOSED\n')"
+seed_windows '@0 #502 Claim target' '@1 #700 Peer session working it'
+FIX=1
+run_case
+grep -q "#700 (window @1) — NOT repaired: it is In Progress on the board, stamped to this host" <<<"$OUT" \
+  || fail "mcase10: a peer's live same-host claim must be refused in another window\n$OUT"
+[ "$(window_marker @1)" = '#700 Peer session working it' ] \
+  || fail "mcase10: the peer's marker must survive untouched"
+[ -z "$(window_marker @0)" ] || fail "mcase10: @0's terminal marker should still have cleared"
+[ "$(cleared_count)" = "1" ] || fail "mcase10: exactly one clear expected (got $(cleared_count))\n$OUT"
+FIX=0
+echo "PASS: marker case 10 a peer's live claim in another window survives (GH #297 not reintroduced)"
+
+# --- mcase 11: the sweep works from OUTSIDE tmux -------------------------------
+# What makes the clear automatic rather than hand-run: the periodic sweep (/tidy)
+# runs outside tmux, and must still read and repair the operator's windows. The
+# pre-#1037 $TMUX guard made that a guaranteed no-op.
+ITEM_LIST_JSON='{"items":[]}'
+ISSUE_VIEW_JSON='{"state":"CLOSED"}'
+PR_VIEW_JSON=""
+ISSUE_STATE_MAP=""
+seed_windows '@0 #502 Claim target'
+FIX=1
+OUT="$(unset TMUX; reconcile_main)"
+grep -q "✓ cleared \[#502 Claim target\] in window @0 — #502 is CLOSED" <<<"$OUT" \
+  || fail "mcase11: a sweep from outside tmux must still repair the server's windows\n$OUT"
+[ -z "$(window_marker @0)" ] || fail "mcase11: @0 should be cleared from outside tmux"
+[ "$(cleared_count)" = "1" ] || fail "mcase11: expected exactly one clear (got $(cleared_count))\n$OUT"
+FIX=0
+echo "PASS: marker case 11 the repair reaches the tmux server from outside tmux"
+
+# --- mcase 12: the cross-board number-collision guard --------------------------
+# A marker records "#<n> <title>" and NOT which repo <n> belongs to, while every
+# board numbers into the same range — so a sweep of board 3 resolving a marker
+# that actually came from board 4 misattributes it. Here #900 is a LIVE
+# In-Progress claim for this host on the OTHER board, and reads CLOSED in the
+# swept board's repo: without the guard, a sweep would wipe a live claim's chip
+# (the GH #297 wrongful-clear class, arriving through the number space).
+ITEM_LIST_JSON='{"items":[]}'
+OTHER_BOARD_ITEMS_JSON='{"items":[
+  {"id":"ISSUE_900","content":{"number":900,"title":"Live on the other board"},"status":"In Progress","host/Session":"testhost:abcd0001"}
+]}'
+ISSUE_VIEW_JSON='{"state":"CLOSED"}'
+PR_VIEW_JSON=""
+ISSUE_STATE_MAP=""
+seed_windows '@0 #900 Live on the other board'
+FIX=1
+run_case
+grep -q "#900 (window @0) — NOT repaired: #900 is a live In-Progress claim for this host on another registered board" <<<"$OUT" \
+  || fail "mcase12: a live claim on another board must be refused\n$OUT"
+[ "$(window_marker @0)" = '#900 Live on the other board' ] \
+  || fail "mcase12: the other board's live claim marker must survive"
+[ "$(cleared_count)" = "0" ] || fail "mcase12: nothing may be cleared (got $(cleared_count))\n$OUT"
+FIX=0
+echo "PASS: marker case 12 a live claim on ANOTHER registered board is never cleared"
+
+# --- mcase 13: the guard's negative control -----------------------------------
+# Same marker, same CLOSED answer — but now NO board holds #900 In Progress for
+# this host. The clear must fire, proving mcase 12's refusal came from the guard
+# and not from the sweep having simply stopped clearing anything.
+OTHER_BOARD_ITEMS_JSON='{"items":[]}'
+seed_windows '@0 #900 Live on the other board'
+FIX=1
+run_case
+grep -q "✓ cleared \[#900 Live on the other board\] in window @0 — #900 is CLOSED" <<<"$OUT" \
+  || fail "mcase13: with no live claim anywhere, the terminal marker must clear\n$OUT"
+[ "$(cleared_count)" = "1" ] || fail "mcase13: expected exactly one clear (got $(cleared_count))\n$OUT"
+FIX=0
+echo "PASS: marker case 13 the cross-board guard's negative control still clears"
+
 # Restore the marker-lens fixtures for anything downstream.
-ISSUE_VIEW_JSON=""; PR_VIEW_JSON=""; set_window_marker ''
+ISSUE_VIEW_JSON=""; PR_VIEW_JSON=""; ISSUE_STATE_MAP=""; OTHER_BOARD_ITEMS_JSON='{"items":[]}'; seed_windows
 
 echo
 echo "=== Lens 2: status drift (status_reconcile_main) ==="
@@ -658,7 +850,7 @@ CONF
 ITEM_LIST_JSON='{"items":[
   {"id":"ISSUE_950","content":{"number":950,"title":"Live truth item"},"status":"In Progress","host/Session":"testhost:live0001"}
 ]}'
-MARKER_LINES='#950 Live truth item
+MARKER_LINES='@0	#950 Live truth item
 '
 OUT="$(BOARDS_CONF_MACHINE="$CACHEON_CONF" BOARDS_CONF_REPO_LOCAL="$TEST_WORK_DIR/no-such-conf" reconcile_main)"
 grep -q "In sync" <<<"$OUT" \
