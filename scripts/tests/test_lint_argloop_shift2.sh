@@ -283,6 +283,39 @@ else
 fi
 
 echo
+echo "── T-DEGENERATE: a check that cannot run must not report success ──"
+# temperloop#1409's class, enforced by
+# workflows/scripts/validate-check-surface-degenerate-coverage.sh and
+# registered in workflows/scripts/config/check-surface-registry.tsv. Before the
+# preflight, an absent or unreadable named path made awk write "can't open
+# file" to stderr, leave the captured report EMPTY, and the lint print `OK` and
+# exit 0 — a vacuous pass on input it never read.
+bash "$LINT" "$WORK/definitely-absent-input.sh" >/dev/null 2>&1
+if [ "$?" -ne 0 ]; then pass "an ABSENT input path: exit non-zero (CANNOT EVALUATE), not 0"
+else fail "an ABSENT input path reported success — the lint passed vacuously"; fi
+
+UNREADABLE="$WORK/unreadable.sh"
+printf 'echo hi\n' >"$UNREADABLE"
+chmod 000 "$UNREADABLE" 2>/dev/null || true
+if [ -r "$UNREADABLE" ]; then
+  # Running as root (or on a filesystem that ignores the mode bit) makes this
+  # case unreachable. Say so rather than assert a property that cannot hold.
+  echo "  – skipped — chmod 000 left the file readable on this host (root?);"
+  echo "    the absent and empty cases above/below still gate."
+else
+  bash "$LINT" "$UNREADABLE" >/dev/null 2>&1
+  if [ "$?" -ne 0 ]; then pass "an UNREADABLE input path: exit non-zero (CANNOT EVALUATE), not 0"
+  else fail "an UNREADABLE input path reported success — the lint passed vacuously"; fi
+fi
+chmod 644 "$UNREADABLE" 2>/dev/null || true
+
+# The injectable "empty input" for a multi-file lint is an EMPTY RESOLVED FILE
+# SET, not an empty file: a lint that scanned nothing has established nothing.
+bash "$LINT" "$LINT" >/dev/null 2>&1
+if [ "$?" -ne 0 ]; then pass "an EMPTY resolved file set: exit non-zero (CANNOT EVALUATE), not 0"
+else fail "an EMPTY resolved file set reported success — the lint passed vacuously"; fi
+
+echo
 echo "── T-GROUND: re-measure the lint's PREMISE, bounded so a hang FAILS ──"
 # Every one of these runs the shape with the flag as the SOLE argument. A
 # watchdog kills anything still alive after 5s, which surfaces as rc 137 — so a

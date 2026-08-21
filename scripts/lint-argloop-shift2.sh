@@ -117,8 +117,11 @@
 #   scripts/lint-argloop-shift2.sh FILE [FILE...] # lint explicit files
 #   scripts/lint-argloop-shift2.sh --list         # print the resolved file set
 #
-# Exit 0 = clean; exit 1 = at least one unguarded `shift N` found. Runs fully
-# offline and shells out to nothing but `awk` and `git ls-files`.
+# Exit 0 = clean; exit 1 = at least one unguarded `shift N` found; exit 2 =
+# CANNOT EVALUATE (an absent or unreadable named path, an empty resolved file
+# set, or a scanner that failed) — never a vacuous `OK`, per the fail-closed
+# rule workflows/scripts/validate-check-surface-degenerate-coverage.sh enforces.
+# Runs fully offline and shells out to nothing but `awk` and `git ls-files`.
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -170,6 +173,22 @@ fi
 # ---------------------------------------------------------------------------
 files=()
 if [ "$#" -gt 0 ]; then
+  # DEGENERATE INPUT FAILS CLOSED (temperloop#1409's class, enforced by
+  # workflows/scripts/validate-check-surface-degenerate-coverage.sh). Without
+  # this preflight an ABSENT or UNREADABLE named path made `awk` write
+  # "can't open file" to stderr, leave the captured report EMPTY, and the
+  # script print `OK` and exit 0 — a check that could not run reporting
+  # success, which is exactly the shape that class exists to close.
+  for f in "$@"; do
+    if [ ! -e "$f" ]; then
+      echo "lint-argloop-shift2: CANNOT EVALUATE — input path does not exist: $f" >&2
+      exit 2
+    fi
+    if [ ! -r "$f" ]; then
+      echo "lint-argloop-shift2: CANNOT EVALUATE — input path is not readable: $f" >&2
+      exit 2
+    fi
+  done
   files=("$@")
 else
   while IFS= read -r f; do
@@ -199,10 +218,14 @@ if [ "${#files[@]}" -gt 0 ]; then
   done
 fi
 
+# An EMPTY resolved file set is the third degenerate shape, and it fails closed
+# for the same reason: a lint that scanned nothing has not established that
+# anything is clean, so "OK" would be a vacuous pass. (Reachable when
+# `git ls-files` returns nothing — no git, an empty checkout — or when every
+# named path was self-exempt.)
 if [ "${#kept[@]}" -eq 0 ]; then
-  [ "$LIST_ONLY" -eq 1 ] && exit 0
-  echo "lint-argloop-shift2: no files to lint" >&2
-  exit 0
+  echo "lint-argloop-shift2: CANNOT EVALUATE — the resolved file set is empty; nothing was scanned" >&2
+  exit 2
 fi
 files=("${kept[@]}")
 
@@ -380,6 +403,15 @@ report="$(
     }
   ' "${files[@]}"
 )"
+scan_rc=$?
+
+# The scanner failing is CANNOT EVALUATE, not "clean" — an empty report from a
+# non-zero awk means the files were never read, and reporting OK there is the
+# same vacuous pass the preflight above exists to prevent.
+if [ "$scan_rc" -ne 0 ]; then
+  echo "lint-argloop-shift2: CANNOT EVALUATE — the scanner exited $scan_rc; no verdict was produced" >&2
+  exit 2
+fi
 
 if [ -n "$report" ]; then
   echo "lint-argloop-shift2: FAIL — an option loop can spin forever on a trailing value-flag:" >&2
