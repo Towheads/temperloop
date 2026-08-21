@@ -1,0 +1,54 @@
+# async-workflow-registry.tsv — the fail-closed registry of this repo's
+# ASYNCHRONOUS (non-PR-triggered) GitHub Actions workflows and what should
+# happen when one of them goes red (temperloop#1297).
+#
+# WHY A REGISTRY AND NOT A HARDCODED LIST. Nothing surfaced a red asynchronous
+# workflow in this repo, so a broken quality gate could sit on `main` for
+# weeks unnoticed — and both observed instances were discovered while ALREADY
+# red, not at the moment they turned. install-tier2.yml leaned on GitHub's
+# built-in scheduled-workflow-failure notification until its weekly cron was
+# retired (1ecb118, 2026-08-13); docs/features/ci-install-tier2.md states the
+# consequence outright: "The retired `schedule` trigger leaned on GitHub's
+# built-in *scheduled*-workflow-failure notification, which stopped applying
+# when the cron went." nightly-macos.yml never had one at all — its own header
+# says so in as many words ("There is NO paging, no Slack, no webhook").
+#
+# The point of the registry is that it FAILS CLOSED. The detector
+# (workflows/scripts/async-workflow-health.sh) does NOT read this file to
+# learn which workflows exist — it DISCOVERS every workflow in
+# .github/workflows/ and classifies it from its own `on:` triggers. This file
+# only records the DISPOSITION of each discovered asynchronous one. A third
+# asynchronous workflow added tomorrow and forgotten here is reported as
+# UNREGISTERED on the same surface a red run is reported on, so forgetting is
+# visible rather than silent. A hardcoded two-entry alarm list would instead
+# go quiet — which is the failure this whole mechanism exists to prevent.
+#
+# ASYNCHRONOUS is a property of the TRIGGERS, decided by the detector, not by
+# this file: a workflow whose only triggers are `pull_request`,
+# `pull_request_target`, `merge_group`, or a branch `push` puts its verdict in
+# front of the person who just pushed, so it is SYNCHRONOUS and out of scope
+# (ci.yml, docs-pages.yml). `schedule`, `workflow_dispatch`,
+# `repository_dispatch`, `workflow_run`, a TAG push, and any trigger the
+# classifier does not recognise are ASYNCHRONOUS — nobody is necessarily
+# watching. An `on:` block the classifier cannot parse is treated as
+# asynchronous too, on the same fail-closed principle.
+#
+# FORMAT — TAB-separated, exactly three columns:
+#   1. WORKFLOW     the workflow file's BASENAME as it sits in
+#                   .github/workflows/ (e.g. `nightly-macos.yml`)
+#   2. DISPOSITION  `alarm`  — a red run raises an alarm line on the read
+#                              surface (the kernel telemetry brief's
+#                              "1. Attention" section, which /check-in renders
+#                              daily and /telemetry renders on demand)
+#                   `exempt` — deliberately unwatched; requires a real reason
+#                              in NOTE, and the detector still reports the
+#                              workflow's state as an `exempt` line so the
+#                              exemption cannot rot into silence
+#   3. NOTE         mandatory, non-empty justification. Never a restatement of
+#                   the filename.
+#
+# `#` starts a whole-line comment; blank lines are ignored.
+#
+# WORKFLOW	DISPOSITION	NOTE
+nightly-macos.yml	alarm	The macOS half of gate coverage, moved off the pre-merge path (temperloop#963) — the ONLY thing standing between a BSD-dialect regression and `main`. Its own header states it has no paging, no Slack and no webhook, so a red night reaches nobody who is not already reading the Actions tab.
+install-tier2.yml	alarm	The tier-2 real-round-trip release gate. Its two existing mitigations are workflow-SPECIFIC and partial — the tag pusher gets GitHub's own Actions notification for their own push, and VERSIONING.md step 4 blocks `make update-kernel` on a green run — and neither covers the long release gap this workflow can rot across (docs/features/ci-install-tier2.md § "What moving off the weekly cron cost"). The generic alarm is ADDITIVE to both, never a replacement.

@@ -58,6 +58,14 @@ trap cleanup EXIT
 
 # The renderer honors each emitter's own *_RAW_DIR first — pin every one to
 # the fixture lake so an operator's real env can never leak into the test.
+#
+# ASYNC_WORKFLOW_RUNS_DIR is pinned for the same reason, one layer over
+# (temperloop#1297): section 1's asynchronous-workflow-health bullet is the
+# brief's ONE live read, and pinning it at an empty fixture dir keeps this
+# suite fully offline and deterministic — no `gh`, no network, no dependence
+# on whether some workflow happens to be red today. The detector's own
+# verdict matrix is covered by test_async_workflow_health.sh; what this suite
+# asserts is only that the bullet renders and never breaks the brief.
 run_brief() {  # $1=lake dir, $2=read-log path, rest = extra args
   local lake="$1" rlog="$2"
   shift 2
@@ -65,6 +73,7 @@ run_brief() {  # $1=lake dir, $2=read-log path, rest = extra args
   PIPELINE_RAW_DIR="$lake" GH_CALLS_RAW_DIR="$lake" KS_SEARCH_FALLBACK_RAW_DIR="$lake" \
   ITEM_EFFICIENCY_RAW_DIR="$lake" \
   TELEMETRY_RAW_DIR="$lake" KNOWLEDGE_READ_LOG="$rlog" \
+  ASYNC_WORKFLOW_RUNS_DIR="$TMP/async-runs-empty" \
     bash "$SCRIPT" "$@"
 }
 
@@ -90,6 +99,11 @@ assert_has "$out" "no data yet — knowledge-search-fallback stream is empty" "k
 assert_has "$out" "no data yet — item-efficiency stream is empty" "item-efficiency no-data line (temperloop#943)"
 assert_has "$out" "no data yet — ks read-log is empty" "read-log no-data line"
 assert_has "$out" "## 1. Attention" "renders Q1 heading"
+# temperloop#1297: the red-asynchronous-workflow alarm lands in Attention, and
+# it must render even on a fresh install with an empty lake — the alarm's whole
+# point is that it does not depend on the pipeline having emitted anything.
+assert_has "$out" "asynchronous workflow health:" "Attention carries the asynchronous-workflow-health bullet"
+assert_has "$out" "async workflow health: LIVE" "the Attention source line marks the workflow-health read as LIVE, not a raw stream"
 assert_has "$out" "## 2. Pipeline health & trust" "renders Q2 heading"
 assert_has "$out" "## 3. Spend" "renders Q3 heading"
 assert_has "$out" "## 4. Improvement" "renders Q4 heading"

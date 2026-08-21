@@ -406,6 +406,15 @@ kernel workflows/scripts/lint-pr-body.sh
 # VERSIONING.md's own table and names no personal path or org-specific value.
 kernel workflows/scripts/check-changelog-entry.sh
 kernel workflows/scripts/telemetry-brief.sh
+# Red-asynchronous-workflow alarm (temperloop#1297) — the detector, its
+# fail-closed disposition registry, and its fixture test suite. Kernel: a
+# stranger's kernel-only checkout has asynchronous workflows of its own (this
+# repo ships two), the detector discovers them from THEIR .github/workflows
+# rather than from any list of ours, and it names no personal path, org, or
+# notification channel. Its read surface is the kernel telemetry brief above.
+kernel workflows/scripts/async-workflow-health.sh
+kernel workflows/scripts/config/async-workflow-registry.tsv
+kernel workflows/scripts/tests/test_async_workflow_health.sh
 # Pipeline spend profiler (temperloop#958) — reads Claude Code's own workflow
 # agent transcripts and reports cost-weighted spend. Kernel: it derives from a
 # harness-owned data source every Claude Code user has, names no personal
