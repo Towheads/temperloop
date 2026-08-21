@@ -31,7 +31,7 @@
 # This file is the CREATION of the shared skeleton — reattach adds a case arm,
 # it does not restructure this dispatch.
 #
-# `resolve`'s ground truth: `gh issue view` for issue state/labels, and the
+# `resolve`'s ground truth: `gh issue view` for issue state/labels/url, and the
 # shared `open_pr_for_issue` (workflows/scripts/build/lib/pr-linkage.sh) for
 # any open PR that closes the issue. Labels are read against the SAME
 # literal label vocabulary pipeline-tick.sh classifies with — sourced from
@@ -40,12 +40,58 @@
 # tests/test_issue_state_label_subset.sh, the mechanical subset-lint against
 # pipeline-tick.sh's label set).
 #
+# ── NEVER FABRICATE A VERDICT (temperloop#1591 / #1518) ────────────────────
+# `resolve` is the FIRST thing `/fix` (Step 2) and any other consumer runs,
+# BEFORE any mutation, so a false verdict here propagates straight into
+# claim-first and a worker spawn. Three rules this file holds structurally:
+#
+#   1. AN ABSENT INPUT NEVER READS AS A CLEAN ONE. `gh issue view` failing was
+#      swallowed into `{}` and `.state // "OPEN"` then invented `open` — so a
+#      NONEXISTENT issue resolved `route: fresh` and a consumer would claim and
+#      drive a target that does not exist (#1591). The probe now returns a
+#      three-way envelope (ok / not-found / error) and the two failure arms get
+#      their OWN terminal routes.
+#   2. A TRANSIENT FAILURE IS NOT A 404. Auth, rate-limit and network failures
+#      were collapsed into the same `{}` as a genuine "no such issue". They are
+#      classified apart now: only GitHub's own "could not resolve to an issue or
+#      pull request" signature is `not-found` (route `not-found`,
+#      issue_state `absent`); EVERY other failure is `error` (route
+#      `probe-failed`, issue_state `unknown`).
+#   3. THE `reason` CAN NEVER CONTRADICT THE `issue_state`. The route table
+#      below is ordered so every non-terminal arm — and the `fresh` default in
+#      particular — is reachable ONLY when the target is a genuinely open
+#      ISSUE. A merged PR number used to emit `issue_state: merged` alongside
+#      `reason: "open, unclaimed, no linked PR"` (#1518, epic #1626).
+#
+# `resolve` ALWAYS EXITS 0 once it has produced a verdict. Failure is expressed
+# IN the verdict (`route`), never by exit code — deliberately, so a caller that
+# captures stdout under `set -e` can never have the honest verdict killed out
+# from under it by a non-zero exit, and so "exit 0" can never be misread as "no
+# problem". The failure routes additionally print one diagnostic line to stderr.
+#
+# PULL-REQUEST TARGETS. `gh issue view <n>` resolves a PULL REQUEST number too
+# (returning state MERGED for a merged one), so `resolve <repo> <pr#>` is a
+# reachable mistake — it is how #1518 was found live. The `.url` field
+# discriminates (`/pull/<n>` vs `/issues/<n>`) at NO extra API call, and a PR
+# target routes `not-an-issue` whatever its state, so a caller can report
+# "that's a PR, not an issue" instead of a misleading `already-done`.
+#
 # DRY_RUN / $FIXTURE (offline test harness, mirrors pipeline-tick.sh's own
 # convention — read that file's header for the general shape):
 #   $FIXTURE/issue-<issue>.json    — the `gh issue view --json
-#                                     state,labels,assignees` shape:
+#                                     state,labels,assignees,url` shape:
 #                                     {"state":"OPEN","labels":[{"name":"x"}],
-#                                      "assignees":[{"login":"y"}]}
+#                                      "assignees":[{"login":"y"}],
+#                                      "url":"https://github.com/o/r/issues/1"}
+#                                     ABSENT = the offline mirror of a 404
+#                                     (route `not-found`), never a fabricated
+#                                     empty-but-open issue.
+#   $FIXTURE/issue-<issue>.error   — optional; simulates a FAILING `gh issue
+#                                     view`. Its first line is the stderr text,
+#                                     classified exactly as a live failure is
+#                                     (a "could not resolve to an issue or pull
+#                                     request" line -> not-found; anything else
+#                                     -> probe-failed). Wins over the .json.
 #   $FIXTURE/open-pr-<issue>.txt   — consumed by pr-linkage.sh's
 #                                     open_pr_for_issue (one PR number per line)
 #   $FIXTURE/pr-<n>.json           — the `gh pr view --json
@@ -134,8 +180,8 @@ subcommands:
   resolve <repo> <issue> [--dry-run --fixture <dir>]
       Read ground-truth GitHub state for ONE issue and print a single JSON
       route-verdict object to stdout (route: fresh|adopt|question-first|
-      claimed-elsewhere|already-done|ambiguous). See this file's header for
-      the full verdict shape.
+      claimed-elsewhere|already-done|ambiguous|not-an-issue|not-found|
+      probe-failed). See this file's header for the full verdict shape.
 
   reattach <repo> <pr> [--dry-run --fixture <dir>]
       Revalidate an already-open PR and print a single ready/not-ready
@@ -156,15 +202,38 @@ open-PR-by-linkage probe) and prints a single JSON route-verdict object to
 stdout:
 
   {
-    "repo": "owner/repo", "issue": 123, "issue_state": "open|closed",
+    "repo": "owner/repo", "issue": 123,
+    "issue_state": "open|closed|merged|absent|unknown",
+    "is_pull_request": bool,
     "open_prs": [{"number":N,"draft":bool,"author":"login",
                   "updated_at":"ISO8601","linkage":"closes"}],
     "claim": {"claimed":bool,"host_session":"host:sess|null","by_me":bool},
     "labels": ["<label>", ...],
     "worktree": "<path>|null",
-    "route": "fresh|adopt|question-first|claimed-elsewhere|already-done|ambiguous",
+    "route": "fresh|adopt|question-first|claimed-elsewhere|already-done|
+              ambiguous|not-an-issue|not-found|probe-failed",
     "reason": "<one-line why this route>"
   }
+
+Routes, in precedence order (first match wins). The three DRIVE routes are
+`fresh` / `adopt` / `ambiguous`; every other route is TERMINAL:
+
+  not-found          the number does not exist in the repo (GitHub's own
+                     "could not resolve" signature). issue_state "absent".
+  probe-failed       the `gh` read failed for a NON-404 reason (auth,
+                     rate-limit, network). issue_state "unknown" — the state
+                     is genuinely unknown, which is NOT the same as "open".
+  not-an-issue       the number is a PULL REQUEST, not an issue.
+  already-done       the issue exists but is not open (closed, or any other
+                     non-open state GitHub may return).
+  question-first     carries the needs-clarification label.
+  claimed-elsewhere  In Progress under a different host/session.
+  ambiguous          >1 open PR links to the issue.
+  adopt              exactly one open linked PR, or funnel-merge-pending.
+  fresh              an open, drivable issue with none of the above.
+
+Always exits 0 once a verdict is produced — failure is carried by `route`,
+never by the exit code (see this file's header).
 
   --dry-run --fixture <dir>   Offline fixture mode (see this file's header
                                comment for the fixture layout).
@@ -173,20 +242,76 @@ USAGE
 
 # ── gh/fixture reads ──────────────────────────────────────────────────────
 
-# issue_state_get_issue <repo> <issue> — prints the raw `gh issue view
-# --json state,labels,assignees` JSON (or its fixture equivalent).
-issue_state_get_issue() {
-  local repo="$1" issue="$2" f
+# issue_state_classify_failure <stderr-text> — prints the failure half of the
+# probe envelope, classifying GitHub's OWN not-found signature apart from every
+# other failure (temperloop#1591). Deliberately NARROW: only a "could not
+# resolve to an issue or pull request" line proves the NUMBER does not exist.
+# A "could not resolve to a Repository" line, an auth error, a rate-limit and a
+# network error all stay `error` — asserting "this issue does not exist" off a
+# failure that never reached the issue is the same fabrication in a new costume.
+issue_state_classify_failure() {
+  local err="$1" kind="error"
+  case "$err" in
+    *"ould not resolve to an issue or pull request"*|\
+    *"ould not resolve to an Issue"*|\
+    *"ould not resolve to a PullRequest"*)
+      kind="not-found" ;;
+  esac
+  [ -n "$err" ] || err="gh issue view failed with no diagnostic output"
+  jq -cn --arg k "$kind" --arg e "$err" '{probe:$k, error:$e}'
+}
+
+# issue_state_probe_issue <repo> <issue> — prints ONE probe-envelope JSON,
+# NEVER a bare `{}` that a later `// "OPEN"` default can turn into a fabricated
+# open issue (temperloop#1591):
+#
+#   {"probe":"ok","data":{<the gh issue view --json state,labels,assignees,url
+#                          payload>}}
+#   {"probe":"not-found","error":"<gh stderr>"}
+#   {"probe":"error","error":"<gh stderr>"}
+issue_state_probe_issue() {
+  local repo="$1" issue="$2" f errf out err
   if [ "$DRY_RUN" -eq 1 ]; then
+    f="$FIXTURE/issue-$issue.error"
+    if [ -f "$f" ]; then
+      issue_state_classify_failure "$(head -n1 "$f")"
+      return 0
+    fi
     f="$FIXTURE/issue-$issue.json"
-    if [ -f "$f" ]; then cat "$f"; else echo '{}'; fi
+    if [ -f "$f" ]; then
+      jq -c '{probe:"ok", data:.}' <"$f" 2>/dev/null \
+        || jq -cn --arg e "unparseable fixture $f" '{probe:"error", error:$e}'
+    else
+      # An ABSENT fixture is the offline mirror of a 404 — the fixture harness
+      # must not be the one place the fabricated-open verdict survives.
+      jq -cn --arg e "no fixture for issue $issue in $FIXTURE" \
+        '{probe:"not-found", error:$e}'
+    fi
     return 0
   fi
-  gh issue view "$issue" -R "$repo" --json state,labels,assignees 2>/dev/null || echo '{}'
+  errf="$(mktemp)"
+  if out="$(gh issue view "$issue" -R "$repo" --json state,labels,assignees,url 2>"$errf")"; then
+    rm -f "$errf"
+    jq -c '{probe:"ok", data:.}' <<<"$out" 2>/dev/null \
+      || jq -cn --arg e "gh issue view returned unparseable JSON" '{probe:"error", error:$e}'
+    return 0
+  fi
+  err="$(tr '\n' ' ' <"$errf" | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//')"
+  rm -f "$errf"
+  issue_state_classify_failure "$err"
 }
 
 # issue_state_get_pr <repo> <pr-number> — prints the raw `gh pr view --json
 # number,draft,author,updatedAt` JSON (or its fixture equivalent).
+#
+# The `|| jq -cn '{number:$n}'` fallback below was REVIEWED against the same
+# masking class (temperloop#1591 acceptance): it is NOT route-decisive. This
+# read is only ever reached for a PR number `open_pr_for_issue` already proved
+# links to the issue, and the route is chosen from that linkage COUNT, never
+# from this payload — so a swallowed failure here degrades the surfaced
+# draft/author/updated_at detail of a PR known to exist, and can neither invent
+# a PR nor suppress one. The number, which is what `adopt`/`ambiguous` act on,
+# is carried through from the linkage probe regardless.
 issue_state_get_pr() {
   local repo="$1" pr="$2" f
   if [ "$DRY_RUN" -eq 1 ]; then
@@ -263,11 +388,34 @@ cmd_resolve() {
     exit 2
   fi
 
-  local issue_json issue_state_raw issue_state labels_json route reason
-  issue_json="$(issue_state_get_issue "$repo" "$issue")"
-  issue_state_raw="$(jq -r '.state // "OPEN"' <<<"$issue_json")"
+  local probe_json probe_kind probe_error probe_ok issue_json
+  local issue_state_raw issue_state issue_url is_pr labels_json route reason
+  probe_json="$(issue_state_probe_issue "$repo" "$issue")"
+  probe_kind="$(jq -r '.probe // "error"' <<<"$probe_json")"
+  probe_error="$(jq -r '.error // ""' <<<"$probe_json")"
+  issue_json="$(jq -c '.data // {}' <<<"$probe_json")"
+
+  # A FAILED probe never defaults to OPEN. `absent` (the number does not exist)
+  # and `unknown` (the read itself failed) are distinct states, and neither is
+  # a state any drive route can be reached from. Note there is no `// "OPEN"`
+  # here any more: on the `ok` arm `.state` is always present.
+  probe_ok=1
+  case "$probe_kind" in
+    ok)        issue_state_raw="$(jq -r '.state // "UNKNOWN"' <<<"$issue_json")" ;;
+    not-found) probe_ok=0; issue_state_raw="ABSENT" ;;
+    *)         probe_ok=0; issue_state_raw="UNKNOWN" ;;
+  esac
   issue_state="$(printf '%s' "$issue_state_raw" | tr '[:upper:]' '[:lower:]')"
   labels_json="$(jq -c '[(.labels // [])[]?.name]' <<<"$issue_json")"
+
+  # Is the target a PULL REQUEST rather than an issue? `.url` discriminates at
+  # no extra API call (`/pull/<n>` vs `/issues/<n>`). The `merged` fallback is
+  # a belt-and-suspenders second signal for a payload carrying no url (an older
+  # fixture): `merged` is a state only a PR can ever be in.
+  issue_url="$(jq -r '.url // ""' <<<"$issue_json")"
+  is_pr=false
+  case "$issue_url" in */pull/*) is_pr=true ;; esac
+  if [ "$issue_state" = "merged" ]; then is_pr=true; fi
 
   has_label() {
     jq -e --arg l "$1" 'any(.[]; . == $l)' <<<"$labels_json" >/dev/null 2>&1
@@ -294,8 +442,13 @@ cmd_resolve() {
   fi
 
   # ── open-PR linkage (shared lib) ────────────────────────────────────────
+  # Skipped entirely when the probe failed: there is no target to find a linked
+  # PR for, and a nonexistent/unreadable issue must not cost a second gh call.
   local pr_numbers pr_count open_prs_json="[]" num pr_json
-  pr_numbers="$(open_pr_for_issue "$repo" "$issue")"
+  pr_numbers=""
+  if [ "$probe_ok" -eq 1 ]; then
+    pr_numbers="$(open_pr_for_issue "$repo" "$issue")"
+  fi
   pr_count=0
   if [ -n "$pr_numbers" ]; then
     while IFS= read -r num; do
@@ -313,9 +466,23 @@ cmd_resolve() {
   fi
 
   # ── route precedence (first match wins) ─────────────────────────────────
-  if [ "$issue_state" = "closed" ]; then
+  # The three "is this even a drivable open issue?" arms come FIRST, so no
+  # later arm — `fresh` above all — is reachable for a target that does not
+  # exist, could not be read, is a pull request, or is not open. That ordering
+  # is what makes `reason` structurally unable to contradict `issue_state`
+  # (temperloop#1591 / #1518, epic #1626).
+  if [ "$probe_kind" = "not-found" ]; then
+    route="not-found"
+    reason="no issue or pull request #$issue in $repo"
+  elif [ "$probe_ok" -eq 0 ]; then
+    route="probe-failed"
+    reason="state probe failed, state unknown (not a 404): $probe_error"
+  elif [ "$is_pr" = true ]; then
+    route="not-an-issue"
+    reason="#$issue is a pull request ($issue_state), not an issue"
+  elif [ "$issue_state" != "open" ]; then
     route="already-done"
-    reason="issue is closed"
+    reason="issue is $issue_state"
   elif has_label "$ISSUE_STATE_LABEL_NEEDS_CLARIFICATION"; then
     route="question-first"
     reason="labeled $ISSUE_STATE_LABEL_NEEDS_CLARIFICATION"
@@ -333,16 +500,33 @@ cmd_resolve() {
     reason="labeled $ISSUE_STATE_LABEL_PIPELINE_MERGE_PENDING"
   else
     route="fresh"
-    reason="open, unclaimed, no linked PR"
+    # Only a self-claim can reach here (a foreign claim took the
+    # `claimed-elsewhere` arm above), so say which — a bare "unclaimed" beside
+    # `claim.claimed: true` is the same self-contradiction class as #1518.
+    if [ "$claimed" = true ]; then
+      reason="open, claimed by this session, no linked PR"
+    else
+      reason="open, unclaimed, no linked PR"
+    fi
   fi
 
-  local worktree_path
-  worktree_path="$(find_worktree "$repo" "$issue")"
+  # A failure route gets one human-readable line on stderr too — the JSON
+  # verdict is the contract, but a human running this by hand should not have
+  # to pipe it through jq to see that the probe found nothing.
+  if [ "$probe_ok" -eq 0 ]; then
+    printf 'issue-state.sh resolve: %s\n' "$reason" >&2
+  fi
+
+  local worktree_path=""
+  if [ "$probe_ok" -eq 1 ]; then
+    worktree_path="$(find_worktree "$repo" "$issue")"
+  fi
 
   jq -cn \
     --arg repo "$repo" \
     --argjson issue "$issue" \
     --arg issue_state "$issue_state" \
+    --argjson is_pr "$is_pr" \
     --argjson open_prs "$open_prs_json" \
     --argjson claimed "$claimed" \
     --arg host_session "$host_session" \
@@ -355,6 +539,7 @@ cmd_resolve() {
       repo: $repo,
       issue: $issue,
       issue_state: $issue_state,
+      is_pull_request: $is_pr,
       open_prs: $open_prs,
       claim: {
         claimed: $claimed,
