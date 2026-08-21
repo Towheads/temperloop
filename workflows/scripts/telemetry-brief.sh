@@ -35,6 +35,14 @@
 #                                               read-log; " · "-separated
 #                                               lines, NOT jsonl)
 #
+# ONE DELIBERATE EXCEPTION to "kernel raw streams only": section 1's
+# asynchronous-workflow-health bullet (temperloop#1297) is a LIVE read of
+# GitHub's own run history via async-workflow-health.sh, because a workflow's
+# redness exists nowhere else — no emitter can write it into the lake. The
+# section's own `source:` line names it as live rather than letting it pass
+# for a stream, and the detector owns its own degradation and always exits 0,
+# so the offline brief still renders in full without gh, jq, or a network.
+#
 # Degradation contract (the fresh-install case): an absent or empty stream
 # renders an honest "no data yet — <stream> is empty" line for its section —
 # never a crash, never a fabricated number. A stream with records but none
@@ -307,7 +315,7 @@ pipeline_files="$(stream_files "$pipeline_dir" "pipeline")"
 # ── 1. Attention ─────────────────────────────────────────────────────────────
 echo
 echo "## 1. Attention — what needs you now"
-echo "source: command-runs-*.jsonl @ $cmd_run_dir · pipeline-*.jsonl @ $pipeline_dir"
+echo "source: command-runs-*.jsonl @ $cmd_run_dir · pipeline-*.jsonl @ $pipeline_dir · async workflow health: LIVE (async-workflow-health.sh, not a raw stream)"
 attention_any=0
 if [ -n "$cmd_files" ]; then
   n="$(printf '%s' "$cmd_runs" | jq 'length')"
@@ -332,6 +340,28 @@ if [ "$attention_any" -eq 0 ]; then
   if [ -n "$cmd_files" ] || [ -n "$pipeline_files" ]; then
     echo "- no in-window attention signals (streams present, no records in the last $lookback days)"
   fi
+fi
+# ── 1b. Asynchronous workflow health (temperloop#1297) ───────────────────────
+# A red ASYNCHRONOUS workflow — a nightly `schedule`, a release-tag push —
+# reports to nobody in particular, so a broken quality gate can sit on `main`
+# for weeks (nightly-macos.yml: 7 consecutive red nights; install-tier2.yml:
+# its GitHub scheduled-failure email stopped applying when the cron was
+# retired, docs/features/ci-install-tier2.md § step 5). This is the surface
+# that alarm lands on — the Attention section /check-in already renders daily
+# — rather than a parallel one invented for it.
+#
+# DELIBERATELY NOT A RAW-LAKE STREAM, and the `source:` line above says so:
+# a workflow's redness lives only in GitHub's own run history, so this is the
+# ONE live read in an otherwise offline brief. It is fully fenced: the
+# detector owns its own degradation (no `gh`, no `jq`, an API failure — each
+# renders a legible `skipped —` / `UNKNOWN` line), always exits 0, and is
+# additionally `|| true`-guarded here so it can never fail the brief that
+# reads it.
+async_health="$here/async-workflow-health.sh"
+if [ -r "$async_health" ]; then
+  bash "$async_health" --format brief 2>/dev/null || true
+else
+  echo "- asynchronous workflow health: skipped — async-workflow-health.sh not found at $async_health (a red scheduled workflow would go unseen)"
 fi
 echo "note: parked \`/build\` items live in the active plan note's own item statuses, not a raw stream — check the plan note directly; the overlay brief adds pipeline escalation/hand-off detail."
 

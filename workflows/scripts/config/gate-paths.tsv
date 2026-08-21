@@ -284,7 +284,8 @@ bash workflows/scripts/lib/tests/test_issue_marker_probe.sh	workflows/scripts/li
 bash workflows/scripts/lib/tests/test_command_declared.sh	workflows/scripts/lib/command_declared.sh workflows/scripts/lib/tests/test_command_declared.sh claude/commands/**
 
 # ── Telemetry / spend / session context ─────────────────────────────────────
-bash workflows/scripts/tests/test_telemetry_brief.sh	workflows/scripts/telemetry-brief.sh workflows/scripts/tests/test_telemetry_brief.sh claude/commands/check-in.md
+bash workflows/scripts/tests/test_telemetry_brief.sh	workflows/scripts/telemetry-brief.sh workflows/scripts/tests/test_telemetry_brief.sh claude/commands/check-in.md workflows/scripts/async-workflow-health.sh
+bash workflows/scripts/tests/test_async_workflow_health.sh	workflows/scripts/async-workflow-health.sh workflows/scripts/tests/test_async_workflow_health.sh workflows/scripts/config/async-workflow-registry.tsv workflows/scripts/telemetry-brief.sh .github/workflows/*
 bash workflows/scripts/tests/test_checkin_status_trailing_newline.sh	claude/commands/check-in.md workflows/scripts/tests/test_checkin_status_trailing_newline.sh
 bash workflows/scripts/tests/test_plan_approval_drain.sh	claude/commands/build.md claude/commands/check-in.md workflows/scripts/tests/test_plan_approval_drain.sh
 bash workflows/scripts/lib/tests/test_token_sum.sh	workflows/scripts/lib/token_sum.sh workflows/scripts/lib/tests/test_token_sum.sh claude/status-line.sh

@@ -301,6 +301,16 @@ KERNEL_GATES=(
   # the T0-inventory/manifest gates above (kernel Makefile is
   # generator-owned; no new target added here).
   "bash workflows/scripts/tests/test_telemetry_brief.sh"
+  # Red-asynchronous-workflow alarm (temperloop#1297): the detector that
+  # surfaces a red non-PR-triggered workflow on the telemetry brief's
+  # Attention section. Covers the trigger classifier (synchronous vs
+  # asynchronous, hybrid, tag-vs-branch push, unparseable `on:`), the
+  # already-red / green / empty / absent-history verdict matrix, and every
+  # fail-closed path (unregistered workflow, absent or empty registry, stale
+  # registry row) — all against RECORDED `gh run list --json` fixtures with a
+  # poisoned `gh` on PATH, never the live API. Same direct-`bash` form as the
+  # telemetry-brief gate above.
+  "bash workflows/scripts/tests/test_async_workflow_health.sh"
   # model-comparison: restricted candidate-session overlay + provider-key
   # health check (temperloop#1252, epic #1225 "model comparison harness").
   # Asserts the settings overlay's EFFECTIVE tool surface via real

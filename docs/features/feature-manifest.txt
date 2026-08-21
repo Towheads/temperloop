@@ -149,6 +149,16 @@ telemetry workflows/scripts/validate-knowledge-search-emit.sh
 telemetry workflows/scripts/telemetry-brief.sh
 telemetry workflows/scripts/tests/test_command_run_emit.sh
 telemetry workflows/scripts/tests/test_telemetry_brief.sh
+
+# ── async-workflow-health — the red-asynchronous-workflow alarm ────────────
+# Its own slug rather than `telemetry`: this is not a raw-lake emit/validator
+# pair (the whole `telemetry` section's subject) but a LIVE read of GitHub's
+# run history that renders INTO the telemetry brief. The registry TSV needs an
+# exact-path claim to win over the broader `quality-gates
+# workflows/scripts/config/*` glob further down (longest pattern wins).
+async-workflow-health workflows/scripts/async-workflow-health.sh
+async-workflow-health workflows/scripts/config/async-workflow-registry.tsv
+async-workflow-health workflows/scripts/tests/test_async_workflow_health.sh
 # session-context — the realized-session-context probe (temperloop#828,
 # epic #810): the SessionEnd-seam raw-lake emit, its shared token-sum
 # helper (also called by claude/status-line.sh's display), and their tests
