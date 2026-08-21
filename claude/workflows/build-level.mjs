@@ -1940,6 +1940,116 @@ function escalate(slug, kind, payload) {
   return { _kind: 'escalation', slug, escalation: { slug, kind, payload } };
 }
 
+// --- 3e.5 gate verdict reconciliation (temperloop#1587) ----------------------
+// The defect this pair of helpers closes: the slice loop maintained TWO
+// independent failure counters — an accumulated `gateFailed` and the terminal
+// slice's own `gateOut.failed` — and shipped BOTH in one escalation payload
+// (`{gateOut:{outcome:'GATE_PASS',failed:0,…}, failedGates:1}`). A consumer
+// that trusted either field acted on a fiction: the kind said the gate failed,
+// the embedded object said it passed. Two counters that CAN disagree is the
+// defect, not merely the run on which they did — so there is now exactly ONE
+// record of failure (the per-slice ledger the loop appends to) and every
+// figure reported anywhere — `failedGates`, the verdict, the escalation kind,
+// the reason prose — is DERIVED from it by gateVerdict() below. No second
+// counter is maintained, and the raw terminal `gateOut` (whose `failed` was
+// the contradicting field) is no longer embedded in the payload: its content
+// survives as the ledger's last entry, which cannot disagree with the sum of
+// the ledger it is part of.
+
+// gateSliceFailed(out) — the failure count ONE slice actually ESTABLISHED.
+// This is the only place a slice's failure count is read, so the ledger's
+// entries are normalized on the way in rather than clamped at each reader:
+//   GATE_SLICE — the count the suite's own `QUALITY_GATES_FAILED=` trailer
+//                reported for that slice (exit 75 always prints it).
+//   GATE_FAIL  — a RED suite by construction, so the floor is 1: an unparseable
+//                or stale trailer must never produce a "failed, 0 failures"
+//                ledger entry (the mirror image of #1587's contradiction).
+//   everything else (GATE_PASS / GATE_ABSENT / GATE_TIMEOUT) — 0. A pass is
+//                zero by construction; a TIMEOUT establishes NOTHING (the slice
+//                was killed before it could report), and unknown-ness is carried
+//                by the verdict, never smuggled into a count.
+function gateSliceFailed(out) {
+  if (!out) return 0;
+  if (out.outcome === 'GATE_FAIL') return Math.max(1, Number(out.failed) || 0);
+  if (out.outcome === 'GATE_SLICE') return Math.max(0, Number(out.failed) || 0);
+  return 0;
+}
+
+// gateVerdict(terminalOutcome, ledger) — the ONE reconciliation point between
+// the slice loop's terminal outcome and its failure ledger. Every arm's kind,
+// counts and reason are computed HERE, from one input, so no arm can ship a
+// payload that contradicts its own verdict.
+//
+// `verdict` is the single field a consumer may trust:
+//   RED     — at least one gate FAILED. The branch is known-broken.
+//   UNKNOWN — nothing failed and the suite never finished (Bash-tool timeout or
+//             slice-cap exhaustion). It says NOTHING about the tree — the whole
+//             point of temperloop#1021, preserved exactly: this and only this
+//             verdict escalates `acceptance-gate-timeout`.
+//   GREEN   — the suite finished and every gate that ran passed.
+//
+// Precedence: an OBSERVED failure dominates an UNFINISHED remainder. A run that
+// failed in slice 1 and then timed out in slice 3 is RED — the failures are
+// real evidence, the missing verdict for the un-run gates cannot un-fail them —
+// and the reason says both halves. This is the same precedence the pre-#1587
+// code already applied to a GATE_PASS terminal after a failing slice, now
+// applied to the TIMEOUT arm too, so "timeout" never launders a known failure
+// into an unknown. A timeout with NO observed failure is untouched.
+function gateVerdict(terminalOutcome, ledger) {
+  const failedGates = ledger.reduce((n, s) => n + (Number(s.failed) || 0), 0);
+  const failedInSlices = ledger.filter((s) => (Number(s.failed) || 0) > 0).map((s) => s.slice);
+  const finished = terminalOutcome === 'GATE_PASS'
+    || terminalOutcome === 'GATE_FAIL'
+    || terminalOutcome === 'GATE_ABSENT';
+  let unfinished;
+  if (terminalOutcome === 'GATE_TIMEOUT') {
+    unfinished = `the quality-gates slice was killed by the executor's ${GATE_BASH_TIMEOUT_MS}ms Bash-tool timeout before it could report — a BUDGET exhaustion, NOT a gate failure`;
+  } else if (terminalOutcome === 'GATE_SLICE') {
+    unfinished = `the suite did not finish within ${GATE_MAX_SLICES} slices of ${GATE_SLICE_SECS}s (~${Math.round(GATE_MAX_SLICES * GATE_SLICE_SECS / 60)} min of gate wall time) — a BUDGET exhaustion, NOT a gate failure`;
+  } else {
+    // Neither a finished verdict nor a recognized budget outcome: the executor
+    // returned something outside the gate's own closed set. Pre-#1587 this fell
+    // through to the GATE_PASS/GATE_ABSENT arm and PUSHED a branch whose gate
+    // never returned a verdict — the permissive-default hole this epic exists
+    // to close. It is UNKNOWN, and the reason names the outcome verbatim rather
+    // than dressing it up as a budget fact.
+    unfinished = `the gate returned an unrecognized outcome '${terminalOutcome}' — no verdict was established (this is NOT a pass, and NOT a known budget exhaustion)`;
+  }
+  const found = `${failedGates} gate failure(s) recorded in slice(s) ${failedInSlices.join(', ')}`;
+
+  if (failedGates > 0) {
+    let reason;
+    if (finished && terminalOutcome === 'GATE_FAIL') {
+      reason = `the suite exited RED — ${found}`;
+    } else if (finished) {
+      // The temperloop#1587 shape: the FINAL slice passed, so the log's last
+      // line reads "OK — gates N..M passed (final slice)". Say plainly that the
+      // green line covers only the gates that slice ran, or the next reader
+      // repeats #1587's mis-read and calls the escalation a false positive.
+      reason = `${found}; the FINAL slice reported ${terminalOutcome}, but its green line covers ONLY the gates that slice ran — the suite as a whole is RED`;
+    } else {
+      reason = `${found} BEFORE the run stopped early — ${unfinished}. The gates that never ran have no verdict, but the recorded failures are real, so the branch is known-RED, not unknown`;
+    }
+    return { verdict: 'RED', finished, failedGates, failedInSlices, reason };
+  }
+  if (!finished) {
+    return {
+      verdict: 'UNKNOWN',
+      finished,
+      failedGates: 0,
+      failedInSlices,
+      reason: `${unfinished}; no gate failed in the slices that DID run, and the suite's overall verdict is unknown`,
+    };
+  }
+  return {
+    verdict: 'GREEN',
+    finished,
+    failedGates: 0,
+    failedInSlices,
+    reason: `the suite finished and every gate passed (terminal outcome ${terminalOutcome})`,
+  };
+}
+
 // discriminationGaps — the temperloop#1319 DEGRADED CASE. WORKER_VERDICT_SCHEMA
 // does not (and per the "advisory, never a new blocking gate" ask, must not)
 // mark `discrimination_evidence` required, §3d branches solely on `.status`,
@@ -2677,8 +2787,15 @@ async function driveItem(item) {
   let gateOut = null;
   let gateStartAt = 0;
   let gateElapsed = 0;
-  let gateFailed = 0;
   let gateSlices = 0;
+  // gateSliceLedger — the AUTHORITATIVE record of what this gate run found
+  // (temperloop#1587): one entry per slice that actually ran, carrying that
+  // slice's own outcome and normalized failure count (gateSliceFailed()).
+  // Every failure figure reported below — the payload's `failedGates`, the
+  // verdict, the escalation kind — is DERIVED from this array by
+  // gateVerdict(); no independent running counter is maintained alongside it,
+  // because two counters that can disagree is exactly the defect #1587 filed.
+  const gateSliceLedger = [];
   for (; gateSlices < GATE_MAX_SLICES; gateSlices++) {
     gateOut = await runMachinery(gateCmd(gateStartAt), {
       label: `gate:${item.slug}`,
@@ -2706,35 +2823,66 @@ async function driveItem(item) {
     if (gateOut.outcome === 'STEP_TIMEOUT') {
       return (await disposeStepTimeout(item, wt, gateOut, 'gate', { adoptable: false })).escalation;
     }
-    gateElapsed += Number(gateOut.elapsedSecs) || 0;
-    gateFailed += Number(gateOut.failed) || 0;
+    const sliceElapsed = Number(gateOut.elapsedSecs) || 0;
+    gateElapsed += sliceElapsed;
+    gateSliceLedger.push({
+      slice: gateSlices + 1,
+      startAt: gateStartAt,
+      outcome: gateOut.outcome,
+      failed: gateSliceFailed(gateOut),
+      elapsedSecs: sliceElapsed,
+    });
     if (gateOut.outcome !== 'GATE_SLICE') break;
     gateStartAt = Number(gateOut.resumeAt) || 0;
     log(`[${item.slug}] 3e.5 gate slice ${gateSlices + 1}/${GATE_MAX_SLICES} spent its ${GATE_SLICE_SECS}s budget — resuming at gate ${gateStartAt}`);
   }
 
+  // ONE verdict, derived once from the ledger (temperloop#1587), and ONE
+  // payload shape shared by both escalation arms — so the kind an operator (or
+  // the escalation router) reads and the numbers underneath it are computed
+  // from the same input and cannot disagree.
+  const gateReport = gateVerdict(gateOut.outcome, gateSliceLedger);
+  const gatePayload = {
+    // `verdict` is the field to trust: RED / UNKNOWN / GREEN. `outcome` is the
+    // TERMINAL slice's own outcome — a per-slice fact, never the suite's
+    // verdict (a GATE_PASS terminal on a run whose slice 1 failed is exactly
+    // #1587's trap). `failedGates` is the sum of `sliceLedger[].failed`, the
+    // only failure record kept.
+    verdict: gateReport.verdict,
+    outcome: gateOut.outcome,
+    suiteFinished: gateReport.finished,
+    failedGates: gateReport.failedGates,
+    failedInSlices: gateReport.failedInSlices,
+    reason: gateReport.reason,
+    // Also derived from the ledger, not from the loop counter: on slice-cap
+    // exhaustion the loop index has already advanced past the last slice, so
+    // `gateSlices + 1` reported one MORE slice than the payload's own ledger
+    // contained — a second, smaller field-vs-field contradiction in the same
+    // payload (temperloop#1587).
+    slices: gateSliceLedger.length,
+    elapsedSecs: gateElapsed,
+    sliceBudgetSecs: GATE_SLICE_SECS,
+    sliceLedger: gateSliceLedger,
+    log: gateLog,
+  };
   // A TIMEOUT is NOT a gate failure — its own escalation kind, so an operator
   // (or the pipeline's escalation router) can tell "the budget ran out" from
   // "this branch is broken" without reading a log. Same for exhausting the
   // slice cap: the suite did not finish, which says nothing about the tree.
-  if (gateOut.outcome === 'GATE_TIMEOUT' || gateOut.outcome === 'GATE_SLICE') {
+  // temperloop#1021 is preserved exactly — and sharpened: this arm is now taken
+  // only when NOTHING failed in the slices that did run, so "the budget ran
+  // out" can never be the label on a run that already observed a real failure.
+  if (gateReport.verdict === 'UNKNOWN') {
     return escalate(item.slug, 'acceptance-gate-timeout', {
-      gateOut,
-      reason: gateOut.outcome === 'GATE_TIMEOUT'
-        ? `the quality-gates slice was killed by the executor's ${GATE_BASH_TIMEOUT_MS}ms Bash-tool timeout before it could report — a BUDGET exhaustion, NOT a gate failure; the suite's verdict is unknown`
-        : `the suite did not finish within ${GATE_MAX_SLICES} slices of ${GATE_SLICE_SECS}s (~${Math.round(GATE_MAX_SLICES * GATE_SLICE_SECS / 60)} min of gate wall time) — a BUDGET exhaustion, NOT a gate failure`,
-      slices: gateSlices + 1,
-      elapsedSecs: gateElapsed,
-      sliceBudgetSecs: GATE_SLICE_SECS,
+      ...gatePayload,
       remedy: 'raise BUILD_GATE_SLICE_SECS (bounded by the agent Bash cap) or split the gate list; re-run the gate to get a real verdict',
-      log: gateLog,
     });
   }
-  // A genuinely RED suite still escalates exactly as before — unchanged. Note
-  // gateFailed is accumulated ACROSS slices, so a failure found in slice 1 is
-  // not lost when slice 2 finishes green.
-  if (gateOut.outcome === 'GATE_FAIL' || gateFailed > 0) {
-    return escalate(item.slug, 'acceptance-gate-failed', { gateOut, failedGates: gateFailed, log: gateLog });
+  // A genuinely RED suite still escalates exactly as before — including the
+  // case where a failure found in slice 1 is followed by green (or unfinished)
+  // later slices: the ledger keeps it, so it is never lost.
+  if (gateReport.verdict === 'RED') {
+    return escalate(item.slug, 'acceptance-gate-failed', gatePayload);
   }
   // GATE_PASS or GATE_ABSENT → proceed. Report the MARGIN, not just the verdict:
   // this is the decay signal that #115's bare number never had. A run that ate

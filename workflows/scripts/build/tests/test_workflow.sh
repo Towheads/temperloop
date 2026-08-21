@@ -29,6 +29,9 @@
 #   - deploy-discovery: ~/.claude/workflows/build-level.mjs resolves (install-claude)
 #   - spike kind: spike items skip push/PR/CI, park with null pr/pushed_sha
 #   - gate-fail: GATE_FAIL → acceptance-gate-failed escalation
+#   - gate verdict/payload agreement (#1587): the escalation kind, its verdict,
+#     its failure count and its reason all derive from ONE slice ledger, in all
+#     four gate outcomes — no payload field may contradict the kind it ships under
 #   - worktree-failed: worktree.sh non-CREATED → worktree-failed escalation
 #   - continuation: onlySlugs+verdicts → verdict injected into worker prompt,
 #     existing worktree reused (no create/claim), only continued slug driven
@@ -1293,6 +1296,227 @@ if (b.timeout > 600000)
 const c = await budgetAndTimeoutFor('', 'setting-c');
 if (c.budget !== 300)
   { console.log(JSON.stringify({ ok: false, reason: 'empty setting did not fall back to the in-file default: ' + JSON.stringify(c) })); process.exit(0); }
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+# ============================================================================
+# TEST 11i (temperloop#1587): the escalation's KIND and its PAYLOAD must agree,
+#   in every one of the four gate outcomes. #1587 shipped
+#   {gateOut:{outcome:'GATE_PASS',failed:0,…}, failedGates:1} under
+#   kind=acceptance-gate-failed: two independent counters, one saying the gate
+#   passed and one saying it failed, so a consumer trusting either acted on a
+#   fiction. This case drives GATE_PASS / GATE_FAIL / GATE_SLICE(cap) /
+#   GATE_TIMEOUT in one level and asserts the SAME structural invariants on
+#   every gate escalation it produces.
+# ============================================================================
+run_node_case "1587 agreement: kind and payload agree across GATE_PASS/FAIL/SLICE/TIMEOUT" "
+$PREAMBLE
+
+// GATE_PASS — the green arm: parks, no escalation at all.
+happyMachinery('g1587-pass', 1587, 'sha-pass');
+happyWorker('g1587-pass');
+
+// GATE_FAIL — note failed:0 in the executor's own line (a stale/absent
+// QUALITY_GATES_FAILED= trailer). A RED suite reporting ZERO failures is the
+// MIRROR image of #1587's contradiction, so the payload must floor it at 1.
+setMachinery('g1587-fail',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/g1587-fail' },
+  { outcome: 'REVIEW_DIFF' },
+  { outcome: 'GATE_FAIL', failed: 0, elapsedSecs: 42 },
+);
+happyWorker('g1587-fail');
+
+// GATE_SLICE — the cap-exhaustion arm, every slice green.
+const capSlices = [];
+for (let i = 0; i < 30; i++) capSlices.push({ outcome: 'GATE_SLICE', resumeAt: i + 1, failed: 0, elapsedSecs: 300 });
+setMachinery('g1587-slice',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/g1587-slice' },
+  { outcome: 'REVIEW_DIFF' },
+  ...capSlices,
+);
+happyWorker('g1587-slice');
+
+// GATE_TIMEOUT — the arm that fires on this repo today (temperloop#1663): the
+// suite cannot finish inside the executor's Bash ceiling.
+setMachinery('g1587-timeout',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/g1587-timeout' },
+  { outcome: 'REVIEW_DIFF' },
+  { outcome: 'GATE_TIMEOUT' },
+);
+happyWorker('g1587-timeout');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'g1587-pass', branch: 'build/g1587-pass', title: 'Pass', kind: 'impl', acceptance: ['c'] },
+  { slug: 'g1587-fail', branch: 'build/g1587-fail', title: 'Fail', kind: 'impl', acceptance: ['c'] },
+  { slug: 'g1587-slice', branch: 'build/g1587-slice', title: 'Slice', kind: 'impl', acceptance: ['c'] },
+  { slug: 'g1587-timeout', branch: 'build/g1587-timeout', title: 'Timeout', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+const bad = (why) => { console.log(JSON.stringify({ ok: false, reason: why })); process.exit(0); };
+
+const escalations = result.escalations ?? [];
+const parked = result.parked ?? [];
+const by = {};
+for (const e of escalations) by[e.slug] = e;
+
+// GATE_PASS: green all the way through — the reconciliation must not perturb it.
+if (parked.length !== 1 || parked[0].slug !== 'g1587-pass')
+  bad('GATE_PASS arm did not park cleanly: ' + JSON.stringify(result));
+if (by['g1587-pass']) bad('GATE_PASS escalated: ' + JSON.stringify(by['g1587-pass']));
+if (escalations.length !== 3) bad('expected 3 gate escalations: ' + JSON.stringify(escalations));
+
+// --- The structural invariants, asserted on EVERY gate escalation ----------
+for (const e of escalations) {
+  const p = e.payload || {};
+  // (1) ONE failure counter. The embedded raw gate object — whose own
+  //     'failed' was #1587's contradicting field — must be gone, and no bare
+  //     top-level 'failed' peer may replace it.
+  if ('gateOut' in p) bad(e.slug + ': payload still embeds the raw gateOut (its .failed is the second counter #1587 filed): ' + JSON.stringify(p));
+  if ('failed' in p) bad(e.slug + ': payload carries a bare top-level failed counter beside failedGates: ' + JSON.stringify(p));
+  // (2) failedGates DERIVES from the ledger — it cannot disagree with it.
+  const ledger = p.sliceLedger || [];
+  const sum = ledger.reduce((n, s) => n + (Number(s.failed) || 0), 0);
+  if (sum !== p.failedGates) bad(e.slug + ': failedGates ' + p.failedGates + ' disagrees with its own ledger sum ' + sum);
+  if (p.slices !== ledger.length) bad(e.slug + ': slices ' + p.slices + ' disagrees with the ledger it ships (' + ledger.length + ')');
+  // (3) The KIND is exactly the verdict, both ways.
+  if (e.kind === 'acceptance-gate-failed' && p.verdict !== 'RED')
+    bad(e.slug + ': escalated FAILED with verdict ' + p.verdict);
+  if (e.kind === 'acceptance-gate-timeout' && p.verdict !== 'UNKNOWN')
+    bad(e.slug + ': escalated TIMEOUT with verdict ' + p.verdict);
+  if (p.verdict === 'RED' && p.failedGates < 1)
+    bad(e.slug + ': verdict RED with ' + p.failedGates + ' failed gates — a failure with no failures');
+  if (p.verdict === 'UNKNOWN' && p.failedGates !== 0)
+    bad(e.slug + ': verdict UNKNOWN while ' + p.failedGates + ' gate(s) are known to have failed');
+  if (p.verdict === 'GREEN') bad(e.slug + ': escalated at all on a GREEN verdict: ' + JSON.stringify(p));
+  // (4) The REASON prose agrees with the verdict it accompanies.
+  const reason = String(p.reason || '');
+  if (!reason) bad(e.slug + ': payload carries no reason');
+  if (p.verdict === 'UNKNOWN' && !/unknown/i.test(reason))
+    bad(e.slug + ': UNKNOWN verdict whose reason never says the verdict is unknown: ' + reason);
+  if (p.verdict === 'RED' && /NOT a gate failure/.test(reason))
+    bad(e.slug + ': RED verdict whose reason denies a gate failed: ' + reason);
+}
+
+// GATE_FAIL: RED, and floored at one failure despite the executor's failed:0.
+const f = by['g1587-fail'];
+if (!f || f.kind !== 'acceptance-gate-failed') bad('GATE_FAIL did not escalate acceptance-gate-failed: ' + JSON.stringify(f));
+if (f.payload.failedGates !== 1) bad('GATE_FAIL with an unparseable count must floor at 1, got ' + f.payload.failedGates);
+
+// GATE_SLICE (cap): UNKNOWN, named as a BUDGET fact, and the slice count is the
+// ledger's own length — not the loop index, which ran one PAST the last slice.
+const s = by['g1587-slice'];
+if (!s || s.kind !== 'acceptance-gate-timeout') bad('slice-cap did not escalate acceptance-gate-timeout: ' + JSON.stringify(s));
+if (!/BUDGET/.test(s.payload.reason)) bad('slice-cap reason does not name the budget cause: ' + s.payload.reason);
+if (s.payload.slices !== 8) bad('slice-cap must report the 8 slices it actually ran, got ' + s.payload.slices);
+
+// GATE_TIMEOUT: UNKNOWN, and still clearly NOT a gate failure (temperloop#1021).
+const t = by['g1587-timeout'];
+if (!t || t.kind !== 'acceptance-gate-timeout') bad('GATE_TIMEOUT did not escalate acceptance-gate-timeout: ' + JSON.stringify(t));
+if (t.payload.verdict !== 'UNKNOWN') bad('GATE_TIMEOUT verdict is not UNKNOWN: ' + JSON.stringify(t.payload));
+if (!/NOT a gate failure/.test(t.payload.reason)) bad('GATE_TIMEOUT reason no longer distinguishes itself from a real failure: ' + t.payload.reason);
+if (t.payload.failedGates !== 0) bad('GATE_TIMEOUT invented a failure count: ' + JSON.stringify(t.payload));
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+# ============================================================================
+# TEST 11j (temperloop#1587): the EXACT observed payload — a failure in an early
+#   slice followed by a green FINAL slice. Pre-fix this shipped
+#   failedGates:1 alongside gateOut:{outcome:'GATE_PASS',failed:0}, and the
+#   operator who read the log's closing 'OK — gates 96..162 passed (final
+#   slice)' line concluded the escalation was a false positive. The escalation
+#   is correct; its payload has to SAY so.
+# ============================================================================
+run_node_case "1587 observed: an early-slice failure + green final slice ships ONE self-consistent payload" "
+$PREAMBLE
+
+setMachinery('g1587-obs',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/g1587-obs' },
+  { outcome: 'REVIEW_DIFF' },
+  { outcome: 'GATE_SLICE', resumeAt: 96, failed: 1, elapsedSecs: 300 },
+  { outcome: 'GATE_PASS', failed: 0, elapsedSecs: 241 },
+);
+happyWorker('g1587-obs');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'g1587-obs', branch: 'build/g1587-obs', title: 'Observed', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+const bad = (why) => { console.log(JSON.stringify({ ok: false, reason: why })); process.exit(0); };
+
+if ((result.escalations ?? []).length !== 1) bad('expected 1 escalation: ' + JSON.stringify(result));
+const e = result.escalations[0];
+const p = e.payload || {};
+if (e.kind !== 'acceptance-gate-failed') bad('kind wrong: ' + e.kind);
+if ((result.parked ?? []).length !== 0) bad('a red suite must never park/push: ' + JSON.stringify(result));
+
+// The contradiction itself: NO field in this payload may read as 'the gate passed'.
+if ('gateOut' in p) bad('the GATE_PASS payload object is still embedded: ' + JSON.stringify(p));
+if (p.verdict !== 'RED') bad('verdict is not RED: ' + JSON.stringify(p));
+if (p.failedGates !== 1) bad('failedGates is not 1: ' + JSON.stringify(p));
+if (JSON.stringify(p.failedInSlices) !== '[1]') bad('failedInSlices does not name slice 1: ' + JSON.stringify(p));
+if (p.suiteFinished !== true) bad('the suite DID finish (final slice GATE_PASS); suiteFinished says otherwise: ' + JSON.stringify(p));
+
+// The terminal slice's own outcome is still reported — but SCOPED as a slice
+// fact under 'outcome', never as the suite's verdict.
+if (p.outcome !== 'GATE_PASS') bad('the terminal slice outcome is no longer reported: ' + JSON.stringify(p));
+if (!/FINAL slice/.test(String(p.reason))) bad('the reason does not explain the green final slice: ' + p.reason);
+if (!/RED/.test(String(p.reason))) bad('the reason does not state the suite is RED: ' + p.reason);
+
+// The ledger is the single record both numbers come from.
+if ((p.sliceLedger || []).length !== 2) bad('ledger does not carry both slices: ' + JSON.stringify(p.sliceLedger));
+if (p.sliceLedger[0].failed !== 1 || p.sliceLedger[0].outcome !== 'GATE_SLICE') bad('slice 1 ledger entry wrong: ' + JSON.stringify(p.sliceLedger));
+if (p.sliceLedger[1].failed !== 0 || p.sliceLedger[1].outcome !== 'GATE_PASS') bad('slice 2 ledger entry wrong: ' + JSON.stringify(p.sliceLedger));
+if (p.sliceLedger[1].startAt !== 96) bad('slice 2 did not record its resume index: ' + JSON.stringify(p.sliceLedger));
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+# ============================================================================
+# TEST 11k (temperloop#1587 + #1021): a TIMEOUT must never LAUNDER an observed
+#   failure into an unknown. A slice that failed, followed by a slice the Bash
+#   ceiling killed, is a KNOWN-red branch — so it escalates as a failure, and
+#   its reason still names the unfinished remainder. The mirror (a timeout with
+#   nothing failed) stays acceptance-gate-timeout — asserted in 11i, and that
+#   is the case #1663 hits on this repo today.
+# ============================================================================
+run_node_case "1587 honesty: an observed failure + a killed later slice is RED, and says both halves" "
+$PREAMBLE
+
+setMachinery('g1587-mix',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/g1587-mix' },
+  { outcome: 'REVIEW_DIFF' },
+  { outcome: 'GATE_SLICE', resumeAt: 40, failed: 2, elapsedSecs: 300 },
+  { outcome: 'GATE_TIMEOUT' },
+);
+happyWorker('g1587-mix');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'g1587-mix', branch: 'build/g1587-mix', title: 'Mixed', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+const bad = (why) => { console.log(JSON.stringify({ ok: false, reason: why })); process.exit(0); };
+
+if ((result.escalations ?? []).length !== 1) bad('expected 1 escalation: ' + JSON.stringify(result));
+const e = result.escalations[0];
+const p = e.payload || {};
+if (e.kind !== 'acceptance-gate-failed') bad('an observed failure must dominate the unfinished remainder, got kind ' + e.kind);
+if (p.verdict !== 'RED') bad('verdict is not RED: ' + JSON.stringify(p));
+if (p.failedGates !== 2) bad('the observed failures were lost or double-counted: ' + JSON.stringify(p));
+if (p.suiteFinished !== false) bad('the suite did NOT finish; suiteFinished says otherwise: ' + JSON.stringify(p));
+// Both halves, in the same sentence: the failures are real AND the rest has no verdict.
+if (!/BUDGET/.test(String(p.reason))) bad('the reason drops the unfinished half: ' + p.reason);
+if (!/known-RED/.test(String(p.reason))) bad('the reason drops the known-failure half: ' + p.reason);
+// The killed slice establishes nothing, so it contributes NO count of its own.
+if (p.sliceLedger[1].outcome !== 'GATE_TIMEOUT' || p.sliceLedger[1].failed !== 0)
+  bad('a killed slice must contribute 0, not a guess: ' + JSON.stringify(p.sliceLedger));
 
 console.log(JSON.stringify({ ok: true }));
 "
