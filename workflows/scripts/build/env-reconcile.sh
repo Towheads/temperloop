@@ -68,15 +68,60 @@
 #                            $HOME/dev/batch/temperloop). Override:
 #                            ENV_RECONCILE_OPERATOR_CHECKOUTS.
 #
-#   worktree <repo>.wt/<slug> — disposable. Drift:
-#                            LEAKED_WORKTREE   its build/<slug> branch's PR
-#                                              is merged or closed, or the
-#                                              directory is ORPHANED (not a
-#                                              worktree the parent repo has
-#                                              registered)
+#   worktree <repo>.wt/<slug> — disposable. Drift (THREE classes, and only the
+#                            first is safe for a consumer to auto-remove —
+#                            temperloop#658):
+#                            LEAKED_WORKTREE:<reason>
+#                                              its ACTUAL branch (read from
+#                                              git's own worktree record, never
+#                                              guessed from the directory name)
+#                                              is gone / merged / on a closed
+#                                              PR, or the directory is ORPHANED
+#                                              (not a worktree the parent repo
+#                                              has registered) — AND the
+#                                              worktree is CLEAN, so removing it
+#                                              destroys nothing.
+#                            DIRTY_WORKTREE:<reason>
+#                                              the same leak reason held, but
+#                                              `git status --porcelain` in the
+#                                              worktree is non-empty: it carries
+#                                              uncommitted work. REPORT ONLY —
+#                                              never auto-removed, whatever the
+#                                              reason says.
+#                            UNCERTAIN_WORKTREE:<reason>
+#                                              the classification could not be
+#                                              ESTABLISHED — the worktree is
+#                                              detached / its branch is
+#                                              unresolvable (BRANCH_UNRESOLVED),
+#                                              or its cleanliness could not be
+#                                              probed (an unregistered ORPHANED
+#                                              directory, or a BRANCH_GONE
+#                                              worktree whose deleted ref leaves
+#                                              `git status` no base to diff
+#                                              against — see
+#                                              _worktree_dirt_state). REPORT
+#                                              ONLY. An undetermined verdict is
+#                                              never a licence to remove.
 #                            Scanned beside every cron+operator checkout
 #                            above (the deterministic `<repo>.wt/` layout
 #                            worktree.sh itself uses).
+#
+#                            Why the split (temperloop#658): this classifier
+#                            used to assume every `<repo>.wt/<slug>` worktree
+#                            sat on `build/<slug>`, the naming convention
+#                            worktree.sh happens to use. A worktree created by
+#                            hand on any other prefix — the `fix/…` isolated
+#                            worktree the kernel's own § Working-tree ownership
+#                            rule PRESCRIBES for cross-repo work — resolved to a
+#                            branch name that had never existed, so `show-ref`
+#                            missed and a live worktree reported
+#                            LEAKED_WORKTREE:BRANCH_GONE. /tidy's env-hygiene
+#                            auto-heal then force-removed it, destroying
+#                            uncommitted work with no recovery (observed
+#                            2026-07-21). Classify from the real signal — git's
+#                            own branch record — and downgrade to a report-only
+#                            class whenever the tree is dirty or the verdict is
+#                            unestablished.
 #
 #   launchd agent            each infra/launchd/*.plist declared beside a
 #                            checkout above. Drift:
@@ -840,35 +885,110 @@ classify_composed_claude_md() {
   printf '%s' "$classes"
 }
 
+# ── _worktree_branch_of <repo> <wt_abs> ───────────────────────────────────────
+# Prints the SHORT name of the branch a registered worktree is ACTUALLY on
+# (`fix/foo`, `build/foo`, `worktree-agent-7`, …), read from git's own
+# `worktree list --porcelain` record for that exact path. Exits 1, printing
+# nothing, when the worktree is detached or its branch cannot be established —
+# the caller must treat that as UNCERTAIN, never as evidence of a leak.
+#
+# The porcelain record is the right signal precisely because it still names the
+# branch when the REF has been deleted out from under the worktree: git prints
+# `branch refs/heads/<name>` alongside `HEAD 0000000…`. That is what keeps the
+# genuine branch-gone case detectable — reading the branch from the worktree's
+# own `HEAD` symref (the fallback below, for a path spelling the parent records
+# differently) agrees with it. Neither is derived from the DIRECTORY NAME, which
+# is the guess temperloop#658 removed.
+_worktree_branch_of() {
+  local repo="$1" wt_abs="$2" branch
+  branch="$(git -C "$repo" worktree list --porcelain 2>/dev/null | awk -v target="worktree $wt_abs" '
+    $0 == target { found = 1; next }
+    found && substr($0, 1, 18) == "branch refs/heads/" { print substr($0, 19); exit }
+    found && ($0 == "detached" || $0 == "") { exit }
+  ')" || branch=""
+  if [ -z "$branch" ]; then
+    branch="$(git -C "$wt_abs" symbolic-ref --quiet --short HEAD 2>/dev/null)" || branch=""
+  fi
+  [ -n "$branch" ] || return 1
+  printf '%s\n' "$branch"
+}
+
+# ── _worktree_dirt_state <wt> ─────────────────────────────────────────────────
+# Prints `dirty` (uncommitted changes OR untracked files present — an untracked
+# new file is unsaved work exactly like a modified tracked one), `clean`, or
+# `unknown` when cleanliness could not be ESTABLISHED. Always exits 0; callers
+# read the printed value. Gitignored paths do not count (`status --porcelain`
+# already honours .gitignore, so the build machinery's own `.build-guard` /
+# `.build-verification.md` markers never make a finished worktree look dirty).
+#
+# UNRESOLVABLE HEAD ⇒ `unknown`, deliberately. When a worktree's branch ref has
+# been deleted out from under it, its HEAD names a ref that resolves to nothing
+# and `git status` has no base to diff against — it reports every tracked file
+# as a new addition, which reads as "dirty" but is an artefact of the missing
+# ref, not evidence about unsaved work. Neither `dirty` nor `clean` is
+# defensible there, so this says so: the caller emits UNCERTAIN_WORKTREE and the
+# consumer reports instead of removing. The cost is that a BRANCH_GONE worktree
+# is never auto-removed, and that is the right trade — the vanished ref may have
+# been the only pointer to that worktree's commits, so nothing about it can be
+# shown to be expendable.
+_worktree_dirt_state() {
+  local wt="$1" st
+  git -C "$wt" rev-parse --verify --quiet HEAD >/dev/null 2>&1 || { printf 'unknown\n'; return 0; }
+  st="$(git -C "$wt" status --porcelain 2>/dev/null)" || { printf 'unknown\n'; return 0; }
+  if [ -n "$st" ]; then printf 'dirty\n'; else printf 'clean\n'; fi
+}
+
+# ── _worktree_verdict <reason> <slug> <dirt> ──────────────────────────────────
+# The one place a leak REASON is turned into an emitted CLASS. A leak reason is
+# only ever emitted as the auto-removable LEAKED_WORKTREE when the worktree is
+# confirmed clean; a dirty tree downgrades to DIRTY_WORKTREE and an unprobeable
+# one to UNCERTAIN_WORKTREE, both report-only (see the header block). Routing
+# every reason through here is what makes "never force-remove on an uncertain
+# classification" structural rather than a rule each call site must remember.
+_worktree_verdict() {
+  local reason="$1" slug="$2" dirt="$3"
+  case "$dirt" in
+    dirty) printf 'DIRTY_WORKTREE:%s:%s' "$reason" "$slug" ;;
+    clean) printf 'LEAKED_WORKTREE:%s:%s' "$reason" "$slug" ;;
+    *) printf 'UNCERTAIN_WORKTREE:%s:%s' "$reason" "$slug" ;;
+  esac
+}
+
 # ── classify_worktree <repo> <wt_dir> ─────────────────────────────────────────
 # <repo> is the PARENT checkout root (without .wt); <wt_dir> is the
 # <repo>.wt/<slug> directory being examined.
 classify_worktree() {
-  local repo="$1" wt="$2" slug branch wt_abs merged state
+  local repo="$1" wt="$2" slug branch wt_abs merged state dirt
   slug="$(basename "$wt")"
-  branch="build/${slug}"
 
   wt_abs="$(cd "$wt" 2>/dev/null && pwd -P)" || wt_abs="$wt"
+  dirt="$(_worktree_dirt_state "$wt_abs")"
 
   if ! git -C "$repo" worktree list --porcelain 2>/dev/null | grep -xF "worktree $wt_abs" >/dev/null; then
-    printf 'LEAKED_WORKTREE:ORPHANED:%s' "$slug"
+    _worktree_verdict ORPHANED "$slug" "$dirt"
+    return 0
+  fi
+
+  # The worktree's REAL branch — never `build/$slug` (temperloop#658).
+  if ! branch="$(_worktree_branch_of "$repo" "$wt_abs")"; then
+    printf 'UNCERTAIN_WORKTREE:BRANCH_UNRESOLVED:%s' "$slug"
     return 0
   fi
 
   if ! git -C "$repo" show-ref --verify --quiet "refs/heads/$branch"; then
-    printf 'LEAKED_WORKTREE:BRANCH_GONE:%s' "$slug"
+    _worktree_verdict BRANCH_GONE "$slug" "$dirt"
     return 0
   fi
 
   merged="$(merged_detect_is_merged "$repo" "$branch" 2>/dev/null)" || merged="false"
   if [ "$merged" = "true" ]; then
-    printf 'LEAKED_WORKTREE:MERGED:%s' "$slug"
+    _worktree_verdict MERGED "$slug" "$dirt"
     return 0
   fi
 
   state="$(_pr_state_of "$repo" "$branch")"
   if [ "$state" = "CLOSED" ]; then
-    printf 'LEAKED_WORKTREE:CLOSED:%s' "$slug"
+    _worktree_verdict CLOSED "$slug" "$dirt"
     return 0
   fi
 
@@ -1235,7 +1355,21 @@ while [ "$_i" -lt "${#WT_ROOTS[@]}" ]; do
       WT_LINES="${WT_LINES}  OK           $wt"$'\n'
     else
       WT_LINES="${WT_LINES}  DRIFT        $wt  [${cls}]"$'\n'
-      add "- ⚠️ leaked worktree: $wt — ${cls}" drift
+      # The finding line carries the DISPOSITION, not just the class, so a
+      # consumer acting on this surface (/tidy's env-hygiene auto-heal,
+      # /check-in) cannot read a report-only verdict as a removal instruction
+      # (temperloop#658).
+      case "$cls" in
+        DIRTY_WORKTREE:*)
+          add "- ⚠️ worktree with UNCOMMITTED work — REPORT ONLY, never remove: $wt — ${cls}" drift
+          ;;
+        UNCERTAIN_WORKTREE:*)
+          add "- ⚠️ worktree classification UNDETERMINED — REPORT ONLY, never remove: $wt — ${cls}" drift
+          ;;
+        *)
+          add "- ⚠️ leaked worktree (clean tree, safe to remove): $wt — ${cls}" drift
+          ;;
+      esac
     fi
   done < <(find "${c}.wt" -mindepth 1 -maxdepth 1 -type d 2>/dev/null)
 done
