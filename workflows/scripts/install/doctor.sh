@@ -13,6 +13,13 @@
 #   SHADOWED  a real file/directory exists where a symlink is expected
 #   DANGLING  symlink present but its target path does not exist on disk
 #
+# Those five classify the managed link TABLE only — they compare a symlink's
+# TARGET STRING, never file CONTENT. Content drift is a separate section:
+# check_installed_workflow_drift() (temperloop#1397) compares the installed
+# ~/.claude/workflows/*.mjs against this checkout's claude/workflows/*.mjs by
+# sha256 and reports OK / DRIFT / ABSENT / UNKNOWN / SKIPPED — see that
+# function's own header.
+#
 # Exit codes:
 #   0   all entries are OK
 #   1   one or more entries are non-OK
@@ -763,6 +770,248 @@ check_legacy_host_config() {
 }
 
 # ---------------------------------------------------------------------------
+# check_installed_workflow_drift — temperloop#1397: the INSTALLED per-level
+# build workflow (~/.claude/workflows/*.mjs) can silently drift from this
+# checkout's own claude/workflows/*.mjs, and until this check nothing on any
+# surface said so.
+#
+# WHY THIS EXISTS. `/build` Step 3, `/sweep` Step 0.3 and `/fix` Step 3 all
+# resolve the orchestrator as `workflowPath="$HOME/.claude/workflows/
+# build-level.mjs"` and invoke it by `scriptPath`. That path is the INSTALLED
+# copy — so what actually executes is whatever was last installed there, not
+# what is committed in the checkout the session is editing. Two live
+# reproductions, both found only because a session happened to diff the two
+# by hand before invoking:
+#   * 2026-08-10 (the filing): installed 153,468 bytes dated Aug 7 vs a repo
+#     copy of 169,056 bytes — 154 commits of orchestration machinery that
+#     would never have run.
+#   * 2026-08-21 (during the run that fixed this): installed 204,139 bytes
+#     dated Aug 15 vs a repo copy of 212,478 bytes dated Aug 21. Every
+#     workflow invocation of that overnight run executed a six-day-stale
+#     orchestrator — including the batches that merged temperloop#1587's
+#     escalation-payload fix, whose payloads then still showed the pre-fix
+#     contradiction because the installed copy never changed.
+#
+# Same class as temperloop#1365/#1591: stale machinery never announces
+# itself — it runs old logic and reports success. The existing surfaces
+# genuinely cannot see it. classify_entry() compares a symlink's TARGET
+# STRING, so an installed real-file copy, or a symlink that points at the
+# intended directory whose CONTENT is stale, both read OK.
+# check_cross_checkout_split() resolves ~/.claude/hooks and would catch
+# ~/.claude/workflows being bound to a different checkout, but it is a
+# path-identity check, not a content one, and never says which side is newer.
+# This check compares CONTENT (sha256, byte-compare fallback) and reports
+# both sizes, both mtimes and both digests so the reader can tell which side
+# is newer WITHOUT running the diff the issue is about.
+#
+# FOUR DISTINCT OUTCOMES — absent is never drift and never clean
+# (the temperloop#1591/#1523 absence-vs-indeterminacy split):
+#   OK       both copies are byte-identical (digest reported).
+#   DRIFT    they differ. Reports size + mtime + sha256 for BOTH, names
+#            which one is NEWER and by how much, and names the physical
+#            directory the installed copy really lives in. Non-zero.
+#   ABSENT   nothing is installed at that path at all — a checkout that
+#            never installed, or a fleet that installs elsewhere. Printed
+#            as its own outcome and explicitly NOT drift, NOT in sync.
+#            Contributes nothing to doctor's exit code: nothing is wrong,
+#            there is simply nothing to compare.
+#   UNKNOWN  something IS at the installed path but drift could not be
+#            evaluated (dangling symlink, a directory, an unreadable file,
+#            no digest tool AND cmp errored). Indeterminate, never clean —
+#            non-zero, per the "a check that could not run must not report
+#            success" rule (temperloop#1409/#1476).
+# Plus SKIPPED when this checkout ships no claude/workflows/*.mjs at all
+# (nothing to compare AGAINST — a tree that predates the workflow path).
+#
+# DETECT AND REPORT ONLY — this check NEVER writes to ~/.claude. Installing
+# is global shared state and a deliberately operator-run action (the kernel's
+# working-tree-ownership rule); a doctor check that auto-copied would be
+# exactly the foreign mutation that rule forbids. It names the remedy and
+# leaves the decision to a human.
+#
+# Runs fully offline; every file it touches it only reads.
+# ---------------------------------------------------------------------------
+
+# Epoch mtime of a file, dialect feature-detected ONCE. A `stat -c %Y ||
+# stat -f %m` fallback chain is NOT safe: on BSD/macOS `stat -f %m FILE`
+# succeeds, but on GNU coreutils `stat -f %m FILE` treats "%m" as a FILE
+# operand, prints filesystem status, and can exit 0 with garbage on stdout.
+# Same idiom as workflows/scripts/drain/vault_hygiene_report.sh.
+if stat -c %Y . >/dev/null 2>&1; then
+  _doctor_stat_mtime() { stat -c %Y "$1" 2>/dev/null; }   # GNU coreutils
+else
+  _doctor_stat_mtime() { stat -f %m "$1" 2>/dev/null; }   # BSD/macOS
+fi
+
+# sha256 of a file, or rc 1 when no hasher is on PATH (the caller then falls
+# back to a byte compare). Same portable preference order as
+# workflows/scripts/chunk-redundancy-surface.sh's _sandbox_sha256.
+_doctor_file_sha256() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" 2>/dev/null | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" 2>/dev/null | awk '{print $1}'
+  else
+    return 1
+  fi
+}
+
+# Human-readable local time for an epoch. BSD `date -r EPOCH` formats a
+# timestamp; GNU `date -r` wants a FILE and fails on a number, so it falls
+# through to `date -d @EPOCH`. Order matters. Rendered in the host local
+# zone, never UTC (the kernel's human-facing-dates rule).
+_doctor_fmt_epoch() {
+  local e="${1:-}"
+  [[ -z "$e" ]] && { printf '(mtime unreadable)'; return 0; }
+  date -r "$e" '+%Y-%m-%d %H:%M:%S %Z' 2>/dev/null \
+    || date -d "@${e}" '+%Y-%m-%d %H:%M:%S %Z' 2>/dev/null \
+    || printf 'epoch %s' "$e"
+}
+
+# Whole seconds -> a compact "Nd Nh Nm" age, for the newer-by delta.
+_doctor_fmt_age() {
+  local s="${1:-0}" d h m
+  d=$(( s / 86400 )); h=$(( (s % 86400) / 3600 )); m=$(( (s % 3600) / 60 ))
+  if (( d > 0 )); then printf '%dd %dh' "$d" "$h"
+  elif (( h > 0 )); then printf '%dh %dm' "$h" "$m"
+  else printf '%dm' "$m"; fi
+}
+
+check_installed_workflow_drift() {
+  local home installed_dir repo_dir
+  home="${HOME:-$(eval echo ~)}"
+  installed_dir="${home}/.claude/workflows"
+  repo_dir="${FOUNDATION}/claude/workflows"
+
+  printf '\nInstalled build-workflow content check (temperloop#1397):\n'
+
+  # Compare EVERY workflow this checkout ships, not just build-level.mjs.
+  # build-level.mjs is the one the incidents named, but a check scoped to a
+  # single instance is the smell the kernel principle warns about — the next
+  # workflow added under claude/workflows/ inherits the defect for free.
+  local -a repo_files=()
+  local f
+  if [[ -d "$repo_dir" ]]; then
+    for f in "${repo_dir}"/*.mjs; do
+      [[ -f "$f" ]] && repo_files+=("$f")
+    done
+  fi
+
+  if (( ${#repo_files[@]} == 0 )); then
+    printf '  SKIPPED (this checkout ships no %s/*.mjs — nothing to compare against)\n' "$repo_dir"
+    return 0
+  fi
+
+  local rc=0 base installed
+  for f in "${repo_files[@]}"; do
+    base="$(basename "$f")"
+    installed="${installed_dir}/${base}"
+
+    # --- ABSENT: nothing installed. NOT drift, and NOT in sync. ------------
+    if [[ ! -e "$installed" && ! -L "$installed" ]]; then
+      printf '  ABSENT   %s\n' "$installed"
+      printf '           nothing is installed there — this host has never installed %s,\n' "$base"
+      printf '           or the fleet installs it somewhere else. ABSENT is NOT drift and\n'
+      printf '           NOT an in-sync result: there is nothing to compare %s against.\n' "$f"
+      printf '           A /build, /sweep or /fix run that resolves scriptPath to that path\n'
+      printf '           would fail outright rather than silently run stale machinery.\n'
+      continue
+    fi
+
+    # --- UNKNOWN: present but not comparable. Indeterminate, never clean. --
+    if [[ ! -f "$installed" ]]; then
+      local why="not a regular file"
+      [[ -L "$installed" && ! -e "$installed" ]] && why="dangling symlink"
+      [[ -d "$installed" ]] && why="a directory"
+      printf '  UNKNOWN  %s\n' "$installed"
+      printf '           exists but drift could NOT be evaluated (%s). Indeterminate —\n' "$why"
+      printf '           this is deliberately not reported as either drift or in sync.\n'
+      rc=1
+      continue
+    fi
+
+    local d_repo d_inst same=""
+    d_repo="$(_doctor_file_sha256 "$f")" || d_repo=""
+    d_inst="$(_doctor_file_sha256 "$installed")" || d_inst=""
+
+    if [[ -n "$d_repo" && -n "$d_inst" ]]; then
+      if [[ "$d_repo" == "$d_inst" ]]; then same=1; else same=0; fi
+    else
+      # No hasher, or a hash that failed: fall back to a byte compare, and
+      # keep cmp's THIRD outcome (rc >= 2 = it could not read a side)
+      # distinct from "they differ" rather than collapsing it into drift.
+      cmp -s "$f" "$installed" >/dev/null 2>&1
+      case $? in
+        0) same=1 ;;
+        1) same=0 ;;
+        *) same="" ;;
+      esac
+    fi
+
+    if [[ -z "$same" ]]; then
+      printf '  UNKNOWN  %s\n' "$installed"
+      printf '           could not be hashed OR byte-compared against %s (unreadable?).\n' "$f"
+      printf '           Indeterminate — not reported as either drift or in sync.\n'
+      rc=1
+      continue
+    fi
+
+    local s_repo s_inst m_repo m_inst real_dir
+    s_repo="$(wc -c <"$f" 2>/dev/null | tr -d ' ')" || s_repo="?"
+    s_inst="$(wc -c <"$installed" 2>/dev/null | tr -d ' ')" || s_inst="?"
+    m_repo="$(_doctor_stat_mtime "$f")" || m_repo=""
+    m_inst="$(_doctor_stat_mtime "$installed")" || m_inst=""
+
+    if [[ "$same" == "1" ]]; then
+      printf '  OK       %s\n' "$installed"
+      printf '           byte-identical to %s\n' "$f"
+      printf '           [%s bytes, sha256 %s]\n' "$s_repo" "${d_repo:-(byte-compared; no sha256 tool on PATH)}"
+      continue
+    fi
+
+    real_dir="$(cd "$(dirname "$installed")" 2>/dev/null && pwd -P)" || real_dir=""
+
+    printf '  DRIFT    %s\n' "$installed"
+    printf '           installed : %s bytes  %s\n' "$s_inst" "$(_doctor_fmt_epoch "$m_inst")"
+    printf '                       sha256 %s\n' "${d_inst:-(unavailable — byte-compared)}"
+    if [[ -n "$real_dir" && "$real_dir" != "$installed_dir" ]]; then
+      printf '                       real path: %s/%s\n' "$real_dir" "$base"
+    fi
+    printf '           repo copy : %s bytes  %s\n' "$s_repo" "$(_doctor_fmt_epoch "$m_repo")"
+    printf '                       sha256 %s\n' "${d_repo:-(unavailable — byte-compared)}"
+    printf '                       %s\n' "$f"
+
+    if [[ -n "$m_repo" && -n "$m_inst" ]]; then
+      if (( m_repo > m_inst )); then
+        printf '           NEWER: the REPO copy, by %s. The installed copy is STALE.\n' \
+          "$(_doctor_fmt_age $(( m_repo - m_inst )))"
+      elif (( m_inst > m_repo )); then
+        printf '           NEWER: the INSTALLED copy, by %s. This checkout is BEHIND what\n' \
+          "$(_doctor_fmt_age $(( m_inst - m_repo )))"
+        printf '           is installed (a vendored tree that has not pulled, or another\n'
+        printf '           checkout installed over it).\n'
+      else
+        printf '           NEWER: undecidable — both carry the SAME mtime yet differ in\n'
+        printf '           content. Compare the sha256 values above by hand.\n'
+      fi
+    else
+      printf '           NEWER: undecidable — an mtime could not be read on one side.\n'
+    fi
+
+    printf '           WHY IT MATTERS: /build Step 3, /sweep Step 0.3 and /fix Step 3 all\n'
+    printf '           invoke it by scriptPath at ~/.claude/workflows/%s, so THAT copy is\n' "$base"
+    printf '           what executes — not the one in this checkout.\n'
+    printf '           REMEDY (operator-run, never automatic): re-run the install from the\n'
+    printf '           checkout you intend to be canonical, or point scriptPath at the\n'
+    printf '           in-repo absolute path %s for this session.\n' "$f"
+    printf '           This check only REPORTS — it never writes to %s.\n' "$installed_dir"
+    rc=1
+  done
+
+  return "$rc"
+}
+
+# ---------------------------------------------------------------------------
 # Main — enumerate and classify every managed entry.
 # ---------------------------------------------------------------------------
 ok=0
@@ -802,13 +1051,17 @@ check_reviewer_coverage || true
 legacy_host_status=0
 check_legacy_host_config || legacy_host_status=$?
 
+workflow_drift_status=0
+check_installed_workflow_drift || workflow_drift_status=$?
+
 if (( non_ok > 0 )); then
   echo
   echo "Non-OK entries:"
   printf '  %s\n' "${non_ok_entries[@]}"
 fi
 
-if (( non_ok > 0 || knowledge_root_status != 0 || cross_checkout_status != 0 || legacy_host_status != 0 )); then
+if (( non_ok > 0 || knowledge_root_status != 0 || cross_checkout_status != 0 \
+      || legacy_host_status != 0 || workflow_drift_status != 0 )); then
   echo
   exit 1
 fi
