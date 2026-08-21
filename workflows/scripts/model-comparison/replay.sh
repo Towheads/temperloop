@@ -337,8 +337,6 @@
 # non-vendoring-caller layer-6 default, matching that registry exactly.
 set -uo pipefail
 
-command -v jq >/dev/null 2>&1 || { echo '{"outcome":"ERROR","error":"jq not found"}' >&2; exit 1; }
-
 HERE="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKTREE_SH="$HERE/../build/worktree.sh"
 STATS_SH="$HERE/stats.sh"
@@ -490,11 +488,29 @@ if ! command -v cannot_evaluate_emit >/dev/null 2>&1; then
   # the human line with an explicit degradation notice naming what's wrong.
   RC_CANNOT_EVALUATE=2
   cannot_evaluate_emit() {
-    jq -cn --arg e "$2" '{outcome:"CANNOT_EVALUATE",error:$e}'
+    # jq-free like the real lib's own encoder (temperloop#1487) — this
+    # branch is reachable from the jq bootstrap guard below, where jq is by
+    # definition absent, so building the object with jq here would print
+    # nothing at all on the one stream a machine consumer reads.
+    local _e="${2//\\/\\\\}"; _e="${_e//\"/\\\"}"
+    printf '{"outcome":"CANNOT_EVALUATE","error":"%s"}\n' "$_e"
     printf '%s: CANNOT-EVALUATE-DEGRADED — workflows/scripts/lib/cannot-evaluate.sh could not be sourced (checkout is structurally off); original message: %s\n' "$1" "$2" >&2
     return "$RC_CANNOT_EVALUATE"
   }
 fi
+
+# ── THE jq BOOTSTRAP GUARD RIDES THE ONE EMISSION PATH (temperloop#1487) ──
+# Deliberately placed AFTER the cannot-evaluate.sh source above, not at the
+# top of the file: this guard's refusal IS a cannot-evaluate — the first one
+# a run can hit — and cannot_evaluate_emit is jq-free by construction (see
+# that lib's § THE BOOTSTRAP TIER), so the bootstrap tier no longer needs a
+# hand-rolled shape of its own. Nothing between `set -uo pipefail` and here
+# invokes jq, so moving the guard down costs nothing. Exit status stays this
+# script's own documented CANNOT_EVALUATE code (1), NOT RC_CANNOT_EVALUATE —
+# the frozen row freezes the two OUTPUT SHAPES plus the library function's
+# return value, while a top-level script's process exit code is its own CLI
+# contract.
+command -v jq >/dev/null 2>&1 || { cannot_evaluate_emit "replay.sh" "jq not found"; exit 1; }
 
 usage() {
   cat <<'EOF' >&2

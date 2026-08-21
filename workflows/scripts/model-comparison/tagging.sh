@@ -264,6 +264,38 @@ cmd_tag() {
 }
 
 # ── subcommand: crosscheck ───────────────────────────────────────────────
+#
+# ── A REGISTERED CARVE-OUT FROM THE ONE EMISSION PATH (temperloop#1487) ───
+# `_cc_eval` deliberately does NOT delegate to
+# workflows/scripts/lib/cannot-evaluate.sh's `cannot_evaluate_emit`, and this
+# is the ONE named exception to that library's "one emission path" claim —
+# registered as such in claude/presentation-plane.md's frozen row rather than
+# left standing as an undocumented sixth reinvention.
+#
+# WHY, structurally: `crosscheck`'s STDOUT *is* its verdict stream. It prints
+# exactly one human line there — `tagging.sh crosscheck: OK — …` / `… FAIL —
+# …` (see `_cc_ok`/`_cc_fail` immediately below, this file's own Usage block,
+# and test_live_tagging.sh's `run_crosscheck`, which captures stdout as the
+# verdict). `cannot_evaluate_emit` writes the frozen machine JSON to stdout,
+# so delegating here would inject a JSON object into the very channel the
+# verdict rides — corrupting a human report stream to satisfy a machine
+# contract that has no consumer on this command. crosscheck is a
+# human-report command, not a machine-verdict emitter: nothing anywhere reads
+# an `{outcome:…}` object off it.
+#
+# WHAT IS THEREFORE ACCEPTED, stated exactly so a reader is not misled:
+#   * the frozen HUMAN line is emitted verbatim, on stderr, prefix and all —
+#     that half of the idiom IS honoured here;
+#   * the frozen machine JSON is NOT emitted at all — not to stdout, not to
+#     stderr. There is no half-shape and no wrong-stream copy;
+#   * the return status is 1, this subcommand's own documented exit code
+#     (`OK`/`FAIL`/`CANNOT EVALUATE` -> 0/1/1, asserted by
+#     test_live_tagging.sh cases 28-30), NOT RC_CANNOT_EVALUATE (2). It is
+#     still fail-CLOSED — non-zero, never a silent pass — which is the
+#     property epic #1409 is about.
+# The `command -v jq` guard inside `cmd_crosscheck` routes through `_cc_eval`
+# for the same reason, so this command has exactly one refusal shape of its
+# own rather than two.
 _cc_eval() { printf 'tagging.sh crosscheck: CANNOT EVALUATE — %s\n' "$1" >&2; return 1; }
 _cc_fail() { printf 'tagging.sh crosscheck: FAIL — %s\n' "$1"; return 1; }
 _cc_ok()   { printf 'tagging.sh crosscheck: OK — %s\n' "$1"; return 0; }
