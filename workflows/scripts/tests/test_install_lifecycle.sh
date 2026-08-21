@@ -490,15 +490,40 @@ fi
 # `pass` line either way. What the two arms differ on is what they were able
 # to prove, and each says so. GitHub's runners have no uv and take the
 # second arm; every workstation with uv takes the first.
+#
+# WHICH BUILD IS ASKED, and why it is not $SANDBOX_TEMPERLOOP. The
+# bootstrapped CLI every step above drives is pinned by bin/bootstrap.sh to
+# the newest RELEASE TAG (see its own header — a first install lands on
+# `git tag -l 'v*'`'s newest, not on the source checkout's HEAD), so it
+# necessarily predates every change in this working tree: an assertion
+# against ITS output could not pass until a release was cut, which is the
+# wrong direction for a gate. 7f therefore asks THIS TREE's uninstall.sh —
+# the same "$REPO_ROOT, not $CHECKOUT" pin step 4b already makes for
+# knowledge_store.sh, and for the same reason.
+#
+# It is still asked about the REAL machine state this lifecycle produced: it
+# runs inside the same sandbox, after the real uninstall, against the real
+# tree on disk. Step 5 emptied the manifest, so this is uninstall's no-op
+# path — it prints every guidance bullet and writes nothing, which is exactly
+# the surface under test. (Run after the 7a-7e snapshots regardless, so it
+# cannot perturb them.)
 # ===========================================================================
+disclose_out="$(sandbox_run bash "$REPO_ROOT/bin/subcommands/uninstall.sh" --yes 2>&1)"
+disclose_rc=$?
+[ "$disclose_rc" -eq 0 ] || fail "7f: this tree's uninstall.sh exited $disclose_rc on the post-uninstall no-op path (output: $disclose_out)"
+grep -q 'nothing recorded' <<<"$disclose_out" \
+  || fail "7f: expected the emptied-manifest no-op path (the state step 5 leaves behind), which is the path that prints the guidance bullets (got: $disclose_out)"
+
 if [ -d "$BM_TOOL_HOME" ]; then
-  grep -q 'Knowledge-search backend home' <<<"$uninstall_out" \
-    || fail "7f: the knowledge-search backend home is present under \$XDG_STATE_HOME after uninstall, but 'temperloop uninstall' never named it — an excluded-but-undisclosed residue (expected uninstall.sh's scope (g) bullet; got: $uninstall_out)"
-  grep -q "$BM_TOOL_HOME" <<<"$uninstall_out" \
-    || fail "7f: uninstall's scope (g) bullet printed, but not the actual on-disk path ($BM_TOOL_HOME) — an operator cannot act on a bullet that names the wrong tree (got: $uninstall_out)"
+  grep -q 'Knowledge-search backend home' <<<"$disclose_out" \
+    || fail "7f: the knowledge-search backend home is present under \$XDG_STATE_HOME after uninstall, but 'temperloop uninstall' never named it — an excluded-but-undisclosed residue (expected uninstall.sh's scope (g) bullet; got: $disclose_out)"
+  grep -qF "$BM_TOOL_HOME" <<<"$disclose_out" \
+    || fail "7f: uninstall's scope (g) bullet printed, but not the actual on-disk path ($BM_TOOL_HOME) — an operator cannot act on a bullet that names the wrong tree (got: $disclose_out)"
   pass "7f: the knowledge-search backend home survives uninstall (declared in EXCL_XDG_STATE) AND 'temperloop uninstall' names it by its real path as scope (g) — the exclusion is disclosed on the removal surface, not only in this test"
 else
-  pass "7f: no knowledge-search backend home under \$XDG_STATE_HOME after uninstall (no 'uv' on this host, so doctor's check_bm_tool_install reported UNAVAILABLE and wrote nothing) — the declared exclusion is inert here and there is nothing for scope (g) to name"
+  grep -q 'Knowledge-search backend home' <<<"$disclose_out" \
+    && fail "7f: no knowledge-search backend home exists, but uninstall printed the scope (g) bullet anyway — naming a path that was never written is a false disclosure (got: $disclose_out)"
+  pass "7f: no knowledge-search backend home under \$XDG_STATE_HOME after uninstall (no 'uv' on this host, so doctor's check_bm_tool_install reported UNAVAILABLE and wrote nothing) — the declared exclusion is inert here, and uninstall correctly says nothing about a tree that does not exist"
 fi
 
 # ===========================================================================
