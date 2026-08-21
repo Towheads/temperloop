@@ -102,8 +102,11 @@ later when the gap has already cost real signal.
 Consumes: the per-stub scan report (a preprocessing step that turns a raw
 session transcript into a compact structured digest); the extraction-tell
 lexicon (the canonical phrase/pattern list that drives lexicon-hit
-adjudication); the board adapter's status-reconcile command (for the
-stale-claim sweep); a vault-hygiene probe script.
+adjudication); the board adapter's reconcile command — its status lens for
+the report-only stale-claim sweep, its label lens for tracker-label hygiene,
+and its marker lens for the one repair this command auto-applies (clearing a
+terminal-issue claim marker from the operator's terminal status bar, which
+nothing else ever clears); a vault-hygiene probe script.
 
 Produces: durable vault artifacts (decisions, patterns, mistakes, feedback
 memories); worklist issues (via the shared capture path) for unfiled

@@ -28,9 +28,13 @@ trap 'rm -rf "$WORK"' EXIT
 fail() { printf 'FAIL: %b\n' "$1" >&2; exit 1; }
 
 # --- the fake tmux shim -------------------------------------------------------
-# Emulates just the two window-option calls lib/claim_marker.sh makes:
-#   show-options -t <pane> -wqv @claimed_issue   -> print $FAKE_MARKER_FILE
-#   set-option   -t <pane> -wu  @claimed_issue   -> record a clear, empty the store
+# Emulates just the three window-option calls lib/claim_marker.sh makes:
+#   show-options -t <pane> -wqv @claimed_issue    -> print $FAKE_MARKER_FILE
+#   set-option   -t <pane> -wu  @claimed_issue    -> record a clear, empty the store
+#   set-option   -t <pane> -wu  automatic-rename  -> record the rename restore
+# The two unset forms are recorded DISTINCTLY (temperloop#1037): matching on
+# `-wu` alone would count the automatic-rename restore as a second marker clear
+# and make the one-clear assertions below meaningless.
 mkdir -p "$WORK/bin"
 cat >"$WORK/bin/tmux" <<'SHIM'
 #!/usr/bin/env bash
@@ -38,9 +42,11 @@ case "${1:-}" in
   show-options) cat "$FAKE_MARKER_FILE" ;;
   set-option)
     case " $* " in
-      *" -wu "*)
+      *" -wu @claimed_issue "*)
         printf 'cleared:%s\n' "$(cat "$FAKE_MARKER_FILE")" >>"$FAKE_CLEARS_FILE"
         : >"$FAKE_MARKER_FILE" ;;
+      *" -wu automatic-rename "*)
+        printf 'autorename\n' >>"$FAKE_CLEARS_FILE" ;;
     esac ;;
 esac
 exit 0
@@ -88,7 +94,11 @@ run_release 502
 grep -q "Released \[#502 Claim target\]" <<<"$OUT" \
   || fail "case2: expected the release confirmation\n$OUT"
 [ "$(cleared_count)" = "1" ] || fail "case2: expected exactly one clear (got $(cleared_count))"
-echo "PASS: release case 2 matching issue number releases this window's claim"
+# temperloop#1037: a release must also restore the window's automatic-rename,
+# which claim_marker_set turned off via rename-window.
+grep -qx 'autorename' "$FAKE_CLEARS_FILE" \
+  || fail "case2: release must unset automatic-rename on the window\n$(cat "$FAKE_CLEARS_FILE")"
+echo "PASS: release case 2 matching issue number releases this window's claim (+ automatic-rename restored)"
 
 # --- case 3: no argument releases whatever this window holds ------------------
 set_marker '#502 Claim target'
