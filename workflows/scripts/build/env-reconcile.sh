@@ -1046,6 +1046,51 @@ _worktree_verdict() {
   esac
 }
 
+# ── _branch_landed_in_default <repo> <branch> ─────────────────────────────────
+# Prints 'true' when <branch>'s tip is a STRICT ancestor of the already-fetched
+# origin/<default> — every commit the branch carries is already contained in the
+# default branch, so the worktree holds nothing origin/<default> does not.
+# Prints 'false' for every other case, INCLUDING every can't-tell one: 'false'
+# means "no evidence the work landed", the same fail-open posture
+# _behind_origin_default and merged_detect_is_merged already take. NEVER fetches
+# — compares only against the remote-tracking ref already on disk, and a stale
+# origin/<default> can only make containment LESS likely, never falsely true.
+#
+# WHY THIS ARM EXISTS (temperloop#1404). merged_detect_is_merged is built for
+# the merge-queue/squash topology where a merged branch's tip is NOT an ancestor
+# of origin/<default>, and has no arm for the opposite, ordinary case: its
+# Method 1 (`gh pr view <branch>`) returns nothing when no PR was ever opened
+# under that head-branch name, and its Method 2 patch-equivalence heuristic is
+# inconclusive precisely when the branch's cumulative diff since its merge-base
+# is EMPTY — which is exactly what "already contained in origin/<default>"
+# means. Both fail open to false, so such a worktree reported OK forever
+# (observed 2026-08-13: `<repo>.wt/land-probe-cwd-873`, clean tree, no PR, tip
+# an ancestor of origin/main — a leak env-reconcile never surfaced, removed by
+# hand). scripts/prune-merged-branches.sh has carried the EITHER/OR — plain
+# ancestor OR merged-detect — since #173; this is the same cheap, network-free
+# arm, which classify_worktree was missing.
+#
+# STRICT ancestry, on purpose. A branch whose tip EQUALS origin/<default> has no
+# commits of its own — the shape of a worktree JUST created whose worker has not
+# committed yet, i.e. live work. Non-strict containment would call that landed
+# and hand /tidy's auto-heal a live worktree to remove, the expensive direction
+# this classifier learned about in temperloop#658.
+_branch_landed_in_default() {
+  local repo="$1" branch="$2" default tip origin_tip
+  default="$(default_branch_of "$repo")" || { printf 'false\n'; return 0; }
+  tip="$(git -C "$repo" rev-parse --verify --quiet "refs/heads/$branch" 2>/dev/null)" || tip=""
+  origin_tip="$(git -C "$repo" rev-parse --verify --quiet "refs/remotes/origin/$default" 2>/dev/null)" || origin_tip=""
+  if [ -z "$tip" ] || [ -z "$origin_tip" ] || [ "$tip" = "$origin_tip" ]; then
+    printf 'false\n'
+    return 0
+  fi
+  if git -C "$repo" merge-base --is-ancestor "$tip" "$origin_tip" 2>/dev/null; then
+    printf 'true\n'
+  else
+    printf 'false\n'
+  fi
+}
+
 # ── Harness agent worktrees (temperloop#1405) ─────────────────────────────────
 # _is_harness_worktree <wt_abs> — true iff the path sits under some checkout's
 # $HARNESS_WT_SUBDIR. Keyed on the PATH LAYOUT, deliberately never on the branch
@@ -1189,6 +1234,26 @@ classify_worktree() {
   state="$(_pr_state_of "$repo" "$branch")"
   if [ "$state" = "CLOSED" ]; then
     _worktree_verdict CLOSED "$slug" "$dirt"
+    return 0
+  fi
+
+  # The plain-ancestor arm merged-detect structurally cannot cover
+  # (temperloop#1404) — see _branch_landed_in_default. Runs LAST, so every
+  # conclusive PR signal still wins: a branch whose commits are already
+  # contained in origin/<default> has landed, whatever gh could or could not
+  # tell us, and the verdict routes through _worktree_verdict exactly like the
+  # others (dirty => report-only, unprobeable => UNCERTAIN).
+  #
+  # GATED ON THE PR NOT BEING OPEN. An OPEN PR is GitHub saying that branch is
+  # still in flight — its commits can be contained in origin/<default> while the
+  # worktree is alive (they landed by another route, the PR was retargeted) —
+  # and temperloop#658's lesson is that calling live work a leak is this
+  # classifier's expensive direction. UNKNOWN does NOT block the arm: UNKNOWN is
+  # the no-PR-was-ever-opened case this arm exists for, and it is also what gh
+  # being absent/offline prints, which this local, network-free test must keep
+  # working under.
+  if [ "$state" != "OPEN" ] && [ "$(_branch_landed_in_default "$repo" "$branch")" = "true" ]; then
+    _worktree_verdict MERGED "$slug" "$dirt"
     return 0
   fi
 
