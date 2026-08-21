@@ -840,6 +840,24 @@ KERNEL_GATES=(
   # debt/stale-exemption checks, allowlist-growth detection against a
   # throwaway git fixture, and the CANNOT-EVALUATE fail-closed paths.
   "bash workflows/scripts/tests/test_exec_bit_registry.sh"
+  # The MANDATORY-STEP BIRTH RULE gate (temperloop#1448, epic #1616): a
+  # workflow spec can declare a pipeline step MANDATORY in prose while nothing
+  # observable proves it ever executes — §3e's command-doc reviewer pass read
+  # "mandatory" for ~a month while the default path structurally could not run
+  # it, detected only by a coverage script written after the fact. This gate
+  # pairs every mandatory declaration in claude/commands/*.md with an execution
+  # signal (a per-run tally, a gate-wired static guard, a runtime refusal, or a
+  # coverage rollup) and fails a HALF-PRESENT pair, exactly as
+  # `make validate-capture-backstop` above does for a capture rule and its
+  # backstop. Registry PLUS mechanical discovery: an undispositioned mandatory
+  # declaration fails, so absence from the registry is not absence of checking.
+  "bash workflows/scripts/validate-mandatory-step-signal.sh"
+  # ...and its own fixture suite — the discrimination pair the item was built
+  # against (the SAME scratch spec passes with a registered signal and fails
+  # without one), every half-present shape, the guard-must-be-gated rule, the
+  # shrink-only `pending` ratchet against a throwaway git fixture, and the
+  # CANNOT-EVALUATE fail-closed paths.
+  "bash workflows/scripts/tests/test_validate_mandatory_step_signal.sh"
   # Replay corpus selection + isolated replay worktree (temperloop#1254,
   # epic #1225 "model comparison harness"): replay.sh selects eligible
   # closed-issue + merged-PR pairs from this repo's own history (real `gh`

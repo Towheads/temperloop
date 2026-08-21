@@ -1,0 +1,64 @@
+# mandatory-step-discovery.tsv — the DISPOSITION LEDGER that turns the
+# mandatory-step birth rule from an opt-in registry into a CLASS
+# (temperloop#1448, epic #1616).
+#
+# WHAT PROBLEM THIS FILE SOLVES. mandatory-step-registry.tsv is opt-in: a
+# mandatory declaration nobody registered would not be failed, it would simply
+# not be checked — the same "somebody has to remember" hole one level up from
+# the defect the rule exists to close. So
+# workflows/scripts/validate-mandatory-step-signal.sh ENUMERATES every
+# mandatory-marker line in claude/commands/*.md mechanically and fails any that
+# has no disposition anywhere. This file is where a discovered line that is
+# deliberately NOT registered records WHY. Silence stopped being a legal
+# answer.
+#
+# Format: four TAB-separated columns; #-comments and blank lines ignored.
+#
+#   SPEC         repo-relative path of the claude/commands/*.md spec.
+#   ANCHOR       a LITERAL substring of the discovered line. A row whose anchor
+#                no longer appears in SPEC is LEDGER-STALE and fails — prune it
+#                in the same change that reworded the prose.
+#   DISPOSITION  `excluded` — the line is NOT a step-execution declaration (see
+#                the gate's § THE SCOPE DECISION (a)): a constraint on how a
+#                step behaves once running, a required argument or artifact
+#                field, or prose that merely REFERENCES a mandatory rule
+#                declared elsewhere. These fail loudly when violated; only a
+#                step that never runs is silent, and that silence is all this
+#                gate exists to break.
+#                `pending` — it IS a step-execution declaration and has no
+#                execution signal yet. SHRINK-ONLY RATCHET (see below).
+#   REASON       required, non-empty, human-readable.
+#
+# THE `pending` RATCHET IS THE BIRTH RULE'S TEETH. A `pending` row present now
+# but absent at the ratchet base ref is PENDING-GREW and fails. So the rows
+# below are the pre-existing debt the rule was born owing, and the set can only
+# shrink: a BRAND-NEW mandatory declaration cannot be parked here. It ships its
+# signal in the same change, or it is `excluded` — a reviewable claim, visible
+# in the diff, that it was never a step-execution declaration at all.
+#
+# SPEC	ANCHOR	DISPOSITION	REASON
+
+# ── pending: real step-execution declarations, no signal yet ────────────────
+claude/commands/tidy.md	## Step 2 — Sensitivity scan (mandatory)	pending	A whole mandatory step of an UNATTENDED command with no per-run evidence that it ran: /tidy's own summary carries no scan tally, and a run that skipped it is indistinguishable from a run that scanned and found nothing. Needs a per-run tally (stubs scanned / flags parked) in the Step 6 summary before it can be registered.
+claude/commands/triage.md	Step-1 intake-deferred line is the mandatory one every run	pending	A mandatory per-run EMISSION ("Intake deferral is always reported, never silent") that is itself the mitigation for an earlier silent-skip defect (foundation#164/#208) — and it has no signal of its own: emit-command-run.sh carries no deferred-count field, so an omitted line leaves no trace. Needs a `deferred` counter on the telemetry record.
+claude/commands/workshop.md	first-run/uninstall persona run is **mandatory**	pending	The install-surface first-run/uninstall persona run is mandated as EXECUTED (explicitly outranking inspection), but /workshop emits nothing distinguishing an executed run from an inspected one. Needs an executed-vs-inspected field on the design brief before it can be registered.
+
+# ── excluded: not step-execution declarations ──────────────────────────────
+# (a) Constraints on how a step BEHAVES once it is running. Violating one is
+#     loud by construction — the step ran and its own output is wrong — which
+#     is precisely what a step that never runs does not give you.
+claude/commands/build.md	**Selection rule (load-bearing, non-negotiable):**	excluded	A ROUTING rule (operator-absent + ask-now → async backend), not a declaration that a step executes. It constrains which backend a question takes when the step runs; it cannot be silently skipped, only taken wrongly, and a wrong route shows up in the question that gets asked.
+claude/commands/build.md	exit capture is mandatory whenever the gate is piped	excluded	A HOW-TO-INVOKE constraint on §3e.5's gate call (pipefail + a dialect-safe exit read), not a declaration that §3e.5 runs. The step's own Pass/Fail verdict is the observable; this rule only governs how that verdict is read.
+claude/commands/build.md	push-before-watch stays mandatory post-#605	excluded	An ORDERING constraint between two steps that both already run (push, then watch CI). Violating it produces a 404-to-ERROR poll against an unpushed SHA, which is loud; it is not a step that can silently not happen.
+claude/commands/build.md	The pin is **required, not optional** (#254)	excluded	An ARGUMENT-SHAPE constraint (`ci-poll.sh --sha <pushed SHA>`), not a step execution. The re-poll step runs either way; the pin governs which SHA it watches.
+claude/commands/build.md	never skips or rewrites a PR	excluded	Not a mandatory declaration at all — the marker vocabulary's `never skip` matching "never skips or rewrites a PR", a sentence describing the conservative DEFAULT of the 4c conflict disposition. Flagging it would be the temperloop#1152 class (a guard firing on prose that merely contains its trigger word).
+claude/commands/assess.md	**This is load-bearing, not optional, in epic-decomposition mode:**	excluded	An ARTIFACT-FIELD constraint (`epic: <N>` must be in the plan frontmatter), not a step execution. Its absence is already caught downstream — build.md Step 2.6's backstop arm fires and mints a duplicate epic, which is visible on the board.
+
+# (b) Prose that merely REFERENCES a mandatory rule declared elsewhere. The
+#     declaration these point at is dispositioned at its own site; flagging the
+#     reference too would demand a second signal for one rule and make every
+#     cross-reference a liability.
+claude/commands/check-in.md	`/tidy`'s mandatory sensitivity scan (its Step 2)	excluded	A back-reference to tidy.md's own Step 2 declaration, which is dispositioned `pending` above. /check-in's step here is READING the surface that scan parks to, not running the scan.
+claude/commands/triage.md	the same reasoning as the mandatory Step-1 intake-deferred line	excluded	A back-reference to triage.md's own Step-1 declaration, dispositioned `pending` above; this sentence is about the pending-feedback tail note, which is explicitly optional ("print nothing when it is empty").
+claude/commands/workshop.md	the mandatory rule that every finding cites a named principle	excluded	A back-reference to a rule declared in an AGENT CHARTER (the reviewer's own output contract), which is outside this gate's scope — a pipeline STEP is a step of a workflow spec, not a reviewer's internal formatting rule.
+claude/commands/tidy.md	the superseded "registry row mandatory" cost line	excluded	Prose ABOUT the capture/backstop registry, quoting a superseded claim in order to record that it was superseded. Failing a doc for documenting its own subject is the temperloop#1152 defect class.
