@@ -16,6 +16,7 @@
 #   3. ci-red               OPEN/MERGEABLE/CLEAN, CI failed     -> ready false "ci-red"
 #   4. stale-base-rebasable OPEN/MERGEABLE/BEHIND, rebase+green -> ready true  "rebased"
 #   5. stale-base-conflict  OPEN/MERGEABLE/BEHIND, rebase clash -> ready false "stale-base-conflict"
+#  5b. dirty-worktree      OPEN/MERGEABLE/BEHIND, DIRTY_WORKTREE -> ready false "dirty-worktree"
 #   6. closed-underneath    MERGED (or CLOSED)                   -> ready false "closed-underneath"
 #   7. conflict             CONFLICTING (CI NOT polled)          -> ready false "conflict"
 #
@@ -140,6 +141,26 @@ JSON
 OUT="$(R 205 "$FX")"
 [ "$(jq -r '.ready' <<<"$OUT")" = "false" ] && ok "ready=false" || bad "t5.ready" "got $(jq -r '.ready' <<<"$OUT")"
 [ "$(jq -r '.reason' <<<"$OUT")" = "stale-base-conflict" ] && ok "reason=stale-base-conflict" || bad "t5.reason" "got $(jq -r '.reason' <<<"$OUT")"
+
+# ── test 5b: dirty-worktree is NOT a stale-base conflict (temperloop#735) ─
+# pr.sh refused to START the rebase (uncommitted tracked edits), which is a
+# different fact from a content clash. The reattach verdict must not relabel it
+# as one — the DISCRIMINATING twin of test 5: same BEHIND state, same non-ready
+# answer, different reason.
+echo "--- test 5b: OPEN/MERGEABLE/BEHIND, DIRTY_WORKTREE -> ready false dirty-worktree ---"
+FX="$TMP/t5b"; seed "$FX"
+cat > "$FX/reattach-pr-215.json" <<'JSON'
+{"state":"OPEN","mergeable":"MERGEABLE","mergeStateStatus":"BEHIND","headRefOid":"a15"}
+JSON
+cat > "$FX/ci-poll-215.json" <<'JSON'
+{"outcome":"CI_GREEN","pr":215,"sha":"a15"}
+JSON
+cat > "$FX/rebase-215.json" <<'JSON'
+{"outcome":"DIRTY_WORKTREE","base":"old","tip":"a15","rebase_needed":true,"dirty_files":1,"dirty_paths":[" M setting-registry.tsv"]}
+JSON
+OUT="$(R 215 "$FX")"
+[ "$(jq -r '.ready' <<<"$OUT")" = "false" ] && ok "ready=false" || bad "t5b.ready" "got $(jq -r '.ready' <<<"$OUT")"
+[ "$(jq -r '.reason' <<<"$OUT")" = "dirty-worktree" ] && ok "reason=dirty-worktree (not stale-base-conflict)" || bad "t5b.reason" "got $(jq -r '.reason' <<<"$OUT")"
 
 # ── test 6: closed-underneath ────────────────────────────────────────────
 echo "--- test 6: MERGED underneath -> ready false closed-underneath ---"
