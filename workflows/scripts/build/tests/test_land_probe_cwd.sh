@@ -196,7 +196,7 @@ printf -- '---\nstatus: done\nepic: 873\n---\n# Test plan\n\n- [x] item one\n' >
 : > "$GHLOG"
 out="$( cd "$NOTAREPO" && PLAN_ARCHIVE_REQUIRES_PR=1 PLAN_ARCHIVE_GH="$GH" \
         bash "$SCRIPT" "$PLAN_SRC" 873 "$E2E" )"
-[[ "$out" == *"plan-archive-pr-queued: 777"* ]] \
+[[ "$out" == *"plan-archive-pending: 777"* ]] \
   || fail "9: archive-plan.sh from a non-repo cwd did not land (got: $out)"
 git -C "$BARE" cat-file -e "chore/plan-archive:Plans-archive/$(basename "$PLAN_SRC")" 2>/dev/null \
   || fail "9: snapshot missing from the archive branch after a non-repo-cwd run"

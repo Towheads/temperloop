@@ -37,13 +37,34 @@
 #                            LAND_ROOT itself (in place).
 #
 #   out (vars set by land_run; caller maps to its own vocabulary):
-#     LAND_RESULT  committed | pr-queued | uncommitted
+#     LAND_RESULT  committed | pr-queued | pr-open | uncommitted
 #     LAND_REV     short SHA          (committed)
-#     LAND_PR      PR number          (pr-queued)
-#     LAND_DETAIL  pushed | already on origin | already current | <why> | ""
+#     LAND_PR      PR number          (pr-queued, pr-open)
+#     LAND_DETAIL  pushed | already on origin | already current |
+#                  enqueued | already on the open archive PR | <why> | ""
+#     LAND_ENQUEUE_ERR  why the queue did not take the PR — set ONLY on the
+#                  `pr-open` arm, empty otherwise (#1523). A consuming `case`
+#                  that predates the `pr-open` result will fall through its
+#                  default arm; see the vendored archive-session.sh note below.
+#
+# The four results, and what each one PROVES (#1523 — a verdict never outruns its
+# own payload; a caller must not fold the middle two into "success"):
+#   committed    the payload is ON the default branch. The only landed result.
+#   pr-queued    the payload is on the archive BRANCH only, carried by an open PR
+#                whose auto-merge IS armed. Pending — it lands when the queue merges.
+#   pr-open      same, but arming auto-merge FAILED. The PR may never merge on its
+#                own; a human has to. Report it as a failure to land, not as queued.
+#   uncommitted  nothing landed anywhere.
 #
 # land_run ALWAYS returns 0 — the outcome is in LAND_RESULT, never the exit code,
 # so a `set -e` caller is never aborted by a "rejected push" control-flow branch.
+#
+# NEVER-DESTROY guarantee (#1523): the PR path bases its worktree on the PENDING
+# archive branch whenever `origin/$LAND_BRANCH` carries commits that are not yet on
+# `origin/$LAND_DEFAULT_BRANCH` — so a prior run's un-merged payload is carried
+# forward and extended, never force-rebuilt off the default branch and discarded.
+# The branch is rebuilt off `origin/$LAND_DEFAULT_BRANCH` only when it has nothing
+# unlanded on it (absent, or already merged).
 #
 # Working-tree guarantee: on the PROTECTED (PR) path the kernel builds the commit in
 # a throwaway worktree and NEVER modifies LAND_ROOT's working tree or branch. So a
@@ -163,42 +184,166 @@ land__add() {  # <root>
   done
 }
 
+# Did the populate + stage actually put the managed payload into the INDEX? (#1523)
+#
+# An EMPTY staged diff is ambiguous: it means "already present" only when the
+# managed paths are genuinely TRACKED here. If populate wrote a file the index
+# never took — the path is .gitignore'd, `git add` refused it, or a partial
+# populate left it out — the diff is empty because the payload is ABSENT, and the
+# short-circuit below would report `committed (already on origin/current)` for
+# bytes that never landed. That is the false-success shape this guard closes:
+# an absent input must never read as a clean one.
+#
+# Scope: only paths populate actually produced under <root> are checked. A managed
+# path this run did not create (a caller managing several paths and touching some),
+# and a managed DIRECTORY holding no files, carry no payload to verify — skip them
+# so a legitimately empty managed dir is not misread as a failure.
+land__paths_staged() {  # <root>  -> 0 = every produced path is in the index
+  local root="$1" p
+  for p in "${LAND_PATHS[@]}"; do
+    [ -e "$root/$p" ] || continue
+    if [ -d "$root/$p" ]; then
+      [ -n "$(find "$root/$p" -type f -print -quit 2>/dev/null)" ] || continue
+    fi
+    git -C "$root" ls-files --error-unmatch -- "$p" >/dev/null 2>&1 || return 1
+  done
+  return 0
+}
+
+# Arm auto-merge on <pr>. Returns non-zero — with the reason in LAND_ENQUEUE_ERR —
+# when the queue did NOT take it. (#1523: the result used to be discarded with
+# `|| true`, so a failed enqueue reported `enqueued` identically to a successful
+# one.) A `gh` that reports the PR is already queued / auto-merge already enabled
+# is a SUCCESS: the desired end state holds, the second call was just redundant.
+land__enqueue() {  # <pr>
+  local pr="$1" out rc=0
+  LAND_ENQUEUE_ERR=""
+  out="$(land__gh_pr pr merge "$pr" --auto 2>&1)" || rc=$?
+  [ "$rc" -eq 0 ] && return 0
+  # Re-PROBE the desired end state rather than pattern-matching gh's
+  # human-facing prose: that text is not a contract, it is localised and
+  # reworded between gh releases, and a glob over it silently turns into a
+  # false "enqueued" (or a false failure) the first time the wording moves.
+  # Auto-merge armed OR a live queue entry both mean the end state holds,
+  # whatever gh chose to say about how it got there.
+  if [ -n "$(land__gh_pr pr view "$pr" \
+               --json autoMergeRequest,mergeQueueEntry \
+               --jq '[.autoMergeRequest, .mergeQueueEntry] | map(select(. != null)) | .[0] // empty' \
+               2>/dev/null)" ]; then
+    return 0
+  fi
+  out="${out//$'\n'/ }"
+  LAND_ENQUEUE_ERR="${out:0:200}"
+  return 1
+}
+
+# Resolve the base the archive branch is (re)built on, and say whether it is a
+# PENDING branch. (#1523 — the data-loss half.)
+#
+# `$LAND_BRANCH` is force-pushed every run. Basing it unconditionally on
+# `origin/$LAND_DEFAULT_BRANCH` means any prior run's payload that has NOT merged
+# yet — CI red, a queue stall, a PR sitting open — is overwritten and gone. So:
+# fetch the remote branch, and if it carries commits the default branch does not,
+# build ON TOP of it. Prints "<base-ref> <pending 0|1>".
+land__pr_base() {
+  local rref="refs/remotes/origin/$LAND_BRANCH" rc=0
+  LAND__PR_BASE=""; LAND__PR_PENDING=0
+
+  # ABSENT vs INDETERMINATE — the distinction the never-destroy guarantee rests on.
+  #
+  # This used to branch on `git fetch`'s exit code alone, and treat ANY non-zero
+  # as "the remote branch is gone". A transient network/auth/rate-limit failure
+  # therefore read as absence: the tracking ref was deleted, pending came back 0,
+  # and the caller force-pushed the archive branch rebuilt from the default
+  # branch — discarding every un-merged snapshot on it. That is exactly the data
+  # loss #1523 exists to prevent, so the guarantee has to be mechanical rather
+  # than a comment.
+  #
+  # `ls-remote --exit-code` separates the two: exit 2 means the ref genuinely
+  # does not exist on origin, any other non-zero means we could not find out.
+  # Only the first is safe to treat as absence.
+  git -C "$LAND_ROOT" ls-remote --exit-code --heads origin "$LAND_BRANCH" >/dev/null 2>&1 || rc=$?
+
+  if [ "$rc" -eq 0 ]; then
+    # The branch EXISTS. A fetch failure here is never absence — refuse rather
+    # than rebuild over a payload we cannot see.
+    git -C "$LAND_ROOT" fetch -q origin "+refs/heads/$LAND_BRANCH:$rref" 2>/dev/null || return 1
+    # Unlanded commits on the branch => a pending payload to preserve.
+    if [ -n "$(git -C "$LAND_ROOT" rev-list -n 1 \
+                 "origin/$LAND_DEFAULT_BRANCH..origin/$LAND_BRANCH" 2>/dev/null)" ]; then
+      LAND__PR_BASE="origin/$LAND_BRANCH"; LAND__PR_PENDING=1; return 0
+    fi
+    LAND__PR_BASE="origin/$LAND_DEFAULT_BRANCH"; return 0
+  fi
+
+  if [ "$rc" -eq 2 ]; then
+    # Genuinely no such branch on origin (merged + auto-deleted, or never
+    # existed). Drop the stale tracking ref so a later run cannot base on it.
+    git -C "$LAND_ROOT" update-ref -d "$rref" 2>/dev/null || true
+    LAND__PR_BASE="origin/$LAND_DEFAULT_BRANCH"; return 0
+  fi
+
+  return 1  # could not determine — the caller must not land
+}
+
 # Tear down a throwaway worktree + its mktemp parent dir.
 land__finish_wt() {  # <wt>
   git -C "$LAND_ROOT" worktree remove --force "$1" >/dev/null 2>&1 || rm -rf "$1"
   rmdir "$(dirname "$1")" 2>/dev/null || true
 }
 
-# Protected default branch: build the commit in a throwaway worktree off
-# origin/<default> (so LAND_ROOT's checked-out branch is never touched), push a
+# Protected default branch: build the commit in a throwaway worktree off the base
+# land__pr_base picks (so LAND_ROOT's checked-out branch is never touched), push the
 # stable branch, adopt-or-open a PR, and arm auto-merge so the queue lands it.
 # Idempotent across runs: stable branch + force-push + adopt-open-PR +
-# the diff-against-origin short-circuit converge repeated runs onto ONE PR, then
+# the diff-against-base short-circuit converge repeated runs onto ONE PR, then
 # auto-flip to `committed (already on origin)` once it merges.
 land__via_pr() {  # <populate_fn>
-  local populate_fn="$1" branch wt rev pr nwo
+  local populate_fn="$1" branch wt rev base pending
   branch="$LAND_BRANCH"
-  nwo="$(land__nwo)"   # for the diagnostics below; land__gh_pr resolves it itself
   git -C "$LAND_ROOT" worktree prune >/dev/null 2>&1 || true
   git -C "$LAND_ROOT" fetch -q origin "$LAND_DEFAULT_BRANCH" 2>/dev/null || true
+  # #1523: extend a PENDING archive branch instead of force-rebuilding over it.
+  if ! land__pr_base; then
+    land__set uncommitted "" "" "could not determine the state of origin/$LAND_BRANCH — refusing to force-rebuild the archive branch over a payload that may be pending"
+    return 0
+  fi
+  base="$LAND__PR_BASE"; pending="$LAND__PR_PENDING"
   wt="$(mktemp -d "${TMPDIR:-/tmp}/land-wt-XXXXXX")/wt"
-  if ! git -C "$LAND_ROOT" worktree add -q -B "$branch" "$wt" "origin/$LAND_DEFAULT_BRANCH" 2>/dev/null; then
+  if ! git -C "$LAND_ROOT" worktree add -q -B "$branch" "$wt" "$base" 2>/dev/null; then
     rm -rf "$(dirname "$wt")"
-    land__set uncommitted "" "" "could not create worktree off origin/$LAND_DEFAULT_BRANCH"
+    land__set uncommitted "" "" "could not create worktree off $base"
     return 0
   fi
   "$populate_fn" "$wt"
   land__add "$wt"
   if git -C "$wt" diff --cached --quiet -- "${LAND_PATHS[@]}"; then
+    # Empty diff. Three genuinely different states hide behind it — separate them
+    # before any of them is allowed to report success (#1523).
+    if ! land__paths_staged "$wt"; then
+      land__finish_wt "$wt"
+      land__warn "nothing staged for ${LAND_PATHS[*]} in $LAND_ROOT and the path is not tracked — the payload never reached the index (ignored by .gitignore, or the populate failed); NOTHING landed"
+      land__set uncommitted "" "" "payload for '${LAND_PATHS[*]}' never reached the index — nothing landed"
+      return 0
+    fi
+    if [ "$pending" = "1" ]; then
+      # Matches the PENDING branch, not the default branch: still un-landed.
+      # Reporting `committed (already on origin)` here would be the exact
+      # false-success this issue is about.
+      land__finish_wt "$wt"
+      land__resolve_pr "$branch" "already on the open archive PR"
+      return 0
+    fi
     rev="$(git -C "$wt" rev-parse --short HEAD)"
     land__finish_wt "$wt"
     land__set committed "$rev" "" "already on origin"
     return 0
   fi
   git -C "$wt" commit -q -m "$LAND_COMMIT_MSG" -- "${LAND_PATHS[@]}"
-  # Plain --force, not --force-with-lease: $branch is disposable and orchestrator-owned,
-  # rebuilt off origin/$LAND_DEFAULT_BRANCH every run (line ~109 above), so there is no
-  # local work to protect. A no-value --force-with-lease uses the local
+  # Plain --force, not --force-with-lease: $branch is orchestrator-owned and its base
+  # is chosen by land__pr_base (the pending branch when one exists, so this push is a
+  # fast-forward that PRESERVES the pending payload; the default branch otherwise), so
+  # there is no local work to protect. A no-value --force-with-lease uses the local
   # refs/remotes/origin/$branch tracking ref as its lease, which goes stale the moment a
   # prior run's PR merges and the remote head auto-deletes on a checkout that never
   # prunes — rejecting every subsequent push with "stale info" (#658).
@@ -207,6 +352,16 @@ land__via_pr() {  # <populate_fn>
     land__set uncommitted "" "" "push of branch '$branch' failed"
     return 0
   fi
+  land__finish_wt "$wt"
+  land__resolve_pr "$branch" "enqueued"
+  return 0
+}
+
+# Adopt-or-open the PR carrying <branch>, then arm auto-merge, and set the outputs.
+# <queued-detail> is the LAND_DETAIL to report when the queue takes it.
+land__resolve_pr() {  # <branch> <queued-detail>
+  local branch="$1" queued_detail="$2" pr nwo
+  nwo="$(land__nwo)"   # for the diagnostics below; land__gh_pr resolves it itself
   # Three-tier PR resolve (#27). $branch is a reused, orchestrator-owned ref, so a
   # PRIOR run's open PR is the common case — the adopt-or-open step has to converge
   # on that one PR rather than dead-end. Each tier is a fallback for the previous
@@ -234,14 +389,20 @@ land__via_pr() {  # <populate_fn>
   if [ -z "$pr" ]; then
     pr="$(land__gh_pr pr view "$branch" --json number -q .number 2>/dev/null || true)"
   fi
-  land__finish_wt "$wt"
   if [ -z "$pr" ]; then
     land__warn "PR resolve failed for branch '$branch' in ${LAND_ROOT}${nwo:+ ($nwo)} — the commit is on that branch but no PR carries it"
     land__set uncommitted "" "" "could not open or find the PR for branch '$branch'"
     return 0
   fi
-  land__gh_pr pr merge "$pr" --auto >/dev/null 2>&1 || true   # queue-ON incantation (queue owns strategy + branch)
-  land__set pr-queued "" "$pr" "enqueued"
+  # Queue-ON incantation (queue owns strategy + branch). Its RESULT is load-bearing:
+  # a discarded failure here reported `enqueued` for a PR nothing would ever merge
+  # (#1523), so a genuine failure downgrades the verdict to pr-open.
+  if land__enqueue "$pr"; then
+    land__set pr-queued "" "$pr" "$queued_detail"
+  else
+    land__warn "auto-merge could NOT be armed on PR #$pr for branch '$branch' in ${LAND_ROOT}${nwo:+ ($nwo)} — the payload is on that PR but nothing will merge it: ${LAND_ENQUEUE_ERR}"
+    land__set pr-open "" "$pr" "auto-merge NOT armed on PR #$pr: ${LAND_ENQUEUE_ERR}"
+  fi
   return 0
 }
 
@@ -254,6 +415,13 @@ land__direct() {  # <populate_fn>
   "$populate_fn" "$LAND_ROOT"
   land__add "$LAND_ROOT"
   if git -C "$LAND_ROOT" diff --cached --quiet -- "${LAND_PATHS[@]}"; then
+    # Same empty-diff ambiguity the PR path resolves above (#1523): "already
+    # current" is only true when the payload is actually tracked here.
+    if ! land__paths_staged "$LAND_ROOT"; then
+      land__warn "nothing staged for ${LAND_PATHS[*]} in $LAND_ROOT and the path is not tracked — the payload never reached the index (ignored by .gitignore, or the populate failed); NOTHING landed"
+      land__set uncommitted "" "" "payload for '${LAND_PATHS[*]}' never reached the index — nothing landed"
+      return 0
+    fi
     rev="$(git -C "$LAND_ROOT" rev-parse --short HEAD 2>/dev/null || true)"
     land__set committed "$rev" "" "already current"
     return 0
