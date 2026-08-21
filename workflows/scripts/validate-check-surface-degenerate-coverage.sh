@@ -940,16 +940,36 @@ if [[ -z "$_csd_ratchet_skip_reason" ]]; then
     ratchet_lines+=("pending ratchet: SKIPPED (bootstrap — $discovery_relpath was added in this diff, nothing to compare against)")
   else
     prev_disc_content="$(git -C "$CHECK_SURFACE_GIT_REPO_ROOT" show "${_csd_ratchet_base_ref}:${discovery_relpath}" 2>/dev/null)" || prev_disc_content=""
+    # `$( )` strips EVERY trailing newline, and the membership test below closes
+    # on one (`*$'\n'"$item"$'\n'*`) — so without re-adding it the LAST entry of
+    # this set can never match, and is falsely reported PENDING-GREW on every
+    # run. Every other membership set in this file is built inline in the same
+    # shell and keeps its terminator; these two are the only ones that round-trip
+    # through a subshell, which is why only they need it back. Caught by the §3e
+    # shell-reviewer, which reproduced the gate failing against its own
+    # byte-identical content.
     prev_pending="$(_csd_pending_from_content "$prev_disc_content")"
+    [[ -n "$prev_pending" ]] && prev_pending="$prev_pending"$'\n'
     upstream_pending=""
     disc_kernel_squash=""
+    disc_kernel_arm_note=""
     if [[ -f "$CHECK_SURFACE_GIT_REPO_ROOT/.kernel-pin" ]]; then
       case "$discovery_relpath" in
         kernel/*)
           disc_kernel_squash="$(_csd_kernel_squash_commit)" || disc_kernel_squash=""
+          if [[ -z "$disc_kernel_squash" ]]; then
+            # Mirror §4a rather than degrading silently: a .kernel-pin present
+            # and the ledger under kernel/, but no reachable subtree squash
+            # commit, means the upstream side of this comparison is UNKNOWN.
+            # §4a says so on its verdict line; §4c must too, or the ratchet
+            # reads as fully checked when half its input was unavailable.
+            disc_kernel_arm_note=" (vendored-kernel arm SKIPPED — .kernel-pin present and $discovery_relpath is under kernel/, but no git-subtree-dir squash commit is reachable, so the upstream pending set could not be read)"
+          fi
           if [[ -n "$disc_kernel_squash" ]]; then
             upstream_disc_content="$(git -C "$CHECK_SURFACE_GIT_REPO_ROOT" show "${disc_kernel_squash}:${discovery_relpath#kernel/}" 2>/dev/null)" || upstream_disc_content=""
             upstream_pending="$(_csd_pending_from_content "$upstream_disc_content")"
+            # Same trailing-newline restoration as prev_pending above.
+            [[ -n "$upstream_pending" ]] && upstream_pending="$upstream_pending"$'\n'
           fi
           ;;
       esac
@@ -968,7 +988,7 @@ if [[ -z "$_csd_ratchet_skip_reason" ]]; then
         failures+=("PENDING-GREW  $cur_pending — listed 'pending' in $CHECK_SURFACE_DISCOVERY_FILE now but not at $_csd_ratchet_base_ref; the pending set is a shrink-only ratchet, so a NEWLY DISCOVERED check surface must be registered (or argued 'excluded'), never parked")
       done <<<"$discovery_pending"
     fi
-    ratchet_lines+=("pending ratchet: checked against $_csd_ratchet_base_ref:$discovery_relpath${disc_kernel_squash:+ + vendored-kernel squash $disc_kernel_squash}")
+    ratchet_lines+=("pending ratchet: checked against $_csd_ratchet_base_ref:$discovery_relpath${disc_kernel_squash:+ + vendored-kernel squash $disc_kernel_squash}${disc_kernel_arm_note:-}")
   fi
 else
   ratchet_lines+=("pending ratchet: SKIPPED ($_csd_ratchet_skip_reason)")

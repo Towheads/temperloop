@@ -1316,6 +1316,33 @@ $out" ;;
 esac
 ok "35 temperloop#1491: the pending set is shrink-only — a newly discovered surface cannot be parked behind a one-line excuse"
 
+# 35b. IDENTITY: an UNCHANGED pending set is GREEN — including its LAST entry.
+# REGRESSION (§3e shell-reviewer, HIGH). _csd_pending_from_content emits
+# newline-TERMINATED entries, but its callers capture it through `$( )`, which
+# strips every trailing newline. The membership test closes on one
+# (`*$'\n'"$item"$'\n'*`), so the LAST entry of the base set could never match
+# and was falsely reported PENDING-GREW on every run.
+#
+# Case 35 cannot catch this: it seeds beta,gamma and asserts on DELTA, a genuine
+# addition, so the broken last-entry match never changes its verdict. This case
+# compares the ledger against ITSELF — the gate must be green against its own
+# byte-identical content, which is exactly the reproduction the reviewer ran.
+{
+  printf 'validate-beta.sh\tpending\tno input-path fixture seam yet\n'
+  printf 'validate-gamma.sh\tpending\tno input-path fixture seam yet\n'
+} >"$R/ledger.tsv"
+count
+rc=0
+out="$(CSD_TEST_DISCOVERY_ROOT="$R" CSD_TEST_DISCOVERY_FILE="$R/ledger.tsv" \
+  run_gate "$R/registry.tsv" "$R/allowlist.tsv" "$R/quality-gates.sh" "$R" "$R_BASE" 2>&1)" || rc=$?
+[[ "$rc" -eq 0 ]] || fail "35b: an UNCHANGED pending set must be GREEN, got rc=$rc:
+$out"
+case "$out" in
+  *"PENDING-GREW"*) fail "35b: the LAST pending entry was falsely reported as grown — the trailing-newline loss is back:
+$out" ;;
+esac
+ok "35b temperloop#1491: the ratchet is green against its own byte-identical ledger — the last entry matches too"
+
 # 36. SHRINK: removing a pending row (the surface got registered) is legal.
 rm -f "$R/validate-delta.sh"
 {
