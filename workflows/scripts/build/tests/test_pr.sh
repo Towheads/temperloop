@@ -15,6 +15,10 @@
 #     also_closes=[171] → exactly `Closes #278` and `Closes #171`, own lines,
 #     never combined, never backticked); acceptance recap; ## Verification;
 #     backlinks + footer; fallback-to-recap when verification_surface absent
+#   - open (temperloop#1023): a worker surface carrying its OWN copy of the
+#     linkage block is stripped down to one block, a surface with no honored
+#     closing-keyword line (mid-sentence / backticked / indented / fenced) is
+#     passed through byte-for-byte, and the count rides `surface_closes_stripped`
 #   - open (stubbed gh): PR_OPENED with parsed pr_number; body/head passed to gh
 #   - recover-probe (temperloop#939): the staged lost-return ladder — RECOVER_NONE
 #     / _COMMITTED / _PUSHED / _PR_OPEN across the four real fixture states, plus
@@ -353,6 +357,81 @@ rc=0; out="$(bash "$SCRIPT" open --verdict "$TMP/verdict-pathref-missing.json" -
   || fail "missing .verification_surface_path file not structured ERROR (got: $out)"
 echo "PASS: a given-but-missing surface file (flag or path key) → structured ERROR + non-zero exit"
 
+# --- open: the worker's own Closes block is stripped from the surface (#1023) ------
+# Observed on temperloop PR #1019: the worker copied pr.sh's linkage block into
+# its own .build-verification.md, so the assembled body carried it TWICE. Linkage
+# lives in pr.sh alone, so `open` strips a bare closing-keyword LINE out of the
+# spliced surface. Assertions below compare the ## Verification window byte-for-
+# byte against the expected surface, so a strip that mangles anything else fails.
+#
+# verif_window N — the N lines of $body that follow the '## Verification' heading.
+verif_window() {
+  local n="$1" ln
+  ln="$(grep -n '^## Verification$' <<<"$body" | head -1 | cut -d: -f1)"
+  [ -n "$ln" ] || fail "assembled body has no ## Verification heading"
+  sed -n "$((ln + 1)),$((ln + n))p" <<<"$body"
+}
+
+cat > "$TMP/surface-dup.md" <<'MD'
+Closes #278
+Closes Towheads/foundation#171
+
+## What changed
+The widget renderer now paints 3 widgets.
+MD
+cat > "$TMP/surface-dup-expected.md" <<'MD'
+
+## What changed
+The widget renderer now paints 3 widgets.
+MD
+body="$(bash "$SCRIPT" open --verdict "$TMP/verdict-nosurface.json" \
+  --gh-issue 278 --also-closes Towheads/foundation#171 \
+  --verification-surface-file "$TMP/surface-dup.md" --body-only)"
+[ "$(grep -c '^Closes ' <<<"$body")" -eq 2 ] \
+  || fail "duplicate linkage survived — expected exactly 2 Closes lines (body: $body)"
+grep -qx 'Closes #278' <<<"$body" || fail "pr.sh's own bare 'Closes #278' missing after strip"
+grep -qx 'Closes Towheads/foundation#171' <<<"$body" \
+  || fail "pr.sh's own qualified 'Closes Towheads/foundation#171' missing after strip"
+[ "$(verif_window "$(wc -l < "$TMP/surface-dup-expected.md")")" = "$(cat "$TMP/surface-dup-expected.md")" ] \
+  || fail "stripped surface not byte-identical to expected (body: $body)"
+echo "PASS: open strips a worker-copied Closes block from the surface — one linkage block (#1023)"
+
+# --- open: a surface with no HONORED closing-keyword line is untouched (#1023) -----
+# The strip is deliberately narrow: only a WHOLE line that is nothing but
+# `<keyword> #N` / `<keyword> owner/repo#N` — i.e. only what GitHub itself would
+# honor AND what can only be a duplicate of pr.sh's emission. A mid-sentence
+# mention, a backticked line, a 4-space-indented line and ANY line inside a
+# fenced code block (a surface quoting an assembled body as its evidence) all
+# survive byte-for-byte.
+cat > "$TMP/surface-clean.md" <<'MD'
+Before: 0 widgets rendered.
+
+pr.sh emits Closes #279 near the top of the body, which is the single home.
+`Closes #280`
+    Closes #281
+
+```text
+Closes #282
+Fixes Towheads/foundation#283
+```
+After: 3 widgets rendered.
+MD
+body="$(bash "$SCRIPT" open --verdict "$TMP/verdict-nosurface.json" --gh-issue 278 \
+  --verification-surface-file "$TMP/surface-clean.md" --body-only)"
+[ "$(verif_window "$(wc -l < "$TMP/surface-clean.md")")" = "$(cat "$TMP/surface-clean.md")" ] \
+  || fail "keyword-free surface was modified (body: $body)"
+for n in 279 280 281 282; do
+  grep -qF "Closes #$n" <<<"$body" || fail "non-honored 'Closes #$n' was stripped (body: $body)"
+done
+grep -qF 'Fixes Towheads/foundation#283' <<<"$body" \
+  || fail "fenced 'Fixes Towheads/foundation#283' was stripped (body: $body)"
+# Two line-start `Closes ` lines: pr.sh's own, plus the one INSIDE the fenced
+# block — which is exactly the proof the fence guard fired (a fence-blind strip
+# would have eaten it and left 1).
+[ "$(grep -c '^Closes ' <<<"$body")" -eq 2 ] \
+  || fail "expected pr.sh's own Closes line + the fenced one (body: $body)"
+echo "PASS: open leaves a surface with no honored closing-keyword line byte-identical (#1023)"
+
 # --- open: stubbed gh → PR_OPENED with parsed number ------------------------------
 mkdir -p "$TMP/bin"
 cat > "$TMP/bin/gh" <<'EOF'
@@ -372,7 +451,24 @@ grep -qx -- '--head' "$TMP/gh-args" || fail "gh not invoked with --head"
 grep -qx 'feat/widget' "$TMP/gh-args" || fail "gh --head branch wrong"
 grep -qx 'Closes #278' "$TMP/gh-args" || fail "assembled body (with Closes #278) not passed to gh"
 grep -qx 'Closes #171' "$TMP/gh-args" || fail "assembled body (with Closes #171) not passed to gh"
+[ "$(jq -r .surface_closes_stripped <<<"$out")" = "0" ] \
+  || fail "surface_closes_stripped not 0 for a clean surface (got: $out)"
 echo "PASS: open creates via gh with the assembled body → PR_OPENED {pr_number}"
+
+# --- open: surface_closes_stripped reports the strip on the real outcome (#1023) ---
+# The strip is otherwise invisible (it deletes worker-authored lines), so the
+# count rides the structured outcome the .mjs logs — SPINE_OUTCOME_SCHEMA is
+# `additionalProperties: true`, so this is a passthrough field, not a new outcome.
+out="$(GH_STUB_ARGS="$TMP/gh-args-dup" PATH="$TMP/bin:$PATH" bash "$SCRIPT" open \
+  --verdict "$TMP/verdict-nosurface.json" --repo "$REPO" --branch feat/widget \
+  --title "feat: widget renderer" --gh-issue 278 --also-closes Towheads/foundation#171 \
+  --verification-surface-file "$TMP/surface-dup.md")"
+[ "$(jq -r .outcome <<<"$out")" = "PR_OPENED" ] || fail "dup-surface open outcome (got: $out)"
+[ "$(jq -r .surface_closes_stripped <<<"$out")" = "2" ] \
+  || fail "surface_closes_stripped did not report the 2 stripped lines (got: $out)"
+[ "$(grep -c '^Closes ' "$TMP/gh-args-dup")" -eq 2 ] \
+  || fail "body passed to gh still carries a duplicate linkage block"
+echo "PASS: open reports surface_closes_stripped on PR_OPENED (#1023)"
 
 # --- open: verdict on stdin -------------------------------------------------------
 body="$(bash "$SCRIPT" open --verdict - --gh-issue 9 --body-only < "$TMP/verdict.json")"

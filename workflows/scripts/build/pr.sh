@@ -32,8 +32,12 @@
 # backticked keywords, and `Closes #1 and #2` closes only #1). Either flag
 # also accepts a fully-qualified `owner/repo#N` ref (the `repo:` field's
 # cross-repo case — plan-schema.md § Optional `repo:` field), emitted as
-# `Closes owner/repo#N`; a bare `Closes #N` is same-repo only. `--body-only`
-# prints the assembled body verbatim and exits — the dry mode tests assert on.
+# `Closes owner/repo#N`; a bare `Closes #N` is same-repo only. Because linkage
+# lives here and only here, a bare closing-keyword LINE the worker wrote into
+# its own verification surface is STRIPPED from that surface before the body is
+# assembled (temperloop#1023 — see strip_surface_closes below), so the assembled
+# body carries exactly one linkage block. `--body-only` prints the assembled
+# body verbatim and exits — the dry mode tests assert on.
 #
 # Output contract — CLOSED outcome set, one structured JSON line per outcome
 # (exception: `open --body-only` prints the raw body, no JSON wrapper):
@@ -47,9 +51,13 @@
 #                (forced=true only when a genuine rewrite needed --force; a
 #                 requested --force that is a pure fast-forward downgrades to a
 #                 plain push, forced=false — #335)
-#   open       → {"outcome":"PR_OPENED","pr_number":…,"url":…} |
-#                {"outcome":"EXISTS","pr_number":…,"url":…}
-#                (EXISTS when gh reports a PR for that branch already exists — adopt it)
+#   open       → {"outcome":"PR_OPENED","pr_number":…,"url":…,
+#                 "surface_closes_stripped":N} |
+#                {"outcome":"EXISTS","pr_number":…,"url":…,
+#                 "surface_closes_stripped":N}
+#                (EXISTS when gh reports a PR for that branch already exists — adopt it;
+#                 surface_closes_stripped = how many duplicate bare closing-keyword
+#                 lines were removed from the worker's verification surface, normally 0)
 #   recover-probe → {"outcome":"RECOVER_NONE"|"RECOVER_DIRTY"|"RECOVER_COMMITTED"
 #                    |"RECOVER_PUSHED"|"RECOVER_PR_OPEN","sha":…,"branch":…,
 #                    "commits_ahead":N,"pushed":bool,"remote_sha":…,
@@ -408,6 +416,63 @@ resolve_surface() {
   jq -r '.verification_surface // ""' <<<"$verdict"
 }
 
+# Strip the worker's own duplicate linkage from the resolved verification
+# surface (temperloop#1023). Issue linkage lives in ONE place — the bare
+# `Closes` block assemble_body emits from --gh-issue/--also-closes. The
+# `## Verification` section, by contrast, is WORKER-AUTHORED content spliced in
+# verbatim, so a worker that copied that block into its own
+# `.build-verification.md` made the assembled body carry it twice (observed on
+# temperloop PR #1019). GitHub dedupes closing keywords, so linkage still
+# resolved — the cost is reviewer-facing: the body reads as though linkage were
+# declared twice, contradicting the single-home invariant this script's header
+# states. Stripping here rather than asking every worker to remember a prose
+# rule keeps the invariant machine-enforced, like the `scan` pre-push check.
+#
+# What is removed is deliberately NARROW — only a line GitHub itself would
+# honor AND that can only be a duplicate of this script's own emission: a WHOLE
+# line that is nothing but `<keyword> #N` or `<keyword> owner/repo#N`. Kept:
+#   - a mid-sentence mention ("…emits `Closes #976` near the top of the body")
+#   - a backticked / inline-code line — GitHub ignores those, so they were never
+#     a duplicate (the same lexical model lint-pr-body.sh uses)
+#   - an indented line (a 4-space code block — likewise ignored by GitHub)
+#   - ANY line inside a ``` / ~~~ fenced code block, so a surface that quotes an
+#     assembled PR body as its evidence keeps that evidence intact
+# Blank lines left behind by a removal are NOT collapsed: Markdown renders a run
+# of blank lines identically, and any rewrite beyond deleting the offending line
+# would risk mutating worker evidence for a cosmetic gain.
+#
+#   mode=count → print how many lines WOULD be stripped (0 for a clean surface)
+#   mode=strip → print the surface with those lines removed
+# cmd_open counts first and only re-runs in strip mode when the count is
+# non-zero, so a surface carrying no such line is passed through byte-for-byte
+# by construction rather than by inspection.
+strip_surface_closes() {
+  awk -v mode="$1" '
+    function is_closes_line(l,   t) {
+      t = tolower(l)
+      if (t ~ /^(closes|closed|close|fixes|fixed|fix|resolves|resolved|resolve)[[:blank:]]*:?[[:blank:]]*#[0-9]+[[:blank:]]*$/) return 1
+      if (t ~ /^(closes|closed|close|fixes|fixed|fix|resolves|resolved|resolve)[[:blank:]]*:?[[:blank:]]*[a-z0-9_.-]+\/[a-z0-9_.-]+#[0-9]+[[:blank:]]*$/) return 1
+      return 0
+    }
+    BEGIN { fence = ""; n = 0 }
+    {
+      if (fence != "") {
+        if (substr($0, 1, 3) == fence) fence = ""
+        if (mode == "strip") print
+        next
+      }
+      if (substr($0, 1, 3) == "```" || substr($0, 1, 3) == "~~~") {
+        fence = substr($0, 1, 3)
+        if (mode == "strip") print
+        next
+      }
+      if (is_closes_line($0)) { n++; next }
+      if (mode == "strip") print
+    }
+    END { if (mode == "count") print n + 0 }
+  '
+}
+
 # Assemble the PR body per the 3f contract, from the verdict JSON + plan
 # fields. Section order: summary; bare Closes lines (one per entry, own line,
 # no backticks — combining or code-spanning them breaks GitHub's auto-close);
@@ -469,6 +534,7 @@ assemble_body() {
 cmd_open() {
   local verdict_src="" repo="" branch="" title="" gh_issue="" also_closes="" \
         plan_link="" source_ref="" surface_file="" surface="" body_only="" verdict body out url pr_number n raw
+  local stripped=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --verdict)     [ $# -ge 2 ] || usage; verdict_src="$2"; shift ;;
@@ -506,6 +572,15 @@ cmd_open() {
   # ERROR. `|| exit 1` propagates resolve_surface's die (it already wrote the
   # ERROR to fd3) without emitting a second one.
   surface="$(resolve_surface "$surface_file" "$verdict")" || exit 1
+  # temperloop#1023 — drop a linkage block the worker copied into its own
+  # surface, so the assembled body carries exactly one (see strip_surface_closes).
+  if [ -n "$surface" ]; then
+    stripped="$(strip_surface_closes count <<<"$surface")"
+    case "$stripped" in ''|*[!0-9]*) stripped=0 ;; esac
+    if [ "$stripped" -gt 0 ]; then
+      surface="$(strip_surface_closes strip <<<"$surface")"
+    fi
+  fi
   body="$(assemble_body "$verdict" "$gh_issue" "$also_closes" "$plan_link" "$source_ref" "$surface")"
 
   if [ -n "$body_only" ]; then
@@ -530,8 +605,8 @@ cmd_open() {
       raw="$(grep -oE '/pull/[0-9]+' <<<"$out" | tail -1 || true)"
       pr_number="${raw#/pull/}"
       [ -n "$pr_number" ] || die "could not parse PR number from existing-PR error: $out"
-      jq -cn --arg n "$pr_number" --arg url "$url" \
-        '{outcome:"EXISTS", pr_number:($n|tonumber), url:$url}'
+      jq -cn --arg n "$pr_number" --arg url "$url" --argjson stripped "$stripped" \
+        '{outcome:"EXISTS", pr_number:($n|tonumber), url:$url, surface_closes_stripped:$stripped}'
       return 0
     fi
     die "gh pr create failed: $out"
@@ -541,8 +616,8 @@ cmd_open() {
   pr_number="${raw#/pull/}"
   [ -n "$pr_number" ] || die "could not parse PR number from gh output: $out"
   url="$(grep -oE 'https?://[^[:space:]]+/pull/[0-9]+' <<<"$out" | tail -1 || true)"
-  jq -cn --arg n "$pr_number" --arg url "$url" \
-    '{outcome:"PR_OPENED", pr_number:($n|tonumber), url:$url}'
+  jq -cn --arg n "$pr_number" --arg url "$url" --argjson stripped "$stripped" \
+    '{outcome:"PR_OPENED", pr_number:($n|tonumber), url:$url, surface_closes_stripped:$stripped}'
 }
 
 [ $# -ge 1 ] || usage
