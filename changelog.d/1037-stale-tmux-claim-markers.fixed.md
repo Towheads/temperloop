@@ -9,11 +9,13 @@
   had not existed since the previous month. Three changes close it:
   **(a)** `reconcile --fix`'s marker lens now sweeps **every window on the tmux
   server** instead of just `$TMUX_PANE`'s, applying the *same* per-marker gates
-  to each — GH #297 is not reintroduced, because what makes a cross-window clear
-  safe is the **proof**, not the ownership: an OPEN issue, an unreadable state,
-  and a live same-host claim are each still refused, in every window, and there
-  is no age-based or "looks stale" clear. Branding another window remains
-  forbidden; `lib/claim_marker.sh` ships no targeted `set`.
+  to each. GH #297 (a claim branding a concurrent session's window — the
+  regression that pinned every marker *write* to the caller's own) is not
+  reintroduced, because what makes a cross-window *clear* safe is the **proof**,
+  not the ownership: an OPEN issue, an unreadable state, and a live same-host
+  claim are each still refused, in every window, and there is no age-based or
+  "looks stale" clear. Branding another window remains forbidden;
+  `lib/claim_marker.sh` ships no targeted `set`.
   **(b)** The sweep no longer requires being *inside* tmux — the server is a
   socket, not an environment variable — so `/tidy`'s nightly now runs the marker
   lens with `--fix` and the repair happens without the operator noticing the
