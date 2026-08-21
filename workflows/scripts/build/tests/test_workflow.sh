@@ -3485,19 +3485,44 @@ LBGEN
 _lb_out="$WF_TEST_TMPDIR/lb"; mkdir -p "$_lb_out"
 MJS_PATH="$MJS" LB_OUT="$_lb_out" node "$_lb_gen" \
   || fail "#1071: could not generate the emitted watchdog shell from build-level.mjs"
-for _f in stall.sh fast.sh batch.sh; do
+# Ceilings are rewritten PER PROBE, and the two numbers differ on purpose
+# (temperloop#1367):
+#   • the two STALL probes get a 2s ceiling, which their 60s stall body outruns
+#     by 30x — the stall's verdict is read off the bound's OWN payload below, so
+#     the ceiling only has to be small enough to keep the probe quick.
+#   • the FAST probe gets a deliberately LARGE ceiling. The #861 pipe leak's
+#     signature is that a healthy step's capture stalls for the WHOLE ceiling, so
+#     the ceiling IS the separation between the passing and failing cases: at 2s
+#     those two were one scheduling hiccup apart on a loaded runner. 30s against
+#     the 10s assertion below leaves a healthy step ~10x of headroom while a leak
+#     still misses by 3x — a wider gap, not a looser bound.
+for _f in stall.sh batch.sh; do
   sed 's/^__lb_ceil=[0-9]*/__lb_ceil=2/' "$_lb_out/$_f" > "$_lb_out/t-$_f"
+done
+sed 's/^__lb_ceil=[0-9]*/__lb_ceil=30/' "$_lb_out/fast.sh" > "$_lb_out/t-fast.sh"
+for _f in stall.sh fast.sh batch.sh; do
   bash -n "$_lb_out/t-$_f" || fail "#1071: the emitted watchdog shell is not valid bash ($_f)"
 done
 
 # NB `|| true`: a bounded-out step exits 137 BY CONTRACT (the watchdog SIGKILLs
 # it), and this suite runs under `set -e` — without the guard the suite itself
 # would die with the very exit code the feature is supposed to produce.
-_lb_start=$(date +%s)
-_lb_stall="$(bash "$_lb_out/t-stall.sh" 2>/dev/null || true)"
-_lb_elapsed=$(( $(date +%s) - _lb_start ))
-[ "$_lb_elapsed" -lt 20 ] \
-  || fail "#1071: a stalled step was NOT bounded — it ran ${_lb_elapsed}s against a 2s ceiling (this is the 9h49m bug)"
+#
+# NB the stall probe is read from a FILE, never a `$( … )` capture, and its
+# verdict is the bound's OWN payload rather than this harness's wall clock
+# (temperloop#1367). What the bound promises is that the WORKFLOW stops waiting
+# on a stalled step at the ceiling; it explicitly does NOT promise that every
+# descendant dies with it — the kill is best-effort DEEP, and a deeper grandchild
+# that outlives it is disposed through the recover-probe instead (see
+# stepBoundPreamble's own header in build-level.mjs). A command substitution
+# reads until EOF, so ONE surviving grandchild holding the inherited pipe
+# write-end makes the harness wait out the entire 60s stall even though the step
+# was killed on time — which is exactly what a loaded 4-worker CI runner produced
+# (60s observed, while the bound had reported STEP_TIMEOUT at elapsed_secs=2).
+# Reading `elapsed_secs` — the field the driver itself consumes — measures the
+# bound; timing the capture measures a descendant's lifetime.
+bash "$_lb_out/t-stall.sh" >"$_lb_out/stall.out" 2>/dev/null || true
+_lb_stall="$(cat "$_lb_out/stall.out")"
 case "$_lb_stall" in
   *'"outcome":"STEP_TIMEOUT"'*) : ;;
   *) fail "#1071: a bounded-out step must report STEP_TIMEOUT, got: $_lb_stall" ;;
@@ -3505,16 +3530,29 @@ esac
 case "$_lb_stall" in
   *'"outcome":"PUSHED"'*) fail "#1071: the killed step still printed a result the driver would have believed: $_lb_stall" ;;
 esac
+case "$_lb_stall" in
+  *'"ceiling_secs":2'*) : ;;
+  *) fail "#1071: the STEP_TIMEOUT payload must name the ceiling it enforced, got: $_lb_stall" ;;
+esac
+_lb_bounded_at="$(printf '%s' "$_lb_stall" | sed -n 's/.*"elapsed_secs":\([0-9][0-9]*\).*/\1/p')"
+[ -n "$_lb_bounded_at" ] \
+  || fail "#1071: the STEP_TIMEOUT payload carries no elapsed_secs — that field IS the bound's observable: $_lb_stall"
+[ "$_lb_bounded_at" -ge 2 ] \
+  || fail "#1071: a STEP_TIMEOUT reporting elapsed_secs=${_lb_bounded_at} below its own 2s ceiling is not a timeout: $_lb_stall"
+[ "$_lb_bounded_at" -lt 20 ] \
+  || fail "#1071: a stalled step was NOT bounded at its ceiling — the watchdog let it run ${_lb_bounded_at}s against a 2s ceiling (this is the 9h49m bug)"
 echo "PASS: K1071 emitted shell: a stalled step is killed at the ceiling and reports STEP_TIMEOUT, not a result"
 
 # The fast path must be FAST: portable-timeout.sh's #861 pipe-leak (the watchdog's
 # `sleep` grandchild holding the caller's `$( … )` pipe open) turns every quick,
-# successful step into a full-ceiling stall. Regression-guard it directly.
+# successful step into a full-ceiling stall. Regression-guard it directly — and
+# here the `$( … )` capture IS the point, since the caller's pipe is what the leak
+# holds open.
 _lb_start=$(date +%s)
 _lb_fast="$(bash "$_lb_out/t-fast.sh" 2>/dev/null || true)"
 _lb_elapsed=$(( $(date +%s) - _lb_start ))
-[ "$_lb_elapsed" -lt 2 ] \
-  || fail "#1071: a FAST step took ${_lb_elapsed}s under a 2s ceiling — the watchdog is holding the pipe open (#861 pipe-leak regression)"
+[ "$_lb_elapsed" -lt 10 ] \
+  || fail "#1071: a FAST step took ${_lb_elapsed}s under a 30s ceiling — the watchdog is holding the pipe open (#861 pipe-leak regression)"
 case "$_lb_fast" in
   '{"outcome":"PUSHED","sha":"abc"}') : ;;
   *) fail "#1071: a healthy step's output must pass through byte-identically, got: $_lb_fast" ;;
