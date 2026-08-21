@@ -223,6 +223,29 @@ If items touch architectural boundaries (new module, import-graph changes, publi
 
 **Graceful skip:** review-agent availability follows the canonical predicate in [[Decisions/foundation - Project capability probes]] (a review subagent is available iff the project declares it in `CLAUDE.md § Subagents` or `.claude/agents/`; absent ⇒ skip the review pass). If either subagent isn't available, note "review agents unavailable — review pass skipped" in the Step 5 summary and continue.
 
+### Artifact-availability audit
+
+**You run this yourself — it is not delegated**, so the graceful skip above never disables it: it must still fire on a checkout with no review agents at all. And it is **advisory, never a gate** (kernel principle *Advisory over enforced discipline*): recognizing that a plan leans on an artifact somebody assumed already exists is judgment-shaped, not a clean mechanical predicate, so a hard block would false-positive on legitimate plans and train authors to route around it. This audit flags and repairs; it never refuses to write the note. <!-- cite: A.15 incident:K#697 -->
+
+**The trap it catches (twice-observed, temperloop#697).** A plan's sequencing asserts that a **plan-critical artifact** — typically an ADR draft, but equally a schema, fixture, corpus, or note that some item *consumes* and no item *produces* — already exists at a **pre-build** location a clean checkout does not have. Both observed occurrences survived on sequencing luck alone: epic #606's plan asserted "ADRs 0009/0010 are already authored (untracked working-tree files)" against a tree that was in fact clean, so the L0 worker re-authored both from scratch; epic #671's L1 hand-off depended on an ADR 0012 draft parked at a session-specific `/private/tmp/…/scratchpad/` path, one tmp GC away from stranding the item. A `/build` worker runs in a **fresh, isolated worktree**: it inherits neither the authoring session's uncommitted files nor its scratchpad.
+
+**Run it over the draft items and the draft `## Sequencing notes`,** before Step 4 writes them. For every artifact an item consumes that no item in the plan produces, locate where the draft says that artifact lives, and flag it when the location is **not durably reachable from a clean checkout**:
+
+- a **session-scratch path** — under `/tmp/`, `/private/tmp/`, `$TMPDIR`, or any `…/scratchpad/…` or per-session directory. Mechanically decidable, no judgment needed: such a path is never durable.
+- an **untracked working-tree file** — "already authored", "already in the tree", "uncommitted", "staged locally". Check it rather than trusting the prose: `git ls-files --error-unmatch <path>` exits non-zero in the item's target repo for a path git does not track.
+- an artifact asserted to exist with **no durable locator at all** — no tracked path, no knowledge-store path, and no producing item.
+
+**Resolve each hit into one of exactly two sanctioned dispositions.** This is the assertion the audit makes:
+
+- **(a) Stage it durably** — commit the artifact in-tree and reference it by its tracked path, or write it to the knowledge store, so the consuming item can reach it from a clean checkout; or
+- **(b) Make authoring it part of the work** — fold "author `<artifact>` from scratch" into the consuming item's `scope:` and `acceptance:`, or emit a **precursor item** that produces it and wire the consumer to it (`depends-on:` for a merge-safety edge, `after:` for logical order only).
+
+There is no third disposition. "It's already there" is not one when the only locator is untracked working-tree state or a tmp path.
+
+Apply the resolution in place where it is clearly right — this is authoring-time repair the assessor owns, not a logical question for `## Re-triage signals`. Where it cannot be resolved now, **surface it rather than swallow it**: add one bullet to the plan note's `## Sequencing notes` naming the artifact, its asserted location, and which disposition is owed, and count it in Step 5's `NEEDS ATTENTION` block as `artifact availability`.
+
+**Default to silence.** A plan whose every consumed artifact is tracked, knowledge-store-resident, or produced by one of its own items flags nothing. `/tidy` § Undurable plan artifacts is this check's registered backstop (`claude/commands/tidy.md` § Capture/Backstop pairings) — it re-scans written plan notes for the same tells, so a plan authored before this check existed, or one whose author skipped it, still surfaces.
+
 ## Step 3.5 — Decomposition preview (before writing)
 
 Before writing the note, print the decomposition shape so the user can catch a bad structure before reviewing prose:
@@ -289,6 +312,7 @@ Build order: L0 first → Ln last; items in the same level ship together.
 NEEDS ATTENTION
   !  split (L-sized) ....... K   <#issues / titles>
   !  missing acceptance .... K   <#issues / titles>
+  !  artifact availability . K   <artifact — asserted location; disposition owed>
   ↩  re-triage signals ..... K   ephemeral:x · re-queued:y — resolve at approval
 ```
 
@@ -349,6 +373,7 @@ This is an **epic-carried, cross-tick handoff** — the plan-approval answer liv
 - **`gh` unauthenticated.** Stop at Step 0 with the `gh auth login` hint (reading sub-issues + labels needs it). No *scope* beyond the default `repo` is ever required — those reads are plain REST — so never stop a run for a missing `project` scope.
 - **Acceptance criteria un-derivable for an item.** Emit the literal placeholder rather than fabricating. Count in summary.
 - **A member looks like a dupe / mis-scoped / invalid.** Do **not** cull or merge it here — surface it as a `## Re-triage signals` bullet (if persistent, flip it `Ready → Backlog` so triage re-intakes it, or `capture.sh` for new work — a comment/label alone won't re-queue; see #44). Triage owns that call.
+- **A plan-critical artifact is assumed to pre-exist untracked (temperloop#697).** The Step 3 § Artifact-availability audit flags it and repairs it in place — stage the artifact durably, or make authoring it part of the consuming item — but it is **advisory and never stops the run**: an unresolvable hit ships as a `## Sequencing notes` bullet plus an `artifact availability` row in `NEEDS ATTENTION`, for the operator to dispose at the approval gate. `/tidy` § Undurable plan artifacts re-scans written plans for the same tells.
 - **Sanity-check subagent disagrees with the draft.** Surface — never silently override.
 - **Subagent unavailable.** Note in summary, continue; user can do the review pass manually.
 - **All items flagged L.** Surface as a decomposition failure ("epic too coarse to decompose at this level — the sub-issues need splitting, likely back in `/triage`") rather than writing a plan of un-shippable chunks.
