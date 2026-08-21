@@ -81,7 +81,7 @@ case "$1 $2" in
 esac
 '
 out="$(run_case)"
-[[ "$out" == *"plan-archive-pr-queued: 25"* ]] \
+[[ "$out" == *"plan-archive-pending: 25"* ]] \
   || fail "tier 2: expected adopt of existing PR 25 (got: $out)"
 grep -q "pr merge 25 --auto" "$GHLOG" || fail "tier 2: 'pr merge 25 --auto' not recorded"
 grep -q "pr view" "$GHLOG" && fail "tier 2: tier 3 consulted even though create recovered the number"
@@ -97,7 +97,7 @@ case "$1 $2" in
 esac
 '
 out="$(run_case)"
-[[ "$out" == *"plan-archive-pr-queued: 25"* ]] \
+[[ "$out" == *"plan-archive-pending: 25"* ]] \
   || fail "tier 2 precision: expected 25 from the /pull/<n> URL, not a trailing digit (got: $out)"
 grep -q "pr merge 25 --auto" "$GHLOG" || fail "tier 2 precision: merged the wrong PR number"
 pass "tier 2 precision: /pull/<n> matched, trailing 'retry in 30' not misread as the PR"
@@ -112,7 +112,7 @@ case "$1 $2" in
 esac
 '
 out="$(run_case)"
-[[ "$out" == *"plan-archive-pr-queued: 42"* ]] \
+[[ "$out" == *"plan-archive-pending: 42"* ]] \
   || fail "tier 3: expected pr view to adopt PR 42 (got: $out)"
 grep -q "pr merge 42 --auto" "$GHLOG" || fail "tier 3: 'pr merge 42 --auto' not recorded"
 pass "tier 3 adopt: pr view <branch> resolved the PR the search index had not surfaced"
@@ -127,7 +127,7 @@ case "$1 $2" in
 esac
 '
 out="$(run_case)"
-[[ "$out" == *"plan-archive-pr-queued: 777"* ]] \
+[[ "$out" == *"plan-archive-pending: 777"* ]] \
   || fail "open-new: expected the freshly created PR 777 (got: $out)"
 grep -q "pr merge 777 --auto" "$GHLOG" || fail "open-new: 'pr merge 777 --auto' not recorded"
 grep -q "pr view" "$GHLOG" && fail "open-new: pr view consulted despite a successful create"

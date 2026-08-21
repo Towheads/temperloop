@@ -7,7 +7,7 @@
 #
 # Covers:
 #   1. protected main → branch chore/plan-archive + PR + queue; target main left
-#      pristine; status plan-archive-pr-queued; `pr merge <pr> --auto` recorded;
+#      pristine; status plan-archive-pending; `pr merge <pr> --auto` recorded;
 #      nothing committed directly to main.
 #   2. self-heal: once the snapshot is on origin/main, report plan-archived
 #      (already on origin) with no new PR.
@@ -58,7 +58,7 @@ git -C "$REPO" push -q -u origin main
 
 out="$( PLAN_ARCHIVE_REQUIRES_PR=1 PLAN_ARCHIVE_GH="$FAKEBIN/gh" \
         bash "$SCRIPT" "$PLAN_SRC" 999 "$REPO" )"
-[[ "$out" == *"plan-archive-pr-queued: 777"* ]] || fail "expected plan-archive-pr-queued: 777 (got: $out)"
+[[ "$out" == *"plan-archive-pending: 777"* ]] || fail "expected plan-archive-pending: 777 (got: $out)"
 # the snapshot branch was pushed to origin, carrying BOTH the new and the prior note
 git -C "$BARE" rev-parse --verify -q chore/plan-archive >/dev/null || fail "plan-archive branch not pushed to origin"
 git -C "$BARE" cat-file -e "chore/plan-archive:Plans-archive/$PLAN_BASE" 2>/dev/null \

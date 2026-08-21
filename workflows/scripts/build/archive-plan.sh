@@ -21,15 +21,35 @@
 #     <repo-root>      the repo build operates on (where Plans-archive/ lives) —
 #                      defaults to the CWD's repo root if omitted
 #
-# Prints exactly one machine-readable status line:
-#   plan-archived:          <rev>  -> snapshot is on the default branch (pushed, or
-#                                     no remote, or already on origin / already current)
-#   plan-archive-pr-queued: <pr>   -> main is protected; snapshot landed on a branch +
-#                                     PR that is ENQUEUED but not yet merged (lands async)
-#   plan-archive-skipped:   <why>  -> not landed (not a repo, custom dir, push rejected) —
-#                                     non-fatal; the snapshot can be re-archived next run
+# Prints exactly one machine-readable status line. The vocabulary separates LANDED
+# from PENDING from FAILED, because the old one did not (#1523): a single
+# `plan-archive-pr-queued:` line read as success while the snapshot sat on a branch
+# that might never merge — and the next run force-rebuilt that branch off main and
+# DESTROYED it. Only the first line below is success:
 #
-# Skips never fail (exit 0) — a missing-arg error is the only non-zero exit.
+#   plan-archived:         <rev>  -> LANDED. The snapshot is on the default branch
+#                                    (pushed, no remote, already on origin/current).
+#   plan-archive-pending:  <pr>   -> NOT landed. main is protected; the snapshot is on
+#                                    the archive branch, carried by PR <pr> with
+#                                    auto-merge armed. It lands only when the queue
+#                                    merges that PR — report it pending, never done.
+#   plan-archive-failed:   <why>  -> NOT landed and NOT pending: the snapshot never
+#                                    reached git, or it reached a PR whose auto-merge
+#                                    could not be armed (so nothing will merge it).
+#                                    Names what did not land; re-run to retry.
+#   plan-archive-skipped:  <why>  -> not attempted (no such note, not a git repo).
+#
+# Exit stays 0 for every status line (a missing-arg error is the only non-zero exit)
+# so a `set -e` caller's epic-close flow is never aborted by an archive miss — the
+# LINE is the verdict, and `plan-archive-failed:` is a failure the caller reports
+# rather than folds into its summary as success.
+#
+# NEVER-DESTROY (#1523): the shared kernel bases the archive branch on the PENDING
+# branch whenever that branch carries un-merged commits, so a prior run's snapshot
+# that has not reached main yet is carried forward, never overwritten. A failed
+# archive therefore leaves the source recoverable twice over — the vault note is
+# untouched (this script only ever READS it) and any already-pushed snapshot stays
+# on the branch.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -56,14 +76,34 @@ git -C "$REPO_ROOT" rev-parse --git-dir >/dev/null 2>&1 || skipped "$REPO_ROOT i
 BASE="$(basename "$SRC")"
 REL="Plans-archive/$BASE"
 
+# Set by populate_plan when the snapshot could not be written; read after land_run.
+# (Same shell — the kernel is SOURCED and calls the populate fn directly, so this is
+# not a subshell assignment.)
+POPULATE_ERR=""
+
 # Populate fn (#408 contract): drop the single plan snapshot under the given root.
 # (Invoked indirectly by land_run, so the main flow can't see the call — hence
 # SC2317 unreachable + SC2329 never-invoked.)
+#
+# #1523: every step is CHECKED and VERIFIED rather than assumed. A bare `cp` under
+# `set -e` aborted the whole script with no status line at all; worse, any write that
+# silently produced nothing left an EMPTY staged diff, which the kernel's
+# short-circuit then read as "already on origin" — a success verdict for bytes that
+# were never written. So the copy reports its own failure, and the written file is
+# compared against the source before this run is allowed to claim anything.
 # shellcheck disable=SC2317,SC2329
 populate_plan() {  # <root>
   local root="$1"
-  mkdir -p "$root/Plans-archive"
-  cp -- "$SRC" "$root/$REL"
+  if ! mkdir -p "$root/Plans-archive" 2>/dev/null; then
+    POPULATE_ERR="could not create $root/Plans-archive"; return 0
+  fi
+  if ! cp -- "$SRC" "$root/$REL" 2>/dev/null; then
+    POPULATE_ERR="could not write the snapshot to $REL under $root"; return 0
+  fi
+  if ! cmp -s -- "$SRC" "$root/$REL"; then
+    POPULATE_ERR="the snapshot written to $REL does not match $SRC"; return 0
+  fi
+  return 0
 }
 
 # Drive the shared protected-main landing kernel. The LAND_* contract is consumed by
@@ -83,9 +123,19 @@ export LAND_REQUIRES_PR="${PLAN_ARCHIVE_REQUIRES_PR:-}"   # this caller owns onl
 
 land_run populate_plan
 
+# The populate verdict OUTRANKS the land verdict (#1523). A snapshot that was never
+# written produces no staged diff, and an un-diffed run otherwise reports
+# `already on origin` — the false success this check makes unreachable.
+if [ -n "$POPULATE_ERR" ]; then
+  echo "plan-archive-failed: $BASE did not land — $POPULATE_ERR (the vault note is untouched; re-run to retry)"
+  exit 0
+fi
+
 case "$LAND_RESULT" in
   committed)   echo "plan-archived: ${LAND_REV}${LAND_DETAIL:+ ($LAND_DETAIL)}" ;;
-  pr-queued)   echo "plan-archive-pr-queued: $LAND_PR" ;;
-  *)           echo "plan-archive-skipped: ${LAND_DETAIL:-unknown}" ;;  # setting:exempt — LAND_DETAIL is an internal land-result field, not an operator default
+  pr-queued)   echo "plan-archive-pending: $LAND_PR" ;;
+  pr-open)     echo "plan-archive-failed: $BASE is on PR #$LAND_PR but that PR is NOT queued to merge — ${LAND_DETAIL:-auto-merge could not be armed}" ;;  # setting:exempt — LAND_DETAIL is an internal land-result field, not an operator default
+  uncommitted) echo "plan-archive-failed: $BASE did not land — ${LAND_DETAIL:-unknown}" ;;  # setting:exempt — as above
+  *)           echo "plan-archive-skipped: ${LAND_DETAIL:-unknown}" ;;  # setting:exempt — as above
 esac
 exit 0
