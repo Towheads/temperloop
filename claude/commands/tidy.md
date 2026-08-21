@@ -31,6 +31,7 @@ Every step in this command has a real-time counterpart that runs during the live
 | Route a conversational fix request through /fix | `claude/CLAUDE.md` § `Route a conversational fix request through /fix` | `Unlinked fix PRs` |
 | Disconfirm a root-cause diagnosis before institutionalizing it | `claude/CLAUDE.md` § `Disconfirm a root-cause diagnosis before institutionalizing it` | `Un-disconfirmed diagnoses` |
 | Coverage-walk collaborative engagement | `claude/commands/workshop.md` § `Step 2 — Coverage walk` | `All-accepted-untouched briefs` |
+| Plan-critical artifact availability | `claude/commands/assess.md` § `Artifact-availability audit` | `Undurable plan artifacts` |
 
 ## Step 0 — Verify environment and acquire the drain lock
 
@@ -316,6 +317,31 @@ For each newly-found hit, append one `### open` entry to the pending-decisions s
 Skip a brief already recorded by a prior sweep (match on the `Designs/<note>` path under an existing `open` entry) — don't re-append the same finding every run.
 
 **Default to silence.** If no ratified brief matches the pattern, surface nothing. Same report-only stance as § Provenance-less epics above — this sweep never edits a brief, reopens it, or blocks anything; `/check-in` disposes it (spot-check the reasoning, or take no action if the design genuinely warranted no pushback).
+
+### Undurable plan artifacts
+
+Backstop for the live `/assess` sequencing check (`claude/commands/assess.md` § Artifact-availability audit, temperloop#697). That audit runs at plan-authoring time and repairs in place, but it is deliberately **advisory** — an author can leave a hit unresolved, and a plan written before the audit existed never saw it at all. This sweep is the periodic, out-of-band net over **written** plan notes: a plan that sequences on an artifact only reachable from the authoring session's untracked working tree or its tmp scratchpad strands the `/build` worker, which runs in a fresh, isolated worktree that inherits neither. <!-- cite: T.25 incident:K#697 -->
+
+**Scope — live plans only.** `Glob` `Plans/*.md` on the resolved knowledge-store path and read each note's frontmatter. Skip `status: abandoned` and `status: done` (settled) and anything under `Plans-archive/` (already built): only a `draft`, `approved`, or `executing` plan still has sequencing that can strand a worker.
+
+**Detect the tells** — the same two the live audit names, applied to each note's `## Sequencing notes` section and to every item's `scope:` / `notes:` / `acceptance:` text:
+
+1. **Session-scratch locator** — a path token under `/tmp/`, `/private/tmp/`, `$TMPDIR`, or containing `/scratchpad/`. Purely mechanical, no judgment: such a path is never durable.
+2. **Untracked-precondition assertion** — an artifact asserted to already exist with no durable locator ("already authored", "already in the tree", "uncommitted", "staged locally"). When the assertion names a repo-relative path, confirm mechanically with `git ls-files --error-unmatch <path>` in the plan's home repo — a path git tracks is **not** a hit.
+
+For each hit, append one `### open` entry to the pending-decisions surface (`Pipeline/pending decisions.md` vs the legacy `Context/pipeline - pending decisions.md` — target pinned by the append-target resolution rule of the path fallback convention, `claude/commands/check-in.md`; in the knowledge store) via `mcp__obsidian-builtin__vault_append`:
+
+```markdown
+### <YYYY-MM-DD HH:MM> · tidy undurable-plan-artifact sweep · Plans/<note>
+- **Decision:** plan "<note>" sequences on `<artifact>` at `<asserted location>`, which a clean checkout does not have — stage it durably, or make authoring it part of the consuming item?
+- **Default taken:** leave as-is (report-only; plan not edited, not re-assessed, not blocked)
+- **Disposition:** auto-taken (unattended; no live operator)
+- **Status:** open
+```
+
+Skip a plan+artifact pair already recorded by a prior sweep (match on the `Plans/<note>` path **and** the artifact under an existing `open` entry) — don't re-append the same finding every run.
+
+**Default to silence.** If no live plan carries either tell, surface nothing. Same report-only stance as § Provenance-less epics and § All-accepted-untouched briefs above — this sweep never edits a plan note, never flips its `status:`, and never blocks a build; `/check-in` disposes it (stage the artifact, re-run `/assess`, or dismiss it as already handled).
 
 ### Retro mint backstop
 
