@@ -122,8 +122,16 @@ command -v jq >/dev/null 2>&1 || { echo '{"error":"jq not found"}' >&2; exit 1; 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # ── Config (env overrides win; defaults centralized in build.config.sh) ──────
+# Both optional sources below use `if …; then …; fi`, not `[ -f … ] && . …`,
+# because this script is `set -euo pipefail` and these guards are meant to be
+# FAIL-OPEN. The `&&` form leaves the whole statement at exit status 1 when the
+# file is absent — harmless mid-file, but fatal the moment that status lands
+# last in a function or at end of file, and it makes the guard's own value a
+# lie to every reader. The `if` form is status-neutral in every position and is
+# already the house idiom here: worklist.sh:50-53, gh-bench.sh:141, and
+# read_ready_items() further down this file (temperloop#1132).
 # shellcheck source=workflows/scripts/build/build.config.sh
-[ -f "$HERE/build.config.sh" ] && . "$HERE/build.config.sh"
+if [ -f "$HERE/build.config.sh" ]; then . "$HERE/build.config.sh"; fi
 
 # Shared "is slash command <name> available" probe (ADR 0008), resolve-once —
 # the Phase R retro-judge trigger uses this to decide whether an overlay
@@ -136,7 +144,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # line, never toward assuming an uninstalled judge exists) — and the same
 # fail-closed treatment applies to `command_declared_capability`.
 # shellcheck source=workflows/scripts/lib/command_declared.sh
-[ -f "$HERE/../lib/command_declared.sh" ] && . "$HERE/../lib/command_declared.sh"
+if [ -f "$HERE/../lib/command_declared.sh" ]; then . "$HERE/../lib/command_declared.sh"; fi
 
 # Model the Phase R retro-judge trigger spawns `claude -p "/retro --pending"`
 # under (temperloop#532/#535). SOURCE OF TRUTH is build.config.sh (sourced

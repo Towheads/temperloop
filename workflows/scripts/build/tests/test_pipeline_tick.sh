@@ -1262,6 +1262,58 @@ RJ="$(action_for <<<"$PLAN" '.action=="retro-judge"')"
   && ok "hermetic: the tick emits ONLY the retro-judge action (CACHE_STORE_ROOT forces a cache-miss, so every other gh call hits the stub's fallback path, not this host's real board)" \
   || bad "t32.hermetic" "unexpected extra actions leaked in: $PLAN"
 
+# ── 33: optional-source guards are FAIL-OPEN and status-neutral (#1132) ──────
+# pipeline-tick.sh is `set -euo pipefail` and sources two OPTIONAL files
+# (build.config.sh, ../lib/command_declared.sh) so a checkout that vendors only
+# a subset still runs. Those guards were written `[ -f x ] && . x`, which leaves
+# the statement at exit status 1 when the file is absent. Mid-file that is
+# survivable; in terminal position (last statement of the file, of a function,
+# or when an errexit caller sources the file) it aborts — so the guard that
+# exists to make a file optional is exactly the thing that makes it fatal.
+# Asserted on two axes: the SHAPE (so the `&&` form cannot be reintroduced —
+# this is what goes red against pre-#1132 code) and the BEHAVIOUR (a copy of
+# the script with neither optional file beside it still completes a dry tick).
+echo "--- test 33: optional-source guards are fail-open and status-neutral (#1132) ---"
+
+# 33a — shape: no `[ … ] && . …` / `&& source …` optional-source guard survives.
+# `^[[:space:]]*[^#[:space:]]` skips comment lines, so the rationale comment
+# that names the bad form (in pipeline-tick.sh, and here) does not self-trip.
+T33_BAD="$(grep -nE '^[[:space:]]*[^#[:space:]].*\][[:space:]]*&&[[:space:]]*(\.|source)[[:space:]]' "$TICK" || true)"
+[ -z "$T33_BAD" ] \
+  && ok "no \`[ -f x ] && . x\` optional-source guard remains in pipeline-tick.sh (RED against pre-#1132 code, which had two)" \
+  || bad "t33.shape" "the && form is back — under set -e it leaves status 1 when the file is absent: $T33_BAD"
+
+# 33b — mechanism, demonstrated on the two forms directly: in terminal position
+# the `&&` form is fatal under `set -e` and the `if` form is not. This is the
+# discriminating proof of WHY 33a matters (both forms survive mid-file, so a
+# mid-file test alone would pass against the buggy code too).
+T33_DIR="$TMP/t33"; mkdir -p "$T33_DIR"
+printf 'set -euo pipefail\n[ -f %s/absent.sh ] && . %s/absent.sh\n' "$T33_DIR" "$T33_DIR" > "$T33_DIR/and.sh"
+printf 'set -euo pipefail\nif [ -f %s/absent.sh ]; then . %s/absent.sh; fi\n' "$T33_DIR" "$T33_DIR" > "$T33_DIR/if.sh"
+T33_AND=0; bash "$T33_DIR/and.sh" || T33_AND=$?
+T33_IF=0;  bash "$T33_DIR/if.sh"  || T33_IF=$?
+[ "$T33_AND" -ne 0 ] && [ "$T33_IF" -eq 0 ] \
+  && ok "in terminal position the && guard exits $T33_AND and the if guard exits $T33_IF — the status the fix removes" \
+  || bad "t33.mechanism" "expected && non-zero and if zero; got && =$T33_AND, if =$T33_IF"
+
+# 33c — behaviour: a lone copy of the script, with NEITHER optional file
+# reachable, still runs a dry tick to completion and emits a well-formed plan.
+T33_ROOT="$TMP/t33-lone"; mkdir -p "$T33_ROOT/build"; seed_board "$T33_ROOT/fx" 3
+cp "$TICK" "$T33_ROOT/build/pipeline-tick.sh"
+echo '[]' > "$T33_ROOT/fx/board-3/ready.json"
+[ ! -f "$T33_ROOT/build/build.config.sh" ] && [ ! -f "$T33_ROOT/lib/command_declared.sh" ] \
+  && ok "fixture really is missing both optional files (guard on the guard)" \
+  || bad "t33.fixture" "an optional file leaked into the lone-copy fixture"
+T33_RC=0
+T33_PLAN="$(bash "$T33_ROOT/build/pipeline-tick.sh" --dry-run --fixture "$T33_ROOT/fx" --board 3 2>"$T33_ROOT/err")" || T33_RC=$?
+if [ "$T33_RC" -eq 0 ]; then
+  [ "$(jq -r '.tick' <<<"$T33_PLAN")" = "done" ] \
+    && ok "a vendored-subset copy with no build.config.sh and no command_declared.sh still completes a tick" \
+    || bad "t33.plan" "tick did not report done: $T33_PLAN"
+else
+  bad "t33.exit" "the lone copy aborted (exit $T33_RC); stderr: $(cat "$T33_ROOT/err")"
+fi
+
 # ── summary ──────────────────────────────────────────────────────────────────
 echo
 echo "pipeline-tick tests: $pass passed, $fail failed"
