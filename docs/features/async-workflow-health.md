@@ -30,7 +30,7 @@ at the moment they turned:
   words: "There is NO paging, no Slack, no webhook." That workflow is the only
   thing standing between a macOS/BSD-dialect regression and the default branch,
   because macOS was deliberately dropped from the pre-merge gate
-  (temperloop#963).
+  (temperloop#963, macOS dropped from pre-merge gating).
 
 Two consequences follow, and both shape the design. First, the detector must
 report a **state**, not a **transition**: a transition-only detector would have
@@ -115,6 +115,14 @@ which is one page. That shares the 5,000-requests/hour REST bucket described in
 `AGENTS.md`, and is negligible against it: `/check-in` renders the brief roughly
 once a day. Under `ASYNC_WORKFLOW_RUNS_DIR` (the fixture seam) no network call
 is made at all, which is how the whole test suite runs offline.
+
+Each live call is bounded at `ASYNC_WORKFLOW_GH_TIMEOUT` seconds through the
+shared `run_with_timeout` watchdog (`workflows/scripts/lib/portable-timeout.sh`,
+temperloop#256, which exists because stock macOS ships no `timeout` binary). The
+bound is what makes this detector safe to put on a daily read surface: the
+caller's `|| true` fence catches a *failed* `gh` call but not a *hung* one, and
+a bound that fires falls through to the same `UNKNOWN` branch a failure takes —
+so a stalled network reports legibly unchecked rather than blocking the brief.
 
 ## Telemetry
 

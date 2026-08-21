@@ -70,6 +70,15 @@
 #   --repo           OWNER/REPO to query; default is inferred by `gh` from
 #                    this checkout
 #
+# ARGUMENT HANDLING IS DELIBERATELY LENIENT. An unrecognised flag is dropped
+# and an unrecognised `--format` value falls back to `brief`, both silently
+# and both exiting 0. That is a considered exception to this file's
+# every-degradation-is-legible rule, made for the same reason as the rule
+# itself: this script runs inside a status readout, and a readout must never
+# be able to fail — or noisily editorialise — the check-in that reads it. The
+# only callers are the test suite and telemetry-brief.sh, which pass literal
+# correct flags.
+#
 # Settings (registered in workflows/scripts/config/setting-registry.tsv):
 #   ASYNC_WORKFLOW_DIR       workflow directory to classify
 #   ASYNC_WORKFLOW_REGISTRY  the disposition registry TSV
@@ -77,6 +86,7 @@
 #                            output, one `<workflow-file>.json` per workflow;
 #                            empty (the default) means query gh live
 #   ASYNC_WORKFLOW_RUN_LIMIT how many recent runs to examine per workflow
+#   ASYNC_WORKFLOW_GH_TIMEOUT seconds to bound each live `gh run list` call
 #
 # Kept POSIX-bash-3.2 friendly (no mapfile, no associative arrays) and BSD/GNU
 # portable (no GNU-only flags, no `\?` in a basic-regex sed, no bare
@@ -91,13 +101,37 @@ repo_root="$(cd -P "$here/../.." && pwd)"
 : "${ASYNC_WORKFLOW_REGISTRY:=$repo_root/workflows/scripts/config/async-workflow-registry.tsv}"
 : "${ASYNC_WORKFLOW_RUNS_DIR:=}"
 : "${ASYNC_WORKFLOW_RUN_LIMIT:=30}"
+: "${ASYNC_WORKFLOW_GH_TIMEOUT:=30}"
+
+# The ONE bounded-subprocess watchdog (temperloop#256) — stock macOS ships no
+# `timeout` binary, so a bare `timeout N gh ...` dies on a fresh Mac. Sourcing
+# is guarded and FAILS OPEN: a checkout that vendors a subset without the lib
+# still runs, just unbounded, which is the pre-existing behavior rather than a
+# new failure. `|| true` because this file runs under `set -uo pipefail`.
+if [ -f "$here/lib/portable-timeout.sh" ]; then
+  # shellcheck source=workflows/scripts/lib/portable-timeout.sh
+  # shellcheck disable=SC1091
+  . "$here/lib/portable-timeout.sh" || true
+fi
+if ! command -v run_with_timeout >/dev/null 2>&1 && ! declare -F run_with_timeout >/dev/null 2>&1; then
+  run_with_timeout() { shift; "$@"; }
+fi
+case "$ASYNC_WORKFLOW_GH_TIMEOUT" in
+  ''|*[!0-9]*) ASYNC_WORKFLOW_GH_TIMEOUT=30 ;;
+esac
 
 format="brief"
 repo_flag=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --format) format="${2:-brief}"; shift 2 ;;
-    --repo) repo_flag="${2:-}"; shift 2 ;;
+    # `shift 2` FAILS (count out of range) when the flag is the LAST argument,
+    # and a failed shift does not shift — so `$#` never decreases and this loop
+    # spins forever on `--format` with no value. There is no `set -e` to catch
+    # the non-zero shift, and `${2:-...}` removes the unset-variable crash that
+    # would otherwise have terminated it. Shift the flag first, then the value
+    # only if one is actually there. Same class as temperloop#1342.
+    --format) format="${2:-brief}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+    --repo) repo_flag="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
     -h|--help) sed -n '2,/^$/p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) shift ;;
   esac
@@ -209,6 +243,14 @@ classify() {  # $1 = workflow file path
 # are asynchronous for this workflow (empty = the workflow is synchronous).
 async_events() {
   local trig="$1" pushkeys="$2" t out=""
+  # `$trig` is deliberately word-split, but it must NOT be glob-expanded: the
+  # classifier's inline-sequence arm (`on: [push, "*"]`) strips quotes, so a
+  # metacharacter can reach here and expand against the CALLER'S cwd. That
+  # both garbles the operator-facing line and — because the filenames it
+  # yields never match a real gh event — makes a registered, RED workflow
+  # report UNKNOWN, the exact masking this detector exists to prevent. It
+  # also makes the verdict depend on where the reader happened to be standing.
+  set -f
   for t in $trig; do
     case "$t" in
       pull_request|pull_request_target|merge_group) ;;
@@ -224,6 +266,7 @@ async_events() {
       *) out="$out $t" ;;
     esac
   done
+  set +f
   printf '%s' "${out# }"
 }
 
@@ -264,12 +307,19 @@ runs_json() {  # $1 = workflow basename -> JSON array on stdout, non-zero on fai
     return 0
   fi
   command -v gh >/dev/null 2>&1 || return 1
+  # BOUNDED. This runs on the /check-in daily read surface, where the header's
+  # central promise is that the detector never blocks its reader — and the call
+  # site's `|| true` fence catches a FAILURE, not a HANG. A bound that fires
+  # returns non-zero, which falls through to the caller's existing
+  # gh_failed=1 -> UNKNOWN branch: legibly unchecked, never silently green.
   if [ -n "$repo_flag" ]; then
-    gh run list --repo "$repo_flag" --workflow "$1" \
+    run_with_timeout "$ASYNC_WORKFLOW_GH_TIMEOUT" \
+      gh run list --repo "$repo_flag" --workflow "$1" \
       --limit "$ASYNC_WORKFLOW_RUN_LIMIT" \
       --json event,status,conclusion,createdAt,url 2>/dev/null
   else
-    (cd "$repo_root" && gh run list --workflow "$1" \
+    (cd "$repo_root" && run_with_timeout "$ASYNC_WORKFLOW_GH_TIMEOUT" \
+      gh run list --workflow "$1" \
       --limit "$ASYNC_WORKFLOW_RUN_LIMIT" \
       --json event,status,conclusion,createdAt,url 2>/dev/null)
   fi
@@ -380,8 +430,16 @@ done
 
 # ── stale registry rows (fail closed the other direction) ───────────────────
 if [ "$registry_ok" -eq 1 ]; then
-  while IFS="$(printf '\t')" read -r row_wf row_disp _rest; do
-    case "$row_wf" in ''|\#*) continue ;; esac
+  # `|| [ -n "$row_wf" ]` — `read` returns non-zero on a final line with no
+  # terminating newline, so without it the last registry row is silently
+  # exempt from this half of the fail-closed contract.
+  while IFS="$(printf '\t')" read -r row_wf row_disp _rest || [ -n "$row_wf" ]; do
+    # Match the comment rule the two awk parsers above already use
+    # (`/^[[:space:]]*#/`). A bare `\#*` here saw an INDENTED comment as a
+    # workflow name and rendered a fabricated STALE-ROW alarm for it.
+    row_wf_trimmed="${row_wf#"${row_wf%%[![:space:]]*}"}"
+    case "$row_wf_trimmed" in ''|\#*) continue ;; esac
+    row_wf="$row_wf_trimmed"
     [ -n "$row_disp" ] || continue
     case " $seen_files " in
       *" $row_wf "*) ;;

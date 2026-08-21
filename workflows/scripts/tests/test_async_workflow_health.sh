@@ -38,6 +38,17 @@
 #  13. The real repo tree classifies correctly: exactly nightly-macos.yml and
 #      install-tier2.yml are asynchronous, both registered.
 #  14. telemetry-brief.sh actually invokes the detector (the wiring check).
+#  15. ARGUMENT PARSER — a value-taking flag as the FINAL argument terminates
+#      instead of spinning forever (`shift 2` out of range does not shift;
+#      same class as temperloop#1342). Bounded, so a regression fails the
+#      suite rather than hanging it.
+#  16. GLOB SAFETY — a metacharacter surviving an inline `on: [...]` sequence
+#      is not expanded against the caller's cwd, which would both garble the
+#      line and mask a genuinely RED workflow as UNKNOWN.
+#  17. REGISTRY COMMENTS — an INDENTED comment row is a comment, matching the
+#      rule the two awk parsers already use, not a fabricated STALE-ROW.
+#  18. NO TRAILING NEWLINE — the final registry row is still stale-row
+#      checked; `read` returns non-zero on it and would otherwise skip it.
 #
 # Usage: bash workflows/scripts/tests/test_async_workflow_health.sh
 
@@ -276,6 +287,88 @@ if grep -q 'async-workflow-health.sh' "$REPO/workflows/scripts/telemetry-brief.s
 else
   fail_test "telemetry-brief wiring" "workflows/scripts/telemetry-brief.sh does not invoke async-workflow-health.sh"
 fi
+
+# ═══ Case 15: the argument parser terminates on a trailing value-flag ══════
+# REGRESSION (§3e shell-reviewer, HIGH): `--format) …; shift 2` fails when the
+# flag is the last argument, and a FAILED shift does not shift — `$#` never
+# decreases and the loop spins forever, pinning a CPU. `${2:-brief}` is what
+# removes the `set -u` crash that would otherwise have terminated it. Bounded
+# here so a regression FAILS this suite instead of hanging CI.
+echo "argument parser:"
+run_bounded() {  # $1=secs; rest = command — echoes the rc, never hangs the suite
+  local secs="$1"; shift
+  "$@" >/dev/null 2>&1 &
+  local cmd_pid=$!
+  ( sleep "$secs" 2>/dev/null; kill -9 "$cmd_pid" 2>/dev/null ) </dev/null >/dev/null 2>&1 &
+  local watchdog_pid=$!
+  wait "$cmd_pid" 2>/dev/null
+  local st=$?
+  kill "$watchdog_pid" 2>/dev/null
+  wait "$watchdog_pid" 2>/dev/null
+  echo "$st"
+}
+for flag in --format --repo; do
+  rc="$(run_bounded 10 env PATH="$TMP/bin:$PATH" \
+        ASYNC_WORKFLOW_DIR="$TMP/wf-green" \
+        ASYNC_WORKFLOW_REGISTRY="$TMP/reg-green" \
+        ASYNC_WORKFLOW_RUNS_DIR="$TMP/runs-green" \
+        bash "$SCRIPT" "$flag")"
+  if [ "$rc" = "0" ]; then
+    ok "trailing $flag with no value exits 0 promptly"
+  else
+    fail_test "trailing $flag" "expected rc=0, got rc=$rc (137 = killed by the watchdog, i.e. it hung)"
+  fi
+done
+
+# ═══ Case 16: a glob metacharacter is not expanded against the cwd ═════════
+# REGRESSION (§3e shell-reviewer, MEDIUM): `for t in $trig` is deliberately
+# word-split but was also GLOB-expanded, so `on: [push, "*"]` in a cwd holding
+# decoy files listed those filenames as "triggers". Beyond the garbled line,
+# filenames never match a real gh event, so a registered RED workflow would
+# report UNKNOWN — the exact masking this detector exists to prevent.
+echo "glob safety:"
+mkdir -p "$TMP/globcwd" "$TMP/wf-glob" "$TMP/runs-glob"
+: > "$TMP/globcwd/AAAA-decoy-file"
+: > "$TMP/globcwd/BBBB-decoy-file"
+mk_wf "$TMP/wf-glob" "glob.yml" '  x'
+# hand-write the inline-sequence form the classifier's other arm parses
+{
+  printf 'name: glob\n\n'
+  printf 'on: [schedule, "*"]\n'
+  printf '\njobs:\n  x:\n    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n'
+} > "$TMP/wf-glob/glob.yml"
+printf 'glob.yml\talarm\tthe glob case\n' > "$TMP/reg-glob"
+runs_fixture "$TMP/runs-glob" "glob.yml" "failure:schedule:2026-08-20T09:00:00Z"
+out="$(cd "$TMP/globcwd" && PATH="$TMP/bin:$PATH" \
+  ASYNC_WORKFLOW_DIR="$TMP/wf-glob" \
+  ASYNC_WORKFLOW_REGISTRY="$TMP/reg-glob" \
+  ASYNC_WORKFLOW_RUNS_DIR="$TMP/runs-glob" \
+  bash "$SCRIPT" --format report)"
+assert_not_has "$out" "AAAA-decoy-file" "a cwd filename never leaks into the trigger list"
+assert_not_has "$out" "BBBB-decoy-file" "a second cwd filename never leaks either"
+assert_has "$out" "RED glob.yml" "a red workflow whose triggers glob is still reported RED, not masked as UNKNOWN"
+
+# ═══ Case 17: an INDENTED registry comment is a comment ════════════════════
+# REGRESSION (§3e shell-reviewer, LOW): the stale-row `case` matched `#` in
+# column 1 only, while the two awk parsers use /^[[:space:]]*#/ — so a
+# leading-space comment rendered a fabricated STALE-ROW alarm against itself.
+echo "registry comment rule:"
+mkdir -p "$TMP/wf-cmt" "$TMP/runs-cmt"
+mk_wf "$TMP/wf-cmt" "sched.yml" '  schedule:
+    - cron: "0 5 * * *"'
+runs_fixture "$TMP/runs-cmt" "sched.yml" "success:schedule:2026-08-20T09:00:00Z"
+printf '  # indented\tcomment\twith tabs\nsched.yml\talarm\tthe real row\n' > "$TMP/reg-cmt"
+out="$(run_detector "$TMP/wf-cmt" "$TMP/reg-cmt" "$TMP/runs-cmt" --format report)"
+assert_not_has "$out" "STALE-ROW" "an indented comment row raises no fabricated stale-row alarm"
+
+# ═══ Case 18: a final row with no trailing newline is still checked ════════
+# REGRESSION (§3e shell-reviewer, LOW): `read` returns non-zero on a last line
+# lacking a terminating newline, so the loop body never ran for it — silently
+# exempting the registry's last row from the stale-row half of the contract.
+echo "no trailing newline:"
+printf 'sched.yml\talarm\tthe real row\nghost.yml\talarm\tno such workflow file' > "$TMP/reg-nonl"
+out="$(run_detector "$TMP/wf-cmt" "$TMP/reg-nonl" "$TMP/runs-cmt" --format report)"
+assert_has "$out" "STALE-ROW ghost.yml" "the final registry row is stale-row checked even with no trailing newline"
 
 echo
 echo "async-workflow-health: $pass passed, $fail failed"
