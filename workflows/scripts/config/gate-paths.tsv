@@ -178,6 +178,7 @@ bash workflows/scripts/tests/test_project_agents_out_of_tree_copy.sh	workflows/s
 bash workflows/scripts/tests/test_project_agents_gitignore_propagation.sh	workflows/scripts/install/** workflows/scripts/tests/test_project_agents_gitignore_propagation.sh
 bash workflows/scripts/tests/test_reviewer_activation_coverage.sh	workflows/scripts/install/** workflows/scripts/config/reviewer-routing.tsv claude/agents/** workflows/scripts/tests/test_reviewer_activation_coverage.sh
 bash workflows/scripts/tests/test_reviewer_activate.sh	workflows/scripts/install/** workflows/scripts/config/reviewer-routing.tsv claude/agents/** workflows/scripts/tests/test_reviewer_activate.sh
+bash workflows/scripts/tests/test_reviewer_seat_tiers.sh	claude/agents/** claude/workflows/build-level.mjs workflows/scripts/tests/test_reviewer_seat_tiers.sh
 bash workflows/scripts/tests/test_doctor_reviewer_coverage.sh	workflows/scripts/install/** workflows/scripts/tests/test_doctor_reviewer_coverage.sh
 bash workflows/scripts/tests/test_doctor_knowledge_root.sh	workflows/scripts/install/** workflows/scripts/lib/knowledge_store*.sh workflows/scripts/build/build.config.sh workflows/scripts/tests/test_doctor_knowledge_root.sh
 bash workflows/scripts/tests/test_doctor_cross_checkout_split.sh	workflows/scripts/install/** workflows/scripts/build/env-reconcile.sh workflows/scripts/tests/test_doctor_cross_checkout_split.sh

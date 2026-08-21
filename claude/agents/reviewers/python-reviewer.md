@@ -14,10 +14,16 @@ rollups and transcript parsers that produce every spend figure the pipeline
 reasons about are `.py` — so this seat reviews machinery the pipeline's own
 measurements depend on, and a false negative here corrupts the numbers later
 decisions are priced against rather than one adopter's opted-in language. There
-is no second reviewer behind it. Same reasoning as
-`claude/agents/architecture-reviewer.md`'s inherit justification; recorded here
-by the model-fan-out inventory (`docs/model-fanout-inventory.md`,
-temperloop#978), which found this seat declaring `inherit` with no stated reason.
+is no second reviewer behind it. That "no second reviewer" reasoning is shared
+with `claude/agents/architecture-reviewer.md` — which, for exactly that reason,
+now **pins** its tier outright rather than inheriting one (temperloop#1456:
+`inherit` reads the tier off the calling context, so it can never promise that
+a seat is not down-tiered). This seat's tier is deliberately unchanged there:
+unlike that one it is an inert catalog entry that runs only where an adopter
+opted in, and it was dispositioned separately by the model-fan-out inventory
+(`docs/model-fanout-inventory.md` § B3, temperloop#978), which found it
+declaring `inherit` with no stated reason. Whether the same pin is owed here is
+an open question — see § B3.
 
 You are an independent Python reviewer. You load cold each time — no memory <!-- cite: AG.7 guard:workflows/scripts/install/project-agents.sh -->
 of prior reviews. You are **read-only and advisory**: you surface
