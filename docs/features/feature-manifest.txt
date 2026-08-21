@@ -458,6 +458,11 @@ quality-gates workflows/scripts/tests/test_validate_feature_docs.sh
 quality-gates workflows/scripts/validate-check-surface-degenerate-coverage.sh
 quality-gates workflows/scripts/validate-exec-bit-registry.sh
 quality-gates workflows/scripts/tests/test_exec_bit_registry.sh
+# Mandatory-step birth rule gate (temperloop#1448, epic #1616) — same claim
+# shape as the two registry gates above; its two TSVs are already reached by
+# the `quality-gates workflows/scripts/config/*` glob.
+quality-gates workflows/scripts/validate-mandatory-step-signal.sh
+quality-gates workflows/scripts/tests/test_validate_mandatory_step_signal.sh
 quality-gates workflows/scripts/tests/test_check_surface_degenerate_coverage.sh
 quality-gates workflows/scripts/tests/test_check_surface_degenerate_backfill.sh
 quality-gates workflows/scripts/validate-design-brief.sh

@@ -169,3 +169,16 @@ workflows/scripts/lint-pr-body.sh	empty	covered	workflows/scripts/tests/test_che
 scripts/lint-argloop-shift2.sh	absent	covered	scripts/tests/test_lint_argloop_shift2.sh	an ABSENT input path: exit non-zero (CANNOT EVALUATE), not 0
 scripts/lint-argloop-shift2.sh	unreadable	covered	scripts/tests/test_lint_argloop_shift2.sh	an UNREADABLE input path: exit non-zero (CANNOT EVALUATE), not 0
 scripts/lint-argloop-shift2.sh	empty	covered	scripts/tests/test_lint_argloop_shift2.sh	an EMPTY resolved file set: exit non-zero (CANNOT EVALUATE), not 0
+
+# ── validate-mandatory-step-signal.sh (temperloop#1448) — the mandatory-step
+#    birth rule gate. Registered rather than parked `pending` (that set is
+#    shrink-only), and its fixture seam is the MANDATORY_STEP_REGISTRY_FILE env
+#    var the regression suite already drives. A gate whose own registry it could
+#    not read must never print OK — the class this file exists to close, and
+#    doubly so for a gate whose whole subject is "declared but never runs".
+#    The injectable "empty input" is a comment-only registry, which parses to
+#    ZERO pairs: a birth-rule gate that checked nothing has established nothing.
+#    ────────────────────────────────────────────────────────────────────────
+workflows/scripts/validate-mandatory-step-signal.sh	absent	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	validate-mandatory-step-signal.sh [absent]: exits non-zero, never a silent OK
+workflows/scripts/validate-mandatory-step-signal.sh	unreadable	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	validate-mandatory-step-signal.sh [unreadable]: exits non-zero, never a silent OK
+workflows/scripts/validate-mandatory-step-signal.sh	empty	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	validate-mandatory-step-signal.sh [empty]: exits non-zero, never a silent OK

@@ -60,6 +60,7 @@ workflows/scripts/validate-exec-bit-registry.sh	top-level validator entrypoint (
 workflows/scripts/validate-feature-docs.sh	top-level validator entrypoint (workflows/scripts/validate-*.sh family) — human-runnable directly, matches its 15 siblings at mode 755
 workflows/scripts/validate-issue-touch-emit.sh	top-level validator entrypoint (workflows/scripts/validate-*.sh family) — human-runnable directly, matches its 15 siblings at mode 755
 workflows/scripts/validate-knowledge-search-emit.sh	top-level validator entrypoint (workflows/scripts/validate-*.sh family) — human-runnable directly, matches its 15 siblings at mode 755
+workflows/scripts/validate-mandatory-step-signal.sh	top-level validator entrypoint (workflows/scripts/validate-*.sh family) — human-runnable directly, matches its 15 siblings at mode 755
 workflows/scripts/validate-model-usage-emit.sh	top-level validator entrypoint (workflows/scripts/validate-*.sh family) — human-runnable directly, matches its 15 siblings at mode 755
 workflows/scripts/validate-onramp-anchors.sh	top-level validator entrypoint (workflows/scripts/validate-*.sh family) — human-runnable directly, matches its 15 siblings at mode 755
 workflows/scripts/validate-prose-budget.sh	top-level validator entrypoint (workflows/scripts/validate-*.sh family) — human-runnable directly, matches its 15 siblings at mode 755
