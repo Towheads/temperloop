@@ -47,12 +47,23 @@
 #     tree silently disable this gate, which is the very "quietly narrows to
 #     zero" failure the contract-surface parse below refuses to commit.
 #
-# THE SAME DISCRIMINATOR GOVERNS THE `CHANGELOG.md` PROBE, which runs first. It
-# once exited 0 unconditionally, which made the fail-loud arm above UNREACHABLE
-# for a tree that had lost CHANGELOG.md too — probe ORDER was the only thing
-# standing between this gate and the invariant stated right here. So: no
-# `CHANGELOG.md` and no `.kernel-pin` FAILS LOUDLY; no `CHANGELOG.md` WITH a pin
-# is the consumer that genuinely keeps no changelog, and gets the legible skip.
+# THE SAME DISCRIMINATOR GOVERNS ALL THREE FILES THIS GATE PROBES —
+# `CHANGELOG.md`, `changelog.d/` and `VERSIONING.md` — and each was retrofitted
+# only after it was caught reporting a clean run it could not have earned:
+#
+#   * `CHANGELOG.md` (the probe that runs FIRST) once exited 0 unconditionally,
+#     which made the `changelog.d/` fail-loud arm above UNREACHABLE for a tree
+#     that had lost CHANGELOG.md too — probe ORDER was the only thing standing
+#     between this gate and the invariant stated right here;
+#   * `VERSIONING.md` (temperloop#1494) was the last holdout, a bare skip at
+#     exit 0 regardless of the pin. That file's § The contract surface table IS
+#     the set this gate enforces over, so losing it narrowed the gate to zero
+#     while it still printed a pass.
+#
+# So, uniformly: the file absent AND no `.kernel-pin` FAILS LOUDLY (a kernel
+# checkout that lost one of its own files); the file absent WITH a pin is the
+# vendoring consumer that genuinely does not carry it, and gets the legible,
+# tag-naming skip. NEVER a silent pass, and never a pass at all for the kernel.
 #
 # The `.kernel-pin` probe goes through `git show "$HEAD:.kernel-pin"` and never
 # a filesystem `[[ -f "$ROOT/.kernel-pin" ]]`: a `<rev>:<path>` not starting
@@ -69,9 +80,11 @@
 # NOT a second definition. The pattern set is PARSED, at run time, out of
 # VERSIONING.md § The contract surface's own table — the backticked paths in
 # its "Where it lives" column. Edit that table and this gate follows; there is
-# no parallel list to keep in sync. If the table cannot be found, or yields
-# implausibly few paths, this script FAILS LOUDLY rather than silently
-# enforcing nothing (a gate that quietly narrows to zero is worse than no gate).
+# no parallel list to keep in sync. If VERSIONING.md is ABSENT, or the table
+# cannot be found in it, or the table yields implausibly few paths, this script
+# FAILS LOUDLY rather than silently enforcing nothing (a gate that quietly
+# narrows to zero is worse than no gate) — with the one pinned-consumer skip the
+# discriminator above carves out.
 #
 # ── The escape hatch is EXPLICIT, never inferred ───────────────────────────
 # Forcing an entry on every commit trains people to write noise, so a genuinely
@@ -542,8 +555,40 @@ if [[ -n "$DRIFT_SECTIONS" || -n "$LOSS_SECTIONS" ]]; then
 fi
 
 # --- property (1) needs the contract-surface definition ---------------------
+# THE SAME `.kernel-pin` DISCRIMINATOR AS THE TWO PROBES ABOVE (temperloop#1494).
+# This probe was the odd one out: it skipped and exited 0 regardless of the pin,
+# so the kernel's OWN checkout losing, renaming or moving VERSIONING.md made
+# property (1) stop being enforced while the gate still reported success.
+# § The contract surface IS this gate's definition of what to enforce — with the
+# file absent the parsed surface set is EMPTY, which is precisely the "quietly
+# narrows to zero" failure this header already refuses twice.
+#
+# The degradation directions are the siblings' directions, for the siblings'
+# reason. A VENDORING CONSUMER legitimately carries no VERSIONING.md at its repo
+# root — it does not run the kernel's release workflow there, and the kernel's
+# own test suite accounts for exactly that layout (test_check_changelog_entry.sh
+# resolves $KERNEL_VERSIONING through this file's symlink, temperloop#1543,
+# because "the overlay root legitimately carries no VERSIONING.md"). So a PINNED
+# tree keeps the legible skip; an UNPINNED tree is a kernel checkout and FAILS.
 if ! git -C "$ROOT" show "$HEAD:$VERSIONING_REL" >/dev/null 2>&1; then
-  say "skipped — no $VERSIONING_REL at $HEAD; nothing defines this tree's contract surface"
+  if ! git -C "$ROOT" show "$HEAD:$KERNEL_PIN_REL" >/dev/null 2>&1; then
+    warn "FAIL — no $VERSIONING_REL at $HEAD, and no $KERNEL_PIN_REL either."
+    warn ""
+    warn "  $KERNEL_PIN_REL is what marks a tree as a VENDORING CONSUMER of this kernel. Without it,"
+    warn "  this is the kernel's own checkout — and a kernel checkout with no $VERSIONING_REL has"
+    warn "  silently disabled this gate's completeness property. § The contract surface is the table"
+    warn "  this gate PARSES to decide what a PR owes an entry for, so with that file gone the"
+    warn "  enforced surface set is EMPTY: every PR would pass property (1) by default. A gate that"
+    warn "  quietly narrows to zero is worse than no gate, so this fails rather than skipping."
+    warn ""
+    warn "  If this IS the kernel (or a fork of it): restore $VERSIONING_REL, and in particular its"
+    warn "  '### The contract surface' table. If the file was deliberately renamed or moved, repoint"
+    warn "  this gate at its new location rather than leaving the old path dangling."
+    warn "  If this is a vendoring overlay that genuinely keeps no $VERSIONING_REL: its repo root is"
+    warn "  missing $KERNEL_PIN_REL. Restore the pin (it is written by 'make update-kernel')."
+    exit 1
+  fi
+  say "skipped — no $VERSIONING_REL at $HEAD; nothing defines this tree's contract surface (vendored kernel $(pinned_kernel_tag)). Property (1) is not enforced here."
   exit 0
 fi
 
