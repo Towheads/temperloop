@@ -3,7 +3,9 @@
 # Tests for pipeline-retro-health.sh — the retro-judge seam detector
 # (temperloop#1150). Zero network, zero real lake: every case builds a
 # synthetic raw lake under TMP and points PIPELINE_RAW_DIR / RETRO_RUNS_RAW_DIR
-# at it.
+# at it. A case that must exercise a stream's DEFAULT (and so cannot pin that
+# stream's env override) fabricates a fixture checkout instead — see
+# `fixture_checkout` below and its temperloop#1408 hermeticity rule.
 #
 # The property under test is the one the seam lacked: a zero-row retro-runs
 # stream must NOT collapse to a single steady state. "No retros were due"
@@ -30,6 +32,33 @@ OLD_TS="2019-01-01T00:00:00Z"
 
 # $1 = lake dir; seeds an empty lake with a pipeline month-file present.
 new_lake() { mkdir -p "$1"; : > "$1/pipeline-$NOW_MONTH.jsonl"; }
+
+# $1 = fixture checkout root. Fabricates a minimal checkout — a copy of the
+# script under <root>/workflows/scripts/build/ plus an empty <root>/meta/data/raw/
+# — and echoes the path to invoke.
+#
+# HERMETICITY RULE (temperloop#1408). The script's CHECKOUT-RELATIVE root
+# (`$here/../../..`) IS the retro-runs default, so any case that leaves
+# RETRO_RUNS_RAW_DIR/TELEMETRY_RAW_DIR unset and runs "$SCRIPT" IN PLACE reads
+# the REAL checkout's meta/data/raw/. That made tests 18 and 19 assert against
+# live host state: green on CI (fresh clone, so the real lake is ALWAYS empty
+# there — the gate was structurally blind to its own non-hermeticity) and red in
+# any checkout that had ever collected a retro-runs row. Worse, t18 flipped
+# pass→fail with no code change at all, purely from the calendar advancing the
+# one real July row out of the 30-day window. A case exercising the retro-runs
+# DEFAULT must therefore run the copy this helper plants, never "$SCRIPT" in
+# place, so the root it resolves is a dir the TEST owns and seeds.
+fixture_checkout() {
+  mkdir -p "$1/workflows/scripts/build" "$1/meta/data/raw"
+  cp "$SCRIPT" "$1/workflows/scripts/build/pipeline-retro-health.sh"
+  printf '%s\n' "$1/workflows/scripts/build/pipeline-retro-health.sh"
+}
+
+# $1 = dir, $2 = ts; writes a one-row retro-runs month-file stamped $2.
+retro_row() {
+  mkdir -p "$1"
+  jq -nc --arg ts "$2" '{ts:$ts,event:"retro-run",judged:1}' > "$1/retro-runs-$NOW_MONTH.jsonl"
+}
 
 # $1=lake $2=action $3=reason(optional) — append one wake record carrying one action.
 wake() {
@@ -249,44 +278,57 @@ OUT="$(TELEMETRY_RAW_DIR="$L" bash "$SCRIPT" --days 30)"
   || bad "t17.status" "$OUT"
 
 echo "--- test 18: RETRO-RUNS stream is NOT pinned to the pipeline writer's absolute root — it stays checkout-relative ---"
-# The critical non-convergence guard from the item's own notes: retro-runs
-# rows exist in BOTH lakes, and pinning this stream to the writer's absolute
-# root would make the probe MISS rows the judge wrote under a different
-# checkout. FAKE_HOME2's meta/data/raw carries a HEALTHY-looking retro-runs
-# row that only a WRONGLY-converged retro_dir would ever see; this checkout's
-# own (real) root carries none. Only PIPELINE_RAW_DIR is pinned, so a
-# defect(never-had-a-row) verdict here proves retro_dir stayed
-# checkout-relative rather than following pipeline_dir's $HOME-anchored
-# default — a healthy verdict would mean the two streams wrongly converged.
+# The critical non-convergence guard from the item's own notes: retro-runs rows
+# exist in BOTH lakes, and pinning this stream to the writer's absolute root
+# would make the probe MISS rows the judge wrote under a different checkout.
+#
+# The two lakes are seeded so the right root and the wrong root give DIFFERENT,
+# non-overlapping verdicts:
+#   fixture CHECKOUT root  — one IN-window row  -> healthy          (correct)
+#   FAKE_HOME2 writer root — one OUT-of-window row -> defect(stalled) (converged)
+# and a retro_dir that followed $pipeline_dir (the third way to get this wrong)
+# lands on $L, which has no retro-runs at all -> defect(never-had-a-row).
+#
+# The probe is the COPY under the fixture checkout, not "$SCRIPT" in place, so
+# the checkout-relative root it resolves is a dir this test seeds rather than
+# the real checkout's live lake (temperloop#1408 — see `fixture_checkout`).
+# Only PIPELINE_RAW_DIR is pinned, isolating this case to the retro-runs default.
 FAKE_HOME2="$TMP/fakehome18"
-mkdir -p "$FAKE_HOME2/dev/foundation/meta/data/raw"
-jq -nc --arg ts "$NOW_TS" '{ts:$ts,event:"retro-run",judged:1}' \
-  > "$FAKE_HOME2/dev/foundation/meta/data/raw/retro-runs-$NOW_MONTH.jsonl"
+retro_row "$FAKE_HOME2/dev/foundation/meta/data/raw" "$OLD_TS"
+CO18="$TMP/checkout18"; PROBE18="$(fixture_checkout "$CO18")"
+retro_row "$CO18/meta/data/raw" "$NOW_TS"
 L="$TMP/l18"; new_lake "$L"
 wake "$L" retro-judge
-OUT="$(HOME="$FAKE_HOME2" PIPELINE_RAW_DIR="$L" bash "$SCRIPT" --days 30)"
-[ "$(jq -r '.status' <<<"$OUT")" = "defect" ] && [ "$(jq -r '.defect_kind' <<<"$OUT")" = "never-had-a-row" ] \
+OUT="$(HOME="$FAKE_HOME2" PIPELINE_RAW_DIR="$L" bash "$PROBE18" --days 30)"
+[ "$(jq -r '.status' <<<"$OUT")" = "healthy" ] \
   && ok "retro-runs resolved against the CHECKOUT root, independent of the pipeline stream's absolute default" \
   || bad "t18.status" "$OUT"
+[ "$(jq -r '.retro_runs.rows_in_window' <<<"$OUT")" = "1" ] \
+  && ok "read the checkout root's in-window row, not the \$HOME-anchored writer root's out-of-window one" \
+  || bad "t18.rows" "$OUT"
 
 echo "--- test 19: MODEL_USAGE_RAW_DIR does not move the RETRO-RUNS stream (temperloop#1565) ---"
 # temperloop#1565 gave pipeline-retro-judge-spawn.sh a MODEL_USAGE_RAW_DIR pin
 # so emit-model-usage.sh stops writing into a vendored kernel/ stub. This
 # script's retro-runs resolution rests on the documented premise that the
 # wrapper overrides no raw dir THIS script reads, so pin the premise: point
-# MODEL_USAGE_RAW_DIR (and, belt-and-braces, a decoy lake carrying a healthy
-# retro-runs row) somewhere only a wrongly-widened resolution would ever look.
-# A defect(never-had-a-row) verdict proves retro_dir ignored it, exactly as in
-# t18 — a healthy verdict would mean the model-usage pin leaked into this
-# stream.
+# MODEL_USAGE_RAW_DIR at a decoy lake carrying an OUT-of-window retro-runs row,
+# somewhere only a wrongly-widened resolution would ever look, while the fixture
+# checkout root carries the IN-window row. A healthy verdict proves retro_dir
+# ignored the decoy, exactly as in t18 — a defect(stalled) verdict would mean
+# the model-usage pin leaked into this stream.
+#
+# Runs the fixture-checkout copy for the same temperloop#1408 reason as t18: this
+# case cannot pin RETRO_RUNS_RAW_DIR (the default is the subject), so without a
+# fixture root it would read the real checkout's live lake.
 DECOY19="$TMP/decoy19"
-mkdir -p "$DECOY19"
-jq -nc --arg ts "$NOW_TS" '{ts:$ts,event:"retro-run",judged:1}' \
-  > "$DECOY19/retro-runs-$NOW_MONTH.jsonl"
+retro_row "$DECOY19" "$OLD_TS"
+CO19="$TMP/checkout19"; PROBE19="$(fixture_checkout "$CO19")"
+retro_row "$CO19/meta/data/raw" "$NOW_TS"
 L="$TMP/l19"; new_lake "$L"
 wake "$L" retro-judge
-OUT="$(MODEL_USAGE_RAW_DIR="$DECOY19" PIPELINE_RAW_DIR="$L" bash "$SCRIPT" --days 30)"
-[ "$(jq -r '.status' <<<"$OUT")" = "defect" ] && [ "$(jq -r '.defect_kind' <<<"$OUT")" = "never-had-a-row" ] \
+OUT="$(MODEL_USAGE_RAW_DIR="$DECOY19" PIPELINE_RAW_DIR="$L" bash "$PROBE19" --days 30)"
+[ "$(jq -r '.status' <<<"$OUT")" = "healthy" ] && [ "$(jq -r '.retro_runs.rows_in_window' <<<"$OUT")" = "1" ] \
   && ok "retro-runs is blind to MODEL_USAGE_RAW_DIR — the model-usage sink pin cannot divert this stream" \
   || bad "t19.status" "$OUT"
 grep -F 'MODEL_USAGE_RAW_DIR' "$SCRIPT" | grep -v '^[[:space:]]*#' >/dev/null \
