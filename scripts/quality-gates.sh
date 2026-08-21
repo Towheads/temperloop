@@ -221,6 +221,21 @@ KERNEL_GATES=(
   # $FOUNDATION. Same direct-`bash` form as the sibling doctor gates above
   # (kernel Makefile is generator-owned; no new target added here).
   "bash workflows/scripts/tests/test_doctor_cross_checkout_split.sh"
+  # Installed build-workflow CONTENT drift guard (temperloop#1397): doctor.sh's
+  # check_installed_workflow_drift() — the CONTENT counterpart to the two
+  # checks above. classify_entry() compares a symlink's TARGET STRING and
+  # check_cross_checkout_split() compares PATH IDENTITY; neither can see a
+  # correctly-targeted ~/.claude/workflows/build-level.mjs whose CONTENT is
+  # weeks stale, which is what /build, /sweep and /fix actually execute by
+  # scriptPath. Pins the full discrimination set — identical copies clean,
+  # drifted copies reported with both sizes/mtimes and two DISTINCT sha256
+  # digests plus which side is newer, an absent installed copy as its OWN
+  # outcome (neither drift nor clean), an uncomparable one as UNKNOWN and
+  # non-zero, and that the check never writes to ~/.claude. Hermetic: an
+  # isolated `env -i` HOME over throwaway fixtures, never the operator's real
+  # ~/.claude. Same direct-`bash` form as the sibling doctor gates above
+  # (kernel Makefile is generator-owned; no new target added here).
+  "bash workflows/scripts/tests/test_doctor_installed_workflow_drift.sh"
   # knowledge_search basic-memory uv-tool install check (temperloop#1113):
   # doctor.sh's check_bm_tool_install() — the DOCTOR half of the hybrid
   # install design (the availability gate's lazy half is covered by

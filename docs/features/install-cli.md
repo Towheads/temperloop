@@ -158,6 +158,27 @@ underlying pieces simply aren't configured yet (the knowledge-store and
 cross-checkout checks additionally FAIL — not just report — on a genuine
 mismatch, contributing to doctor's exit code).
 
+**Installed build-workflow content check.** The five link states above
+compare a symlink's *target string*, and the cross-checkout check compares
+*path identity* — neither can see a correctly-targeted
+`~/.claude/workflows/build-level.mjs` whose *content* is weeks stale, which
+is exactly what `/build`, `/sweep` and `/fix` execute when they invoke the
+orchestrator by `scriptPath`. So `doctor.sh` separately compares every
+installed `~/.claude/workflows/*.mjs` against this checkout's own
+`claude/workflows/*.mjs` by sha256 (byte compare when no hasher is on
+`PATH`) and reports one of five outcomes per file: `OK` (byte-identical),
+`DRIFT` (they differ — printing both sizes, both mtimes and both digests,
+naming which side is newer and by how much, and naming the physical
+directory the installed copy really lives in), `ABSENT` (nothing installed
+there at all — its own outcome, explicitly *neither* drift *nor* in-sync),
+`UNKNOWN` (something is there but could not be compared — a dangling
+symlink, a directory, an unreadable file — indeterminate, never a silent
+pass), or `SKIPPED` (this checkout ships no workflows to compare against).
+`DRIFT` and `UNKNOWN` contribute to doctor's exit code. It **detects and
+reports only** — it never writes to `~/.claude`, because installing is
+global shared state and a deliberately operator-run action; it names the
+remedy and leaves the decision to a human.
+
 **Kernel/overlay compose.** `workflows/scripts/install-claude-md.sh`
 composes the installed `~/.claude/CLAUDE.md` from three pieces, in order: a
 generated-file banner, the kernel doc (`claude/CLAUDE.kernel.md`, with any

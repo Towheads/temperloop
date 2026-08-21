@@ -226,6 +226,11 @@ install-cli workflows/scripts/tests/test_legacy_host_preflight.sh
 # core subject matter (verifying installed state matches the running
 # checkout), so it claims here rather than carving out a new feature.
 install-cli workflows/scripts/tests/test_doctor_cross_checkout_split.sh
+# check_installed_workflow_drift() (temperloop#1397) is the CONTENT
+# counterpart to the path-identity check above — same core subject matter
+# (does the installed state match the running checkout), so it claims here
+# too rather than carving out a new feature.
+install-cli workflows/scripts/tests/test_doctor_installed_workflow_drift.sh
 # (workflows/scripts/demo/ is claimed by the `testbed` slug below — it is the
 # testbed seed-content home now, not the try-era demo-repo generator.)
 install-cli workflows/scripts/proposal/*
