@@ -37,6 +37,13 @@ trap cleanup EXIT
 # shellcheck source=workflows/scripts/lib/agent_declared.sh
 source "$LIB_DIR/agent_declared.sh"
 
+# The lib answers ENTIRELY from AGENT_DECLARED_OVERRIDE whenever that variable is
+# merely SET, so an inherited value from the caller's environment would make every
+# filesystem-surface case below vacuous — they would pass without probing anything.
+# The sibling test_command_declared.sh unsets its own override for this reason;
+# omitting it here was flagged by the §3e shell-reviewer.
+unset AGENT_DECLARED_OVERRIDE
+
 # A cwd with no CLAUDE.md and no .claude/, and a HOME with no .claude/ --
 # the "nothing anywhere" baseline every single-surface case builds on.
 mk_clean_cwd()  { local d="$TMP/$1"; mkdir -p "$d"; printf '%s' "$d"; }

@@ -221,7 +221,7 @@ The subagent is read-only and returns advisory feedback. Apply technical suggest
 
 If items touch architectural boundaries (new module, import-graph changes, public-API shifts), also spawn `Agent { subagent_type: "architecture-reviewer" }` with the same list. Skip otherwise.
 
-**Graceful skip:** review-agent availability follows the canonical predicate in [[Decisions/foundation - Project capability probes]] (a review subagent is available iff the project declares it in `CLAUDE.md § Subagents` or `.claude/agents/`; absent ⇒ skip the review pass). If either subagent isn't available, note "review agents unavailable — review pass skipped" in the Step 5 summary and continue.
+**Graceful skip:** review-agent availability is a MECHANICAL PROBE, never a judgment call (temperloop#1462). Source `workflows/scripts/lib/agent_declared.sh` and read `agent_declared_state <agent>`, which prints exactly one of `installed`, `source-only`, or `absent` (ADR 0029) across the same three surfaces `command_declared` walks. **`installed` is the spawn gate** — do not gate on bare `agent_declared`, which is deliberately true for `source-only` too, and do not re-derive availability by eye from whether a `.claude/agents/` directory exists: read that way, the predicate reported every reviewer unavailable on this repo's own checkout while all eleven agents were installed and spawnable at `$HOME/.claude/agents/`, so a mandatory pass silently did not run. If either subagent isn't available, note "review agents unavailable — review pass skipped" in the Step 5 summary and continue.
 
 ### Artifact-availability audit
 
