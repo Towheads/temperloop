@@ -1,0 +1,115 @@
+# check-surface-discovery.tsv — the DISPOSITION LEDGER that turns the
+# degenerate-input registry from a seed into a CLASS (temperloop#1491,
+# follow-up to temperloop#1476, epic #1409).
+#
+# WHAT PROBLEM THIS FILE SOLVES. check-surface-registry.tsv is opt-in: a
+# check surface nobody registered was not failed, it was simply not checked.
+# So the registry documented what somebody REMEMBERED, and a check surface
+# added next month inherited the exact defect epic #1409 exists to close,
+# silently. The fix is not a longer registry (a longer list is still a list
+# somebody sampled) — it is the §5 DISCOVERY PASS in
+# validate-check-surface-degenerate-coverage.sh, which enumerates the
+# candidate set MECHANICALLY from the tree and FAILS on any candidate that
+# has no disposition anywhere. This file is where a candidate that is
+# deliberately NOT registered records WHY. Silence stopped being a legal
+# answer; an explicit, reviewed reason is now the only way out.
+#
+# THE DISCOVERY PREDICATE (owned by the gate's §5 — restated here for the
+# reader, not duplicated as logic): every tracked file under the repo root
+# whose basename matches `validate-*.sh`, `check-*.sh`, or `lint-*.sh`, with
+# `tests/`, `fixtures/`, `node_modules/` and `.git/` pruned, plus the
+# vendored `kernel/` subtree pruned in a composed overlay (its rows are
+# upstream-owned and upstream-checked).
+#
+# WHAT THE PREDICATE CANNOT SEE — stated, not implied. Two candidate classes
+# are out of its reach BY CONSTRUCTION, and both keep their existing home:
+#   1. SUBCOMMAND surfaces (`replay.sh:diff-scope`) — no filename glob can
+#      find a check-shaped subcommand of a general orchestration script.
+#      That is exactly why the registry is a registry and not a glob, and
+#      those surfaces are registered/allowlisted by hand as before.
+#   2. Check-shaped scripts OUTSIDE the three name families — a hook
+#      (`claude/hooks/*-guard.sh`), a Makefile recipe body. Hooks are a
+#      deliberately different contract: they FAIL OPEN by design (a guard
+#      that cannot evaluate must not block the operator), which is the exact
+#      inverse of this class's fail-closed rule, so folding them in would
+#      register a contradiction.
+# Widening the predicate to a fourth name family is a one-line change in the
+# gate; widening it to the two classes above is a design question, not an
+# omission.
+#
+# FORMAT — TAB-separated, exactly three columns:
+#   1. SURFACE      same grammar as check-surface-registry.tsv's SURFACE
+#                   column (a script path, or `<script-path>:<subcommand>`)
+#   2. DISPOSITION  pending | excluded
+#                     pending   a genuine check surface that SHOULD be
+#                               registered and is not yet. SHRINK-ONLY (see
+#                               below): a `pending` row may be removed (the
+#                               surface got registered) but never ADDED.
+#                     excluded  a discovered path that is deliberately not a
+#                               registrable check surface at all. Growable,
+#                               because a newly-added script legitimately
+#                               matching the name glob but not being a gated
+#                               check needs a home — but every `excluded`
+#                               row is a reviewed claim in the diff, exactly
+#                               like the registry's own `not-applicable`.
+#   3. REASON       mandatory, non-empty, one line. For `pending`, say what
+#                   BLOCKS registration (and name the tracking issue when one
+#                   exists); for `excluded`, say why it is not a check
+#                   surface this class governs.
+#
+# THE PENDING RATCHET (§4c of the gate). The `pending` set may only SHRINK
+# relative to the ratchet base ref, exactly like
+# check-surface-degenerate-allowlist.tsv. Without that, this file would be a
+# nicer-looking version of the hole it closes: a new unregistered surface
+# could be parked here forever with a one-line excuse. It cannot — a NEW
+# check surface must be registered, or argued as `excluded` in review.
+#
+# ADOPTION NOTE FOR A CONSUMING REPO. An ABSENT ledger means ZERO
+# dispositions, so the discovery pass requires every discovered surface to be
+# registered or allowlisted — fail-closed, deliberately, and consistent with
+# how this gate already treats its other inputs. A repo adopting the kernel
+# creates this file and dispositions its own surfaces; the gate's failure
+# output names every one of them, so the list is mechanical, not archaeology.
+
+# ── pending: no input-path fixture seam ────────────────────────────────────
+# These surfaces derive their scan set from their own location (a fixed
+# repo-relative path or `git ls-files`) and read NO environment override, so
+# no absent/unreadable/empty input can be injected without first adding a
+# scan-root seam. That seam is the prerequisite work, not a fixture — which
+# is why they are `pending` rather than registered with a fabricated
+# `not-applicable` claim.
+scripts/lint-bash32-cmdsubst-comment.sh	pending	no input-path fixture seam: scans the tree from its own location with no env override, so the degenerate triple is not injectable until a scan-root seam is added
+scripts/lint-bash32-ctlesc-ifs.sh	pending	no input-path fixture seam: scans the tree from its own location with no env override (it has a --list mode, but no scan-root override), so the degenerate triple is not injectable yet
+scripts/lint-pipe-grep-q.sh	pending	no input-path fixture seam: scans the tree from its own location with no env override (--list aside), so the degenerate triple is not injectable yet
+scripts/lint-zsh-param-tie.sh	pending	no input-path fixture seam: scans the tree from its own location with no env override, so the degenerate triple is not injectable yet
+workflows/scripts/drain/validate-lexicon.sh	pending	no input-path fixture seam: reads the fixed repo-relative workflows/scripts/drain/lexicon.tsv with no env override, so an absent/unreadable/empty lexicon cannot be staged without adding one
+workflows/scripts/validate-activation-registry.sh	pending	no input-path fixture seam: resolves the activation registry and its predicate targets from fixed repo-relative paths with no env override
+workflows/scripts/validate-command-run-emit.sh	pending	no input-path fixture seam: this presence-lint reads fixed repo-relative skill .md files with no env override, so no degenerate input can be pointed at it yet
+workflows/scripts/validate-diagnose-queue-emit.sh	pending	no input-path fixture seam: same presence-lint shape as validate-command-run-emit.sh — fixed repo-relative inputs, no env override
+workflows/scripts/validate-issue-touch-emit.sh	pending	no input-path fixture seam: same presence-lint shape as validate-command-run-emit.sh — fixed repo-relative inputs, no env override
+workflows/scripts/validate-knowledge-search-emit.sh	pending	no input-path fixture seam: same presence-lint shape as validate-command-run-emit.sh — fixed repo-relative inputs, no env override
+
+# ── pending: the only env seam names an OPTIONAL second input ─────────────
+# An override exists, but it names a file whose ABSENCE is documented-legal,
+# so pointing it at a degenerate path proves nothing about the check's
+# primary input — which has no override at all.
+workflows/scripts/validate-capture-backstop.sh	pending	its only env seam (STAGEFIND_DIR) names an optional sibling checkout whose absence is legal; the primary inputs (this repo's own kernel CLAUDE.md and /tidy backstop table) have no override, so the triple is not injectable yet
+workflows/scripts/validate-template-refs.sh	pending	its only env seam (MESSAGE_SCHEMA_OVERLAY) names an optional overlay file whose absence is legal by design; the primary input (claude/message-schema.md) has no override, so the triple is not injectable yet
+
+# ── pending: registration in flight ───────────────────────────────────────
+workflows/scripts/check-changelog-entry.sh	pending	registration is in flight as temperloop#1494 (same epic level as this item); it has a full env seam (CHANGELOG_GATE_ROOT/_BASE/_HEAD) and a dedicated suite, so #1494 registers it and deletes this row — a legal shrink
+
+# ── pending: MEASURED to fail OPEN — a live instance of the class ─────────
+# These three are not "not yet fixtured": they were probed during
+# temperloop#1491 and reported SUCCESS on degenerate input. Registering them
+# `covered` would be false and registering them `not-applicable` would be
+# worse, so they are recorded here with the measured evidence. Each needs a
+# FIX (fail closed) before it can be registered; each needs its own tracked
+# defect issue, which this ledger row is the durable record of until one
+# exists.
+workflows/scripts/config/check-setting-prose.sh	pending	MEASURED FAIL-OPEN (temperloop#1491): with SETTING_PROSE_BASELINE_FILE pointed at an absent, chmod-000, or empty path it printed 'OK — 0 new setting-prose violations' and exited 0 — it could not read its baseline and reported success. Needs a fail-closed fix before registration
+workflows/scripts/kernel/check-gitleaks-kernel.sh	pending	MEASURED FAIL-OPEN (temperloop#1491): with KERNEL_MANIFEST_ROOT pointed at an absent, chmod-000, or empty directory it printed 'OK — gitleaks found 0 leaks across 0 kernel file(s)' and exited 0 — a vacuous pass over an empty scan set. Needs a zero-files-scanned fail-closed guard before registration
+workflows/scripts/kernel/check-producer-egress.sh	pending	MEASURED FAIL-OPEN (temperloop#1491): with CHECK_PRODUCER_EGRESS_KERNEL_ROOT pointed at an absent, chmod-000, or empty directory it printed 'no named producers found to scan' and exited 0 — a vacuous pass over an empty scan set. Needs a zero-producers fail-closed guard before registration
+
+# ── excluded: not a gated check surface ───────────────────────────────────
+workflows/scripts/dev/validate-clean-host-ks-search.sh	excluded	not a gated check surface: an opt-in, manually-invoked Docker+network harness deliberately kept OUT of the gated suite (Makefile's validate-clean-host-ks-search target is not a KERNEL_GATES entry, because kernel principle 3 forbids live-network in gates), so it produces no CI verdict that could report success when it could not run

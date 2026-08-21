@@ -759,6 +759,14 @@ KERNEL_GATES=(
   # allowlist-growth detection against a throwaway git fixture, and the
   # CANNOT-EVALUATE fail-closed paths.
   "bash workflows/scripts/tests/test_check_surface_degenerate_coverage.sh"
+  # The bulk degenerate-input fixture suite (temperloop#1491): the 17 check
+  # surfaces the same item registered in one pass, each proven to exit
+  # non-zero on absent / unreadable / empty input through its own documented
+  # fixture seam. It is the TEST_FILE every one of those 51
+  # check-surface-registry.tsv rows names, so this line is what makes those
+  # rows count — an unwired fixture proves nothing, which is why the gate
+  # above checks for an ACTIVE invocation here.
+  "bash workflows/scripts/tests/test_check_surface_degenerate_backfill.sh"
   # Gate the dropped executable bit, keyed to a registry (temperloop#1326,
   # epic #1415): a script can lose its executable bit (an incidental
   # `mode change 100755 => 100644`, e.g. in a rebase) and stay green forever

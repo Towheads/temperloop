@@ -66,10 +66,28 @@ count() { total=$((total + 1)); }
 
 gitc() { git -c user.name="Check-Surface Test" -c user.email="check-surface-test@example.com" -c commit.gpgsign=false "$@"; }
 
+# The NEUTRAL discovery seam (temperloop#1491). §5 of the gate enumerates
+# candidate check surfaces from CHECK_SURFACE_DISCOVERY_ROOT and fails closed
+# both on an undispositioned candidate AND on an enumeration that finds NONE
+# (EMPTY-DISCOVERY — a vacuous enumeration is the same defect shape as a
+# vacuous registry). Every pre-#1491 fixture below points the gate at a
+# scratch tree containing no candidate-shaped file at all, so without a
+# neutral seam all of them would trip EMPTY-DISCOVERY on a concern they are
+# not about. run_gate therefore defaults discovery at this tiny consistent
+# pair — one candidate, one disposition — and the §5 tests override it via
+# CSD_TEST_DISCOVERY_ROOT / CSD_TEST_DISCOVERY_FILE.
+DISCOVERY_NEUTRAL_ROOT="$WORK/discovery-neutral"
+mkdir -p "$DISCOVERY_NEUTRAL_ROOT"
+: >"$DISCOVERY_NEUTRAL_ROOT/check-neutral.sh"
+DISCOVERY_NEUTRAL_LEDGER="$DISCOVERY_NEUTRAL_ROOT/ledger.tsv"
+printf 'check-neutral.sh\texcluded\tneutral fixture seam for the pre-#1491 tests\n' >"$DISCOVERY_NEUTRAL_LEDGER"
+
 # run_gate <registry> <allowlist> <quality-gates-file> <git-repo-root> [base-ref]
 # base-ref defaults to empty (the gate's own auto-resolve — origin/HEAD then
 # origin/main then quiet skip), matching production default. Tests that need
-# a SPECIFIC base ref (the ratchet tests) pass one explicitly.
+# a SPECIFIC base ref (the ratchet tests) pass one explicitly. Discovery
+# (§5) defaults to the neutral seam above unless the caller exports
+# CSD_TEST_DISCOVERY_ROOT / CSD_TEST_DISCOVERY_FILE.
 run_gate() {
   local registry="$1" allowlist="$2" qg="$3" git_root="$4" base_ref="${5:-}"
   env \
@@ -79,6 +97,8 @@ run_gate() {
     CHECK_SURFACE_GIT_REPO_ROOT="$git_root" \
     CHECK_SURFACE_ALLOWLIST_BASE_REF="$base_ref" \
     CHECK_SURFACE_REPO_ROOT="$git_root" \
+    CHECK_SURFACE_DISCOVERY_ROOT="${CSD_TEST_DISCOVERY_ROOT:-$DISCOVERY_NEUTRAL_ROOT}" \
+    CHECK_SURFACE_DISCOVERY_FILE="${CSD_TEST_DISCOVERY_FILE:-$DISCOVERY_NEUTRAL_LEDGER}" \
     bash "$GATE"
 }
 
@@ -1083,6 +1103,269 @@ case "$out" in
 $out" ;;
 esac
 ok "26 temperloop#1559: a pin-bearing tree with no subtree squash history falls back FAIL-CLOSED to the plain base-ref ratchet, and says so"
+
+# ---------------------------------------------------------------------------
+# SECTION D (temperloop#1491) — §5 THE DISCOVERY PASS, the coverage assertion.
+#
+# Everything above tests surfaces somebody REMEMBERED to register. These
+# tests are about the surfaces nobody did: the gate now enumerates candidate
+# check surfaces MECHANICALLY from the tree and fails closed on any that has
+# no disposition. The discrimination that matters is 27 vs 28 — the SAME
+# tree, the only difference being whether the discovered surface has a
+# reasoned row.
+# ---------------------------------------------------------------------------
+D="$WORK/d"
+mkdir -p "$D/tests"
+: >"$D/check-alpha.sh"  # registered below
+: >"$D/validate-beta.sh" # the discovered-but-unregistered surface under test
+: >"$D/tests/check-under-tests.sh" # must be PRUNED by the predicate
+D_QG="$D/quality-gates.sh"
+D_TESTFILE="$D/test_alpha.sh"
+D_REGISTRY="$D/registry.tsv"
+D_ALLOW="$D/allowlist.tsv"
+D_LEDGER="$D/ledger.tsv"
+D_ANCHOR="alpha degenerate input: exit non-zero, never OK"
+printf 'check "%s" true\n' "$D_ANCHOR" >"$D_TESTFILE"
+printf '#!/usr/bin/env bash\nGATES=(\n  "bash test_alpha.sh"\n)\n' >"$D_QG"
+: >"$D_ALLOW"
+{
+  printf 'check-alpha.sh\tabsent\tcovered\ttest_alpha.sh\t%s\n' "$D_ANCHOR"
+  printf 'check-alpha.sh\tunreadable\tnot-applicable\t-\tno file-shaped input\n'
+  printf 'check-alpha.sh\tempty\tnot-applicable\t-\tno file-shaped input\n'
+} >"$D_REGISTRY"
+
+# --- 27. An unregistered, undispositioned discovered surface is RED. -------
+: >"$D_LEDGER"
+count
+rc=0
+out="$(CSD_TEST_DISCOVERY_ROOT="$D" CSD_TEST_DISCOVERY_FILE="$D_LEDGER" \
+  run_gate "$D_REGISTRY" "$D_ALLOW" "$D_QG" "$D" 2>&1)" || rc=$?
+[[ "$rc" -ne 0 ]] || fail "27: a mechanically discovered surface with no disposition anywhere should be RED, got rc=0:
+$out"
+case "$out" in
+  *"UNREGISTERED-SURFACE"*"validate-beta.sh"*) ;;
+  *) fail "27: expected an UNREGISTERED-SURFACE line naming validate-beta.sh, got:
+$out" ;;
+esac
+ok "27 temperloop#1491: a discovered check surface with NO disposition fails closed, naming it"
+
+# --- 28. THE DISCRIMINATION: the same tree, one reasoned row -> GREEN. -----
+#     This is the pair that proves §5 is a real assertion and not a constant:
+#     nothing about the tree changed except the ledger row.
+printf 'validate-beta.sh\tpending\tno input-path fixture seam yet\n' >"$D_LEDGER"
+count
+rc=0
+out="$(CSD_TEST_DISCOVERY_ROOT="$D" CSD_TEST_DISCOVERY_FILE="$D_LEDGER" \
+  run_gate "$D_REGISTRY" "$D_ALLOW" "$D_QG" "$D" 2>&1)" || rc=$?
+[[ "$rc" -eq 0 ]] || fail "28: the same tree with a reasoned 'pending' row should be GREEN, got rc=$rc:
+$out"
+case "$out" in
+  *"Discovery pass: 2 candidate check surface(s)"*) ;;
+  *) fail "28: expected the verdict to state the discovered count (2 — check-alpha.sh + validate-beta.sh, with tests/ pruned), got:
+$out" ;;
+esac
+ok "28 temperloop#1491: the SAME tree passes once the discovered surface carries a reasoned disposition (and tests/ is pruned: 2 candidates, not 3)"
+
+# --- 29. A disposition with no REASON is not a disposition. ----------------
+printf 'validate-beta.sh\tpending\t\n' >"$D_LEDGER"
+count
+rc=0
+out="$(CSD_TEST_DISCOVERY_ROOT="$D" CSD_TEST_DISCOVERY_FILE="$D_LEDGER" \
+  run_gate "$D_REGISTRY" "$D_ALLOW" "$D_QG" "$D" 2>&1)" || rc=$?
+[[ "$rc" -ne 0 ]] || fail "29: an empty REASON should be RED, got rc=0:
+$out"
+case "$out" in
+  *"DISPOSITION-UNJUSTIFIED"*"validate-beta.sh"*) ;;
+  *) fail "29: expected DISPOSITION-UNJUSTIFIED naming validate-beta.sh, got:
+$out" ;;
+esac
+ok "29 temperloop#1491: a ledger row with an empty REASON is rejected — silence stays illegal"
+
+# --- 30. An unrecognized disposition is RED (not silently ignored). --------
+printf 'validate-beta.sh\twontfix\tsome words\n' >"$D_LEDGER"
+count
+rc=0
+out="$(CSD_TEST_DISCOVERY_ROOT="$D" CSD_TEST_DISCOVERY_FILE="$D_LEDGER" \
+  run_gate "$D_REGISTRY" "$D_ALLOW" "$D_QG" "$D" 2>&1)" || rc=$?
+[[ "$rc" -ne 0 ]] || fail "30: an unrecognized disposition should be RED, got rc=0:
+$out"
+case "$out" in
+  *"BAD-DISPOSITION"*"validate-beta.sh"*) ;;
+  *) fail "30: expected BAD-DISPOSITION naming validate-beta.sh, got:
+$out" ;;
+esac
+ok "30 temperloop#1491: an unrecognized DISPOSITION is rejected rather than treated as a disposition"
+
+# --- 31. A stale ledger row (surface no longer in the tree) is RED. --------
+{
+  printf 'validate-beta.sh\tpending\tno input-path fixture seam yet\n'
+  printf 'check-ghost.sh\texcluded\tthis script was deleted three refactors ago\n'
+} >"$D_LEDGER"
+count
+rc=0
+out="$(CSD_TEST_DISCOVERY_ROOT="$D" CSD_TEST_DISCOVERY_FILE="$D_LEDGER" \
+  run_gate "$D_REGISTRY" "$D_ALLOW" "$D_QG" "$D" 2>&1)" || rc=$?
+[[ "$rc" -ne 0 ]] || fail "31: a ledger row naming a script the tree does not have should be RED, got rc=0:
+$out"
+case "$out" in
+  *"SURFACE-NOT-FOUND"*"check-ghost.sh"*) ;;
+  *) fail "31: expected SURFACE-NOT-FOUND naming check-ghost.sh, got:
+$out" ;;
+esac
+ok "31 temperloop#1491: a stale discovery-ledger row is flagged, so the ledger cannot rot into a list of ghosts"
+
+# --- 32. A ledger row SUPERSEDED by a registration is a NOTE, not a fail. --
+#     Load-bearing for concurrent work (temperloop#1494 registers a surface
+#     this item listed 'pending'): the registering PR must not have to also
+#     delete the row in the same commit to stay green.
+{
+  printf 'validate-beta.sh\tpending\tno input-path fixture seam yet\n'
+  printf 'check-alpha.sh\tpending\tthis one has SINCE been registered\n'
+} >"$D_LEDGER"
+count
+rc=0
+out="$(CSD_TEST_DISCOVERY_ROOT="$D" CSD_TEST_DISCOVERY_FILE="$D_LEDGER" \
+  run_gate "$D_REGISTRY" "$D_ALLOW" "$D_QG" "$D" 2>&1)" || rc=$?
+[[ "$rc" -eq 0 ]] || fail "32: a ledger row superseded by a registration should stay GREEN, got rc=$rc:
+$out"
+case "$out" in
+  *"check-alpha.sh"*"SUPERSEDED"*) ;;
+  *) fail "32: expected a SUPERSEDED note naming check-alpha.sh, got:
+$out" ;;
+esac
+ok "32 temperloop#1491: a ledger row superseded by a registration is REPORTED, not failed (concurrent registration stays green)"
+
+# --- 33. An enumeration that finds NOTHING is a vacuous pass. --------------
+EMPTY_D="$WORK/d-empty"
+mkdir -p "$EMPTY_D"
+count
+rc=0
+out="$(CSD_TEST_DISCOVERY_ROOT="$EMPTY_D" CSD_TEST_DISCOVERY_FILE="$D_LEDGER" \
+  run_gate "$D_REGISTRY" "$D_ALLOW" "$D_QG" "$D" 2>&1)" || rc=$?
+[[ "$rc" -ne 0 ]] || fail "33: an enumeration finding zero candidates should be RED, got rc=0:
+$out"
+case "$out" in
+  *"EMPTY-DISCOVERY"*) ;;
+  *) fail "33: expected an EMPTY-DISCOVERY line, got:
+$out" ;;
+esac
+ok "33 temperloop#1491: a discovery pass that enumerates ZERO candidates fails closed — the gate does not become an instance of its own defect class"
+
+# --- 34. An UNREADABLE ledger is CANNOT EVALUATE, never a pass. ------------
+UNREADABLE_LEDGER="$D/unreadable-ledger.tsv"
+printf 'validate-beta.sh\tpending\tno input-path fixture seam yet\n' >"$UNREADABLE_LEDGER"
+chmod 000 "$UNREADABLE_LEDGER"
+count
+rc=0
+out="$(CSD_TEST_DISCOVERY_ROOT="$D" CSD_TEST_DISCOVERY_FILE="$UNREADABLE_LEDGER" \
+  run_gate "$D_REGISTRY" "$D_ALLOW" "$D_QG" "$D" 2>&1)" || rc=$?
+chmod 644 "$UNREADABLE_LEDGER"
+[[ "$rc" -ne 0 ]] || fail "34: an unreadable discovery ledger should be RED, got rc=0:
+$out"
+case "$out" in
+  *"CANNOT EVALUATE"*) ;;
+  *) fail "34: expected a CANNOT EVALUATE verdict, got:
+$out" ;;
+esac
+ok "34 temperloop#1491: an unreadable discovery ledger is CANNOT EVALUATE (fail-closed), never a silent pass"
+
+# ---------------------------------------------------------------------------
+# 35/36. §4c THE PENDING RATCHET — the `pending` set may only SHRINK. Without
+#        it the ledger would be a nicer-looking version of the hole §5 closes.
+# ---------------------------------------------------------------------------
+R="$WORK/d-ratchet"
+mkdir -p "$R"
+: >"$R/check-alpha.sh"
+: >"$R/validate-beta.sh"
+: >"$R/validate-gamma.sh"
+printf 'check "%s" true\n' "$D_ANCHOR" >"$R/test_alpha.sh"
+printf '#!/usr/bin/env bash\nGATES=(\n  "bash test_alpha.sh"\n)\n' >"$R/quality-gates.sh"
+: >"$R/allowlist.tsv"
+{
+  printf 'check-alpha.sh\tabsent\tcovered\ttest_alpha.sh\t%s\n' "$D_ANCHOR"
+  printf 'check-alpha.sh\tunreadable\tnot-applicable\t-\tno file-shaped input\n'
+  printf 'check-alpha.sh\tempty\tnot-applicable\t-\tno file-shaped input\n'
+} >"$R/registry.tsv"
+{
+  printf 'validate-beta.sh\tpending\tno input-path fixture seam yet\n'
+  printf 'validate-gamma.sh\tpending\tno input-path fixture seam yet\n'
+} >"$R/ledger.tsv"
+gitc -C "$R" init -q 2>/dev/null || git -C "$R" init -q
+gitc -C "$R" add -A
+GIT_AUTHOR_DATE="2024-01-01T00:00:00Z" GIT_COMMITTER_DATE="2024-01-01T00:00:00Z" \
+  gitc -C "$R" commit -q -m "base: two pending dispositions"
+R_BASE="$(git -C "$R" rev-parse HEAD)"
+
+# 35. GROWTH: a newly discovered surface parked as `pending` is RED.
+: >"$R/validate-delta.sh"
+{
+  printf 'validate-beta.sh\tpending\tno input-path fixture seam yet\n'
+  printf 'validate-gamma.sh\tpending\tno input-path fixture seam yet\n'
+  printf 'validate-delta.sh\tpending\tI would rather not write a fixture today\n'
+} >"$R/ledger.tsv"
+count
+rc=0
+out="$(CSD_TEST_DISCOVERY_ROOT="$R" CSD_TEST_DISCOVERY_FILE="$R/ledger.tsv" \
+  run_gate "$R/registry.tsv" "$R/allowlist.tsv" "$R/quality-gates.sh" "$R" "$R_BASE" 2>&1)" || rc=$?
+[[ "$rc" -ne 0 ]] || fail "35: parking a NEWLY discovered surface as 'pending' should be RED, got rc=0:
+$out"
+case "$out" in
+  *"PENDING-GREW"*"validate-delta.sh"*) ;;
+  *) fail "35: expected PENDING-GREW naming validate-delta.sh, got:
+$out" ;;
+esac
+ok "35 temperloop#1491: the pending set is shrink-only — a newly discovered surface cannot be parked behind a one-line excuse"
+
+# 35b. IDENTITY: an UNCHANGED pending set is GREEN — including its LAST entry.
+# REGRESSION (§3e shell-reviewer, HIGH). _csd_pending_from_content emits
+# newline-TERMINATED entries, but its callers capture it through `$( )`, which
+# strips every trailing newline. The membership test closes on one
+# (`*$'\n'"$item"$'\n'*`), so the LAST entry of the base set could never match
+# and was falsely reported PENDING-GREW on every run.
+#
+# Case 35 cannot catch this: it seeds beta,gamma and asserts on DELTA, a genuine
+# addition, so the broken last-entry match never changes its verdict. This case
+# compares the ledger against ITSELF — the gate must be green against its own
+# byte-identical content, which is exactly the reproduction the reviewer ran.
+{
+  printf 'validate-beta.sh\tpending\tno input-path fixture seam yet\n'
+  printf 'validate-gamma.sh\tpending\tno input-path fixture seam yet\n'
+} >"$R/ledger.tsv"
+count
+rc=0
+out="$(CSD_TEST_DISCOVERY_ROOT="$R" CSD_TEST_DISCOVERY_FILE="$R/ledger.tsv" \
+  run_gate "$R/registry.tsv" "$R/allowlist.tsv" "$R/quality-gates.sh" "$R" "$R_BASE" 2>&1)" || rc=$?
+[[ "$rc" -eq 0 ]] || fail "35b: an UNCHANGED pending set must be GREEN, got rc=$rc:
+$out"
+case "$out" in
+  *"PENDING-GREW"*) fail "35b: the LAST pending entry was falsely reported as grown — the trailing-newline loss is back:
+$out" ;;
+esac
+ok "35b temperloop#1491: the ratchet is green against its own byte-identical ledger — the last entry matches too"
+
+# 36. SHRINK: removing a pending row (the surface got registered) is legal.
+rm -f "$R/validate-delta.sh"
+{
+  printf 'validate-beta.sh\tpending\tno input-path fixture seam yet\n'
+} >"$R/ledger.tsv"
+: >"$R/test_gamma.sh"
+printf 'check "%s" true\n' "gamma degenerate input: exit non-zero, never OK" >"$R/test_gamma.sh"
+printf '#!/usr/bin/env bash\nGATES=(\n  "bash test_alpha.sh"\n  "bash test_gamma.sh"\n)\n' >"$R/quality-gates.sh"
+{
+  printf 'check-alpha.sh\tabsent\tcovered\ttest_alpha.sh\t%s\n' "$D_ANCHOR"
+  printf 'check-alpha.sh\tunreadable\tnot-applicable\t-\tno file-shaped input\n'
+  printf 'check-alpha.sh\tempty\tnot-applicable\t-\tno file-shaped input\n'
+  printf 'validate-gamma.sh\tabsent\tcovered\ttest_gamma.sh\t%s\n' "gamma degenerate input: exit non-zero, never OK"
+  printf 'validate-gamma.sh\tunreadable\tnot-applicable\t-\tno file-shaped input\n'
+  printf 'validate-gamma.sh\tempty\tnot-applicable\t-\tno file-shaped input\n'
+} >"$R/registry.tsv"
+count
+rc=0
+out="$(CSD_TEST_DISCOVERY_ROOT="$R" CSD_TEST_DISCOVERY_FILE="$R/ledger.tsv" \
+  run_gate "$R/registry.tsv" "$R/allowlist.tsv" "$R/quality-gates.sh" "$R" "$R_BASE" 2>&1)" || rc=$?
+[[ "$rc" -eq 0 ]] || fail "36: burning a pending row down into a registration should be GREEN, got rc=$rc:
+$out"
+ok "36 temperloop#1491: deleting a pending row because the surface got registered is a legal SHRINK"
 
 echo
 echo "$pass/$total tests passed"

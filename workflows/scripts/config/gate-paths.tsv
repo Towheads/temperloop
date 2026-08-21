@@ -211,8 +211,13 @@ bash workflows/scripts/tests/test_validate_provider_disclosure.sh	workflows/scri
 # file — a change to any of them can flip this gate's verdict (an anchor
 # moving, a fixture regressing) even though it doesn't touch this gate's own
 # two files. Generous on purpose, per this file's own header.
-bash workflows/scripts/validate-check-surface-degenerate-coverage.sh	workflows/scripts/validate-check-surface-degenerate-coverage.sh workflows/scripts/config/check-surface-registry.tsv workflows/scripts/config/check-surface-degenerate-allowlist.tsv workflows/scripts/lib/cannot-evaluate.sh workflows/scripts/validate-provider-disclosure.sh workflows/scripts/tests/test_validate_provider_disclosure.sh workflows/scripts/validate-model-usage-emit.sh workflows/scripts/tests/test_model_usage_emit.sh workflows/scripts/model-comparison/replay.sh workflows/scripts/model-comparison/tests/test_replay_isolation.sh scripts/quality-gates.sh
-bash workflows/scripts/tests/test_check_surface_degenerate_coverage.sh	workflows/scripts/tests/test_check_surface_degenerate_coverage.sh workflows/scripts/validate-check-surface-degenerate-coverage.sh workflows/scripts/config/check-surface-registry.tsv workflows/scripts/config/check-surface-degenerate-allowlist.tsv
+bash workflows/scripts/validate-check-surface-degenerate-coverage.sh	workflows/scripts/validate-check-surface-degenerate-coverage.sh workflows/scripts/config/check-surface-registry.tsv workflows/scripts/config/check-surface-degenerate-allowlist.tsv workflows/scripts/config/check-surface-discovery.tsv workflows/scripts/lib/cannot-evaluate.sh workflows/scripts/validate-provider-disclosure.sh workflows/scripts/tests/test_validate_provider_disclosure.sh workflows/scripts/validate-model-usage-emit.sh workflows/scripts/tests/test_model_usage_emit.sh workflows/scripts/model-comparison/replay.sh workflows/scripts/model-comparison/tests/test_replay_isolation.sh scripts/quality-gates.sh
+bash workflows/scripts/tests/test_check_surface_degenerate_coverage.sh	workflows/scripts/tests/test_check_surface_degenerate_coverage.sh workflows/scripts/validate-check-surface-degenerate-coverage.sh workflows/scripts/config/check-surface-registry.tsv workflows/scripts/config/check-surface-degenerate-allowlist.tsv workflows/scripts/config/check-surface-discovery.tsv
+# The bulk degenerate-input fixture suite (temperloop#1491) drives 17 real
+# check surfaces, so it must re-run whenever any of them changes — hence the
+# broad globs rather than a per-surface list that would drift the moment a
+# new surface is registered.
+bash workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh workflows/scripts/config/check-surface-registry.tsv workflows/scripts/validate-*.sh workflows/scripts/config/check-*.sh workflows/scripts/kernel/check-*.sh workflows/scripts/lint-pr-body.sh
 
 # Gate the dropped executable bit (temperloop#1326, epic #1415) and its own
 # fixture suite. The gate reads its two config files (registry + shrink-only

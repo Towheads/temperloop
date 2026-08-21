@@ -40,18 +40,19 @@
 # exist; a row naming a script the tree doesn't have now fails
 # SURFACE-NOT-FOUND rather than silently passing).
 #
-# SEED SET, DELIBERATELY NOT EXHAUSTIVE. This item registers the three
-# surfaces epic #1409's own motivating instances named (plus this gate
-# itself), and the two explicitly out-of-scope surfaces on the allowlist
-# (tagging.sh — #1480; batch.sh's line-141 bootstrap check — #1487). Dozens
-# of other `validate-*.sh` scripts in this repo are not yet in the registry
-# at all — a registry with a small seed set is legitimate (coverage is
-# opt-in and grows as surfaces are added), never a reason to fall back to a
-# glob. Widening the registry to the rest of the repo's check surfaces is
-# future work — but per §4 below, once a surface IS registered, its rows can
-# no longer be quietly removed or downgraded.
+# NO LONGER A SEED SET — COVERAGE IS NO LONGER OPT-IN (temperloop#1491).
+# The first cut of this gate (temperloop#1476) registered exactly the three
+# surfaces epic #1409's motivating instances named, plus this gate itself,
+# and said so honestly: an UNREGISTERED surface was not failed, it was simply
+# not checked. That is a seed, not a class — the registry documented what
+# somebody remembered, and a check surface added next month inherited the
+# original defect silently. §5 below closes it: the candidate set is now
+# ENUMERATED MECHANICALLY from the tree and a candidate with no disposition
+# anywhere FAILS. Registering the rest of the repo's surfaces was the first
+# OUTPUT of that assertion, never the fix itself — a longer hand-written list
+# is still a list somebody sampled.
 #
-# ── The two config files ────────────────────────────────────────────────────
+# ── The three config files ──────────────────────────────────────────────────
 #   check-surface-registry.tsv            SURFACE / CASE / STATUS / TEST_FILE /
 #                                          DETAIL — one row per (surface, case).
 #                                          STATUS=covered rows are verified by
@@ -74,6 +75,18 @@
 #                                          never added — see §4. Starting
 #                                          non-empty is expected, not a
 #                                          failure.
+#   check-surface-discovery.tsv            SURFACE / DISPOSITION / REASON for
+#                                          every MECHANICALLY DISCOVERED
+#                                          surface that is deliberately not
+#                                          registered (temperloop#1491) —
+#                                          `pending` (should be registered,
+#                                          blocked on something named;
+#                                          SHRINK-ONLY per §4c) or `excluded`
+#                                          (not a registrable check surface).
+#                                          §5 fails any discovered surface in
+#                                          none of the three files. An ABSENT
+#                                          ledger means ZERO dispositions,
+#                                          which is the STRICT reading.
 #
 # ── What "covered" actually verifies (per case) ─────────────────────────────
 #   1. TEST_FILE exists and is readable (else CANNOT EVALUATE — see below).
@@ -189,6 +202,10 @@
 #                                         check-surface-registry.tsv
 #   CHECK_SURFACE_ALLOWLIST_FILE         default: workflows/scripts/config/
 #                                         check-surface-degenerate-allowlist.tsv
+#   CHECK_SURFACE_DISCOVERY_FILE         default: workflows/scripts/config/
+#                                         check-surface-discovery.tsv
+#   CHECK_SURFACE_DISCOVERY_ROOT         default: CHECK_SURFACE_REPO_ROOT —
+#                                         the tree §5 enumerates
 #   CHECK_SURFACE_QUALITY_GATES_FILE     default: scripts/quality-gates.sh
 #   CHECK_SURFACE_GIT_REPO_ROOT          default: this repo's root — the repo
 #                                         every `git` ratchet operation runs
@@ -219,7 +236,12 @@ DEFAULT_REPO_ROOT="$(cd -P "$SCRIPT_DIR/../.." && pwd)"
 : "${CHECK_SURFACE_GIT_REPO_ROOT:=$DEFAULT_REPO_ROOT}"
 : "${CHECK_SURFACE_REGISTRY_FILE:=$SCRIPT_DIR/config/check-surface-registry.tsv}"
 : "${CHECK_SURFACE_ALLOWLIST_FILE:=$SCRIPT_DIR/config/check-surface-degenerate-allowlist.tsv}"
+: "${CHECK_SURFACE_DISCOVERY_FILE:=$SCRIPT_DIR/config/check-surface-discovery.tsv}"
 : "${CHECK_SURFACE_QUALITY_GATES_FILE:=$CHECK_SURFACE_REPO_ROOT/scripts/quality-gates.sh}"
+# The tree §5's discovery pass enumerates. Defaults to the same root every
+# other relative path seam resolves against, so a fixture that redirects
+# CHECK_SURFACE_REPO_ROOT at a scratch tree redirects discovery with it.
+: "${CHECK_SURFACE_DISCOVERY_ROOT:=$CHECK_SURFACE_REPO_ROOT}"
 # Empty by default — §origin resolution auto-resolves at ratchet time. An
 # operator-set value is honored VERBATIM (never re-resolved).
 : "${CHECK_SURFACE_ALLOWLIST_BASE_REF:=}"
@@ -251,6 +273,8 @@ _csd_resolve_path() {
 CHECK_SURFACE_REGISTRY_FILE="$(_csd_resolve_path "$CHECK_SURFACE_REGISTRY_FILE")"
 CHECK_SURFACE_ALLOWLIST_FILE="$(_csd_resolve_path "$CHECK_SURFACE_ALLOWLIST_FILE")"
 CHECK_SURFACE_QUALITY_GATES_FILE="$(_csd_resolve_path "$CHECK_SURFACE_QUALITY_GATES_FILE")"
+CHECK_SURFACE_DISCOVERY_FILE="$(_csd_resolve_path "$CHECK_SURFACE_DISCOVERY_FILE")"
+CHECK_SURFACE_DISCOVERY_ROOT="$(_csd_resolve_path "$CHECK_SURFACE_DISCOVERY_ROOT")"
 
 [[ -f "$CHECK_SURFACE_REGISTRY_FILE" ]] || _csd_cannot_evaluate "registry file not found: $CHECK_SURFACE_REGISTRY_FILE"
 [[ -r "$CHECK_SURFACE_REGISTRY_FILE" ]] || _csd_cannot_evaluate "registry file exists but is not readable: $CHECK_SURFACE_REGISTRY_FILE"
@@ -258,6 +282,15 @@ CHECK_SURFACE_QUALITY_GATES_FILE="$(_csd_resolve_path "$CHECK_SURFACE_QUALITY_GA
 # An absent allowlist is legal (fully burned down); an UNREADABLE one is not.
 if [[ -e "$CHECK_SURFACE_ALLOWLIST_FILE" && ! -r "$CHECK_SURFACE_ALLOWLIST_FILE" ]]; then
   _csd_cannot_evaluate "allowlist file exists but is not readable: $CHECK_SURFACE_ALLOWLIST_FILE"
+fi
+
+# Same rule as the allowlist: an ABSENT discovery ledger is legal and means
+# ZERO dispositions (so §5 requires every discovered surface to be registered
+# or allowlisted — strictly MORE demanding, never a silent pass); an
+# UNREADABLE one is CANNOT EVALUATE, because "is this surface dispositioned"
+# is undecidable without reading it.
+if [[ -e "$CHECK_SURFACE_DISCOVERY_FILE" && ! -r "$CHECK_SURFACE_DISCOVERY_FILE" ]]; then
+  _csd_cannot_evaluate "discovery ledger exists but is not readable: $CHECK_SURFACE_DISCOVERY_FILE"
 fi
 
 [[ -f "$CHECK_SURFACE_QUALITY_GATES_FILE" ]] || _csd_cannot_evaluate "quality-gates file not found: $CHECK_SURFACE_QUALITY_GATES_FILE"
@@ -323,6 +356,23 @@ _csd_surface_exists() {
   local script resolved
   script="$(_csd_surface_script "$1")"
   resolved="$(_csd_resolve_path "$script")"
+  [[ -f "$resolved" ]]
+}
+
+# _csd_discovery_surface_exists <surface> -> rc 0 iff the SURFACE's script
+# half exists under the DISCOVERY root. Same check as _csd_surface_exists
+# above, resolved against CHECK_SURFACE_DISCOVERY_ROOT instead of
+# CHECK_SURFACE_REPO_ROOT: a discovery-ledger row's path is by construction
+# relative to the tree §5 enumerates. In production the two roots are the
+# same path, so this is identical to _csd_surface_exists; they diverge only
+# under a fixture that redirects one of them.
+_csd_discovery_surface_exists() {
+  local script resolved
+  script="$(_csd_surface_script "$1")"
+  case "$script" in
+    /*) resolved="$script" ;;
+    *) resolved="$CHECK_SURFACE_DISCOVERY_ROOT/$script" ;;
+  esac
   [[ -f "$resolved" ]]
 }
 
@@ -523,6 +573,73 @@ if [[ -f "$CHECK_SURFACE_ALLOWLIST_FILE" ]]; then
     allowlist_surfaces="$allowlist_surfaces$a_surface
 "
   done < <(_csd_tsv_file "$CHECK_SURFACE_ALLOWLIST_FILE")
+fi
+
+# ---------------------------------------------------------------------------
+# 3b. Parse the DISCOVERY DISPOSITION LEDGER: SURFACE<TAB>DISPOSITION<TAB>
+#     REASON (temperloop#1491). This is the third, and last, legal home for a
+#     check surface: registered (compliant), allowlisted (registered but not
+#     yet proven), or dispositioned here (`pending` — should be registered,
+#     blocked on something named; `excluded` — not a registrable check
+#     surface at all). §5 below fails any MECHANICALLY DISCOVERED surface
+#     that is in none of the three. An absent ledger parses to zero rows,
+#     which is the strict reading, not a lenient one.
+# ---------------------------------------------------------------------------
+discovery_surfaces=""
+discovery_pending=""
+n_pending=0
+n_excluded=0
+if [[ -f "$CHECK_SURFACE_DISCOVERY_FILE" ]]; then
+  while IFS=$'\x1f' read -r d_surface d_disp d_reason || [[ -n "${d_surface:-}" ]]; do
+    [[ -z "${d_surface:-}" ]] && continue
+    case "$d_surface" in \#*) continue ;; esac
+    case "${d_disp:-}" in
+      pending)
+        n_pending=$((n_pending + 1))
+        discovery_pending="$discovery_pending$d_surface
+"
+        ;;
+      excluded) n_excluded=$((n_excluded + 1)) ;;
+      *)
+        failures+=("BAD-DISPOSITION  $d_surface — unrecognized disposition '${d_disp:-}' in $CHECK_SURFACE_DISCOVERY_FILE (want: pending, excluded)")
+        continue
+        ;;
+    esac
+    trimmed_reason="$(printf '%s' "${d_reason:-}" | awk '{ gsub(/^[ \t]+|[ \t]+$/, ""); print }')"
+    if [[ -z "$trimmed_reason" ]]; then
+      failures+=("DISPOSITION-UNJUSTIFIED  $d_surface — every discovery-ledger row requires a non-empty REASON (a disposition without a reason is the silence this ledger exists to end)")
+    fi
+    if ! _csd_discovery_surface_exists "$d_surface"; then
+      failures+=("SURFACE-NOT-FOUND  $d_surface — the script half ($(_csd_surface_script "$d_surface")) does not exist in the tree (a stale discovery-ledger row: prune it)")
+    fi
+    discovery_surfaces="$discovery_surfaces$d_surface
+"
+  done < <(_csd_tsv_file "$CHECK_SURFACE_DISCOVERY_FILE")
+fi
+
+# A ledger row for a surface that has SINCE been registered (or allowlisted)
+# is SUPERSEDED, not a failure. This is deliberate and load-bearing for
+# concurrent work: the PR that registers a `pending` surface is authored
+# against a tree where the row still exists, and hard-failing on the overlap
+# would make every such registration a two-PR dance. The row is reported so
+# it gets pruned, and it can never HIDE anything — the surface is compliant
+# by the registry's own rules either way.
+superseded_lines=()
+if [[ -n "$discovery_surfaces" ]]; then
+  while IFS= read -r d_surface; do
+    [[ -z "$d_surface" ]] && continue
+    case $'\n'"${known_surfaces:-}"$'\n' in
+      *$'\n'"$d_surface"$'\n'*)
+        superseded_lines+=("note: discovery-ledger row $d_surface is SUPERSEDED — the surface is now in $CHECK_SURFACE_REGISTRY_FILE; prune the ledger row")
+        continue
+        ;;
+    esac
+    case $'\n'"$allowlist_surfaces" in
+      *$'\n'"$d_surface"$'\n'*)
+        superseded_lines+=("note: discovery-ledger row $d_surface is SUPERSEDED — the surface is now on $CHECK_SURFACE_ALLOWLIST_FILE; prune the ledger row")
+        ;;
+    esac
+  done <<<"$discovery_surfaces"
 fi
 
 # Registry/allowlist must be disjoint: a surface cannot be both compliant and
@@ -786,6 +903,188 @@ else
   ratchet_lines+=("registry ratchet: SKIPPED ($_csd_ratchet_skip_reason)")
 fi
 
+# _csd_pending_from_content <tsv-content> -> the `pending` SURFACE column of
+# a discovery-ledger blob, one per line. Used by 4c for BOTH sides of the
+# comparison (the base ref's copy and, in a composed overlay, the vendored
+# kernel's own pulled copy).
+_csd_pending_from_content() {
+  local content="$1" c_surface c_disp _c_rest out=""
+  [[ -n "$content" ]] || return 0
+  while IFS=$'\x1f' read -r c_surface c_disp _c_rest || [[ -n "${c_surface:-}" ]]; do
+    [[ -z "${c_surface:-}" ]] && continue
+    case "$c_surface" in \#*) continue ;; esac
+    [[ "${c_disp:-}" == "pending" ]] || continue
+    out="$out$c_surface
+"
+  done < <(_csd_tsv_string "$content")
+  printf '%s' "$out"
+}
+
+# --- 4c. Pending ratchet (temperloop#1491): the discovery ledger's `pending`
+#         SET may only SHRINK, exactly like the allowlist in 4a. Without it
+#         this ledger would be a nicer-looking version of the hole §5 closes
+#         — a newly-discovered surface parked forever behind a one-line
+#         excuse. `excluded` rows are deliberately NOT ratcheted: a new
+#         script that legitimately matches the name glob without being a
+#         gated check needs a home, and an `excluded` row is a reviewed claim
+#         in the diff, the same trust model the registry's own
+#         `not-applicable` already runs on. Same vendored-kernel arm as 4a
+#         (a row upstream shipped is upstream-ratcheted, not overlay growth).
+if [[ -z "$_csd_ratchet_skip_reason" ]]; then
+  discovery_relpath="$(_csd_ratchet_relpath "$CHECK_SURFACE_DISCOVERY_FILE")" || discovery_relpath=""
+  if [[ ! -f "$CHECK_SURFACE_DISCOVERY_FILE" ]]; then
+    ratchet_lines+=("pending ratchet: SKIPPED (no discovery ledger at $CHECK_SURFACE_DISCOVERY_FILE — zero dispositions, which §5 enforces strictly rather than leniently)")
+  elif [[ -z "$discovery_relpath" ]]; then
+    ratchet_lines+=("pending ratchet: SKIPPED ($CHECK_SURFACE_DISCOVERY_FILE is not under $CHECK_SURFACE_GIT_REPO_ROOT)")
+  elif _csd_ratchet_file_added "$discovery_relpath"; then
+    ratchet_lines+=("pending ratchet: SKIPPED (bootstrap — $discovery_relpath was added in this diff, nothing to compare against)")
+  else
+    prev_disc_content="$(git -C "$CHECK_SURFACE_GIT_REPO_ROOT" show "${_csd_ratchet_base_ref}:${discovery_relpath}" 2>/dev/null)" || prev_disc_content=""
+    # `$( )` strips EVERY trailing newline, and the membership test below closes
+    # on one (`*$'\n'"$item"$'\n'*`) — so without re-adding it the LAST entry of
+    # this set can never match, and is falsely reported PENDING-GREW on every
+    # run. Every other membership set in this file is built inline in the same
+    # shell and keeps its terminator; these two are the only ones that round-trip
+    # through a subshell, which is why only they need it back. Caught by the §3e
+    # shell-reviewer, which reproduced the gate failing against its own
+    # byte-identical content.
+    prev_pending="$(_csd_pending_from_content "$prev_disc_content")"
+    [[ -n "$prev_pending" ]] && prev_pending="$prev_pending"$'\n'
+    upstream_pending=""
+    disc_kernel_squash=""
+    disc_kernel_arm_note=""
+    if [[ -f "$CHECK_SURFACE_GIT_REPO_ROOT/.kernel-pin" ]]; then
+      case "$discovery_relpath" in
+        kernel/*)
+          disc_kernel_squash="$(_csd_kernel_squash_commit)" || disc_kernel_squash=""
+          if [[ -z "$disc_kernel_squash" ]]; then
+            # Mirror §4a rather than degrading silently: a .kernel-pin present
+            # and the ledger under kernel/, but no reachable subtree squash
+            # commit, means the upstream side of this comparison is UNKNOWN.
+            # §4a says so on its verdict line; §4c must too, or the ratchet
+            # reads as fully checked when half its input was unavailable.
+            disc_kernel_arm_note=" (vendored-kernel arm SKIPPED — .kernel-pin present and $discovery_relpath is under kernel/, but no git-subtree-dir squash commit is reachable, so the upstream pending set could not be read)"
+          fi
+          if [[ -n "$disc_kernel_squash" ]]; then
+            upstream_disc_content="$(git -C "$CHECK_SURFACE_GIT_REPO_ROOT" show "${disc_kernel_squash}:${discovery_relpath#kernel/}" 2>/dev/null)" || upstream_disc_content=""
+            upstream_pending="$(_csd_pending_from_content "$upstream_disc_content")"
+            # Same trailing-newline restoration as prev_pending above.
+            [[ -n "$upstream_pending" ]] && upstream_pending="$upstream_pending"$'\n'
+          fi
+          ;;
+      esac
+    fi
+    if [[ -n "$discovery_pending" ]]; then
+      while IFS= read -r cur_pending; do
+        [[ -z "$cur_pending" ]] && continue
+        case $'\n'"$prev_pending" in
+          *$'\n'"$cur_pending"$'\n'*) continue ;;
+        esac
+        if [[ -n "$upstream_pending" ]]; then
+          case $'\n'"$upstream_pending" in
+            *$'\n'"$cur_pending"$'\n'*) continue ;;
+          esac
+        fi
+        failures+=("PENDING-GREW  $cur_pending — listed 'pending' in $CHECK_SURFACE_DISCOVERY_FILE now but not at $_csd_ratchet_base_ref; the pending set is a shrink-only ratchet, so a NEWLY DISCOVERED check surface must be registered (or argued 'excluded'), never parked")
+      done <<<"$discovery_pending"
+    fi
+    ratchet_lines+=("pending ratchet: checked against $_csd_ratchet_base_ref:$discovery_relpath${disc_kernel_squash:+ + vendored-kernel squash $disc_kernel_squash}${disc_kernel_arm_note:-}")
+  fi
+else
+  ratchet_lines+=("pending ratchet: SKIPPED ($_csd_ratchet_skip_reason)")
+fi
+
+# ---------------------------------------------------------------------------
+# 5. THE DISCOVERY PASS (temperloop#1491) — THE COVERAGE ASSERTION.
+#
+# Everything above this point verifies surfaces somebody REMEMBERED to name.
+# That is the defect temperloop#1491 exists to close: coverage was opt-in, so
+# an unregistered check surface was not failed, it was simply not checked —
+# and a fix that registered exactly the surfaces one person had noticed would
+# reproduce that same sampling one generation later. This pass replaces the
+# sampling with an enumeration: it derives the candidate set MECHANICALLY
+# from the tree and FAILS CLOSED (UNREGISTERED-SURFACE) on any candidate that
+# is in NONE of the three legal homes — the registry, the allowlist, or the
+# discovery ledger. Silence stops being a disposition.
+#
+# THE PREDICATE: a tracked file whose BASENAME matches one of this repo's
+# three check-script name families — `validate-*.sh`, `check-*.sh`,
+# `lint-*.sh` — with `tests/`, `fixtures/`, `node_modules/` and `.git/`
+# pruned (a fixture is not a gate), plus the vendored `kernel/` subtree
+# pruned in a composed overlay (those surfaces are upstream-owned, and
+# upstream's own CI ran this same pass over them).
+#
+# TRACKED, not merely present: enumeration prefers `git ls-files`, so a
+# developer's untracked scratch `check-foo.sh` cannot fail the gate. A root
+# that is not a git work tree (a fixture's scratch tree) falls back to
+# `find`. Which one ran is stated in the verdict — a pass must never look
+# identical to a pass that enumerated nothing.
+#
+# WHAT THE PREDICATE CANNOT SEE is stated, not implied, in
+# check-surface-discovery.tsv's own header: SUBCOMMAND surfaces (no filename
+# glob reaches `replay.sh:diff-scope` — the reason this is a registry at all)
+# and check-shaped scripts outside the three name families (a `claude/hooks/`
+# guard, whose contract is the INVERSE of this class: a guard that cannot
+# evaluate must fail OPEN so it never blocks the operator). Both keep their
+# existing by-hand home.
+# ---------------------------------------------------------------------------
+[[ -d "$CHECK_SURFACE_DISCOVERY_ROOT" ]] || _csd_cannot_evaluate "discovery root not found: $CHECK_SURFACE_DISCOVERY_ROOT — cannot enumerate the candidate check surfaces"
+
+_csd_prune_kernel=0
+[[ -f "$CHECK_SURFACE_DISCOVERY_ROOT/.kernel-pin" ]] && _csd_prune_kernel=1
+
+# _csd_is_candidate <repo-relative-path> -> rc 0 iff the path is a candidate
+# check surface under the predicate documented above.
+_csd_is_candidate() {
+  local p="$1" base
+  case "$p" in
+    tests/* | */tests/* | fixtures/* | */fixtures/* | node_modules/* | */node_modules/* | .git/* | */.git/*) return 1 ;;
+  esac
+  if [[ "$_csd_prune_kernel" -eq 1 ]]; then
+    case "$p" in kernel/*) return 1 ;; esac
+  fi
+  base="${p##*/}"
+  case "$base" in
+    validate-*.sh | check-*.sh | lint-*.sh) return 0 ;;
+  esac
+  return 1
+}
+
+# _csd_enumerate <root> -> every candidate-shaped path under <root>, one per
+# line, REPO-RELATIVE. `git ls-files` when <root> is a work tree (the
+# "tracked" half of the predicate), `find` otherwise.
+_csd_enumerate() {
+  local root="$1" line
+  if [[ "$_csd_discovery_source" == "git ls-files" ]]; then
+    git -C "$root" ls-files 2>/dev/null
+  else
+    find "$root" -type f \( -name 'validate-*.sh' -o -name 'check-*.sh' -o -name 'lint-*.sh' \) 2>/dev/null |
+      while IFS= read -r line; do printf '%s\n' "${line#"$root"/}"; done
+  fi
+}
+
+_csd_discovery_source="find"
+if git -C "$CHECK_SURFACE_DISCOVERY_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  _csd_discovery_source="git ls-files"
+fi
+
+n_discovered=0
+n_undispositioned=0
+while IFS= read -r cand; do
+  [[ -z "$cand" ]] && continue
+  _csd_is_candidate "$cand" || continue
+  n_discovered=$((n_discovered + 1))
+  case $'\n'"${known_surfaces:-}"$'\n' in *$'\n'"$cand"$'\n'*) continue ;; esac
+  case $'\n'"$allowlist_surfaces" in *$'\n'"$cand"$'\n'*) continue ;; esac
+  case $'\n'"$discovery_surfaces" in *$'\n'"$cand"$'\n'*) continue ;; esac
+  n_undispositioned=$((n_undispositioned + 1))
+  failures+=("UNREGISTERED-SURFACE  $cand — a check surface discovered mechanically in the tree with NO disposition anywhere: it is not in $CHECK_SURFACE_REGISTRY_FILE, not on $CHECK_SURFACE_ALLOWLIST_FILE, and has no row in $CHECK_SURFACE_DISCOVERY_FILE. Register it (with its absent/unreadable/empty rows), or add a reasoned 'pending'/'excluded' row to the discovery ledger — an unchecked check surface is no longer a legal state")
+done < <(_csd_enumerate "$CHECK_SURFACE_DISCOVERY_ROOT")
+
+if [[ "$n_discovered" -eq 0 ]]; then
+  failures+=("EMPTY-DISCOVERY  the discovery pass enumerated ZERO candidate check surfaces under $CHECK_SURFACE_DISCOVERY_ROOT (source: $_csd_discovery_source) — an enumeration that finds nothing is a vacuous pass, exactly the defect class this gate exists to close")
+fi
+
 # ---------------------------------------------------------------------------
 # Verdict.
 # ---------------------------------------------------------------------------
@@ -794,7 +1093,11 @@ if [[ -n "$allowlist_surfaces" ]]; then
   n_allowlisted="$(printf '%s' "$allowlist_surfaces" | grep -c . || true)"
 fi
 echo "Checked $n_surfaces registered surface(s) ($n_covered_rows covered row(s), $n_not_applicable not-applicable row(s)); $n_allowlisted surface(s) on the allowlist ($CHECK_SURFACE_ALLOWLIST_FILE)"
+echo "Discovery pass: $n_discovered candidate check surface(s) enumerated from $CHECK_SURFACE_DISCOVERY_ROOT via $_csd_discovery_source; $n_pending pending + $n_excluded excluded in $CHECK_SURFACE_DISCOVERY_FILE; $n_undispositioned undispositioned"
 printf '%s\n' "${ratchet_lines[@]}"
+if (( ${#superseded_lines[@]} > 0 )); then
+  printf '%s\n' "${superseded_lines[@]}"
+fi
 if (( ${#failures[@]} > 0 )); then
   printf '%s\n' "${failures[@]}"
   echo "---"

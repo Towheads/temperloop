@@ -6,15 +6,17 @@
 # orchestration script (replay.sh's `diff-scope`) is reachable even though no
 # `validate-*.sh` glob could ever match it.
 #
-# SEED SET, DELIBERATELY NOT EXHAUSTIVE. This registers the three surfaces
-# epic #1409's own motivating instances named, PLUS THIS GATE ITSELF (see the
-# dedicated section below) — review round 2 found an earlier cut of this
-# gate was not registered against its own registry, which is exactly how its
-# absent/unreadable/empty-registry paths shipped unverified (an empty
-# registry passed vacuously). Dozens of this repo's other `validate-*.sh`
-# scripts are not yet registered at all — that is legal (coverage is opt-in,
-# grows as surfaces are added) and is not itself a gate failure. Widening
-# this registry is future work, tracked nowhere yet.
+# NOT A SEED SET ANY MORE (temperloop#1491). The first four sections below
+# are epic #1409's own motivating instances plus THIS GATE ITSELF (review
+# round 2 found an earlier cut of the gate was not registered against its own
+# registry, which is exactly how its absent/unreadable/empty-registry paths
+# shipped unverified — an empty registry passed vacuously). The fifth section
+# is the bulk registration that closed the class. The thing that closed it is
+# NOT the length of this file: it is the gate's §5 DISCOVERY PASS, which
+# enumerates candidate check surfaces mechanically from the tree and FAILS on
+# any that is neither registered here, nor on the allowlist, nor given a
+# reasoned row in check-surface-discovery.tsv. Being absent from this file is
+# no longer the same thing as being unchecked.
 #
 # FORMAT — TAB-separated, five columns, one row per (SURFACE, CASE):
 #   1. SURFACE     a script path (repo-relative) or `<script-path>:<subcommand>`
@@ -86,3 +88,72 @@ workflows/scripts/model-comparison/replay.sh:diff-scope	empty	not-applicable	-	d
 workflows/scripts/validate-check-surface-degenerate-coverage.sh	absent	covered	workflows/scripts/tests/test_check_surface_degenerate_coverage.sh	the gate's own registry: an ABSENT registry file is CANNOT EVALUATE, not 0
 workflows/scripts/validate-check-surface-degenerate-coverage.sh	unreadable	covered	workflows/scripts/tests/test_check_surface_degenerate_coverage.sh	the gate's own registry: an UNREADABLE registry file is CANNOT EVALUATE, not 0
 workflows/scripts/validate-check-surface-degenerate-coverage.sh	empty	covered	workflows/scripts/tests/test_check_surface_degenerate_coverage.sh	the gate's own registry: an EMPTY registry file is EMPTY-REGISTRY, not 0
+
+# ── temperloop#1491 BULK REGISTRATION — the seed becomes a class ──────────
+# The 17 surfaces below were not chosen from a list somebody remembered:
+# they are the subset of the MECHANICALLY DISCOVERED candidate set (the
+# `validate-*.sh` / `check-*.sh` / `lint-*.sh` name families, enumerated by
+# this gate's own §5 discovery pass) that (a) takes its input through a
+# single documented fixture seam, and (b) was MEASURED to already exit
+# non-zero on all three degenerate shapes. Every discovered surface NOT
+# registered here carries an explicit, reasoned row in
+# check-surface-discovery.tsv instead — silence is no longer a legal
+# disposition, which is what turns this file from a seed into a class.
+#
+# All 51 rows below are backed by ONE suite,
+# workflows/scripts/tests/test_check_surface_degenerate_backfill.sh: each
+# anchor is the label argument of that suite's own `degenerate ...`
+# assertion line for that (surface, case), so deleting the assertion deletes
+# the anchor with it. See that file's header for why one shared suite (not
+# 17 dedicated ones) is the honest shape here.
+workflows/scripts/validate-docs-footer.sh	absent	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	validate-docs-footer.sh [absent]: exits non-zero, never a silent OK
+workflows/scripts/validate-docs-footer.sh	unreadable	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	validate-docs-footer.sh [unreadable]: exits non-zero, never a silent OK
+workflows/scripts/validate-docs-footer.sh	empty	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	validate-docs-footer.sh [empty]: exits non-zero, never a silent OK
+workflows/scripts/validate-feature-docs.sh	absent	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	validate-feature-docs.sh [absent]: exits non-zero, never a silent OK
+workflows/scripts/validate-feature-docs.sh	unreadable	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	validate-feature-docs.sh [unreadable]: exits non-zero, never a silent OK
+workflows/scripts/validate-feature-docs.sh	empty	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	validate-feature-docs.sh [empty]: exits non-zero, never a silent OK
+workflows/scripts/validate-onramp-anchors.sh	absent	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	validate-onramp-anchors.sh [absent]: exits non-zero, never a silent OK
+workflows/scripts/validate-onramp-anchors.sh	unreadable	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	validate-onramp-anchors.sh [unreadable]: exits non-zero, never a silent OK
+workflows/scripts/validate-onramp-anchors.sh	empty	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	validate-onramp-anchors.sh [empty]: exits non-zero, never a silent OK
+workflows/scripts/validate-design-brief.sh	absent	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	validate-design-brief.sh [absent]: exits non-zero, never a silent OK
+workflows/scripts/validate-design-brief.sh	unreadable	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	validate-design-brief.sh [unreadable]: exits non-zero, never a silent OK
+workflows/scripts/validate-design-brief.sh	empty	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	validate-design-brief.sh [empty]: exits non-zero, never a silent OK
+workflows/scripts/validate-prose-budget.sh	absent	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	validate-prose-budget.sh [absent]: exits non-zero, never a silent OK
+workflows/scripts/validate-prose-budget.sh	unreadable	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	validate-prose-budget.sh [unreadable]: exits non-zero, never a silent OK
+workflows/scripts/validate-prose-budget.sh	empty	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	validate-prose-budget.sh [empty]: exits non-zero, never a silent OK
+workflows/scripts/validate-exec-bit-registry.sh	absent	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	validate-exec-bit-registry.sh [absent]: exits non-zero, never a silent OK
+workflows/scripts/validate-exec-bit-registry.sh	unreadable	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	validate-exec-bit-registry.sh [unreadable]: exits non-zero, never a silent OK
+workflows/scripts/validate-exec-bit-registry.sh	empty	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	validate-exec-bit-registry.sh [empty]: exits non-zero, never a silent OK
+workflows/scripts/config/check-contributor-manifest.sh	absent	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	check-contributor-manifest.sh [absent]: exits non-zero, never a silent OK
+workflows/scripts/config/check-contributor-manifest.sh	unreadable	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	check-contributor-manifest.sh [unreadable]: exits non-zero, never a silent OK
+workflows/scripts/config/check-contributor-manifest.sh	empty	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	check-contributor-manifest.sh [empty]: exits non-zero, never a silent OK
+workflows/scripts/config/check-gate-paths.sh	absent	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	check-gate-paths.sh [absent]: exits non-zero, never a silent OK
+workflows/scripts/config/check-gate-paths.sh	unreadable	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	check-gate-paths.sh [unreadable]: exits non-zero, never a silent OK
+workflows/scripts/config/check-gate-paths.sh	empty	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	check-gate-paths.sh [empty]: exits non-zero, never a silent OK
+workflows/scripts/config/check-redundancy-fixtures.sh	absent	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	check-redundancy-fixtures.sh [absent]: exits non-zero, never a silent OK
+workflows/scripts/config/check-redundancy-fixtures.sh	unreadable	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	check-redundancy-fixtures.sh [unreadable]: exits non-zero, never a silent OK
+workflows/scripts/config/check-redundancy-fixtures.sh	empty	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	check-redundancy-fixtures.sh [empty]: exits non-zero, never a silent OK
+workflows/scripts/config/check-reviewer-routing.sh	absent	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	check-reviewer-routing.sh [absent]: exits non-zero, never a silent OK
+workflows/scripts/config/check-reviewer-routing.sh	unreadable	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	check-reviewer-routing.sh [unreadable]: exits non-zero, never a silent OK
+workflows/scripts/config/check-reviewer-routing.sh	empty	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	check-reviewer-routing.sh [empty]: exits non-zero, never a silent OK
+workflows/scripts/config/check-setting-registry.sh	absent	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	check-setting-registry.sh [absent]: exits non-zero, never a silent OK
+workflows/scripts/config/check-setting-registry.sh	unreadable	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	check-setting-registry.sh [unreadable]: exits non-zero, never a silent OK
+workflows/scripts/config/check-setting-registry.sh	empty	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	check-setting-registry.sh [empty]: exits non-zero, never a silent OK
+workflows/scripts/kernel/check-kernel-manifest.sh	absent	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	check-kernel-manifest.sh [absent]: exits non-zero, never a silent OK
+workflows/scripts/kernel/check-kernel-manifest.sh	unreadable	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	check-kernel-manifest.sh [unreadable]: exits non-zero, never a silent OK
+workflows/scripts/kernel/check-kernel-manifest.sh	empty	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	check-kernel-manifest.sh [empty]: exits non-zero, never a silent OK
+workflows/scripts/kernel/check-personal-token-denylist.sh	absent	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	check-personal-token-denylist.sh [absent]: exits non-zero, never a silent OK
+workflows/scripts/kernel/check-personal-token-denylist.sh	unreadable	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	check-personal-token-denylist.sh [unreadable]: exits non-zero, never a silent OK
+workflows/scripts/kernel/check-personal-token-denylist.sh	empty	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	check-personal-token-denylist.sh [empty]: exits non-zero, never a silent OK
+workflows/scripts/kernel/check-prerename-leak-guard.sh	absent	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	check-prerename-leak-guard.sh [absent]: exits non-zero, never a silent OK
+workflows/scripts/kernel/check-prerename-leak-guard.sh	unreadable	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	check-prerename-leak-guard.sh [unreadable]: exits non-zero, never a silent OK
+workflows/scripts/kernel/check-prerename-leak-guard.sh	empty	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	check-prerename-leak-guard.sh [empty]: exits non-zero, never a silent OK
+workflows/scripts/kernel/check-terminology-leak-guard.sh	absent	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	check-terminology-leak-guard.sh [absent]: exits non-zero, never a silent OK
+workflows/scripts/kernel/check-terminology-leak-guard.sh	unreadable	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	check-terminology-leak-guard.sh [unreadable]: exits non-zero, never a silent OK
+workflows/scripts/kernel/check-terminology-leak-guard.sh	empty	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	check-terminology-leak-guard.sh [empty]: exits non-zero, never a silent OK
+workflows/scripts/kernel/check-pr-leak-guard.sh	absent	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	check-pr-leak-guard.sh [absent]: exits non-zero, never a silent OK
+workflows/scripts/kernel/check-pr-leak-guard.sh	unreadable	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	check-pr-leak-guard.sh [unreadable]: exits non-zero, never a silent OK
+workflows/scripts/kernel/check-pr-leak-guard.sh	empty	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	check-pr-leak-guard.sh [empty]: exits non-zero, never a silent OK
+workflows/scripts/lint-pr-body.sh	absent	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	lint-pr-body.sh [absent]: exits non-zero, never a silent OK
+workflows/scripts/lint-pr-body.sh	unreadable	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	lint-pr-body.sh [unreadable]: exits non-zero, never a silent OK
+workflows/scripts/lint-pr-body.sh	empty	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	lint-pr-body.sh [empty]: exits non-zero under --require-verification, never a silent OK
