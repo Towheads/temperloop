@@ -81,6 +81,7 @@ kernel scripts/prune-merged-branches.sh
 kernel scripts/lint-zsh-param-tie.sh
 kernel scripts/lint-bash32-cmdsubst-comment.sh
 kernel scripts/lint-pipe-grep-q.sh
+kernel scripts/lint-bash32-ctlesc-ifs.sh
 kernel scripts/update-kernel.sh
 kernel scripts/assemble-changelog.sh
 kernel scripts/ensure-shellcheck.sh
