@@ -373,6 +373,8 @@ bash scripts/tests/test_lint_bash32_cmdsubst_comment.sh	scripts/lint-bash32-cmds
 # workflows/scripts/lib/issue-marker-probe.sh.
 bash scripts/lint-pipe-grep-q.sh	*.sh bin/** .temperloop/** workflows/scripts/report-producers/**
 bash scripts/tests/test_lint_pipe_grep_q.sh	scripts/lint-pipe-grep-q.sh scripts/tests/test_lint_pipe_grep_q.sh
+bash scripts/lint-bash32-ctlesc-ifs.sh	*.sh bin/** .temperloop/** workflows/scripts/report-producers/**
+bash scripts/tests/test_lint_bash32_ctlesc_ifs.sh	scripts/lint-bash32-ctlesc-ifs.sh scripts/tests/test_lint_bash32_ctlesc_ifs.sh workflows/scripts/validate-check-surface-degenerate-coverage.sh workflows/scripts/validate-exec-bit-registry.sh
 make shellcheck	*.sh
 bash scripts/tests/test_ensure_shellcheck.sh	scripts/ensure-shellcheck.sh scripts/tests/test_ensure_shellcheck.sh
 bash workflows/scripts/validate-docs-footer.sh	README.md docs/** workflows/scripts/validate-docs-footer.sh

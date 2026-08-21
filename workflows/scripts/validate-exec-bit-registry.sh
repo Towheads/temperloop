@@ -156,14 +156,26 @@ n_registered=0
 # degenerate-coverage.sh's own helper (LOW 9 there): `IFS=$'\t' read`
 # collapses consecutive tabs because tab is one of bash's IFS-whitespace
 # characters, so a genuinely empty middle field silently shifts every field
-# after it left. Route through awk once, re-joining on \x01, then read on
-# that (\x01 is not IFS whitespace, so it does not collapse).
+# after it left. Route through awk once, re-joining on \x1f (ASCII US), then
+# read on that (\x1f is not IFS whitespace, so it does not collapse).
+#
+# WHY \x1f AND NOT \x01 (temperloop#1649) — see the fuller note on the
+# corresponding helper in validate-check-surface-degenerate-coverage.sh. Short
+# form: 0x01 is bash's own CTLESC marker byte (0x7f is CTLNUL), and bash 3.2 —
+# the system /bin/bash on macOS, and what `bash scripts/quality-gates.sh`
+# resolves to on the macos-latest runner — does not split on either. It returns
+# the whole line in the FIRST variable instead, 0x01 bytes and all, so every
+# registry row parsed as one field and this gate was red on nightly-macos for
+# seven consecutive nights while ubuntu (bash 5.x) stayed green. A BASH-VERSION
+# defect, not a BSD-vs-GNU awk dialect one: the awk stage above emits
+# byte-identical output under BSD and GNU awk alike.
+# scripts/lint-bash32-ctlesc-ifs.sh is the mechanical guard.
 # ---------------------------------------------------------------------------
-_exb_tsv_file() { # <file> -> \x01-joined lines on stdout
-  awk -F'\t' 'BEGIN{OFS="\x01"} {$1=$1; print}' "$1"
+_exb_tsv_file() { # <file> -> \x1f-joined lines on stdout
+  awk -F'\t' 'BEGIN{OFS="\x1f"} {$1=$1; print}' "$1"
 }
-_exb_tsv_string() { # <string> -> \x01-joined lines on stdout
-  printf '%s' "$1" | awk -F'\t' 'BEGIN{OFS="\x01"} {$1=$1; print}'
+_exb_tsv_string() { # <string> -> \x1f-joined lines on stdout
+  printf '%s' "$1" | awk -F'\t' 'BEGIN{OFS="\x1f"} {$1=$1; print}'
 }
 
 # _exb_mode <resolved-path> -> best-effort octal permission mode string for
@@ -193,7 +205,7 @@ _exb_mode() {
 # ---------------------------------------------------------------------------
 allowlist_paths=""
 if [[ -f "$EXEC_BIT_ALLOWLIST_FILE" ]]; then
-  while IFS=$'\x01' read -r a_path a_reason || [[ -n "${a_path:-}" ]]; do
+  while IFS=$'\x1f' read -r a_path a_reason || [[ -n "${a_path:-}" ]]; do
     [[ -z "${a_path:-}" ]] && continue
     case "$a_path" in \#*) continue ;; esac
     trimmed_reason="$(printf '%s' "${a_reason:-}" | awk '{ gsub(/^[ \t]+|[ \t]+$/, ""); print }')"
@@ -214,7 +226,7 @@ fi
 # ---------------------------------------------------------------------------
 seen_paths=""
 current_registry_paths=""
-while IFS=$'\x01' read -r r_path r_reason || [[ -n "${r_path:-}" ]]; do
+while IFS=$'\x1f' read -r r_path r_reason || [[ -n "${r_path:-}" ]]; do
   [[ -z "${r_path:-}" ]] && continue
   case "$r_path" in \#*) continue ;; esac
 
@@ -345,7 +357,7 @@ if [[ -z "$_exb_ratchet_skip_reason" ]]; then
     prev_content="$(git -C "$EXEC_BIT_GIT_REPO_ROOT" show "${_exb_ratchet_base_ref}:${allowlist_relpath}" 2>/dev/null)" || prev_content=""
     prev_paths=""
     if [[ -n "$prev_content" ]]; then
-      while IFS=$'\x01' read -r p_path _rest || [[ -n "${p_path:-}" ]]; do
+      while IFS=$'\x1f' read -r p_path _rest || [[ -n "${p_path:-}" ]]; do
         [[ -z "${p_path:-}" ]] && continue
         case "$p_path" in \#*) continue ;; esac
         prev_paths="$prev_paths$p_path
