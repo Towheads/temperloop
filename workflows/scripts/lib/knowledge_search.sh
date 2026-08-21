@@ -526,7 +526,7 @@ ks_search__rg_fallback() {
   # calling here, so in production this loop only ever sees `--limit N`.
   while [ $# -gt 0 ]; do
     case "$1" in
-      --limit) limit="${2:-10}"; shift 2 ;;
+      --limit) limit="${2:-10}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
       *)
         printf 'knowledge_search: ks_search__rg_fallback: unrecognised argument "%s" (accepted: --limit)\n' "$1" >&2
         return 2

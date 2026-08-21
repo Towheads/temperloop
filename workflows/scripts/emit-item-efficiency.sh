@@ -119,24 +119,33 @@ ci_sha=""
 merge_group_sha=""
 print_only=0
 
+# ARG LOOP — the shift is deliberately TWO steps (temperloop#1342). Bash's
+# `shift 2` FAILS (count out of range) when the flag is the LAST argument, and
+# a FAILED shift does not shift: `$#` never decreases, the same arm re-matches,
+# and this loop spins at 100% CPU forever. `${2:-}` is what makes that a HANG
+# rather than a `set -u` crash. A hang here is strictly worse than the failure
+# this file's never-fail-or-block-the-spawn-site contract exists to prevent —
+# the conventional `emit-… || true` call shape cannot save a caller from it.
+# So: shift the FLAG, then the value only if one is actually there.
+# scripts/lint-argloop-shift2.sh is the mechanical guard for the class.
 while [ $# -gt 0 ]; do
   case "$1" in
-    --slug)             slug="${2:-}"; shift 2 ;;
-    --repo)             repo="${2:-}"; shift 2 ;;
-    --epic)             epic="${2:-}"; shift 2 ;;
-    --issue)            issue="${2:-}"; shift 2 ;;
-    --pr)               pr="${2:-}"; shift 2 ;;
-    --level)            level="${2:-}"; shift 2 ;;
-    --build-run)        build_runs="${2:-}"; shift 2 ;;
-    --design-run)       design_runs="${2:-}"; shift 2 ;;
-    --driver-prep-run)  prep_runs="${2:-}"; shift 2 ;;
-    --worker-ms)        worker_ms="${2:-}"; shift 2 ;;
-    --ci-ms)            ci_ms="${2:-}"; shift 2 ;;
-    --merge-group-ms)   merge_group_ms="${2:-}"; shift 2 ;;
-    --gate-wait-ms)     gate_wait_ms="${2:-}"; shift 2 ;;
-    --end-to-end-ms)    end_to_end_ms="${2:-}"; shift 2 ;;
-    --ci-sha)           ci_sha="${2:-}"; shift 2 ;;
-    --merge-group-sha)  merge_group_sha="${2:-}"; shift 2 ;;
+    --slug)             slug="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+    --repo)             repo="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+    --epic)             epic="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+    --issue)            issue="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+    --pr)               pr="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+    --level)            level="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+    --build-run)        build_runs="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+    --design-run)       design_runs="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+    --driver-prep-run)  prep_runs="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+    --worker-ms)        worker_ms="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+    --ci-ms)            ci_ms="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+    --merge-group-ms)   merge_group_ms="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+    --gate-wait-ms)     gate_wait_ms="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+    --end-to-end-ms)    end_to_end_ms="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+    --ci-sha)           ci_sha="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+    --merge-group-sha)  merge_group_sha="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
     --print-only)       print_only=1; shift ;;
     -h|--help)          sed -n '2,110p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) warn "unknown argument $1 (ignored)"; shift ;;

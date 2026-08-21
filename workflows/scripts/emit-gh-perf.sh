@@ -42,21 +42,30 @@ phase=""; label=""; board=""; op_class=""; count=""
 source_kind="bench"; backend="github"
 p50="0"; p95="0"; max="0"; total="0"; gql_pts="0"; rest_calls="0"
 
+# ARG LOOP — the shift is deliberately TWO steps (temperloop#1342). Bash's
+# `shift 2` FAILS (count out of range) when the flag is the LAST argument, and
+# a FAILED shift does not shift: `$#` never decreases, the same arm re-matches,
+# and this loop spins at 100% CPU forever. `${2:-}` is what makes that a HANG
+# rather than a `set -u` crash. A hang here is strictly worse than the failure
+# this file's never-fail-or-block-the-spawn-site contract exists to prevent —
+# the conventional `emit-… || true` call shape cannot save a caller from it.
+# So: shift the FLAG, then the value only if one is actually there.
+# scripts/lint-argloop-shift2.sh is the mechanical guard for the class.
 while [ $# -gt 0 ]; do
   case "$1" in
-    --phase)      phase="${2:-}"; shift 2 ;;
-    --label)      label="${2:-}"; shift 2 ;;
-    --board)      board="${2:-}"; shift 2 ;;
-    --op-class)   op_class="${2:-}"; shift 2 ;;
-    --count)      count="${2:-}"; shift 2 ;;
-    --source)     source_kind="${2:-}"; shift 2 ;;
-    --backend)    backend="${2:-}"; shift 2 ;;
-    --p50)        p50="${2:-}"; shift 2 ;;
-    --p95)        p95="${2:-}"; shift 2 ;;
-    --max)        max="${2:-}"; shift 2 ;;
-    --total)      total="${2:-}"; shift 2 ;;
-    --gql-pts)    gql_pts="${2:-}"; shift 2 ;;
-    --rest-calls) rest_calls="${2:-}"; shift 2 ;;
+    --phase)      phase="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+    --label)      label="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+    --board)      board="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+    --op-class)   op_class="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+    --count)      count="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+    --source)     source_kind="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+    --backend)    backend="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+    --p50)        p50="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+    --p95)        p95="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+    --max)        max="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+    --total)      total="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+    --gql-pts)    gql_pts="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+    --rest-calls) rest_calls="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
     *)
       printf '%s: WARN unknown argument %s (ignored)\n' "$self" "$1" >&2
       shift

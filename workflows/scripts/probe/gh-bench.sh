@@ -73,15 +73,15 @@ die() { echo "gh-bench: $1" >&2; exit 2; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --board)          board="${2:-}"; shift 2 ;;
-    --phase)          phase="${2:-}"; shift 2 ;;
-    --label)          label="${2:-}"; shift 2 ;;
-    --reps)           reps="${2:-}"; shift 2 ;;
+    --board)          board="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+    --phase)          phase="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+    --label)          label="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+    --reps)           reps="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
     --cold)           mode="cold"; shift ;;
     --warm)           mode="warm"; shift ;;
     --both)           mode="both"; shift ;;
     --with-mutations) with_mutations=1; shift ;;
-    --backend)        backend="${2:-}"; shift 2 ;;
+    --backend)        backend="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
     --dry-run)        dry_run=1; shift ;;
     -h|--help)        sed -n '2,63p' "$0"; exit 0 ;;
     *)                die "unknown argument: $1" ;;

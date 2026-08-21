@@ -38,13 +38,13 @@ by="op"; do_emit=0; do_compare=0; phase=""; label=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --by)      by="${2:-}"; shift 2 ;;
+    --by)      by="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
     --emit)    do_emit=1; shift ;;
     --compare) do_compare=1; shift ;;
-    --phase)   phase="${2:-}"; shift 2 ;;
-    --label)   label="${2:-}"; shift 2 ;;
-    --tsv)     TSV="${2:-}"; shift 2 ;;
-    --lake)    LAKE="${2:-}"; shift 2 ;;
+    --phase)   phase="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+    --label)   label="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+    --tsv)     TSV="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+    --lake)    LAKE="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
     -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
     *)         die "unknown argument: $1" ;;
   esac

@@ -76,12 +76,21 @@ pr=""
 outcome=""
 detail_json=""
 
+# ARG LOOP — the shift is deliberately TWO steps (temperloop#1342). Bash's
+# `shift 2` FAILS (count out of range) when the flag is the LAST argument, and
+# a FAILED shift does not shift: `$#` never decreases, the same arm re-matches,
+# and this loop spins at 100% CPU forever. `${2:-}` is what makes that a HANG
+# rather than a `set -u` crash. A hang here is strictly worse than the failure
+# this file's never-fail-or-block-the-spawn-site contract exists to prevent —
+# the conventional `emit-… || true` call shape cannot save a caller from it.
+# So: shift the FLAG, then the value only if one is actually there.
+# scripts/lint-argloop-shift2.sh is the mechanical guard for the class.
 while [ $# -gt 0 ]; do
   case "$1" in
-    --repo)        repo="${2:-}"; shift 2 ;;
-    --pr)          pr="${2:-}"; shift 2 ;;
-    --outcome)     outcome="${2:-}"; shift 2 ;;
-    --detail-json) detail_json="${2:-}"; shift 2 ;;
+    --repo)        repo="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+    --pr)          pr="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+    --outcome)     outcome="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+    --detail-json) detail_json="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
     *)
       printf '%s: WARN unknown argument %s (ignored)\n' "$self" "$1" >&2
       shift

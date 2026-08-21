@@ -108,11 +108,11 @@ UNKNOWN_RETRY_MAX="${READY_PR_SWEEP_UNKNOWN_RETRY_MAX:-3}"
 UNKNOWN_RETRY_DELAY="${READY_PR_SWEEP_UNKNOWN_RETRY_DELAY:-2}"
 while [ $# -gt 0 ]; do
   case "$1" in
-    --format) FORMAT="${2:-}"; shift 2 ;;
+    --format) FORMAT="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
     --format=*) FORMAT="${1#--format=}"; shift ;;
-    --limit) LIMIT="${2:-}"; shift 2 ;;
+    --limit) LIMIT="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
     --limit=*) LIMIT="${1#--limit=}"; shift ;;
-    --repos) REPOS="${2:-}"; shift 2 ;;
+    --repos) REPOS="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
     --repos=*) REPOS="${1#--repos=}"; shift ;;
     -h | --help) grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;

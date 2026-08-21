@@ -287,7 +287,7 @@ _claim_marker_tmux() {
   local target="" unset_form=0 optname="" f
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      -t)  target="${2:-}"; shift 2 ;;
+      -t)  target="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
       -wu) unset_form=1; shift ;;
       -w|-wqv) shift ;;
       *)   optname="$1"; shift ;;

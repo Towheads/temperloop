@@ -177,17 +177,17 @@ PR_BODY=""
 parse_args() {
   while [ $# -gt 0 ]; do
     case "$1" in
-      --to) TARGET="${2:-}"; shift 2 ;;
-      --branch) BRANCH="${2:-}"; shift 2 ;;
-      --testbed-dir) TESTBED_DIR="${2:-}"; shift 2 ;;
-      --testbed-ref) TESTBED_REF="${2:-}"; shift 2 ;;
-      --testbed-repo) TESTBED_REPO="${2:-}"; shift 2 ;;
-      --target-url) TARGET_URL="${2:-}"; shift 2 ;;
-      --base) BASE="${2:-}"; shift 2 ;;
+      --to) TARGET="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+      --branch) BRANCH="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+      --testbed-dir) TESTBED_DIR="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+      --testbed-ref) TESTBED_REF="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+      --testbed-repo) TESTBED_REPO="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+      --target-url) TARGET_URL="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+      --base) BASE="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
       --allow-unrecorded) ALLOW_UNRECORDED=1; shift ;;
       --open-pr) OPEN_PR=1; shift ;;
-      --pr-title) PR_TITLE="${2:-}"; shift 2 ;;
-      --pr-body) PR_BODY="${2:-}"; shift 2 ;;
+      --pr-title) PR_TITLE="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+      --pr-body) PR_BODY="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
       --dry-run) MODE="preflight"; shift ;;
       -h | --help) usage; exit 0 ;;
       *) die "unknown argument: $1 (run --help)" ;;
