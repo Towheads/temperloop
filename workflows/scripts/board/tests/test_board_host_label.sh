@@ -26,27 +26,26 @@ set -euo pipefail
 
 # All four paths below resolve PHYSICAL (`pwd -P`, not plain `pwd`), and
 # consistently so — every one of them, not just BOARD_DIR — per
-# temperloop#1490. In a consumer that vendors this board toolkit through a
-# compat symlink (foundation: workflows/scripts/board -> ../../kernel/
-# workflows/scripts/board), a logical `pwd` here would keep that symlink in
-# HERE/LIB_DIR/BOARD_DIR, and the structural check below (grep -rlE over
-# BOARD_DIR) would silently find NOTHING: real macOS/BSD grep
-# (/usr/bin/grep — NOT a GNU-compatible grep some shells alias onto)
-# refuses to descend into a symlinked TOP-LEVEL directory argument, unlike
-# GNU grep, which follows it. That is a false failure (empty "found:" list),
-# not evidence the class ever re-diverged — confirmed by reproducing the
-# identical grep call directly against both the symlinked and physical
-# path. Resolving physical is the fix; it must apply to HERE too (not just
-# BOARD_DIR), because the self-exclusion filter on line ~44 below compares
-# grep's (now-physical) output against "$HERE/test_board_host_label.sh" —
-# a stale logical HERE would stop matching and the test would wrongly count
-# itself as a second inline site.
+# temperloop#1490, so that check 1's identity comparison has ONE canonical
+# spelling per path on both of its sides.
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+SELF_NAME="$(basename "${BASH_SOURCE[0]}")"
 LIB_DIR="$(cd "$HERE/../lib" && pwd -P)"
 BOARD_DIR="$(cd "$HERE/.." && pwd -P)"
 BOARD_SH="$LIB_DIR/board.sh"
 
 fail() { echo "FAIL: $1" >&2; exit 1; }
+
+# Canonicalize a FILE path: its directory resolved physically, plus the
+# basename left as-is. Both sides of check 1's identity comparison go
+# through this, so a vendored layout that reaches lib/ or tests/ through a
+# symlink cannot make two spellings of the SAME file read as two sites.
+phys_path() {
+  local p="$1" d b
+  d="$(dirname "$p")"
+  b="$(basename "$p")"
+  printf '%s/%s\n' "$(cd "$d" && pwd -P)" "$b"
+}
 
 # --- 1: structural — the chain must live in EXACTLY ONE place -------------
 # A grep-based regression guard: if any script under workflows/scripts/board/
@@ -55,9 +54,44 @@ fail() { echo "FAIL: $1" >&2; exit 1; }
 # silently reintroducing the divergence. Test fixtures that merely EXPORT
 # SUBSET_HOST_LABEL=... (setting the variable) don't match this pattern —
 # only an inlined `${SUBSET_HOST_LABEL:-` fallback expression does.
-sites_with_inline_chain="$(grep -rlE '\$\{SUBSET_HOST_LABEL:-' "$BOARD_DIR" 2>/dev/null | grep -v "$HERE/test_board_host_label.sh" || true)"
+#
+# WHY THE FILE SET IS ENUMERATED WITH `find -L` INSTEAD OF `grep -r`
+# (temperloop#1422). This reads like it should be a one-line recursive grep,
+# and it was one until this fix. It is not portable, and the failure looks
+# impossible at first read because the DIRECT-file form against the very
+# same tree —
+#     grep -lE '\$\{SUBSET_HOST_LABEL:-' <board-dir>/lib/board.sh
+# — matches on BOTH platforms, symlinked or not. Only the RECURSIVE form
+# diverges, and it diverges in two different ways:
+#   * a board dir that IS a symlink — foundation and every other vendoring
+#     overlay (workflows/scripts/board -> ../../kernel/workflows/scripts/
+#     board). GNU grep -r descends into a symlinked TOP-LEVEL argument;
+#     real macOS/BSD grep (/usr/bin/grep — NOT a GNU-compatible grep some
+#     shells alias onto) does not, and `-R` does not help there either
+#     (both measured). Result: exit 1 and an EMPTY match list, on macOS
+#     only — the failure then prints "found:" with nothing after it, which
+#     reads as "the helper was deleted" when the truth is "the walk never
+#     entered the directory".
+#   * a board dir that is a REAL dir whose FILES are per-file symlinks into
+#     a vendored kernel/ copy. `-r` on EITHER grep follows only a symlink
+#     named on the command line, never one met DURING the walk, so that
+#     layout found nothing on BOTH platforms. (`-R` splits the same way as
+#     above: GNU follows, BSD still does not — measured. So no single
+#     recursive flag spans both layouts on both platforms.)
+# `find -L` follows symlinks at the argument AND during the walk, and grep
+# is then handed real files by name — i.e. the direct-file form that
+# already worked everywhere. The verdict stops being a function of which
+# grep is on PATH or of how the tree was vendored. Do not "simplify" this
+# back to grep -r.
+inline_site_candidates=()
+while IFS= read -r -d '' candidate; do
+  inline_site_candidates+=("$(phys_path "$candidate")")
+done < <(find -L "$BOARD_DIR" -type f ! -name "$SELF_NAME" -print0)
+[ "${#inline_site_candidates[@]}" -gt 0 ] || \
+  fail "enumerated ZERO files under $BOARD_DIR — the file walk is broken, not the code under test"
+sites_with_inline_chain="$(grep -lE '\$\{SUBSET_HOST_LABEL:-' "${inline_site_candidates[@]}" 2>/dev/null || true)"
 site_count="$(printf '%s\n' "$sites_with_inline_chain" | grep -c . || true)"
-if [ "$site_count" -ne 1 ] || [ "$sites_with_inline_chain" != "$BOARD_SH" ]; then
+if [ "$site_count" -ne 1 ] || [ "$sites_with_inline_chain" != "$(phys_path "$BOARD_SH")" ]; then
   fail "expected exactly lib/board.sh to inline the chain, found: $sites_with_inline_chain"
 fi
 
