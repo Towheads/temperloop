@@ -147,7 +147,19 @@ repo_args=()
 # workflows/scripts/config/check-reviewer-routing.sh.
 TSV="${WFR_COVERAGE_ROUTING_TSV:-$SCRIPT_DIR/config/reviewer-routing.tsv}"
 routing_rows=()
-if [ -f "$TSV" ]; then
+# AN ABSENT OR UNREADABLE ROUTING TABLE IS NOT AN EMPTY ONE (temperloop#1446
+# review, MEDIUM). Without this guard the `if [ -f ]` falls through with no
+# `else`, the roster collapses to the single hardcoded workflow-reviewer
+# member, and the report renders a confident per-reviewer table that silently
+# OMITS every reviewer the table would have named. That reads exactly like
+# "those reviewers were never routed" -- the same false all-clear the regex
+# escaping above exists to prevent, arriving through a different door.
+if [ ! -e "$TSV" ]; then
+  printf %s\\n "workflow-reviewer-coverage: WARNING - routing table not found at $TSV; the per-reviewer roster is DEGRADED to workflow-reviewer only. Every other reviewer is OMITTED, not measured as zero." >&2
+elif [ ! -r "$TSV" ]; then
+  printf %s\\n "workflow-reviewer-coverage: WARNING - routing table at $TSV exists but is UNREADABLE; the per-reviewer roster is DEGRADED to workflow-reviewer only. Every other reviewer is OMITTED, not measured as zero." >&2
+fi
+if [ -r "$TSV" ]; then
   while IFS=$'\t' read -r pattern reviewer _agent_path || [ -n "${pattern:-}" ]; do
     [ -z "${pattern:-}" ] && continue
     case "$pattern" in \#*) continue ;; esac
@@ -219,6 +231,7 @@ fi
 # three shapes to ANY reviewer name, so the identical same-line-separator
 # protection applies uniformly across the whole roster, not only to
 # workflow-reviewer.
+jq_err="$(mktemp "${TMPDIR:-/tmp}/wfr-cov-jqerr-XXXXXX")"
 report="$(printf '%s' "$prs_json" | jq -c --arg since "$since" --argjson rules "$routing_rules_json" --argjson roster "$reviewer_roster_json" '
   # NAMES STOP AT THE ` · ` SEPARATOR, not at end-of-line. build-level.mjs
   # joins the ran-tally and the skip notes into ONE summary string with
@@ -251,10 +264,30 @@ report="$(printf '%s' "$prs_json" | jq -c --arg since "$since" --argjson rules "
   # idiom above (a `capture` that does not match yields NO output, so it must
   # be collected into an array before `any(...)` can be applied safely).
   def ran_tally_names($body): [ $body | capture("(^|\n)§3e review[ \t]*[—–-][ \t]*ran:[ \t]*(?<names>[^\n·]*)").names ];
+
+  # A REVIEWER NAME IS DATA, NOT A PATTERN (temperloop#1446 review, HIGH).
+  # `$r` arrives verbatim from reviewer-routing.tsv column 2. Concatenated raw
+  # into a regex, a name carrying a metacharacter (`bad(reviewer`) makes the jq
+  # `test` builtin THROW — and the whole pipeline fail-open (`2>/dev/null ||
+  # echo ""`) then renders that throw as the zero-row report: every count 0,
+  # `by_reviewer` empty, exit 0. A false all-clear indistinguishable from a
+  # genuinely quiet window, on the one tool whose entire job is making an
+  # invisible gap visible. It would also take the legacy temperloop#1450
+  # workflow-reviewer metric down with it, since both share this single jq
+  # invocation.
+  #
+  # Escape rather than trust the input. The sibling consumer of this same tsv
+  # already does exactly this (`_rr_ere_escape` in
+  # workflows/scripts/config/check-reviewer-routing.sh) — matching that
+  # precedent rather than inventing a second convention. NOTE: no apostrophes
+  # anywhere in this block; the jq program is a single-quoted shell string and
+  # one apostrophe ends it (a trap this repo has paid for before).
+  def re_escape($v): $v | gsub("(?<c>[.^$*+?()\\[\\]{}|\\\\/-])"; "\\" + .c);
+
   def reviewer_ran($r; $body):
-    (ran_tally_names($body) | any(test("\\b" + $r + "\\b")))
-    or ($body | test("(^|\n)###[ \t]+" + $r + "[ \t\r]*(\n|$)"));
-  def reviewer_skipped($r; $body): $body | test("skipped[ \t]*[—–-][ \t]*`?" + $r + "\\b");
+    (ran_tally_names($body) | any(test("\\b" + re_escape($r) + "\\b")))
+    or ($body | test("(^|\n)###[ \t]+" + re_escape($r) + "[ \t\r]*(\n|$)"));
+  def reviewer_skipped($r; $body): $body | test("skipped[ \t]*[—–-][ \t]*`?" + re_escape($r) + "\\b");
 
   # Extension rows match by suffix (`.py`); glob rows (`docs/**`) match by
   # prefix on the glob stripped of its trailing `**`. A `claude/commands/*.md`
@@ -308,7 +341,17 @@ report="$(printf '%s' "$prs_json" | jq -c --arg since "$since" --argjson rules "
          })
      | sort_by(.reviewer)) as $by_reviewer
   | $legacy + {by_reviewer: $by_reviewer}
-' 2>/dev/null || echo '')"
+' 2>"$jq_err" || true)"
+# NARROW THE FAIL-OPEN (temperloop#1446 review, HIGH aggravator). This was
+# `2>/dev/null || echo ""`, which rendered ANY jq error -- a thrown regex, a
+# malformed body, a bad filter -- as the all-zeros fallback below: a report that
+# looks like a quiet window and is actually a crashed one. The fallback stays (a
+# report beats nothing), but it can no longer be SILENT.
+if [ -s "$jq_err" ]; then
+  printf %s\\n "workflow-reviewer-coverage: WARNING - the coverage query FAILED; the figures below are the ZERO FALLBACK and measure nothing. jq said:" >&2
+  sed "s/^/  /" "$jq_err" >&2
+fi
+rm -f "$jq_err"
 [ -n "$report" ] || report='{"since":"'"$since"'","command_doc_prs":0,"with_workflow_reviewer":0,"any_reviewer_ran":0,"skip_notice_only":0,"no_review_record":0,"skipped_prs":[],"unrecorded_prs":[],"coverage_pct":0,"by_reviewer":[]}'
 
 if [ "$JSON" = 1 ]; then
