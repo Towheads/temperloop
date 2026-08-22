@@ -2533,6 +2533,61 @@ console.log(JSON.stringify({ ok: true }));
 "
 
 # ============================================================================
+# TEST (K1530): workerPrompt must tell the worker to add its own
+#   changelog.d/ fragment for contract-surface changes — the same way it is
+#   told to run the gates (temperloop#1530). Asserts the section reaches the
+#   worker's actual prompt (not just that the function exists — that's the
+#   static guard below), and that it names both the README pointer (shape
+#   lives in ONE place) and the commit-trailer opt-out (the channel that
+#   works before a PR exists).
+# ============================================================================
+run_node_case "K1530 prevention: workerPrompt embeds the changelog-fragment instruction" "
+$PREAMBLE
+
+happyMachinery('cl-item', 900, 'shaCl');
+happyWorker('cl-item');
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'cl-item', branch: 'build/cl-item', title: 'CL item', kind: 'impl', acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+await mod.default();
+const w = callLog.find(c => (c.opts.label||'') === 'worker:cl-item');
+let reason = null;
+if (!w) reason = 'no worker call logged';
+else if (!w.promptFull.includes('Changelog fragment — contract-surface changes need one (temperloop#1530)')) reason = 'worker prompt missing the changelog-fragment section';
+else if (!w.promptFull.includes('changelog.d/README.md')) reason = 'worker prompt must point at changelog.d/README.md rather than restate the fragment shape';
+else if (!w.promptFull.includes('Changelog: none — <reason>')) reason = 'worker prompt must name the recorded commit-trailer opt-out';
+else if (!w.promptFull.includes('changelog.d/cl-item.<category>.md')) reason = 'worker prompt must name a concrete fragment path derived from the item slug';
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+# --- K1530 static lockstep guards: build.md §3c and workerPrompt() must carry
+# the SAME changelog-fragment instruction, so a future edit to either one
+# cannot silently drop the other half — the exact defect this item fixes (a
+# worker never told to add a fragment, so every contract-surface PR fails CI
+# once by design). Mirrors the K1432/K1319 lockstep idiom above. -------------
+grep -q 'function changelogFragmentSection' "$MJS" \
+  || fail "#1530: changelogFragmentSection() missing — workerPrompt must embed the changelog-fragment instruction as its own self-contained section"
+grep -q '## Changelog fragment — contract-surface changes need one (temperloop#1530)' "$MJS" \
+  || fail "#1530: workerPrompt() must embed the '## Changelog fragment' section"
+grep -q 'changelog.d/README.md' "$MJS" \
+  || fail "#1530: workerPrompt() must point the worker at changelog.d/README.md rather than restate the fragment's filename grammar"
+grep -q 'Changelog: none — <reason>' "$MJS" \
+  || fail "#1530: workerPrompt() must name the recorded commit-trailer opt-out (the channel that works before a PR exists)"
+grep -q '\.\.\.changelogFragmentSection(item)' "$MJS" \
+  || fail "#1530: workerPrompt()'s returned array must splice in changelogFragmentSection(item) — a defined-but-unused function never reaches the worker"
+K1530_BUILD_MD="$REPO_ROOT/claude/commands/build.md"
+[ -f "$K1530_BUILD_MD" ] \
+  || fail "#1530: claude/commands/build.md is missing — the prose half of this contract pair cannot be verified"
+grep -q 'temperloop#1530' "$K1530_BUILD_MD" \
+  || fail "#1530: build.md §3c must name temperloop#1530 alongside the changelog-fragment instruction (lockstep with build-level.mjs)"
+grep -q 'changelog.d/README.md' "$K1530_BUILD_MD" \
+  || fail "#1530: build.md §3c must point the worker at changelog.d/README.md rather than restate the fragment's filename grammar"
+grep -q 'Changelog: none — <reason>' "$K1530_BUILD_MD" \
+  || fail "#1530: build.md §3c must name the recorded commit-trailer opt-out (lockstep with build-level.mjs)"
+echo "PASS: #1530 changelog-fragment guard — workerPrompt embeds the add-a-fragment instruction (README pointer + recorded opt-out); build.md §3c in lockstep"
+
+# ============================================================================
 # TEST (K993): the backgrounded-gate stall is detected MECHANICALLY and
 # auto-resumed — worker returned NO verdict AND its worktree is dirty with ZERO
 # commits (the #982/#983 shape). The probe reports RECOVER_DIRTY; driveItem must
