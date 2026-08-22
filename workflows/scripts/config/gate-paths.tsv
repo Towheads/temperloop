@@ -195,6 +195,7 @@ bash workflows/scripts/tests/test_install_lifecycle.sh	bin/** workflows/scripts/
 bash workflows/scripts/tests/lib/tests/test_sandbox.sh	workflows/scripts/tests/lib/** bin/**
 bash workflows/scripts/tests/test_sandbox_dry_run_legs.sh	workflows/scripts/tests/lib/** workflows/scripts/tests/test_sandbox_dry_run_legs.sh bin/** workflows/scripts/install/**
 bash workflows/scripts/tests/lib/tests/test_sandbox_integrity.sh	workflows/scripts/tests/lib/**
+bash workflows/scripts/tests/lib/tests/test_sandbox_trap.sh	workflows/scripts/tests/lib/**
 make test-prune-branches	scripts/prune-merged-branches.sh scripts/tests/test_prune_merged_branches.sh
 
 # ── Registry / prose / presentation-plane lints ─────────────────────────────

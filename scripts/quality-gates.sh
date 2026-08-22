@@ -1535,6 +1535,17 @@ KERNEL_GATES=(
   # appended onto sandbox.sh above. Sibling suite to test_sandbox.sh (kept
   # separate rather than folded in) — same direct-`bash` form.
   "bash workflows/scripts/tests/lib/tests/test_sandbox_integrity.sh"
+  # Sandbox ROOT-LEAK guard (temperloop#1723): the EXIT/HUP/INT/TERM traps
+  # sandbox_up installs ITSELF (so no suite has to be edited to be safe and
+  # none can forget), the SANDBOX_KEEP debuggability escape, and the
+  # stale-root sweeper workflows/scripts/tests/lib/sandbox-sweep.sh — the only
+  # remedy for the untrappable SIGKILL path and for roots leaked before the
+  # guard existed. Fixture-driven: each scenario runs a generated suite as a
+  # SEPARATE process with $TMPDIR re-pointed at a throwaway scan dir and
+  # asserts on what that dir holds once the fixture is dead, which is the only
+  # place the property is observable. Sibling suite to test_sandbox.sh /
+  # test_sandbox_integrity.sh; same direct-`bash` form.
+  "bash workflows/scripts/tests/lib/tests/test_sandbox_trap.sh"
   # `temperloop install` (temperloop#264, ADR K164 D7): the CLI half of the
   # install manifest library (workflows/scripts/install/manifest.sh) landed
   # above — installs the machine surface (links_enumerate() desired state)

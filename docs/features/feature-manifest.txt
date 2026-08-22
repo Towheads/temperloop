@@ -599,6 +599,13 @@ engineering-principles claude/templates/first-epic-setup.md
 sandbox-core workflows/scripts/tests/lib/sandbox.sh
 sandbox-core workflows/scripts/tests/lib/tests/test_sandbox.sh
 sandbox-core workflows/scripts/tests/test_sandbox_dry_run_legs.sh
+# Root-leak guard (temperloop#1723) — the EXIT/signal traps sandbox_up
+# installs itself, plus the stale-root sweeper that reclaims what no trap can
+# (SIGKILL, and roots leaked before the guard existed). Documented in the same
+# sandbox-core doc rather than a new slug: it is a property of sandbox_up /
+# sandbox_down, not a separate feature.
+sandbox-core workflows/scripts/tests/lib/sandbox-sweep.sh
+sandbox-core workflows/scripts/tests/lib/tests/test_sandbox_trap.sh
 
 # ── sandbox-integrity — write preflight, drift tripwire, tree-manifest diff
 #    (temperloop#266) — three more sandbox_* functions appended onto

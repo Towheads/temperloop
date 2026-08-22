@@ -56,11 +56,23 @@
 #   sandbox_up [prefix]
 #     Creates the throwaway root (mktemp -d "${TMPDIR:-/tmp}/<prefix>-XXXXXX")
 #     and its home/xdg/bin subdirectories. Must be called before anything
-#     else in this file. Sets the SANDBOX_* globals documented below.
+#     else in this file. Sets the SANDBOX_* globals documented below. ALSO
+#     registers the root and installs the EXIT/HUP/INT/TERM cleanup traps
+#     that make the root un-leakable on a failed, timed-out or cancelled run
+#     (temperloop#1723 — see the ROOT-LEAK GUARD block further down for the
+#     chaining, idempotence and SIGKILL-not-covered notes), and drops a
+#     `.sandbox-root` marker file in the root for sandbox-sweep.sh.
+#
+#     A caller that wants its OWN EXIT trap chained rather than clobbered
+#     should install it BEFORE sandbox_up — though a later sandbox_up call
+#     re-arms and re-chains, so the harness's own interferer idiom (install a
+#     trap between two sandbox_up calls) stays correct too.
 #
 #   sandbox_down
-#     rm -rf the throwaway root. Safe to call even if sandbox_up was never
-#     called (no-op).
+#     rm -rf the throwaway root and de-register it. Safe to call even if
+#     sandbox_up was never called (no-op), and safe to call alongside the
+#     traps above — the two are idempotent together, never a double-remove.
+#     Under SANDBOX_KEEP=1 it RETAINS the root and says so on stderr.
 #
 #   sandbox_env
 #     Populates the SANDBOX_ENV_ARGS array with the `NAME=VALUE` assignments
@@ -220,6 +232,177 @@ fi
 _SANDBOX_SH_LOADED=1
 
 # ---------------------------------------------------------------------------
+# ROOT-LEAK GUARD (temperloop#1723)
+#
+# THE LEAK. A throwaway root is ~1GB for the install-surface suites, and
+# every suite removed it with a single `sandbox_down` on its LAST line. That
+# line is only reached on the HAPPY path: `fail()` is `exit 1`, so a failed
+# assertion — plus a timeout kill, a CI cancellation, or an ENOSPC — walked
+# past it and stranded the root. Measured cost: $TMPDIR holding 215 leaked
+# roots totalling ~180GB, which filled a 460GB disk and killed a validation
+# batch mid-run.
+#
+# THE FIX, AND WHY IT LIVES HERE. `sandbox_up` installs the cleanup traps
+# ITSELF, so every existing caller became safe with no edit and no new
+# caller can forget. Three properties the implementation below holds:
+#
+#   REGISTERED, NOT LATEST-ONLY. Every root sandbox_up ever creates in this
+#   shell is appended to _SANDBOX_ROOTS, so a suite that calls sandbox_up
+#   many times (bin/subcommands/tests/test_uninstall.sh does, 13 times) has
+#   EVERY root reclaimed, not just the one $SANDBOX_ROOT happens to name at
+#   the moment of death.
+#
+#   CHAINED, NEVER CLOBBERING. A caller's own EXIT/signal handler is
+#   captured (via `trap -p`, whose output is bash's own re-runnable quoting
+#   — so no unescaping is guessed at) into a _sandbox_prior_<SIG> function
+#   and run FIRST, before the root it may still need is removed. Traps are
+#   re-armed on EVERY sandbox_up call, so a caller that installs its own
+#   EXIT trap AFTER the first sandbox_up (which the harness's own
+#   test_sandbox.sh does at its test-5 interferer) is re-chained rather than
+#   left holding a clobbered trap. A signal the caller deliberately IGNORES
+#   (`trap '' TERM`) is left alone.
+#
+#   IDEMPOTENT. `rm -rf` on an already-removed root is a no-op, and
+#   sandbox_down de-registers, so the explicit trailing `sandbox_down` call
+#   the suites already carry and the trap can both run without conflict —
+#   which is why test_install_lifecycle.sh's "sandbox_down removed the root"
+#   assertion still means what it did.
+#
+# WHAT IS **NOT** COVERED: SIGKILL (`kill -9`, an OOM kill, the SIGKILL leg
+# of a candidate timeout) is untrappable by construction — no trap can fire.
+# A root leaked that way is reclaimed by the sweeper,
+# workflows/scripts/tests/lib/sandbox-sweep.sh, which is the ONLY remedy for
+# that path (and for roots already stranded before this guard existed).
+#
+# DEBUGGABILITY ESCAPE: export SANDBOX_KEEP=1 to RETAIN every root — for
+# diagnosing a red suite. It is loud on stderr, and it applies to the
+# explicit `sandbox_down` call as well as to the traps, so "keep" means
+# keep. A suite that ASSERTS its root was removed therefore fails under
+# SANDBOX_KEEP; that is the flag working, not a regression.
+# ---------------------------------------------------------------------------
+
+# Basename of the marker file sandbox_up drops in each root. Its presence is
+# what makes a leaked root identifiable to the sweeper without guessing at
+# `mktemp` prefixes.
+SANDBOX_MARKER_NAME=".sandbox-root"
+
+_SANDBOX_ROOTS=()
+_SANDBOX_ANNOUNCED=()
+
+# sandbox_keep_requested — 0 (true) iff the caller asked to RETAIN roots.
+# Accepts the falsey spellings explicitly so `SANDBOX_KEEP=0` means "no".
+sandbox_keep_requested() {
+  case "${SANDBOX_KEEP:-}" in
+    "" | 0 | no | No | NO | false | False | FALSE) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+_sandbox_register_root() {
+  _SANDBOX_ROOTS+=("$1")
+}
+
+_sandbox_forget_root() {
+  local target="$1" kept=() r
+  for r in ${_SANDBOX_ROOTS[@]+"${_SANDBOX_ROOTS[@]}"}; do
+    [[ "$r" == "$target" ]] || kept+=("$r")
+  done
+  _SANDBOX_ROOTS=(${kept[@]+"${kept[@]}"})
+  return 0
+}
+
+# Announce a retained root ONCE, however many cleanup paths reach it.
+_sandbox_announce_keep() {
+  local root="$1" a
+  for a in ${_SANDBOX_ANNOUNCED[@]+"${_SANDBOX_ANNOUNCED[@]}"}; do
+    [[ "$a" == "$root" ]] && return 0
+  done
+  _SANDBOX_ANNOUNCED+=("$root")
+  printf 'sandbox: SANDBOX_KEEP set — RETAINING %s\n' "$root" >&2
+  printf 'sandbox:   inspect it, then remove it yourself (or run: bash %s --apply).\n' \
+    "workflows/scripts/tests/lib/sandbox-sweep.sh" >&2
+  printf 'sandbox:   a suite that asserts the root was removed will fail under SANDBOX_KEEP.\n' >&2
+  return 0
+}
+
+# Remove (or, under SANDBOX_KEEP, report) every root registered in this shell.
+# Safe to call any number of times.
+_sandbox_cleanup_all() {
+  local r
+  for r in ${_SANDBOX_ROOTS[@]+"${_SANDBOX_ROOTS[@]}"}; do
+    [[ -n "$r" ]] || continue
+    if sandbox_keep_requested; then
+      if [[ -e "$r" ]]; then
+        _sandbox_announce_keep "$r"
+      fi
+      continue
+    fi
+    rm -rf "$r"
+  done
+  if ! sandbox_keep_requested; then
+    _SANDBOX_ROOTS=()
+  fi
+  return 0
+}
+
+# EXIT-trap half. Never calls `exit`, so the script's own exit status — which
+# a caller's chained prior handler has already seen as $? — is preserved.
+_sandbox_on_exit() {
+  _sandbox_cleanup_all
+}
+
+# Signal half. Cleans up, then exits 128+N so the shell reports the
+# conventional signal status AND the EXIT chain (including a caller's own
+# EXIT handler) still gets to run — which a bare re-raise would skip.
+_sandbox_on_signal() {
+  local num="$2"
+  _sandbox_cleanup_all
+  exit $((128 + num))
+}
+
+# _sandbox_arm_one <SIG> <handler> — install <handler> for <SIG>, chaining
+# whatever the caller already had bound there.
+_sandbox_arm_one() {
+  local sig="$1" handler="$2" line body prior_fn="_sandbox_prior_$1"
+  line="$(trap -p "$sig" 2>/dev/null)"
+  if [[ -n "$line" ]]; then
+    # `trap -p` prints `trap -- '<body>' <NAME>`, where <NAME> is EXIT or the
+    # SIG-prefixed signal name and <body> is single-quoted with bash's own
+    # escaping. Strip only the fixed prefix and the trailing name (shortest
+    # match from the end, so a body containing spaces or newlines survives),
+    # then re-emit the STILL-QUOTED body into an `eval` — no hand-rolled
+    # unescaping, so an apostrophe in the caller's handler cannot corrupt it.
+    body="${line#trap -- }"
+    body="${body% *}"
+    case "$body" in
+      *_sandbox_on_exit* | *_sandbox_on_signal*)
+        # Already ours (a re-arm after another sandbox_up) — nothing to chain.
+        return 0
+        ;;
+      "''")
+        # The caller deliberately IGNORES this signal; honour that.
+        return 0
+        ;;
+    esac
+    eval "${prior_fn}() { eval ${body}
+}"
+    handler="$prior_fn; $handler"
+  fi
+  # Deliberate immediate expansion: the composed handler must be baked in now.
+  # shellcheck disable=SC2064
+  trap "$handler" "$sig"
+  return 0
+}
+
+_sandbox_arm_traps() {
+  _sandbox_arm_one EXIT '_sandbox_on_exit'
+  _sandbox_arm_one HUP '_sandbox_on_signal HUP 1'
+  _sandbox_arm_one INT '_sandbox_on_signal INT 2'
+  _sandbox_arm_one TERM '_sandbox_on_signal TERM 15'
+  return 0
+}
+
+# ---------------------------------------------------------------------------
 sandbox_up() {
   local prefix="${1:-sandbox}"
   SANDBOX_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/${prefix}-XXXXXX")"
@@ -254,12 +437,31 @@ sandbox_up() {
     "$SANDBOX_XDG_DATA_HOME" \
     "$SANDBOX_XDG_CACHE_HOME" \
     "$SANDBOX_BIN"
+  # Root-leak guard (temperloop#1723 — see the block above sandbox_up).
+  # The marker is what lets sandbox-sweep.sh identify a LEAKED root
+  # positively, rather than guessing from a `mktemp` prefix. Timestamp is
+  # stored UTC (a machine-parsed record, never a display surface).
+  {
+    printf '# temperloop test sandbox root (workflows/scripts/tests/lib/sandbox.sh)\n'
+    printf 'prefix=%s\n' "$prefix"
+    printf 'pid=%s\n' "$$"
+    printf 'suite=%s\n' "${0##*/}"
+    printf 'created=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  } >"$SANDBOX_ROOT/$SANDBOX_MARKER_NAME"
+  _sandbox_register_root "$SANDBOX_ROOT"
+  _sandbox_arm_traps
 }
 
 # ---------------------------------------------------------------------------
 sandbox_down() {
   [[ -n "${SANDBOX_ROOT:-}" ]] || return 0
+  if sandbox_keep_requested; then
+    _sandbox_announce_keep "$SANDBOX_ROOT"
+    return 0
+  fi
   rm -rf "$SANDBOX_ROOT"
+  _sandbox_forget_root "$SANDBOX_ROOT"
+  return 0
 }
 
 # ---------------------------------------------------------------------------
