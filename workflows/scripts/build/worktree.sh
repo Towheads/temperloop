@@ -44,16 +44,23 @@
 # no prose (the orchestrator branches on `.outcome`, never parses prose):
 #   create →  {"outcome":"CREATED","path":…,"branch":…,"base":…,
 #              "guard":"ARMED"|"UNARMED"|"UNKNOWN","guard_detail":…,
-#              "preserved":bool,"preserved_ref":…,"preserved_detail":…}
+#              "preserved":bool,"preserved_ref":…,"preserved_detail":…,
+#              "sidelined":bool,"sidelined_path":…,"sidelined_branch":…}
 #   restore → {"outcome":"RESTORED","path":…,"branch":…,"base":…,"ref":…,"sha":…,
 #              "strategy":"fast-forward"|"merge","guard":…,"guard_detail":…} |
 #             {"outcome":"RESTORE_CONFLICT","path":…,"branch":…,"base":…,"ref":…,
 #              "sha":…,"conflicts":[…],"aborted":true,"error":…} |
 #             {"outcome":"RESTORE_NOT_FOUND","slug":…,"ref":…}
 #   remove →  {"outcome":"REMOVED"|"NOT_FOUND","path":…,"branch":…,
-#              "preserved":bool,"preserved_ref":…,"preserved_detail":…}
+#              "preserved":bool,"preserved_ref":…,"preserved_detail":…} |
+#             {"outcome":"REMOVE_REFUSED","path":…,"branch":…,
+#              "preserved":false,"preserved_ref":…,"preserved_detail":…}
+#              + non-zero exit  (§ Never destroy what preservation missed)
 #   prune  →  one line per <repo>.wt/* worktree:
 #             {"outcome":"PRUNED"|"SKIPPED_FRESH"|"SKIPPED_DIRTY"|"SKIPPED_UNMERGED","path":…,"branch":…}
+#             …one line per SIDELINED worktree (a `.unpreserved-<sha8>` path):
+#             {"outcome":"SIDELINED_WT_REAPED"|"SIDELINED_WT","path":…,"branch":…,
+#              "slug":…,"issue":…,"issue_state":…,"landed":bool,"reason":…}
 #             …then one line per preservation ref (§ Unlanded-work preservation):
 #             {"outcome":"PARKED_REF_REAPED"|"PARKED_REF","ref":…,"sha":…,"slug":…,
 #              "issue":…,"issue_state":…,"landed":bool,"reason":…}
@@ -63,6 +70,8 @@
 # NOTE on the CREATED/REMOVED `preserved*` fields (temperloop#1699): the
 # unlanded-work verdict rides those lines as FIELDS, never as a new `outcome`
 # string, and `create` never refuses — see § Unlanded-work preservation below.
+# The same holds for `create`'s SIDELINE verdict (`sidelined*`, temperloop#1730):
+# fields on the existing CREATED line, never a new `outcome`.
 # `restore`'s own outcomes are NOT in build-level.mjs's SPINE_OUTCOME_SCHEMA
 # because the build spine never invokes `restore`; the specs that do (`/fix`,
 # `/sweep`) call it directly.
@@ -295,6 +304,15 @@ parked_ref_slug() {
   fi
 }
 
+# sidelined_wt_slug <path> — the slug a sidelined worktree was moved aside FROM,
+# i.e. its basename with the `.unpreserved-<sha8>` (and any `-<n>` collision
+# suffix) stripped. Mirrors parked_ref_slug so both disposal owners read the
+# originating issue number off the same slug shape.
+sidelined_wt_slug() {
+  local name="${1##*/}"
+  printf '%s\n' "${name%%.unpreserved-*}"
+}
+
 # parked_ref_issue <slug> — the ORIGINATING issue number, when the slug carries
 # one as its trailing `-<digits>` field (the kernel's `<slug>-<issue#>` branch
 # convention). Prints nothing when the slug carries no issue number — an
@@ -393,8 +411,22 @@ preserve_mint_ref() {
 }
 
 # preserve_unlanded <repo> <wt_path> <branch> — sets PRESERVED / PRESERVED_REF /
-# PRESERVED_DETAIL. NEVER fails (always returns 0): it is called from inside the
-# destroying primitive and must never abort a create under `set -e`.
+# PRESERVED_DETAIL.
+#
+# RETURN VALUE IS THE DESTRUCTION GATE (temperloop#1730). Until this item the
+# helper always returned 0 and both destroying callers ran `|| true`, so a
+# capture FAILURE was indistinguishable from a capture that was never needed —
+# and the work was destroyed with nothing captured. The return now separates
+# exactly those two:
+#   0  — the loss window is CLOSED. Either nothing could be lost
+#        (`no-occupant` / `nothing-to-preserve` / `not-needed:*`) or the work was
+#        captured (`preserved:*`). Destroying is safe.
+#   1  — preservation was NEEDED and FAILED (`capture-failed:snapshot`,
+#        `capture-failed:no-commit`, `capture-failed:ref-mint`,
+#        `unclassifiable:no-default-branch`). NOTHING was captured, so the
+#        caller must NOT destroy. PRESERVED_DETAIL says which.
+# It still never aborts the caller by itself: both call sites branch on the
+# return with `if !`, which is exempt from `set -e`.
 #
 # COMPOSES, never re-derives. The loss window is classified by `pr.sh
 # recover-probe`'s existing ladder — RECOVER_DIRTY / RECOVER_COMMITTED ARE the
@@ -431,8 +463,10 @@ preserve_unlanded() {
 
   default="$(default_branch "$repo")" || default=""
   if [ -z "$default" ]; then
+    # An occupant exists (checked above) and we cannot even classify it — so we
+    # cannot claim the loss window is closed. Gate the destruction shut.
     PRESERVED_DETAIL="unclassifiable:no-default-branch"
-    return 0
+    return 1
   fi
 
   if [ "$have_wt" -eq 1 ] && [ -f "$SCRIPT_DIR/pr.sh" ]; then
@@ -464,8 +498,12 @@ preserve_unlanded() {
     fi
   fi
 
+  # `^{commit}` deliberately, not the bare ref: a ref that does not resolve to a
+  # COMMIT cannot be preserved as one, and reading the bare object id here would
+  # hand `preserve_mint_ref` a non-commit that `update-ref` then rejects — a
+  # ref-mint failure standing in for what is really "there is no commit here".
   if [ "$have_branch" -eq 1 ]; then
-    tip="$(git -C "$repo" rev-parse --verify --quiet "refs/heads/$branch" 2>/dev/null)" || tip=""
+    tip="$(git -C "$repo" rev-parse --verify --quiet "refs/heads/$branch^{commit}" 2>/dev/null)" || tip=""
   elif [ "$have_wt" -eq 1 ]; then
     tip="$(git -C "$wt_path" rev-parse HEAD 2>/dev/null)" || tip=""
   fi
@@ -493,20 +531,20 @@ preserve_unlanded() {
     sha="$(preserve_capture "$wt_path" 2>/dev/null)" || sha=""
     if [ -z "$sha" ]; then
       PRESERVED_DETAIL="capture-failed:snapshot outcome=$outcome"
-      return 0
+      return 1
     fi
   else
     sha="$tip"
   fi
   if [ -z "$sha" ]; then
     PRESERVED_DETAIL="capture-failed:no-commit outcome=$outcome"
-    return 0
+    return 1
   fi
 
   ref="$(preserve_mint_ref "$repo" "$slug" "$sha" 2>/dev/null)" || ref=""
   if [ -z "$ref" ]; then
     PRESERVED_DETAIL="capture-failed:ref-mint outcome=$outcome sha=$sha"
-    return 0
+    return 1
   fi
 
   PRESERVED="true"
@@ -517,18 +555,117 @@ preserve_unlanded() {
   return 0
 }
 
+# --- Never destroy what preservation missed (temperloop#1730) ----------------
+#
+# #1699 minted the preservation ref but both destroying callers still ran
+# `preserve_unlanded … || true` and then destroyed UNCONDITIONALLY, so the guard
+# covered the happy path only: on `capture-failed:*` / `unclassifiable:*` the
+# work went to `git worktree remove --force` + `git branch -D` with nothing
+# captured. The `|| true` is gone from both call sites; each branches on the
+# return, and the two DIVERGE because their constraints differ:
+#
+#   * `remove` (the /sweep unattended park finale) REFUSES — a leaked worktree
+#     is recoverable by hand, a force-deleted branch is not. It reports
+#     REMOVE_REFUSED with the verbatim `preserved_detail` plus the STILL-STANDING
+#     path, and exits non-zero.
+#   * `create` must NEVER refuse (a refusing create turns /build's prelude batch
+#     from "created" into "escalated"), so it SIDELINES instead: the occupant is
+#     MOVED ASIDE to `<path>.unpreserved-<sha8>` on branch
+#     `<branch>.unpreserved-<sha8>`, which frees the deterministic path, so the
+#     work survives AND create still CREATES.
+SIDELINED="false"
+SIDELINED_PATH=""
+SIDELINED_BRANCH=""
+
+# sideline_unpreserved <repo> <wt_path> <branch> — move the un-preservable
+# occupant aside, sets SIDELINED / SIDELINED_PATH / SIDELINED_BRANCH.
+#
+# MOVES, never copies and never removes: `git worktree move` keeps the worktree
+# REGISTERED at its new path (so `prune` still sees it — § Sidelined-worktree
+# disposal), with a plain `mv` + `git worktree repair` fallback for an occupant
+# git declines to move (an unregistered stale dir from a crashed run). The
+# branch rename is what actually frees `refs/heads/<branch>` for the fresh
+# create; without it `worktree add -b` would still collide.
+#
+# Returns non-zero WITHOUT having destroyed anything when it cannot claim a free
+# name or the move fails. That is the ONE case create's caller cannot paper
+# over, and it resolves to ERROR rather than to destruction on purpose: the only
+# other way to satisfy "create never refuses" there is to delete work that
+# nothing captured, which is the exact failure this whole guard exists to close.
+sideline_unpreserved() {
+  local repo="$1" wt_path="$2" branch="$3"
+  local tok base_path new_path new_branch n=1 moved=0
+  SIDELINED="false"
+  SIDELINED_PATH=""
+  SIDELINED_BRANCH=""
+
+  tok="$(git -C "$repo" rev-parse --verify --quiet "refs/heads/$branch^{commit}" 2>/dev/null)" || tok=""
+  if [ -z "$tok" ] && [ -d "$wt_path" ]; then
+    tok="$(git -C "$wt_path" rev-parse HEAD 2>/dev/null)" || tok=""
+  fi
+  if [ -n "$tok" ]; then
+    tok="${tok:0:8}"
+  else
+    tok="$(date -u '+%Y%m%d%H%M%S')"
+  fi
+
+  base_path="${wt_path}.unpreserved-${tok}"
+  new_path="$base_path"
+  new_branch="${branch}.unpreserved-${tok}"
+  while [ -e "$new_path" ] || git -C "$repo" show-ref --verify --quiet "refs/heads/$new_branch"; do
+    n=$((n + 1))
+    [ "$n" -le 20 ] || return 1
+    new_path="${base_path}-${n}"
+    new_branch="${branch}.unpreserved-${tok}-${n}"
+  done
+  git check-ref-format "$new_branch" >/dev/null 2>&1 || return 1
+
+  if [ -e "$wt_path" ]; then
+    if git -C "$repo" worktree move "$wt_path" "$new_path" 2>/dev/null; then
+      moved=1
+    elif mv "$wt_path" "$new_path" 2>/dev/null; then
+      git -C "$repo" worktree repair "$new_path" >/dev/null 2>&1 || true
+      moved=1
+    fi
+    [ "$moved" -eq 1 ] || return 1
+  fi
+
+  if git -C "$repo" show-ref --verify --quiet "refs/heads/$branch"; then
+    git -C "$repo" branch -m "$branch" "$new_branch" >/dev/null 2>&1 || return 1
+  else
+    new_branch=""
+  fi
+
+  SIDELINED="true"
+  SIDELINED_PATH="$new_path"
+  SIDELINED_BRANCH="$new_branch"
+  printf 'worktree.sh: preservation FAILED (%s) — sidelined %s to %s instead of destroying it\n' \
+    "$PRESERVED_DETAIL" "$wt_path" "$new_path" >&2
+  return 0
+}
+
 # Tear down whatever occupies the deterministic path (registered worktree,
 # stale dir, stale registration, stale branch) so create can always re-add.
 #
-# PRESERVE BEFORE DESTROY (#1699). The preserve call below is the guard's
-# REACHABILITY surface — the guarantee is that it sits inside this function's
-# own body, not merely that the helper exists somewhere in the file. `|| true`
-# is load-bearing for the same reason guard_probe's is: a future edit that
-# leaves preserve_unlanded returning non-zero must never abort a create
-# mid-flight under `set -e`.
+# PRESERVE BEFORE DESTROY (#1699), AND NEVER DESTROY WHAT PRESERVATION MISSED
+# (#1730). The preserve call below is the guard's REACHABILITY surface — the
+# guarantee is that it sits inside this function's own body, not merely that the
+# helper exists somewhere in the file. It carries NO `|| true`: swallowing the
+# return is precisely what let the destruction below run on a failed capture.
+# `if !` is the shape that keeps the caller safe under `set -e` (the test of an
+# `if` is exempt) WITHOUT discarding the verdict.
 clear_path() {
   local repo="$1" wt_path="$2" branch="$3"
-  preserve_unlanded "$repo" "$wt_path" "$branch" || true
+  SIDELINED="false"
+  SIDELINED_PATH=""
+  SIDELINED_BRANCH=""
+  if ! preserve_unlanded "$repo" "$wt_path" "$branch"; then
+    sideline_unpreserved "$repo" "$wt_path" "$branch" \
+      || die "preservation failed ($PRESERVED_DETAIL) and '$wt_path' could not be sidelined — refusing to destroy uncaptured work"
+    # The occupant is gone from the deterministic path/branch by MOVE, so the
+    # destroying block below is a no-op on this arm. Falling through rather than
+    # returning keeps `worktree prune` + the stale-registration cleanup on one path.
+  fi
   if [ -e "$wt_path" ]; then
     git -C "$repo" worktree remove --force "$wt_path" 2>/dev/null \
       || rm -rf "$wt_path"
@@ -943,10 +1080,14 @@ cmd_create() {
          --arg guard "$GUARD_STATUS" --arg guard_detail "$GUARD_DETAIL" \
          --argjson preserved "$PRESERVED" --arg preserved_ref "$PRESERVED_REF" \
          --arg preserved_detail "$PRESERVED_DETAIL" \
+         --argjson sidelined "$SIDELINED" --arg sidelined_path "$SIDELINED_PATH" \
+         --arg sidelined_branch "$SIDELINED_BRANCH" \
     '{outcome:"CREATED", path:$path, branch:$branch, base:$base,
       guard:$guard, guard_detail:$guard_detail,
       preserved:$preserved, preserved_ref:$preserved_ref,
-      preserved_detail:$preserved_detail}'
+      preserved_detail:$preserved_detail,
+      sidelined:$sidelined, sidelined_path:$sidelined_path,
+      sidelined_branch:$sidelined_branch}'
 }
 
 # --- restore: re-apply a preservation ref into a fresh worktree (#1699) -------
@@ -1052,7 +1193,25 @@ cmd_remove() {
   # PARK-AND-CONTINUE finale reaches (temperloop#1725, absorbed into #1699). It
   # does not route through clear_path, so it takes the same guard directly;
   # a /sweep-originated preservation ref is minted HERE.
-  preserve_unlanded "$repo" "$wt_path" "$branch" || true
+  #
+  # AND, unlike `create`, it REFUSES when that guard came back empty-handed
+  # (#1730). No `|| true`: on a `capture-failed:*` / `unclassifiable:*` verdict
+  # nothing was captured, and `remove`'s asymmetry is the whole reason the two
+  # callers diverge — a worktree this leaves standing is recoverable by hand
+  # (its own `prune` reclaims it once the work lands or the issue closes), while
+  # the `git branch -D` below is not. Refuse loudly, destroy nothing, and let
+  # the caller see a non-zero exit rather than a silent false REMOVED.
+  if ! preserve_unlanded "$repo" "$wt_path" "$branch"; then
+    jq -cn --arg path "$wt_path" --arg branch "$branch" \
+           --argjson preserved "$PRESERVED" --arg preserved_ref "$PRESERVED_REF" \
+           --arg preserved_detail "$PRESERVED_DETAIL" \
+      '{outcome:"REMOVE_REFUSED", path:$path, branch:$branch,
+        preserved:$preserved, preserved_ref:$preserved_ref,
+        preserved_detail:$preserved_detail}'
+    printf 'worktree.sh: REFUSING to remove %s — preservation failed (%s); worktree and branch %s left INTACT\n' \
+      "$wt_path" "$PRESERVED_DETAIL" "$branch" >&2
+    exit 1
+  fi
 
   if [ -e "$wt_path" ]; then
     existed=1
@@ -1102,7 +1261,16 @@ cmd_prune() {
         ;;
       "")
         case "$wt_path" in
-          "$prefix"*) prune_one "$repo" "$wt_path" "$branch" "$default" "$force" ;;
+          "$prefix"*)
+            # A sidelined worktree is NOT ordinary debris — it holds work no
+            # preservation captured, so it takes its own conservative disposal
+            # owner rather than prune_one's merged/dirty/fresh gates (and, like
+            # a preservation ref, `--force` deliberately does not reach it).
+            case "${wt_path##*/}" in
+              *.unpreserved-*) prune_sidelined_wt "$repo" "$wt_path" "$branch" "$default" ;;
+              *)               prune_one "$repo" "$wt_path" "$branch" "$default" "$force" ;;
+            esac
+            ;;
         esac
         wt_path=""
         ;;
@@ -1193,6 +1361,74 @@ prune_parked_refs() {
       '{outcome:"PARKED_REF", ref:$ref, sha:$sha, slug:$slug, issue:$issue,
         issue_state:$issue_state, landed:$landed, reason:$reason}'
   done < <(git -C "$repo" for-each-ref --format='%(refname)' "$PARKED_REF_NS/*" 2>/dev/null || true)
+}
+
+# --- The sidelined worktree's named disposal owner (temperloop#1730) ---------
+#
+# `create`'s sideline moves an un-preservable occupant to
+# `<repo>.wt/<slug>.unpreserved-<sha8>` rather than destroying it, so `prune`
+# owns its eventual disposal exactly as it owns a preservation ref's. It is the
+# SAME two-gate contract as prune_parked_refs — deliberately, because both hold
+# the same thing (work that exists only on this machine):
+#
+#   1. ANCESTRY — the sidelined HEAD is an ancestor of origin/<default>, i.e.
+#      the work reached the merged tip. A DIRTY sidelined tree can never pass
+#      this gate: ancestry of HEAD says nothing about uncommitted changes.
+#   2. DISPOSITION — the originating issue (the slug's trailing `-<issue#>`)
+#      reached a terminal state (CLOSED).
+#
+# An UNEVALUABLE check is FALSE — no issue number in the slug, no `gh`, an
+# offline/unauthenticated/rate-limited `gh`, an unrecognized state all leave the
+# gate shut, and an OPEN issue is never reaped. The cost of a wrong FALSE is one
+# extra reported line next sweep; the cost of a wrong TRUE is destroyed work.
+# `--force` is NOT plumbed in here on purpose: it exists to override the
+# dirty/fresh heuristics on ordinary debris, and this path is not heuristic.
+#
+# The outcome strings are distinct from `PRUNED` for the same reason the
+# parked-ref ones are: deploy-mini.sh counts `"outcome":"PRUNED"` lines.
+prune_sidelined_wt() {
+  local repo="$1" wt_path="$2" branch="$3" default="$4"
+  local slug issue head landed=false dirty=0 issue_state="unknown" terminal=false state reason
+  slug="$(sidelined_wt_slug "$wt_path")"
+  issue="$(parked_ref_issue "$slug")"
+
+  head="$(git -C "$wt_path" rev-parse HEAD 2>/dev/null)" || head=""
+  if [ -n "$(git -C "$wt_path" status --porcelain 2>/dev/null)" ]; then dirty=1; fi
+  if [ "$dirty" -eq 0 ] && [ -n "$head" ] \
+     && git -C "$repo" merge-base --is-ancestor "$head" "origin/$default" 2>/dev/null; then
+    landed=true
+  fi
+
+  if [ -n "$issue" ] && command -v gh >/dev/null 2>&1; then
+    state="$(cd "$repo" && _worktree_gh issue view "$issue" --json state --jq .state 2>/dev/null)" || state=""
+    case "$state" in
+      CLOSED) issue_state="closed"; terminal=true ;;
+      OPEN)   issue_state="open" ;;
+    esac
+  fi
+
+  reason="held:unpreserved issue=${issue_state} dirty=${dirty}"
+  if [ "$landed" = true ] || [ "$terminal" = true ]; then
+    if [ "$landed" = true ]; then reason="reaped:ancestor-of-merged-tip"; else reason="reaped:issue-terminal"; fi
+    rm -f "$wt_path/.build-guard"
+    git -C "$repo" worktree remove --force "$wt_path" 2>/dev/null || rm -rf "$wt_path"
+    git -C "$repo" worktree prune 2>/dev/null || true
+    if [ ! -e "$wt_path" ]; then
+      if [ -n "$branch" ]; then
+        git -C "$repo" branch -D "$branch" >/dev/null 2>&1 || true
+      fi
+      jq -cn --arg path "$wt_path" --arg branch "$branch" --arg slug "$slug" --arg issue "$issue" \
+             --arg issue_state "$issue_state" --argjson landed "$landed" --arg reason "$reason" \
+        '{outcome:"SIDELINED_WT_REAPED", path:$path, branch:$branch, slug:$slug, issue:$issue,
+          issue_state:$issue_state, landed:$landed, reason:$reason}'
+      return 0
+    fi
+    reason="held:reap-failed"
+  fi
+  jq -cn --arg path "$wt_path" --arg branch "$branch" --arg slug "$slug" --arg issue "$issue" \
+         --arg issue_state "$issue_state" --argjson landed "$landed" --arg reason "$reason" \
+    '{outcome:"SIDELINED_WT", path:$path, branch:$branch, slug:$slug, issue:$issue,
+      issue_state:$issue_state, landed:$landed, reason:$reason}'
 }
 
 prune_one() {
