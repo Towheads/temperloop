@@ -574,6 +574,7 @@ review-agents workflows/scripts/tests/fixtures/docs-reviewer/*
 review-agents workflows/scripts/tests/fixtures/congruence-lens/*
 review-agents workflows/scripts/workflow-reviewer-coverage.sh
 review-agents workflows/scripts/tests/test_workflow_reviewer_coverage.sh
+review-agents workflows/scripts/tests/test_reviewer_coverage_all_routed.sh
 review-agents workflows/scripts/install/reviewer-activation-coverage.sh
 review-agents workflows/scripts/tests/test_reviewer_activation_coverage.sh
 review-agents workflows/scripts/install/reviewer-activate.sh

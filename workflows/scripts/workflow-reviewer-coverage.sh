@@ -1,12 +1,50 @@
 #!/usr/bin/env bash
 #
-# workflow-reviewer-coverage.sh — reporting rollup for temperloop#1007.
+# workflow-reviewer-coverage.sh — reporting rollup for temperloop#1007,
+# generalized to every ROUTED reviewer by temperloop#1446.
 #
-# Reports the COVERAGE RATE of the workflow-reviewer gate: of the merged PRs in a
-# window that TOUCHED a `claude/commands/*.md` workflow spec, what fraction carry
+# Reports the COVERAGE RATE of §3e pre-push review: of the merged PRs in a
+# window, what fraction of the reviewers `workflows/scripts/config/
+# reviewer-routing.tsv` routes for each PR's changed files carry
 # MACHINE-EMITTED EVIDENCE THAT THE REVIEWER ACTUALLY RAN.
 #
-# ── What changed, and why (temperloop#1450) ────────────────────────────────
+# ── temperloop#1446 — every routed reviewer, not just workflow-reviewer ────
+# The §3e gap (#1387/#1430) stayed invisible for ~a month because nothing
+# measured whether reviews executed. #1450 fixed that for exactly ONE
+# reviewer (workflow-reviewer) over exactly ONE path class (command-doc
+# PRs) — every OTHER routed reviewer (shell-reviewer, docs-reviewer,
+# python-reviewer, typescript-reviewer, …) still had no execution signal at
+# all: the same defect class, just uncovered by the fix that caught it once.
+#
+# This script now ALSO derives, for every merged PR in the window, the full
+# reviewer SET `/build`'s §3e step would route for that PR's changed files —
+# `reviewer-routing.tsv`'s extension/path-glob axis, plus the one in-prose
+# override build.md 3e states outside the tsv: a `claude/commands/*.md`
+# workflow spec always routes to `workflow-reviewer`, regardless of any tsv
+# row (foundation#1007). (build.md 3e's OTHER non-tsv routes — a `review:`
+# item override, the `architectural` change-kind route, and the generic
+# "any other stranger-facing `*.md` -> docs-reviewer" prose fallback — carry
+# no file-glob a PR's `files` list alone can reproduce, so they are
+# deliberately OUT of scope here; the tsv + the one md override are the
+# routes this script can derive purely from `gh pr list --json files`.)
+#
+# For each reviewer that tsv/override names ANYWHERE (the roster), across
+# every merged PR that reviewer is routed to in the window, the SAME
+# machine-emitted-evidence classification #1450 built is reused/generalized
+# (see `reviewer_ran`/`reviewer_skipped` below) — no new false-positive
+# surface, and the same same-line skip-clause termination (a `§3e review —
+# ran: docs-reviewer · skipped — workflow-reviewer …` line must not score
+# `workflow-reviewer` as ran) applies to every reviewer, not only
+# workflow-reviewer.
+#
+# The result is reported PER REVIEWER, in the `by_reviewer` array/section —
+# a reviewer with ZERO routed PRs this window ("nothing to review") is
+# listed with `routed: false` and a null rate; a reviewer that WAS routed
+# but has no execution signal at all is listed with `routed: true` and
+# `coverage_pct: 0` — the two are never conflated, and no roster reviewer is
+# ever silently omitted from the table.
+#
+# ── What changed for workflow-reviewer specifically, and why (temperloop#1450) ──
 # This script used to classify a PR as covered when its body matched, case-
 # insensitively, `workflow-reviewer|BLOCKING|MAJOR`. That measured PROSE, not
 # execution, and it was wrong in BOTH directions:
@@ -50,9 +88,9 @@
 #   --repo R   owner/repo (default: gh's resolved default for the cwd)
 #   --json     machine-readable output instead of the text summary
 #
-# --json shape (all counts over the command-doc denominator):
+# --json shape (all counts over the command-doc denominator, PLUS by_reviewer):
 #   {since, command_doc_prs, with_workflow_reviewer, any_reviewer_ran,
-#    skip_notice_only, no_review_record, coverage_pct}
+#    skip_notice_only, no_review_record, coverage_pct, by_reviewer}
 #   with_workflow_reviewer  the numerator: `workflow-reviewer` named in an
 #                           emitted `ran:` tally, or its own `### workflow-reviewer`
 #                           review-notes block. coverage_pct is this / denominator.
@@ -63,10 +101,25 @@
 #   no_review_record        neither. The build path emitted nothing at all.
 #   The three buckets partition the denominator:
 #   any_reviewer_ran + skip_notice_only + no_review_record == command_doc_prs.
+#   by_reviewer             ONE ROW PER REVIEWER in the tsv+override roster
+#                           (temperloop#1446), over ALL merged PRs in the
+#                           window (not just command-doc PRs): {reviewer,
+#                           routed, routed_prs, documented_pass, skip_notice,
+#                           no_record, coverage_pct}. `routed:false`
+#                           (routed_prs==0, coverage_pct:null) means nothing
+#                           was routed to that reviewer this window;
+#                           `routed:true` with `coverage_pct:0` means it WAS
+#                           routed and never documented as having run — the
+#                           two states are always distinguishable, and every
+#                           roster reviewer is always present in the array.
 #
-# Test seam: WFR_COVERAGE_GH_BIN overrides the gh binary (hermetic; see test_workflow_reviewer_coverage.sh).
+# Test seam: WFR_COVERAGE_GH_BIN overrides the gh binary (hermetic; see
+# test_workflow_reviewer_coverage.sh and test_reviewer_coverage_all_routed.sh).
+# WFR_COVERAGE_ROUTING_TSV overrides the routing tsv path (hermetic fixtures).
 # Fail-open: an unreadable PR list yields a zero-row report and exit 0.
 set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 GH="${WFR_COVERAGE_GH_BIN:-gh}"
 DAYS=28
@@ -77,13 +130,51 @@ while [ $# -gt 0 ]; do
     --days) DAYS="$2"; shift 2 ;;
     --repo) REPO="$2"; shift 2 ;;
     --json) JSON=1; shift ;;
-    -h|--help) sed -n '2,66p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,116p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "workflow-reviewer-coverage: unknown arg: $1" >&2; exit 2 ;;
   esac
 done
 
 repo_args=()
 [ -n "$REPO" ] && repo_args=(--repo "$REPO")
+
+# ── Load the routing roster (temperloop#1446) ───────────────────────────────
+# reviewer-routing.tsv is the single source of truth for the extension/glob
+# axis (ADR 0008); the ONE non-tsv route this script can derive from a PR's
+# `files` list alone — claude/commands/*.md -> workflow-reviewer (foundation
+# #1007) — is added below as a literal roster member, since it never appears
+# as a tsv row. Parsed bash-3.2-portable, same read-loop shape as
+# workflows/scripts/config/check-reviewer-routing.sh.
+TSV="${WFR_COVERAGE_ROUTING_TSV:-$SCRIPT_DIR/config/reviewer-routing.tsv}"
+routing_rows=()
+# AN ABSENT OR UNREADABLE ROUTING TABLE IS NOT AN EMPTY ONE (temperloop#1446
+# review, MEDIUM). Without this guard the `if [ -f ]` falls through with no
+# `else`, the roster collapses to the single hardcoded workflow-reviewer
+# member, and the report renders a confident per-reviewer table that silently
+# OMITS every reviewer the table would have named. That reads exactly like
+# "those reviewers were never routed" -- the same false all-clear the regex
+# escaping above exists to prevent, arriving through a different door.
+if [ ! -e "$TSV" ]; then
+  printf %s\\n "workflow-reviewer-coverage: WARNING - routing table not found at $TSV; the per-reviewer roster is DEGRADED to workflow-reviewer only. Every other reviewer is OMITTED, not measured as zero." >&2
+elif [ ! -r "$TSV" ]; then
+  printf %s\\n "workflow-reviewer-coverage: WARNING - routing table at $TSV exists but is UNREADABLE; the per-reviewer roster is DEGRADED to workflow-reviewer only. Every other reviewer is OMITTED, not measured as zero." >&2
+fi
+if [ -r "$TSV" ]; then
+  while IFS=$'\t' read -r pattern reviewer _agent_path || [ -n "${pattern:-}" ]; do
+    [ -z "${pattern:-}" ] && continue
+    case "$pattern" in \#*) continue ;; esac
+    [ -z "${reviewer:-}" ] && continue
+    routing_rows+=("$pattern"$'\t'"$reviewer")
+  done <"$TSV"
+fi
+if [ "${#routing_rows[@]}" -gt 0 ]; then
+  routing_rules_json="$(printf '%s\n' "${routing_rows[@]}" | jq -R -s -c \
+    'split("\n") | map(select(length > 0)) | map(split("\t")) | map({pattern: .[0], reviewer: .[1]})')"
+else
+  routing_rules_json='[]'
+fi
+reviewer_roster_json="$(printf '%s' "$routing_rules_json" \
+  | jq -c '([.[].reviewer] + ["workflow-reviewer"]) | unique')"
 
 # Window start: N days ago, portable across BSD (macOS) and GNU date.
 since="$(date -u -v-"${DAYS}"d '+%Y-%m-%d' 2>/dev/null || date -u -d "-${DAYS} days" '+%Y-%m-%d')"
@@ -135,7 +226,13 @@ fi
 #               matched leniently because it is only a REPORTING bucket, never
 #               the numerator. Matching it is what stops the old regex's worst
 #               false positive: a provable non-run scoring as a pass.
-report="$(printf '%s' "$prs_json" | jq -c --arg since "$since" '
+#
+# `reviewer_ran`/`reviewer_skipped` (temperloop#1446) generalize the same
+# three shapes to ANY reviewer name, so the identical same-line-separator
+# protection applies uniformly across the whole roster, not only to
+# workflow-reviewer.
+jq_err="$(mktemp "${TMPDIR:-/tmp}/wfr-cov-jqerr-XXXXXX")"
+report="$(printf '%s' "$prs_json" | jq -c --arg since "$since" --argjson rules "$routing_rules_json" --argjson roster "$reviewer_roster_json" '
   # NAMES STOP AT THE ` · ` SEPARATOR, not at end-of-line. build-level.mjs
   # joins the ran-tally and the skip notes into ONE summary string with
   # `parts.join(" · ")`, so a real emitted line reads:
@@ -162,23 +259,100 @@ report="$(printf '%s' "$prs_json" | jq -c --arg since "$since" '
                or test("(^|\n)###[ \t]+workflow-reviewer[ \t\r]*(\n|$)");
   def skip_notice: test("skipped[ \t]*[—–-][ \t]*`?workflow-reviewer\\b");
 
-  [ .[] | select(any(.paths[]?; test("^claude/commands/.*\\.md$"))) ]
-  | map(. + {ran: (.body | any_ran), wfr: (.body | wfr_ran), skip: (.body | skip_notice)})
-  | {
-      since: $since,
-      command_doc_prs: length,
-      with_workflow_reviewer: (map(select(.wfr)) | length),
-      any_reviewer_ran:       (map(select(.ran)) | length),
-      skip_notice_only:       (map(select(.ran | not) | select(.skip)) | length),
-      no_review_record:       (map(select(.ran | not) | select(.skip | not)) | length),
-      skipped_prs:            (map(select(.ran | not) | select(.skip) | .number)),
-      unrecorded_prs:         (map(select(.ran | not) | select(.skip | not) | .number))
-    }
-  | . + {coverage_pct: (if .command_doc_prs > 0
-                        then (.with_workflow_reviewer * 100 / .command_doc_prs | floor)
-                        else 0 end)}
-' 2>/dev/null || echo '')"
-[ -n "$report" ] || report='{"since":"'"$since"'","command_doc_prs":0,"with_workflow_reviewer":0,"any_reviewer_ran":0,"skip_notice_only":0,"no_review_record":0,"skipped_prs":[],"unrecorded_prs":[],"coverage_pct":0}'
+  # ── temperloop#1446: the same three shapes, generalized to ANY reviewer ────
+  # `ran_tally_names($body)` mirrors the `[ran_tally.names]` array-collection
+  # idiom above (a `capture` that does not match yields NO output, so it must
+  # be collected into an array before `any(...)` can be applied safely).
+  def ran_tally_names($body): [ $body | capture("(^|\n)§3e review[ \t]*[—–-][ \t]*ran:[ \t]*(?<names>[^\n·]*)").names ];
+
+  # A REVIEWER NAME IS DATA, NOT A PATTERN (temperloop#1446 review, HIGH).
+  # `$r` arrives verbatim from reviewer-routing.tsv column 2. Concatenated raw
+  # into a regex, a name carrying a metacharacter (`bad(reviewer`) makes the jq
+  # `test` builtin THROW — and the whole pipeline fail-open (`2>/dev/null ||
+  # echo ""`) then renders that throw as the zero-row report: every count 0,
+  # `by_reviewer` empty, exit 0. A false all-clear indistinguishable from a
+  # genuinely quiet window, on the one tool whose entire job is making an
+  # invisible gap visible. It would also take the legacy temperloop#1450
+  # workflow-reviewer metric down with it, since both share this single jq
+  # invocation.
+  #
+  # Escape rather than trust the input. The sibling consumer of this same tsv
+  # already does exactly this (`_rr_ere_escape` in
+  # workflows/scripts/config/check-reviewer-routing.sh) — matching that
+  # precedent rather than inventing a second convention. NOTE: no apostrophes
+  # anywhere in this block; the jq program is a single-quoted shell string and
+  # one apostrophe ends it (a trap this repo has paid for before).
+  def re_escape($v): $v | gsub("(?<c>[.^$*+?()\\[\\]{}|\\\\/-])"; "\\" + .c);
+
+  def reviewer_ran($r; $body):
+    (ran_tally_names($body) | any(test("\\b" + re_escape($r) + "\\b")))
+    or ($body | test("(^|\n)###[ \t]+" + re_escape($r) + "[ \t\r]*(\n|$)"));
+  def reviewer_skipped($r; $body): $body | test("skipped[ \t]*[—–-][ \t]*`?" + re_escape($r) + "\\b");
+
+  # Extension rows match by suffix (`.py`); glob rows (`docs/**`) match by
+  # prefix on the glob stripped of its trailing `**`. A `claude/commands/*.md`
+  # path always routes to workflow-reviewer, overriding any tsv match for that
+  # SAME path (foundation#1007) — no tsv row currently claims `.md`, so this is
+  # additive today, but the override wins by construction if one ever did.
+  def is_workflow_md($p): $p | test("^claude/commands/.*\\.md$");
+  def match_rule($p; $rule):
+    if ($rule.pattern | startswith(".")) then ($p | endswith($rule.pattern))
+    elif ($rule.pattern | endswith("/**")) then ($p | startswith($rule.pattern[0:-2]))
+    else false end;
+  def routed_for_path($p; $rules):
+    if is_workflow_md($p) then ["workflow-reviewer"]
+    else [ $rules[] | select(match_rule($p; .)) | .reviewer ]
+    end;
+  def routed_set($paths; $rules): ([ $paths[] as $p | routed_for_path($p; $rules)[] ]) | unique;
+
+  ([ .[] | select(any(.paths[]?; test("^claude/commands/.*\\.md$"))) ]
+   | map(. + {ran: (.body | any_ran), wfr: (.body | wfr_ran), skip: (.body | skip_notice)})
+   | {
+       since: $since,
+       command_doc_prs: length,
+       with_workflow_reviewer: (map(select(.wfr)) | length),
+       any_reviewer_ran:       (map(select(.ran)) | length),
+       skip_notice_only:       (map(select(.ran | not) | select(.skip)) | length),
+       no_review_record:       (map(select(.ran | not) | select(.skip | not)) | length),
+       skipped_prs:            (map(select(.ran | not) | select(.skip) | .number)),
+       unrecorded_prs:         (map(select(.ran | not) | select(.skip | not) | .number))
+     }
+   | . + {coverage_pct: (if .command_doc_prs > 0
+                          then (.with_workflow_reviewer * 100 / .command_doc_prs | floor)
+                          else 0 end)}
+  ) as $legacy
+  | (. | map(. + {routed: routed_set(.paths; $rules)})) as $prs_routed
+  | ($roster | map(
+       . as $r
+       | ($prs_routed | map(select(.routed | index($r)))) as $matching
+       | ($matching | map(select(reviewer_ran($r; .body)))) as $passed
+       | ($matching | map(select((reviewer_ran($r; .body) | not) and reviewer_skipped($r; .body)))) as $skipped
+       | ($matching | map(select((reviewer_ran($r; .body) | not) and (reviewer_skipped($r; .body) | not)))) as $norecord
+       | {
+           reviewer: $r,
+           routed: (($matching | length) > 0),
+           routed_prs: ($matching | length),
+           documented_pass: ($passed | length),
+           skip_notice: ($skipped | length),
+           no_record: ($norecord | length),
+           coverage_pct: (if ($matching | length) > 0
+                          then (($passed | length) * 100 / ($matching | length) | floor)
+                          else null end)
+         })
+     | sort_by(.reviewer)) as $by_reviewer
+  | $legacy + {by_reviewer: $by_reviewer}
+' 2>"$jq_err" || true)"
+# NARROW THE FAIL-OPEN (temperloop#1446 review, HIGH aggravator). This was
+# `2>/dev/null || echo ""`, which rendered ANY jq error -- a thrown regex, a
+# malformed body, a bad filter -- as the all-zeros fallback below: a report that
+# looks like a quiet window and is actually a crashed one. The fallback stays (a
+# report beats nothing), but it can no longer be SILENT.
+if [ -s "$jq_err" ]; then
+  printf %s\\n "workflow-reviewer-coverage: WARNING - the coverage query FAILED; the figures below are the ZERO FALLBACK and measure nothing. jq said:" >&2
+  sed "s/^/  /" "$jq_err" >&2
+fi
+rm -f "$jq_err"
+[ -n "$report" ] || report='{"since":"'"$since"'","command_doc_prs":0,"with_workflow_reviewer":0,"any_reviewer_ran":0,"skip_notice_only":0,"no_review_record":0,"skipped_prs":[],"unrecorded_prs":[],"coverage_pct":0,"by_reviewer":[]}'
 
 if [ "$JSON" = 1 ]; then
   printf '%s' "$report" | jq -c 'del(.skipped_prs, .unrecorded_prs)'
@@ -189,7 +363,15 @@ else
     "  command-doc PRs: \(.command_doc_prs)  ·  workflow-reviewer RAN (machine-recorded): \(.with_workflow_reviewer)  ·  coverage: \(.coverage_pct)%",
     "  any reviewer ran: \(.any_reviewer_ran)  ·  legible skip notice (did NOT run): \(.skip_notice_only)  ·  no machine record: \(.no_review_record)",
     (if (.skipped_prs | length) > 0 then "  skip-notice PRs: \(.skipped_prs | map(tostring) | join(" "))" else empty end),
-    (if (.unrecorded_prs | length) > 0 then "  no-record PRs: \(.unrecorded_prs | map(tostring) | join(" "))" else empty end)
+    (if (.unrecorded_prs | length) > 0 then "  no-record PRs: \(.unrecorded_prs | map(tostring) | join(" "))" else empty end),
+    "",
+    "per-reviewer coverage (every reviewer reviewer-routing.tsv + the claude/commands/*.md override route, all merged PRs since \(.since)):",
+    (.by_reviewer[] |
+      if .routed then
+        "  \(.reviewer): routed \(.routed_prs)  ·  documented pass \(.documented_pass) (\(.coverage_pct)%)  ·  skip notice \(.skip_notice)  ·  no record \(.no_record)"
+      else
+        "  \(.reviewer): not routed this window (nothing to review)"
+      end)
   '
 fi
 

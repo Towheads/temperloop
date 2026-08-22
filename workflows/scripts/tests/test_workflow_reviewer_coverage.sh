@@ -234,6 +234,63 @@ grep -F "command-doc PRs: 0" <<<"$out0" >/dev/null || bad "empty set: expected 0
 grep -F "coverage: 0%" <<<"$out0"       >/dev/null || bad "empty set: expected 0% (no divide-by-zero); got: $out0"
 ok "empty PR set -> zero-row report, exit 0, no divide-by-zero"
 
+# --- 7. A REGEX METACHARACTER IN THE ROUTING TSV MUST NOT ZERO THE REPORT -----
+# temperloop#1446 review, HIGH. Reviewer names come straight off
+# reviewer-routing.tsv column 2 and were concatenated raw into a jq regex, so a
+# name like `bad(reviewer` made jq test() THROW. The pipeline fail-open then
+# rendered that throw as the all-zeros fallback: every count 0, by_reviewer
+# empty, exit 0 — a false all-clear indistinguishable from a genuinely quiet
+# window, on the one tool whose job is making an invisible gap visible. Worse,
+# the legacy #1450 workflow-reviewer metric shares that jq invocation, so a bad
+# tsv row could take the pre-existing metric down with it.
+#
+# The assertion is deliberately about the LEGACY numbers, not just the new
+# roster: it pins the blast-radius half of the finding.
+printf 'x\ty\n' > /dev/null   # (no-op: keeps the tab literal visible to readers)
+BADTSV="$TMP/bad-routing.tsv"
+{
+  # The bad row must ROUTE to a path the fixture PRs actually touch, AND one
+  # that is NOT under claude/commands/ -- that prefix always overrides to
+  # workflow-reviewer (foundation#1007), so a .md row would never route the
+  # bad name at all and this case would pass against UNFIXED code. It did.
+  printf '.md\tworkflow-reviewer\tclaude/agents/workflow-reviewer.md\n'
+  printf '.json\tbad(reviewer\tclaude/agents/bad.md\n'
+} > "$BADTSV"
+write_fixture
+j_clean="$(run --days 28 --json)"
+j_bad="$(WFR_COVERAGE_ROUTING_TSV="$BADTSV" run --days 28 --json 2>/dev/null)"
+[ "$(jqf "$j_bad" '.command_doc_prs')" = "$(jqf "$j_clean" '.command_doc_prs')" ] \
+  || bad "metachar tsv zeroed the legacy denominator: bad=$j_bad"
+[ "$(jqf "$j_bad" '.with_workflow_reviewer')" = "$(jqf "$j_clean" '.with_workflow_reviewer')" ] \
+  || bad "metachar tsv zeroed the legacy numerator (blast radius into the #1450 metric): bad=$j_bad"
+[ "$(jqf "$j_bad" '.by_reviewer | length')" -gt 0 ] \
+  || bad "metachar tsv emptied by_reviewer: $j_bad"
+ok "7: a regex metacharacter in the routing tsv does not collapse the report to a false all-clear"
+
+# --- 8. AN ABSENT / UNREADABLE ROUTING TABLE SAYS SO -------------------------
+# temperloop#1446 review, MEDIUM. The `if [ -f "$TSV" ]` had no `else`, so a
+# missing table silently collapsed the roster to the single hardcoded
+# workflow-reviewer member — a confident per-reviewer table that OMITS every
+# reviewer the tsv would have named, which reads as "those were never routed".
+err_missing="$(WFR_COVERAGE_ROUTING_TSV="$TMP/does-not-exist.tsv" run --days 28 --json 2>&1 >/dev/null)"
+grep -F "routing table not found" <<<"$err_missing" >/dev/null \
+  || bad "absent routing tsv degraded SILENTLY; stderr was: $err_missing"
+grep -F "OMITTED, not measured as zero" <<<"$err_missing" >/dev/null \
+  || bad "absent-tsv warning does not distinguish omitted from zero: $err_missing"
+
+UNREADTSV="$TMP/unreadable-routing.tsv"
+printf '.md\tworkflow-reviewer\tclaude/agents/workflow-reviewer.md\n' > "$UNREADTSV"
+chmod 000 "$UNREADTSV"
+if [ "$(id -u)" -eq 0 ]; then
+  ok "8: unreadable-tsv arm SKIPPED — running as root, which can read anything"
+else
+  err_unread="$(WFR_COVERAGE_ROUTING_TSV="$UNREADTSV" run --days 28 --json 2>&1 >/dev/null)"
+  grep -F "UNREADABLE" <<<"$err_unread" >/dev/null \
+    || bad "unreadable routing tsv degraded SILENTLY; stderr was: $err_unread"
+  ok "8: an absent or unreadable routing table warns loudly instead of degrading silently"
+fi
+chmod 644 "$UNREADTSV"
+
 if [ "$fails" -eq 0 ]; then
   echo "workflow-reviewer-coverage tests: ALL PASS"
 else

@@ -1287,6 +1287,13 @@ KERNEL_GATES=(
   # over merged command-doc PRs. Reporting rollup, not a merge gate — its own
   # test just proves the numerator/denominator/rate math and fail-open behavior.
   "bash workflows/scripts/tests/test_workflow_reviewer_coverage.sh"
+  # per-reviewer coverage generalization (temperloop#1446): the SAME rollup
+  # script's `by_reviewer` derivation — every reviewer reviewer-routing.tsv +
+  # the claude/commands/*.md override route, not just workflow-reviewer over
+  # command-doc PRs. Hermetic (fixture routing tsv + gh double); includes a
+  # discrimination case that neuters the routing derivation and proves the
+  # suite goes red without it.
+  "bash workflows/scripts/tests/test_reviewer_coverage_all_routed.sh"
   "make test-scan-stub"
   # Vault-hygiene probe (foundation #959): fixture-vault suite for
   # drain/vault_hygiene_report.sh — the detect-and-propose maintenance detector
