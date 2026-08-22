@@ -2061,7 +2061,7 @@ qg_print_skipped_gates() {
     [[ -n "$gate" ]] || continue
     printf '  not run (out of scope): %s\n' "$gate"
   done <<<"$skipped"
-  printf 'A green SCOPED run is NOT a green full run — the authority is the UNSCOPED merge_group run of the CI checks job, which gates `main` (temperloop#1024).\n'
+  printf 'A green SCOPED run is NOT a green full run — the authority is the UNSCOPED merge_group run of the CI checks job, which gates the default branch (temperloop#1024).\n'
 }
 
 if [[ "$GATE_SELECTION_MODE" == "diff" && -n "$GATE_SELECTION_SELECTED" ]]; then

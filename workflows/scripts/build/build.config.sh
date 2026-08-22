@@ -446,6 +446,18 @@ fi
 # full one would have caught. Doing so re-exposes the parallel-item timeout
 # above, so prefer fixing the gate-paths.tsv row that was wrong.
 #
+# SET IT IN A CONFIG FILE, NOT THE ENVIRONMENT. This is the one setting whose
+# env layer does NOT reach its consumer, and the reason is structural rather
+# than an oversight: the gate command SCRUBS every build.config.sh value-setting
+# from its own environment before running (foundation#1241, so the suite's
+# config-precedence tests see tracked defaults exactly as CI does), and this
+# name is in that scrub set. `export BUILD_GATE_SCOPED=0` is therefore erased
+# before it is read and the gate stays scoped — verified, not assumed. The
+# scrub deliberately leaves the config-FILE layers alone, so the working escape
+# hatches are this file's own default, the repo-local
+# workflows/scripts/build/build.config.local.sh ($BUILD_CONFIG_LOCAL), or the
+# machine config ($BUILD_CONFIG_MACHINE).
+#
 # READ IN THE EMITTED SHELL, not plumbed as an orchestrator `input.*` key like
 # BUILD_GATE_SLICE_SECS above. That is the narrower seam, not a shortcut: the
 # slice budget must reach the .mjs's own control flow (it derives the Bash-tool
@@ -883,7 +895,15 @@ fi
 # redundancy, so the ratchet moves up instead — raised past #1319's own
 # immediate need to leave #1430 headroom too, rather than raising twice in
 # one day for two items landing the same week.
-: "${PROSE_BUDGET_TIER2_FILE_CAP:=1130}"
+# Raised again 1130 -> 1140 (temperloop#1663). §3e.5 gained ONE bullet, and it
+# is a contract bullet rather than commentary: §3e.5 stopped being the bare
+# repo-wide run it had been since PR #309, so the section now has to state what
+# scopes it, why that is safe, which seam carries it, and where the escape hatch
+# actually lives (a config FILE — the env layer is scrubbed by #1241). Folding
+# that into a neighbouring bullet would bury a safety property inside prose about
+# pipefail. Same call, same reason, as the #1319/#1430 raise above: taken past the
+# immediate need (+1) so the next build.md edit does not spend a PR on a ratchet.
+: "${PROSE_BUDGET_TIER2_FILE_CAP:=1140}"
 
 # ── Pipeline spend profiler (temperloop#958) ───────────────────────────────
 # Settings for `workflows/scripts/pipeline-spend-report.sh` and its
