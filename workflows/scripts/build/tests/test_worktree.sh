@@ -741,3 +741,177 @@ out="$(bash "$SCRIPT" prune "$R15")"
 [ "$(grep -c '"outcome":"PRUNED"' <<<"$out")" = "0" ] \
   || fail "#1699: a parked-ref line was counted as a PRUNED worktree (got: $out)"
 echo "PASS: parked-ref outcomes are distinct from PRUNED (deploy-mini's counter is unaffected) (#1699)"
+
+# =============================================================================
+# Never destroy what preservation failed to capture (temperloop#1730)
+# =============================================================================
+# #1699 above proves the HAPPY path: when the capture succeeds, the work
+# survives the destruction. These cases prove the FAILURE path — the one the
+# `|| true` at both call sites used to swallow, destroying the work with
+# nothing captured. The two destroying callers diverge deliberately:
+# `remove` REFUSES, `create` SIDELINES and still CREATES.
+
+# ACTIVATION PROOF: the swallow is gone from BOTH destroying primitives.
+# `grep -F` deliberately — a plain BRE containing `"$repo"` is mis-handled by
+# BSD grep, so a fixed-string match is the only reliable form here.
+grep -F -- 'preserve_unlanded "$repo" "$wt_path" "$branch" || true' "$SCRIPT" \
+  && fail "#1730: a destroying call site still swallows preserve_unlanded's verdict with || true"
+[ "$(grep -F -- 'preserve_unlanded ' "$SCRIPT" | grep -v '^[[:space:]]*#' | grep -c -F -- '|| true')" = "0" ] \
+  || fail "#1730: some preserve_unlanded CALL (non-comment line) still carries || true"
+echo "PASS: neither destroying path swallows a preserve_unlanded failure — the || true is gone (#1730)"
+
+# --- fixture helpers: force each of the four capture-failure details ----------
+#
+# Each helper leaves an OCCUPANT at the deterministic path/branch that
+# preserve_unlanded is guaranteed to fail to capture, and echoes the detail
+# prefix it forces. Together they cover the closed failure set.
+
+# capture-failed:ref-mint — a directory/file ref conflict makes update-ref fail
+# for every candidate name (the #1699 mintfail technique).
+fx_ref_mint() {
+  local repo="$1" slug="$2" sha
+  bash "$SCRIPT" create "$repo" "$slug" >/dev/null
+  printf 'unpreservable work\n' > "$repo.wt/$slug/work.txt"
+  git -C "$repo.wt/$slug" add work.txt
+  git -C "$repo.wt/$slug" commit -q -m "work that cannot be preserved"
+  sha="$(git -C "$repo.wt/$slug" rev-parse HEAD)"
+  git -C "$repo" update-ref "refs/parked/${slug}-${sha:0:8}/x" "$sha"
+}
+
+# capture-failed:snapshot — the worktree dir is present (so have_wt=1) but its
+# gitdir link is broken, so preserve_capture's own `rev-parse HEAD` fails.
+fx_snapshot() {
+  local repo="$1" slug="$2"
+  bash "$SCRIPT" create "$repo" "$slug" >/dev/null
+  git -C "$repo.wt/$slug" commit -q --allow-empty -m "work that cannot be snapshotted"
+  printf 'gitdir: /nonexistent/broken\n' > "$repo.wt/$slug/.git"
+}
+
+# capture-failed:no-commit — no worktree dir at all, and `build/<slug>` names a
+# non-commit object, so the branch tip resolves to nothing to preserve.
+fx_no_commit() {
+  local repo="$1" slug="$2" tree common
+  bash "$SCRIPT" create "$repo" "$slug" >/dev/null
+  tree="$(git -C "$repo" rev-parse 'origin/main^{tree}')"
+  git -C "$repo" worktree remove --force "$repo.wt/$slug"
+  common="$(cd "$repo" && cd "$(git rev-parse --git-common-dir)" && pwd -P)"
+  mkdir -p "$common/refs/heads/build"
+  printf '%s\n' "$tree" > "$common/refs/heads/build/$slug"
+}
+
+# unclassifiable:no-default-branch — an occupant exists but origin's default
+# branch cannot be resolved at all.
+fx_no_default() {
+  local repo="$1" slug="$2"
+  bash "$SCRIPT" create "$repo" "$slug" >/dev/null
+  git -C "$repo.wt/$slug" commit -q --allow-empty -m "work with no classifiable base"
+  git -C "$repo" symbolic-ref -d refs/remotes/origin/HEAD
+  git -C "$repo" update-ref -d refs/remotes/origin/main
+}
+
+# --- `remove` REFUSES on every one of the four failure details ----------------
+# A leaked worktree is recoverable by hand; a `git branch -D`'d branch is not.
+for case_spec in \
+  "refmint:fx_ref_mint:capture-failed:ref-mint" \
+  "snapshot:fx_snapshot:capture-failed:snapshot" \
+  "nocommit:fx_no_commit:capture-failed:no-commit" \
+  "nodefault:fx_no_default:unclassifiable:no-default-branch" ; do
+  cname="${case_spec%%:*}"; rest="${case_spec#*:}"
+  fx="${rest%%:*}"; want="${rest#*:}"
+  RC="$(mkfix "refuse$cname")"
+  slug="refuse${cname}-1730"
+  "$fx" "$RC" "$slug"
+  rc=0
+  out="$(bash "$SCRIPT" remove "$RC" "$slug")" || rc=$?
+  [ "$rc" -ne 0 ] || fail "#1730[$cname]: remove exited 0 on a capture failure (got: $out)"
+  [ "$(jq -r .outcome <<<"$out")" = "REMOVE_REFUSED" ] \
+    || fail "#1730[$cname]: refusal is not a named outcome (got: $out)"
+  [ "$(jq -r .preserved <<<"$out")" = "false" ] \
+    || fail "#1730[$cname]: a refusal claimed preservation (got: $out)"
+  # The verbatim detail, not a re-worded summary — the operator needs the
+  # machine's own classification to know WHICH failure this was.
+  case "$(jq -r .preserved_detail <<<"$out")" in
+    "$want"*) : ;;
+    *) fail "#1730[$cname]: expected detail '$want*' (got: $(jq -r .preserved_detail <<<"$out"))" ;;
+  esac
+  # …and the STILL-STANDING path, so the operator can go look at it.
+  [ "$(jq -r .path <<<"$out")" = "$RC.wt/$slug" ] \
+    || fail "#1730[$cname]: refusal does not report the still-standing path (got: $out)"
+  # THE POINT: nothing was destroyed.
+  if [ "$cname" != "nocommit" ]; then
+    [ -e "$RC.wt/$slug" ] || fail "#1730[$cname]: the worktree was destroyed by a REFUSED remove"
+  fi
+  git -C "$RC" show-ref --verify --quiet "refs/heads/build/$slug" \
+    || fail "#1730[$cname]: build/$slug was force-deleted by a REFUSED remove"
+done
+echo "PASS: remove REFUSES (non-zero + REMOVE_REFUSED + verbatim detail + standing path) on all four capture failures, destroying nothing (#1730)"
+
+# --- `create` SIDELINES and still CREATES ------------------------------------
+# create can never refuse — a refusing create turns /build's prelude batch from
+# 'created' into 'escalated' — so the un-preservable occupant is MOVED ASIDE.
+R16="$(mkfix sideline)"
+fx_ref_mint "$R16" sideitem-1730
+sidesha="$(git -C "$R16.wt/sideitem-1730" rev-parse HEAD)"
+out="$(bash "$SCRIPT" create "$R16" sideitem-1730)"
+[ "$(jq -r .outcome <<<"$out")" = "CREATED" ] \
+  || fail "#1730: a capture failure turned create into a refusal (got: $out)"
+[ "$(jq -r .preserved <<<"$out")" = "false" ] || fail "#1730: sideline case claimed preservation (got: $out)"
+[ "$(jq -r .sidelined <<<"$out")" = "true" ] || fail "#1730: create did not report the sideline (got: $out)"
+sidepath="$(jq -r .sidelined_path <<<"$out")"
+sidebranch="$(jq -r .sidelined_branch <<<"$out")"
+case "$sidepath" in
+  "$R16.wt/sideitem-1730.unpreserved-"*) : ;;
+  *) fail "#1730: sidelined path is not <path>.unpreserved-<sha8> (got: $sidepath)" ;;
+esac
+# The work is RECOVERABLE: both halves moved aside, neither destroyed.
+[ -d "$sidepath" ] || fail "#1730: the sidelined worktree does not exist"
+[ -f "$sidepath/work.txt" ] || fail "#1730: the worker's file is missing from the sidelined worktree"
+git -C "$R16" show-ref --verify --quiet "refs/heads/$sidebranch" \
+  || fail "#1730: the sidelined branch was not preserved (got: $sidebranch)"
+[ "$(git -C "$R16" rev-parse "$sidebranch")" = "$sidesha" ] \
+  || fail "#1730: the sidelined branch does not name the un-preservable commit"
+# …and create genuinely CREATED: a fresh worktree on a fresh base at the
+# deterministic path, on the deterministic branch.
+[ -d "$R16.wt/sideitem-1730" ] || fail "#1730: create did not stand a fresh worktree up"
+[ "$(git -C "$R16.wt/sideitem-1730" rev-parse --abbrev-ref HEAD)" = "build/sideitem-1730" ] \
+  || fail "#1730: the fresh worktree is not on build/sideitem-1730"
+[ "$(git -C "$R16.wt/sideitem-1730" rev-parse HEAD)" = "$(git -C "$R16" rev-parse origin/main)" ] \
+  || fail "#1730: the fresh worktree is not based on origin/main"
+echo "PASS: a capture failure SIDELINES the prior work (worktree + branch moved aside, recoverable) and create still returns CREATED (#1730)"
+
+# --- prune reports a sidelined worktree the way it reports a PARKED_REF -------
+# Same two gates, same conservative floor: an unevaluable check is FALSE.
+out="$(bash "$SCRIPT" prune "$R16")"
+sline="$(jq -c --arg p "$sidepath" 'select(.path==$p)' <<<"$out")"
+[ "$(jq -r .outcome <<<"$sline")" = "SIDELINED_WT" ] \
+  || fail "#1730: an unevaluable sidelined worktree was not REPORTED (got: $out)"
+[ "$(jq -r .slug <<<"$sline")" = "sideitem-1730" ] \
+  || fail "#1730: the originating slug was not parsed off the sidelined path (got: $sline)"
+[ "$(jq -r .issue <<<"$sline")" = "1730" ] \
+  || fail "#1730: the originating issue was not parsed off the slug (got: $sline)"
+[ "$(jq -r .issue_state <<<"$sline")" = "unknown" ] || fail "#1730: unevaluable issue_state (got: $sline)"
+[ "$(jq -r .landed <<<"$sline")" = "false" ] || fail "#1730: unlanded sidelined wt reported landed (got: $sline)"
+[ -d "$sidepath" ] || fail "#1730: an unevaluable check REAPED the sidelined worktree"
+# A parked/sidelined line must never inflate deploy-mini.sh's PRUNED counter.
+[ "$(jq -r --arg p "$sidepath" 'select(.path==$p).outcome' <<<"$out" | grep -c '^PRUNED$')" = "0" ] \
+  || fail "#1730: a sidelined worktree was counted as PRUNED (got: $out)"
+
+# OPEN issue → reported, never reaped. And --force does NOT reach this path:
+# it overrides prune_one's dirty/fresh heuristics, not a conservative gate.
+out="$(GH_ISSUE_STATE=OPEN bash "$SCRIPT" prune "$R16" --force)"
+sline="$(jq -c --arg p "$sidepath" 'select(.path==$p)' <<<"$out")"
+[ "$(jq -r .outcome <<<"$sline")" = "SIDELINED_WT" ] \
+  || fail "#1730: a sidelined worktree whose issue is OPEN was reaped (got: $sline)"
+[ "$(jq -r .issue_state <<<"$sline")" = "open" ] || fail "#1730: OPEN issue_state (got: $sline)"
+[ -d "$sidepath" ] || fail "#1730: --force reaped an open-issue sidelined worktree"
+
+# CLOSED issue → the disposition gate fires; worktree AND branch reclaimed.
+out="$(GH_ISSUE_STATE=CLOSED bash "$SCRIPT" prune "$R16")"
+sline="$(jq -c --arg p "$sidepath" 'select(.path==$p)' <<<"$out")"
+[ "$(jq -r .outcome <<<"$sline")" = "SIDELINED_WT_REAPED" ] \
+  || fail "#1730: a terminal-disposition sidelined worktree was not reaped (got: $sline)"
+[ "$(jq -r .reason <<<"$sline")" = "reaped:issue-terminal" ] || fail "#1730: reap reason (got: $sline)"
+[ ! -e "$sidepath" ] || fail "#1730: the reaped sidelined worktree survived"
+git -C "$R16" show-ref --verify --quiet "refs/heads/$sidebranch" \
+  && fail "#1730: the reaped sidelined branch survived"
+echo "PASS: prune reports sidelined worktrees like PARKED_REF — unevaluable is FALSE, an open issue is never reaped, --force does not override (#1730)"
