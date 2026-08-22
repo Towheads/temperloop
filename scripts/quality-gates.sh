@@ -1218,6 +1218,18 @@ KERNEL_GATES=(
   # as the count-prose gate above.
   "bash workflows/scripts/validate-prose-budget.sh"
   "bash workflows/scripts/tests/test_validate_prose_budget.sh"
+  # No-unresolvable-wikilink gate for review-agent charters
+  # (requirements-auditor / architecture-reviewer vault-links finding): a
+  # `claude/agents/**/*.md` charter declares `tools: Read, Grep, Glob, Bash`
+  # (no MCP), so an Obsidian `[[wikilink]]` pointed at a vault note — most
+  # dangerously in a "read first" section — silently degrades the agent's
+  # review with nothing distinguishing that from having read it. This gate
+  # fails on any wikilink-shaped `[[X` (X not a space or bracket) anywhere
+  # under claude/agents/, while deliberately not matching bash `[[ ]]`
+  # test-syntax examples a shell-focused reviewer charter legitimately
+  # quotes (always a space or nothing immediately inside the brackets).
+  "bash workflows/scripts/validate-agent-charter-links.sh"
+  "bash workflows/scripts/tests/test_validate_agent_charter_links.sh"
   # (The AI-authorship footer gate — validate-docs-footer.sh and its test —
   # is CLASS-gated as a KERNEL-CONTENT gate just below this array, not listed
   # here: it asserts THIS repo's own README.md + docs/**/*.md carry the
