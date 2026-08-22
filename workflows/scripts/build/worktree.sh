@@ -8,8 +8,12 @@
 # `git worktree` for build items.
 #
 #   worktree.sh create <repo-root> <slug>        # add worktree + drop guard marker
+#   worktree.sh restore <repo-root> <slug> [--ref <ref>]
+#                                                # fresh worktree + re-apply a
+#                                                # #1699 preservation ref
 #   worktree.sh remove <repo-root> <slug>        # remove worktree + branch + marker
 #   worktree.sh prune  <repo-root> [--force]     # sweep merged <repo>.wt/* worktrees
+#                                                # + dispose #1699 preservation refs
 #   worktree.sh deps-merged <repo-root> <shas>   # gate: all comma-sep SHAs merged?
 #
 # Deterministic layout (pure function of the slug — never reported back by a
@@ -39,12 +43,29 @@
 # Output contract — CLOSED outcome set, one structured JSON line per outcome,
 # no prose (the orchestrator branches on `.outcome`, never parses prose):
 #   create →  {"outcome":"CREATED","path":…,"branch":…,"base":…,
-#              "guard":"ARMED"|"UNARMED"|"UNKNOWN","guard_detail":…}
-#   remove →  {"outcome":"REMOVED"|"NOT_FOUND","path":…,"branch":…}
+#              "guard":"ARMED"|"UNARMED"|"UNKNOWN","guard_detail":…,
+#              "preserved":bool,"preserved_ref":…,"preserved_detail":…}
+#   restore → {"outcome":"RESTORED","path":…,"branch":…,"base":…,"ref":…,"sha":…,
+#              "strategy":"fast-forward"|"merge","guard":…,"guard_detail":…} |
+#             {"outcome":"RESTORE_CONFLICT","path":…,"branch":…,"base":…,"ref":…,
+#              "sha":…,"conflicts":[…],"aborted":true,"error":…} |
+#             {"outcome":"RESTORE_NOT_FOUND","slug":…,"ref":…}
+#   remove →  {"outcome":"REMOVED"|"NOT_FOUND","path":…,"branch":…,
+#              "preserved":bool,"preserved_ref":…,"preserved_detail":…}
 #   prune  →  one line per <repo>.wt/* worktree:
 #             {"outcome":"PRUNED"|"SKIPPED_FRESH"|"SKIPPED_DIRTY"|"SKIPPED_UNMERGED","path":…,"branch":…}
+#             …then one line per preservation ref (§ Unlanded-work preservation):
+#             {"outcome":"PARKED_REF_REAPED"|"PARKED_REF","ref":…,"sha":…,"slug":…,
+#              "issue":…,"issue_state":…,"landed":bool,"reason":…}
 #   deps-merged → {"outcome":"DEPS_MERGED"} | {"outcome":"DEPS_UNMERGED","unmerged":[…]}
 #   error  →  {"outcome":"ERROR","error":…} + non-zero exit
+#
+# NOTE on the CREATED/REMOVED `preserved*` fields (temperloop#1699): the
+# unlanded-work verdict rides those lines as FIELDS, never as a new `outcome`
+# string, and `create` never refuses — see § Unlanded-work preservation below.
+# `restore`'s own outcomes are NOT in build-level.mjs's SPINE_OUTCOME_SCHEMA
+# because the build spine never invokes `restore`; the specs that do (`/fix`,
+# `/sweep`) call it directly.
 set -euo pipefail
 
 command -v jq >/dev/null 2>&1 || { echo '{"outcome":"ERROR","error":"jq not found"}'; exit 1; }
@@ -69,7 +90,7 @@ die() {
 }
 
 usage() {
-  die "usage: worktree.sh create <repo-root> <slug> | remove <repo-root> <slug> | prune <repo-root> [--force] | deps-merged <repo-root> <sha,sha,...>"
+  die "usage: worktree.sh create <repo-root> <slug> | restore <repo-root> <slug> [--ref <ref>] | remove <repo-root> <slug> | prune <repo-root> [--force] | deps-merged <repo-root> <sha,sha,...>"
 }
 
 # Physical-path resolve for an EXISTING dir (portable — no GNU readlink -f).
@@ -219,10 +240,295 @@ materialize_agents() {
   return 0
 }
 
+# --- Unlanded-work preservation (temperloop#1699) ----------------------------
+#
+# THE LOSS. `clear_path` below force-removes the worktree AND `git branch -D`s
+# `build/<slug>`, so COMMITTING IS NOT PROTECTION: an escalated attempt that
+# committed clean work is destroyed just as completely as an uncommitted one.
+# Every caller that re-drives an item (`/fix` Step 4a's inline-answer branch,
+# `/sweep`'s park finale, `build-level.mjs`'s 3b pre-create) reaches this
+# primitive, and the loss was previously mitigated — where it was mitigated at
+# all — by PROSE in one spec. Prose can be silently skipped by a worker; that is
+# how the class was found (temperloop#1699, driving foundation#1791).
+#
+# THE SEAM. The guard lives INSIDE the destroying primitive, not at the two
+# spec call sites, so every caller inherits it — including callers nobody has
+# written yet. `prune_one` already refuses to reap unlanded work through three
+# gates (SKIPPED_UNMERGED / SKIPPED_FRESH / SKIPPED_DIRTY); `clear_path` had
+# none.
+#
+# TRANSPORT: a LOCAL-ONLY ref outside `refs/heads/`, never pushed.
+#   * outside `refs/heads/` because `<type>/<slug>` and `build/<slug>` COLLIDE
+#     whenever an item's own branch type is `build` (merged examples in this
+#     repo: `build/reviewer-coverage-all-routed-1446`, #1702). A slug-derived
+#     `refs/heads/*` preservation ref would then meet the re-drive's own push as
+#     a non-fast-forward, whose documented recovery is `--force` — destroying
+#     the preserved commits while reporting PUSHED.
+#   * never pushed because this repo is public and `/sweep`'s park is
+#     UNATTENDED: a push transport would auto-publish worker output that never
+#     passed the acceptance gate. `git push` moves `refs/heads` and tags only,
+#     so `refs/parked/*` is local by construction, not by discipline.
+#
+# NEVER A FALSE `preserved`, mirroring the arming probe's posture above: an
+# unclassifiable tree or a failed capture resolves AWAY from claiming
+# preservation and says WHY in `preserved_detail`. The verdict rides the CREATED
+# line as fields (`preserved` / `preserved_ref` / `preserved_detail`), following
+# the `guard` / `guard_detail` precedent — deliberately NOT a new `outcome`
+# string, because build-level.mjs's SPINE_OUTCOME_SCHEMA is a closed enum whose
+# own DEPS_MERGED comment records that an unlisted outcome is schema-invalid.
+# For the same reason `create` NEVER refuses: a `create` that can decline would
+# turn /build's prelude batch from "created" into "escalated".
+PARKED_REF_NS="refs/parked"
+PRESERVED="false"
+PRESERVED_REF=""
+PRESERVED_DETAIL="not-run"
+
+# parked_ref_slug <ref> — the slug a preservation ref was minted for, i.e. the
+# ref basename with its `-<sha8>` (and any `-<n>` collision suffix) stripped.
+parked_ref_slug() {
+  local name="${1##*/}"
+  local re='^(.+)-[0-9a-f]{8}(-[0-9]+)?$'
+  if [[ "$name" =~ $re ]]; then
+    printf '%s\n' "${BASH_REMATCH[1]}"
+  else
+    printf '%s\n' "$name"
+  fi
+}
+
+# parked_ref_issue <slug> — the ORIGINATING issue number, when the slug carries
+# one as its trailing `-<digits>` field (the kernel's `<slug>-<issue#>` branch
+# convention). Prints nothing when the slug carries no issue number — an
+# unevaluable disposition gate, which reap_parked_ref treats as FALSE.
+parked_ref_issue() {
+  local slug="$1"
+  local re='-([0-9]+)$'
+  if [[ "$slug" =~ $re ]]; then printf '%s\n' "${BASH_REMATCH[1]}"; fi
+}
+
+# preserve_capture <wt_path> — print the sha of ONE commit object capturing the
+# worktree's full state: its commits (reachable via the parent) AND whatever is
+# uncommitted on disk. Prints nothing / returns non-zero on any failure.
+#
+# NO SEMANTIC COMMIT IS AUTHORED. The snapshot is built in a THROWAWAY index and
+# sealed with `commit-tree` — a detached WIP object. The branch pointer, the
+# real index and the working tree are never touched, so this cannot fail
+# halfway and leave the worker's tree in a state it did not choose. (The failure
+# this shape avoids: a failed preservation `git commit` makes the subsequent
+# push a no-op that still reports PUSHED — a false positive.)
+#
+# A CLEAN tree short-circuits to the branch tip itself, so the ordinary
+# committed-and-clean case mints no object at all.
+#
+# The exclusion pathspec is recover-probe's OWN (pr.sh cmd_recover_probe) plus
+# the #418 surface artifact: `.build-guard` and `.build-verification.md` are
+# orchestrator machinery, never worker work, and must never be re-committed.
+#
+# preserve_set_ident fills PRESERVE_IDENT with the `-c` args every
+# object-writing git call here uses. `commit-tree` and `merge` REQUIRE an
+# identity and a bare CI runner or fresh container has none configured — without
+# this the capture would fail on machine config rather than on anything about
+# the work. The repo's own identity (local/global/system) always wins; the
+# machinery identity is only the floor. Deliberately `-c` config rather than
+# `GIT_AUTHOR_*` / `GIT_COMMITTER_*` assignments: those read as operator-settable
+# seams to check-setting-registry.sh, and they are not — they are git's own
+# ident protocol.
+PRESERVE_IDENT=()
+preserve_set_ident() {
+  local at="$1" n e
+  n="$(git -C "$at" config user.name 2>/dev/null || true)"
+  e="$(git -C "$at" config user.email 2>/dev/null || true)"
+  [ -n "$n" ] || n="worktree.sh"
+  [ -n "$e" ] || e="worktree@localhost"
+  PRESERVE_IDENT=(-c "user.name=$n" -c "user.email=$e")
+}
+
+preserve_capture() {
+  local wt="$1" head idx tree sha head_tree
+  head="$(git -C "$wt" rev-parse HEAD 2>/dev/null)" || return 1
+  [ -n "$head" ] || return 1
+  idx="$(mktemp "${TMPDIR:-/tmp}/wt-parked-idx.XXXXXX")" || return 1
+  rm -f "$idx"
+  if ! GIT_INDEX_FILE="$idx" git -C "$wt" read-tree "$head" 2>/dev/null; then
+    rm -f "$idx"
+    return 1
+  fi
+  GIT_INDEX_FILE="$idx" git -C "$wt" add -A -- \
+    ':(exclude).build-guard' ':(exclude).build-verification.md' 2>/dev/null || true
+  tree="$(GIT_INDEX_FILE="$idx" git -C "$wt" write-tree 2>/dev/null)" || tree=""
+  rm -f "$idx"
+  [ -n "$tree" ] || return 1
+
+  head_tree="$(git -C "$wt" rev-parse "${head}^{tree}" 2>/dev/null)" || head_tree=""
+  if [ -n "$head_tree" ] && [ "$tree" = "$head_tree" ]; then
+    printf '%s\n' "$head"
+    return 0
+  fi
+  preserve_set_ident "$wt"
+  sha="$(git -C "$wt" "${PRESERVE_IDENT[@]}" commit-tree "$tree" -p "$head" \
+           -m 'parked: WIP snapshot preserved before clear_path (#1699)' 2>/dev/null)" || sha=""
+  [ -n "$sha" ] || return 1
+  printf '%s\n' "$sha"
+}
+
+# preserve_mint_ref <repo> <slug> <sha> — point a local-only preservation ref at
+# <sha> and print its name. Idempotent when the ref already names the SAME sha;
+# a ref that already names a DIFFERENT one (an 8-hex prefix collision, or a
+# hand-created ref) is never clobbered — the mint disambiguates with a `-<n>`
+# suffix instead. Returns non-zero (printing nothing) when no usable name can be
+# claimed, which resolves the caller AWAY from claiming preservation.
+preserve_mint_ref() {
+  local repo="$1" slug="$2" sha="$3" base ref existing n=1
+  base="$PARKED_REF_NS/${slug}-${sha:0:8}"
+  ref="$base"
+  while : ; do
+    git check-ref-format "$ref" >/dev/null 2>&1 || return 1
+    existing="$(git -C "$repo" rev-parse --verify --quiet "${ref}^{commit}" 2>/dev/null)" || existing=""
+    if [ -z "$existing" ] || [ "$existing" = "$sha" ]; then break; fi
+    n=$((n + 1))
+    [ "$n" -le 20 ] || return 1
+    ref="${base}-${n}"
+  done
+  git -C "$repo" update-ref "$ref" "$sha" 2>/dev/null || return 1
+  printf '%s\n' "$ref"
+}
+
+# preserve_unlanded <repo> <wt_path> <branch> — sets PRESERVED / PRESERVED_REF /
+# PRESERVED_DETAIL. NEVER fails (always returns 0): it is called from inside the
+# destroying primitive and must never abort a create under `set -e`.
+#
+# COMPOSES, never re-derives. The loss window is classified by `pr.sh
+# recover-probe`'s existing ladder — RECOVER_DIRTY / RECOVER_COMMITTED ARE the
+# window; RECOVER_PUSHED / RECOVER_PR_OPEN need nothing because the work already
+# exists off this machine — and the "already landed" test is
+# `merged_detect_is_merged`, the same merge-queue-safe helper prune_one uses (a
+# squash/rebase merge leaves the tip a non-ancestor even though it landed).
+#
+# recover-probe's failure arrives as a VALID `{"outcome":"ERROR",...}` line —
+# `pr.sh` dups its real stdout onto fd 3, so a `die` reaches an external capture
+# like any other outcome — so ERROR is branched on EXPLICITLY here rather than
+# falling through the default arm and being read as a RECOVER_NONE-shaped
+# success. Both it and an absent probe are treated as UNCLASSIFIABLE, which
+# means "assume the loss window and try to capture", never "assume safe".
+preserve_unlanded() {
+  local repo="$1" wt_path="$2" branch="$3"
+  local slug default have_wt=0 have_branch=0 probe="" outcome="" sha ref
+  local dirty=0 merged="false" tip=""
+  PRESERVED="false"
+  PRESERVED_REF=""
+  PRESERVED_DETAIL="nothing-to-preserve"
+
+  if [ -d "$wt_path" ]; then have_wt=1; fi
+  if git -C "$repo" show-ref --verify --quiet "refs/heads/$branch" 2>/dev/null; then have_branch=1; fi
+  if [ "$have_wt" -eq 0 ] && [ "$have_branch" -eq 0 ]; then
+    PRESERVED_DETAIL="no-occupant"
+    return 0
+  fi
+
+  slug="${branch#*/}"
+  case "$slug" in
+    ""|*/*) slug="$(printf '%s' "$branch" | tr '/' '-')" ;;
+  esac
+
+  default="$(default_branch "$repo")" || default=""
+  if [ -z "$default" ]; then
+    PRESERVED_DETAIL="unclassifiable:no-default-branch"
+    return 0
+  fi
+
+  if [ "$have_wt" -eq 1 ] && [ -f "$SCRIPT_DIR/pr.sh" ]; then
+    probe="$(bash "$SCRIPT_DIR/pr.sh" recover-probe "$wt_path" "$branch" 2>/dev/null || true)"
+    if [ -n "$probe" ]; then
+      outcome="$(jq -r '.outcome // ""' <<<"$probe" 2>/dev/null || true)"
+    fi
+  fi
+
+  case "$outcome" in
+    RECOVER_PUSHED)  PRESERVED_DETAIL="not-needed:pushed";  return 0 ;;
+    RECOVER_PR_OPEN) PRESERVED_DETAIL="not-needed:pr-open"; return 0 ;;
+    RECOVER_NONE)    PRESERVED_DETAIL="nothing-to-preserve"; return 0 ;;
+    RECOVER_DIRTY|RECOVER_COMMITTED) : ;;   # the loss window — fall through and capture
+    ERROR)           outcome="unclassifiable-probe-error" ;;
+    *)               outcome="unclassifiable-probe-absent" ;;
+  esac
+
+  # Dirtiness comes from the probe when it ran (it reports `dirty` on EVERY
+  # outcome); the local fallback exists only for the unclassifiable arms.
+  if [ -n "$probe" ]; then
+    case "$(jq -r '.dirty // false' <<<"$probe" 2>/dev/null || true)" in
+      true) dirty=1 ;;
+    esac
+  elif [ "$have_wt" -eq 1 ]; then
+    if [ -n "$(git -C "$wt_path" status --porcelain \
+                 -- ':(exclude).build-guard' ':(exclude).build-verification.md' 2>/dev/null)" ]; then
+      dirty=1
+    fi
+  fi
+
+  if [ "$have_branch" -eq 1 ]; then
+    tip="$(git -C "$repo" rev-parse --verify --quiet "refs/heads/$branch" 2>/dev/null)" || tip=""
+  elif [ "$have_wt" -eq 1 ]; then
+    tip="$(git -C "$wt_path" rev-parse HEAD 2>/dev/null)" || tip=""
+  fi
+
+  # Already in the merged tip => nothing can be lost. Cheap ancestor test first
+  # (the ordinary case), falling through to the merge-queue-safe helper only
+  # when the tip is NOT an ancestor — the squash/rebase shape.
+  if [ "$dirty" -eq 0 ] && [ -n "$tip" ]; then
+    if git -C "$repo" merge-base --is-ancestor "$tip" "origin/$default" 2>/dev/null; then
+      merged="true"
+    else
+      merged="$(merged_detect_is_merged "$repo" "$branch" "$default")" || merged="false"
+    fi
+    if [ "$merged" = "true" ]; then
+      PRESERVED_DETAIL="not-needed:merged"
+      return 0
+    fi
+  fi
+
+  sha=""
+  if [ "$have_wt" -eq 1 ]; then
+    # The worktree is the authority when it exists: its capture covers the
+    # branch's commits AND the uncommitted tree. NO silent fallback to the tip —
+    # that would drop the dirty half while still reporting `preserved`.
+    sha="$(preserve_capture "$wt_path" 2>/dev/null)" || sha=""
+    if [ -z "$sha" ]; then
+      PRESERVED_DETAIL="capture-failed:snapshot outcome=$outcome"
+      return 0
+    fi
+  else
+    sha="$tip"
+  fi
+  if [ -z "$sha" ]; then
+    PRESERVED_DETAIL="capture-failed:no-commit outcome=$outcome"
+    return 0
+  fi
+
+  ref="$(preserve_mint_ref "$repo" "$slug" "$sha" 2>/dev/null)" || ref=""
+  if [ -z "$ref" ]; then
+    PRESERVED_DETAIL="capture-failed:ref-mint outcome=$outcome sha=$sha"
+    return 0
+  fi
+
+  PRESERVED="true"
+  PRESERVED_REF="$ref"
+  PRESERVED_DETAIL="preserved:$outcome sha=$sha dirty=$dirty"
+  printf 'worktree.sh: preserved unlanded work for %s at %s (%s)\n' \
+    "$branch" "$ref" "$PRESERVED_DETAIL" >&2
+  return 0
+}
+
 # Tear down whatever occupies the deterministic path (registered worktree,
 # stale dir, stale registration, stale branch) so create can always re-add.
+#
+# PRESERVE BEFORE DESTROY (#1699). The preserve call below is the guard's
+# REACHABILITY surface — the guarantee is that it sits inside this function's
+# own body, not merely that the helper exists somewhere in the file. `|| true`
+# is load-bearing for the same reason guard_probe's is: a future edit that
+# leaves preserve_unlanded returning non-zero must never abort a create
+# mid-flight under `set -e`.
 clear_path() {
   local repo="$1" wt_path="$2" branch="$3"
+  preserve_unlanded "$repo" "$wt_path" "$branch" || true
   if [ -e "$wt_path" ]; then
     git -C "$repo" worktree remove --force "$wt_path" 2>/dev/null \
       || rm -rf "$wt_path"
@@ -553,7 +859,15 @@ guard_report() {
   } >&2
 }
 
-cmd_create() {
+# create_core <repo-root> <slug> — everything `create` does EXCEPT emit its
+# outcome line, so `restore` can stand a fresh worktree up on the same
+# deterministic path/branch/base without a second CREATED line on stdout
+# (the orchestrator branches on one JSON line per invocation). Sets
+# CREATE_PATH / CREATE_BRANCH / CREATE_BASE for whichever command emits.
+CREATE_PATH=""
+CREATE_BRANCH=""
+CREATE_BASE=""
+create_core() {
   local repo slug wt_path branch default out
   repo="$(resolve_repo "$1")"
   slug="$2"
@@ -561,6 +875,9 @@ cmd_create() {
   wt_path="${repo}.wt/${slug}"
   branch="build/${slug}"
   default="$(default_branch "$repo")" || die "cannot resolve origin's default branch in '$repo'"
+  CREATE_PATH="$wt_path"
+  CREATE_BRANCH="$branch"
+  CREATE_BASE="origin/$default"
 
   # The path is a pure function of the slug — anything already there is debris
   # from an aborted run; force-remove and re-add.
@@ -618,9 +935,108 @@ cmd_create() {
       || die "self-heal untrack-commit failed in '$wt_path'"
   fi
 
-  jq -cn --arg path "$wt_path" --arg branch "$branch" --arg base "origin/$default" \
+}
+
+cmd_create() {
+  create_core "$1" "$2"
+  jq -cn --arg path "$CREATE_PATH" --arg branch "$CREATE_BRANCH" --arg base "$CREATE_BASE" \
          --arg guard "$GUARD_STATUS" --arg guard_detail "$GUARD_DETAIL" \
+         --argjson preserved "$PRESERVED" --arg preserved_ref "$PRESERVED_REF" \
+         --arg preserved_detail "$PRESERVED_DETAIL" \
     '{outcome:"CREATED", path:$path, branch:$branch, base:$base,
+      guard:$guard, guard_detail:$guard_detail,
+      preserved:$preserved, preserved_ref:$preserved_ref,
+      preserved_detail:$preserved_detail}'
+}
+
+# --- restore: re-apply a preservation ref into a fresh worktree (#1699) -------
+#
+# NEVER ASSUMES A FAST-FORWARD. The escalation window is exactly the window in
+# which `origin/<default>` advances (an operator answers a question, a sibling
+# item merges), so by the time the re-drive stands a fresh worktree up on the
+# NEW base, the preserved commit's base is an ancestor of neither. The prose
+# this replaces asserted the fast-forward "always applies"; measured inside
+# #1699's own development it was FALSE (`origin/main` f0c14fd vs. the preserved
+# commit's base 30f7143), and the work survived only because an agent silently
+# deviated from the instruction and happened to deviate correctly. A diverged
+# base is therefore a SUPPORTED, TESTED case here, not an edge.
+#
+# A CONFLICT IS A NAMED RESULT, never a silent partial merge: the merge is
+# aborted so the worktree is left clean on the fresh base, the conflicted paths
+# are reported, and the preservation ref is left INTACT so nothing is lost and
+# the operator can resolve by hand against a ref that still exists.
+cmd_restore() {
+  local repo slug ref="" wt_path branch sha strategy out conflicts conflicts_json
+  repo="$(resolve_repo "$1")"; shift
+  slug="$1"; shift
+  validate_slug "$slug"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --ref)
+        [ $# -ge 2 ] || die "--ref requires a ref name"
+        ref="$2"
+        shift
+        shift
+        ;;
+      *) usage ;;
+    esac
+  done
+
+  if [ -z "$ref" ]; then
+    # Newest first — a slug may carry several snapshots across re-drives.
+    ref="$(git -C "$repo" for-each-ref --sort=-committerdate --count=1 \
+             --format='%(refname)' "$PARKED_REF_NS/${slug}-*" 2>/dev/null || true)"
+  else
+    case "$ref" in
+      "$PARKED_REF_NS/"*) ;;
+      *) die "--ref '$ref' is not under $PARKED_REF_NS (a preservation ref is local-only and never a branch)" ;;
+    esac
+  fi
+  sha=""
+  if [ -n "$ref" ]; then
+    sha="$(git -C "$repo" rev-parse --verify --quiet "${ref}^{commit}" 2>/dev/null)" || sha=""
+  fi
+  if [ -z "$sha" ]; then
+    jq -cn --arg slug "$slug" --arg ref "$ref" \
+      '{outcome:"RESTORE_NOT_FOUND", slug:$slug, ref:$ref}'
+    return 0
+  fi
+
+  create_core "$repo" "$slug"
+  wt_path="$CREATE_PATH"
+  branch="$CREATE_BRANCH"
+
+  if git -C "$wt_path" merge-base --is-ancestor HEAD "$sha" 2>/dev/null; then
+    if ! out="$(git -C "$wt_path" merge --ff-only "$sha" 2>&1)"; then
+      die "restore fast-forward onto '$branch' failed: $out"
+    fi
+    strategy="fast-forward"
+  else
+    preserve_set_ident "$wt_path"
+    if out="$(git -C "$wt_path" "${PRESERVE_IDENT[@]}" merge --no-ff --no-edit \
+                -m "restore: re-apply preserved work from $ref (#1699)" "$sha" 2>&1)"; then
+      strategy="merge"
+    else
+      conflicts="$(git -C "$wt_path" diff --name-only --diff-filter=U 2>/dev/null || true)"
+      git -C "$wt_path" merge --abort 2>/dev/null || git -C "$wt_path" reset -q --hard 2>/dev/null || true
+      conflicts_json='[]'
+      if [ -n "$conflicts" ]; then
+        conflicts_json="$(printf '%s\n' "$conflicts" | jq -R . | jq -cs .)"
+      fi
+      jq -cn --arg path "$wt_path" --arg branch "$branch" --arg base "$CREATE_BASE" \
+             --arg ref "$ref" --arg sha "$sha" --argjson conflicts "$conflicts_json" \
+             --arg error "$out" \
+        '{outcome:"RESTORE_CONFLICT", path:$path, branch:$branch, base:$base,
+          ref:$ref, sha:$sha, conflicts:$conflicts, aborted:true, error:$error}'
+      return 0
+    fi
+  fi
+
+  jq -cn --arg path "$wt_path" --arg branch "$branch" --arg base "$CREATE_BASE" \
+         --arg ref "$ref" --arg sha "$sha" --arg strategy "$strategy" \
+         --arg guard "$GUARD_STATUS" --arg guard_detail "$GUARD_DETAIL" \
+    '{outcome:"RESTORED", path:$path, branch:$branch, base:$base,
+      ref:$ref, sha:$sha, strategy:$strategy,
       guard:$guard, guard_detail:$guard_detail}'
 }
 
@@ -631,6 +1047,12 @@ cmd_remove() {
   validate_slug "$slug"
   wt_path="${repo}.wt/${slug}"
   branch="build/${slug}"
+
+  # `remove` is the OTHER destroying path — the one `/sweep`'s unattended
+  # PARK-AND-CONTINUE finale reaches (temperloop#1725, absorbed into #1699). It
+  # does not route through clear_path, so it takes the same guard directly;
+  # a /sweep-originated preservation ref is minted HERE.
+  preserve_unlanded "$repo" "$wt_path" "$branch" || true
 
   if [ -e "$wt_path" ]; then
     existed=1
@@ -646,11 +1068,14 @@ cmd_remove() {
     fi
   fi
 
-  if [ "$existed" -eq 1 ]; then
-    jq -cn --arg path "$wt_path" --arg branch "$branch" '{outcome:"REMOVED", path:$path, branch:$branch}'
-  else
-    jq -cn --arg path "$wt_path" --arg branch "$branch" '{outcome:"NOT_FOUND", path:$path, branch:$branch}'
-  fi
+  local oc="NOT_FOUND"
+  if [ "$existed" -eq 1 ]; then oc="REMOVED"; fi
+  jq -cn --arg outcome "$oc" --arg path "$wt_path" --arg branch "$branch" \
+         --argjson preserved "$PRESERVED" --arg preserved_ref "$PRESERVED_REF" \
+         --arg preserved_detail "$PRESERVED_DETAIL" \
+    '{outcome:$outcome, path:$path, branch:$branch,
+      preserved:$preserved, preserved_ref:$preserved_ref,
+      preserved_detail:$preserved_detail}'
 }
 
 cmd_prune() {
@@ -683,6 +1108,91 @@ cmd_prune() {
         ;;
     esac
   done < <(git -C "$repo" worktree list --porcelain; echo)
+
+  # The named reap owner for the #1699 preservation refs. Same sweep, same
+  # conservative posture as the worktree gates above.
+  prune_parked_refs "$repo" "$default"
+}
+
+# _worktree_gh — the gh override seam, mirroring _merged_detect_gh / _board_gh:
+# tests stand a stub on PATH rather than reaching the network, and every call is
+# attributed so it stops landing in the call-logger's `unattributed` bucket.
+_worktree_gh() {
+  # GH_CALL_OP is a per-call attribution tag, not a static operator default.
+  GH_CALL_CONTEXT="${GH_CALL_CONTEXT:-worktree}" GH_CALL_OP="${GH_CALL_OP:-parked-ref-reap}" gh "$@"  # setting:exempt — per-call attribution tag, not a static operator default
+}
+
+# --- The preservation ref's named reap owner (temperloop#1699) ----------------
+#
+# A preservation ref is minted by the destroying primitives above and must not
+# leak forever, so `prune` owns its disposal. TWO gates, either of which
+# authorizes a reap:
+#
+#   1. ANCESTRY — the preserved commit is an ancestor of origin/<default>. This
+#      is PROOF the work reached the merged tip: nothing can be lost by deleting
+#      a ref whose content is already in the default branch.
+#   2. DISPOSITION — the originating issue (the slug's trailing `-<issue#>`)
+#      reached a terminal state (CLOSED).
+#
+# Both gates are needed, not one: a /sweep-originated ref is preserved at PARK
+# and is never restored in place, so its commit never reaches the merged tip and
+# the ancestry gate ALONE can never fire for it — the disposition gate is what
+# eventually reaps it. Conversely a /fix restore-and-merge lands the work, so
+# ancestry fires there without waiting on issue bookkeeping.
+#
+# An UNEVALUABLE check is FALSE — do not delete. No issue number in the slug, no
+# `gh`, an unauthenticated/offline/rate-limited `gh`, an unrecognized state: all
+# leave the disposition gate shut, exactly as merged-detect.sh's Method-3
+# fail-open leaves the ancestry side. The consequence of a wrong FALSE is one
+# extra ref reported next sweep; the consequence of a wrong TRUE is destroyed
+# work. An OPEN issue is therefore never reaped on the disposition gate.
+#
+# READ-ONLY on failure and never fatal: a ref this cannot dispose is REPORTED
+# (`PARKED_REF`), never silently dropped. The outcome strings are deliberately
+# distinct from `PRUNED` — deploy-mini.sh counts `"outcome":"PRUNED"` lines, and
+# a parked-ref line must never inflate that count.
+prune_parked_refs() {
+  local repo="$1" default="$2"
+  local ref sha slug issue landed terminal issue_state state reason
+  while IFS= read -r ref; do
+    [ -n "$ref" ] || continue
+    sha="$(git -C "$repo" rev-parse --verify --quiet "${ref}^{commit}" 2>/dev/null)" || sha=""
+    [ -n "$sha" ] || continue
+    slug="$(parked_ref_slug "$ref")"
+    issue="$(parked_ref_issue "$slug")"
+
+    landed=false
+    if git -C "$repo" merge-base --is-ancestor "$sha" "origin/$default" 2>/dev/null; then
+      landed=true
+    fi
+
+    issue_state="unknown"
+    terminal=false
+    if [ -n "$issue" ] && command -v gh >/dev/null 2>&1; then
+      state="$(cd "$repo" && _worktree_gh issue view "$issue" --json state --jq .state 2>/dev/null)" || state=""
+      case "$state" in
+        CLOSED) issue_state="closed"; terminal=true ;;
+        OPEN)   issue_state="open" ;;
+      esac
+    fi
+
+    reason="held:unlanded issue=${issue_state}"
+    if [ "$landed" = true ] || [ "$terminal" = true ]; then
+      if [ "$landed" = true ]; then reason="reaped:ancestor-of-merged-tip"; else reason="reaped:issue-terminal"; fi
+      if git -C "$repo" update-ref -d "$ref" "$sha" 2>/dev/null; then
+        jq -cn --arg ref "$ref" --arg sha "$sha" --arg slug "$slug" --arg issue "$issue" \
+               --arg issue_state "$issue_state" --argjson landed "$landed" --arg reason "$reason" \
+          '{outcome:"PARKED_REF_REAPED", ref:$ref, sha:$sha, slug:$slug, issue:$issue,
+            issue_state:$issue_state, landed:$landed, reason:$reason}'
+        continue
+      fi
+      reason="held:reap-failed"
+    fi
+    jq -cn --arg ref "$ref" --arg sha "$sha" --arg slug "$slug" --arg issue "$issue" \
+           --arg issue_state "$issue_state" --argjson landed "$landed" --arg reason "$reason" \
+      '{outcome:"PARKED_REF", ref:$ref, sha:$sha, slug:$slug, issue:$issue,
+        issue_state:$issue_state, landed:$landed, reason:$reason}'
+  done < <(git -C "$repo" for-each-ref --format='%(refname)' "$PARKED_REF_NS/*" 2>/dev/null || true)
 }
 
 prune_one() {
@@ -794,6 +1304,10 @@ case "$cmd" in
   create)
     [ $# -eq 2 ] || usage
     cmd_create "$1" "$2"
+    ;;
+  restore)
+    [ $# -ge 2 ] || usage
+    cmd_restore "$@"
     ;;
   remove)
     [ $# -eq 2 ] || usage
