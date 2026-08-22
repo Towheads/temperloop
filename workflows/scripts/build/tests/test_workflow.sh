@@ -2716,6 +2716,43 @@ grep -q 'BUILD_GATE_SCOPED:-1' "$MJS" \
   || fail "#1663: the 3e.5 gate's scope must come from \$BUILD_GATE_SCOPED with a default, so the escape hatch exists and an absent/older build.config.sh still resolves"
 echo "PASS: #1663 scoped-acceptance-gate guard — 3e.5 scopes through QUALITY_GATES_SCOPED (env, not flag) from \$BUILD_GATE_SCOPED"
 
+# --- K1663 superseded-premise guard: the OLD contract must not come back ------
+# Before #1663, §3e.5 was documented in SEVEN live artifacts as the BARE,
+# repo-wide run, and two of them stated a safety property that scoping REMOVED:
+# that a repo-wide red the worker's scoped subset missed would be caught at
+# §3e.5. It is not, and cannot be — §3e.5 and the worker's own `--scoped` run
+# now resolve the same diff through the same map, so they select nearly the same
+# gates. A red outside that set is caught by the UNSCOPED merge_group run, before
+# `main` but after push.
+#
+# Six of the seven sites were rewritten by hand for #1663; the seventh survived
+# the sweep and had to be caught in review. That is precisely the "purge the
+# superseded premise from every live artifact" failure the kernel names, and a
+# prose contradiction has no other test — so it gets a mechanical one here.
+#
+# These patterns are the FALSE CLAIMS, not the topic: prose that accurately
+# describes what §3e.5 does and does not catch (including the words "repo-wide")
+# is expected and must keep passing.
+BUILD_MD="$REPO_ROOT/claude/commands/build.md"
+[ -f "$BUILD_MD" ] || fail "#1663: claude/commands/build.md not found at $BUILD_MD"
+for stale_claim in \
+  'repo-wide red the subset missed is caught' \
+  'bare repo-wide run was DEFERRED' \
+  'bare repo-wide run was \*\*deferred'
+do
+  for surface in "$BUILD_MD" "$MJS"; do
+    if grep -q "$stale_claim" "$surface"; then
+      fail "#1663: '$(basename "$surface")' still asserts the pre-#1663 contract ('$stale_claim') — §3e.5 is diff-scoped and does NOT catch a repo-wide red outside the item's scoped set; the unscoped merge_group run does"
+    fi
+  done
+done
+# The positive half: §3e.5 must still be named as the acceptance AUTHORITY, so a
+# future edit cannot "fix" the above by deleting the deferral contract wholesale
+# and leaving the worker with no instruction at all.
+grep -q 'DEFERRED to the parent-side 3e.5 gate' "$MJS" \
+  || fail "#1663/#997: the worker prompt must still route a repo-wide acceptance criterion to §3e.5 — removing the stale WORDING must not remove the deferral CONTRACT"
+echo "PASS: #1663 superseded-premise guard — no live artifact still claims §3e.5 is the bare repo-wide catch; the deferral contract survives"
+
 # ============================================================================
 # TEST (K1080): worker return-value OUTPUT SHAPE reaches the prompt, and its
 #   bounds come from the orchestrator hand-off (Step 0) — not a hardcoded
