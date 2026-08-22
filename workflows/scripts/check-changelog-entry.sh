@@ -699,7 +699,7 @@ if find_marker "$SKIP_MARKER_RE" "$CHANGELOG_GATE_SKIP_LABEL"; then
 fi
 
 # --- did this change add a changelog.d/ fragment? ---------------------------
-# An "entry" is now a CONFORMING FRAGMENT PRESENT AT HEAD. Three filters, each
+# An "entry" is now a CONFORMING FRAGMENT PRESENT AT HEAD. Filters, each
 # closing a way an apparent entry could still be a lost one:
 #
 #   * the basename must parse under the lib's filename grammar — an
@@ -708,12 +708,25 @@ fi
 #     assembler only reads regular files DIRECTLY in the directory, so a
 #     nested file would sit there looking pending while the release shipped
 #     without it;
-#   * the file must EXIST at HEAD with at least one non-blank line. Existence
-#     at HEAD is what stops a release cut's fragment DELETIONS from reading as
-#     entries; the non-blank test is the fragment-era analogue of the old
-#     "a bare `###` sub-heading is not an entry" rule (an empty fragment is a
-#     lost entry, and the assembler refuses to cut on one).
-ADDED_FRAGMENTS=""
+#   * the file must EXIST at HEAD (existence at HEAD is what stops a release
+#     cut's fragment DELETIONS from reading as entries), and its BODY must
+#     pass the exact same shape checks `scripts/assemble-changelog.sh` runs at
+#     the cut — SHARED, not re-derived: `changelog_fragment_empty` and
+#     `changelog_fragment_body_offenders` (workflows/scripts/lib/changelog.sh)
+#     are the same functions that script calls. Two copies of a shape rule is
+#     how they diverge — this is the fix for exactly that (temperloop#1542):
+#     cutting v0.31.0 hit a hard stop at release-cut time on a fragment this
+#     gate had already accepted at PR time, because a body-heading/
+#     control-token check that existed at release cut had no PR-time
+#     counterpart. It does now, and it is the SAME check.
+#
+# The candidate set is mirrored into a throwaway directory under the same
+# basenames so the shared, filesystem-based lib functions can run over
+# exactly the files this diff touches (added or modified) — never the whole
+# $FRAGMENT_DIR_REL/, so an unrelated pre-existing fragment can't fail a PR
+# that never touched it.
+FRAG_MIRROR="$tmpdir/frag-mirror"
+mkdir -p "$FRAG_MIRROR"
 while IFS= read -r f; do
   [[ -n "$f" ]] || continue
   case "$f" in
@@ -722,11 +735,49 @@ while IFS= read -r f; do
   esac
   case "$frag_name" in */*) continue ;; esac
   changelog_fragment_parse "$frag_name" >/dev/null 2>&1 || continue
-  git -C "$ROOT" show "$HEAD:$f" 2>/dev/null | grep -E '[^[:space:]]' >/dev/null || continue
-  ADDED_FRAGMENTS="$ADDED_FRAGMENTS$f"$'\n'
+  # a deleted file (a release cut consuming a fragment) fails `git show`;
+  # skip it rather than mirroring empty content under its old name.
+  content="$(git -C "$ROOT" show "$HEAD:$f" 2>/dev/null)" || continue
+  printf '%s\n' "$content" > "$FRAG_MIRROR/$frag_name"
 done <<EOF
 $CHANGED
 EOF
+
+MIRROR_OFFENDERS="$(changelog_fragment_body_offenders "$FRAG_MIRROR")"
+if [[ -n "$MIRROR_OFFENDERS" ]]; then
+  warn "FAIL — fragment body carries its own h1/h2/h3 heading, or an assembler control token."
+  warn ""
+  printf '%s\n' "$MIRROR_OFFENDERS" | sed -e 's/^/    - /' >&2
+  warn ""
+  warn "  The assembler OWNS the '### <Category>' sub-heading — a fragment supplying its own"
+  warn "  restructures the assembled section (and, with BREAKING in it, could forge the very signal"
+  warn "  changelog_breaking_sections() reads). This is the SAME check scripts/assemble-changelog.sh"
+  warn "  runs at release-cut time (changelog_fragment_body_offenders in"
+  warn "  workflows/scripts/lib/changelog.sh) — catching it here means a bad shape is a cheap PR-time"
+  warn "  fix instead of a hard stop that writes nothing at the release cut (temperloop#1542)."
+  warn ""
+  warn "  Fix: the fragment body is only the bullet(s) that would go under '### <Category>' — no"
+  warn "  '#', '##' or '###' line of its own (h4+ is fine). See $FRAGMENT_DIR_REL/README.md § File contents."
+  exit 1
+fi
+
+MIRROR_EMPTY="$(changelog_fragment_empty "$FRAG_MIRROR")"
+if [[ -n "$MIRROR_EMPTY" ]]; then
+  warn "FAIL — fragment file is present but its body is blank (an empty fragment is a lost entry;"
+  warn "  scripts/assemble-changelog.sh refuses to cut on one too):"
+  warn ""
+  printf '%s\n' "$MIRROR_EMPTY" | sed -e 's/^/    - /' >&2
+  warn ""
+  warn "  Fix: write the bullet the entry represents, or remove the file and use the"
+  warn "  '$CHANGELOG_GATE_SKIP_LABEL' escape hatch below if this change ships nothing."
+  exit 1
+fi
+
+ADDED_FRAGMENTS=""
+while IFS= read -r name; do
+  [[ -n "$name" ]] || continue
+  ADDED_FRAGMENTS="$ADDED_FRAGMENTS$FRAGMENT_DIR_REL/$name"$'\n'
+done < <(changelog_fragment_names "$FRAG_MIRROR")
 
 if [[ -n "$ADDED_FRAGMENTS" ]]; then
   say "OK — contract surface changed and this change carries a $FRAGMENT_DIR_REL/ fragment:"

@@ -52,7 +52,15 @@ the bullet, nothing else:
   0, so CI treated a split install as healthy.
 ```
 
-Rules the assembler enforces (it fails the cut rather than dropping an entry):
+Rules the assembler enforces (it fails the cut rather than dropping an entry).
+**The two body-shape rules — no heading, not empty — are enforced at PR time
+too**, by the SAME shared functions in `workflows/scripts/lib/changelog.sh`
+that the assembler calls (`changelog_fragment_body_offenders`,
+`changelog_fragment_empty`) — `workflows/scripts/check-changelog-entry.sh`
+rejects a malformed fragment on the PR that adds it, not only at the release
+cut (temperloop#1542: a fragment opening with its own `### Fixed` heading once
+passed the PR gate and then hit a hard stop at release-cut time, writing
+nothing):
 
 - **No `#`, `##` or `###` heading in the body.** The assembler owns the
   `### <Category>` heading. `####` and deeper are fine inside an entry.

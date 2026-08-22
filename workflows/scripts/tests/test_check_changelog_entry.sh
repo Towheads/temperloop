@@ -93,6 +93,17 @@
 #              (a vendoring consumer legitimately keeps no VERSIONING.md at its
 #              repo root — see the KERNEL_ROOT resolution above)
 #
+# Fragment SHAPE agreement with the release-cut assembler (temperloop#1542) —
+# the disagreement that hit v0.31.0's cut as a hard stop at a fragment this
+# gate had already accepted:
+#  38. RED   — a fragment body carrying its own h1/h2/h3 heading (the OBSERVED
+#              shape: '### Fixed') is rejected here, at PR time, by the SAME
+#              shared function scripts/assemble-changelog.sh calls at the cut
+#  39. RED   — a fragment body carrying an assembler control token
+#              (##BEGIN##, ##CATEGORY##) is rejected the same way
+#  40. GREEN — a conforming fragment with an h4 sub-heading in its body still
+#              passes (the assembler only owns h1/h2/h3; h4+ is prose)
+#
 # Usage: bash workflows/scripts/tests/test_check_changelog_entry.sh
 
 set -uo pipefail
@@ -1155,6 +1166,54 @@ assert_status 0 "$RUN_STATUS" "skips instead of failing"
 assert_has "$RUN_OUT" "skipped —" "the skip is legible, never silent"
 assert_has "$RUN_OUT" "nothing defines this tree's contract surface" "says what is missing"
 assert_has "$RUN_OUT" "v0.42.0" "names the pinned kernel release from .kernel-pin"
+
+# ── 38. RED: a fragment body carrying its own heading is rejected at PR time ─
+# THE OBSERVED FAILURE (temperloop#1542): cutting v0.31.0 hit a hard stop at
+# release-cut time on changelog.d/1508-t4-overlay-negative-control.fixed.md,
+# whose BODY opened with '### Fixed' — a shape check-changelog-entry.sh had
+# already accepted at PR time, because until this fix it never ran
+# changelog_fragment_body_offenders() (the same function
+# scripts/assemble-changelog.sh calls) at all. Reproduced here verbatim.
+echo "38. a fragment body carrying its own '### Fixed' heading is rejected"
+D="$TMP/r38"; BASE="$(new_repo "$D")"
+echo "# build v2" > "$D/claude/commands/build.md"
+frag "$D" "1508-t4-overlay-negative-control.fixed.md" \
+  "### Fixed" "" "- The overlay negative control now reports correctly."
+git -C "$D" add -A >/dev/null
+git -C "$D" commit -aqm "tweak the build command spec"
+run_gate "$D" "$BASE"
+assert_status 1 "$RUN_STATUS" "fails — a body heading is rejected at PR time, not release-cut time"
+assert_has "$RUN_OUT" "own h1/h2/h3 heading" "names the specific defect"
+assert_has "$RUN_OUT" "1508-t4-overlay-negative-control.fixed.md:1: ### Fixed" "quotes the offending line, file and number"
+assert_has "$RUN_OUT" "SAME check scripts/assemble-changelog.sh" "says this is the SAME check the assembler runs"
+
+# ── 39. RED: an assembler control token in the body is rejected too ─────────
+# Defence in depth in changelog_fragment_body_offenders(): a body line
+# spelling one of the assembler's own control tokens is rejected by the same
+# rule as a heading, at the same PR-time point.
+echo "39. a fragment body carrying an assembler control token is rejected"
+D="$TMP/r39"; BASE="$(new_repo "$D")"
+echo "# build v2" > "$D/claude/commands/build.md"
+frag "$D" "1542-control-token.changed.md" "- entry" "##CATEGORY## security 1"
+git -C "$D" add -A >/dev/null
+git -C "$D" commit -aqm "tweak the build command spec"
+run_gate "$D" "$BASE"
+assert_status 1 "$RUN_STATUS" "fails — a control token in the body is rejected at PR time"
+assert_has "$RUN_OUT" "assembler control token" "names the specific defect"
+
+# ── 40. GREEN: an h4 sub-heading in the body is not owned by the assembler ──
+# Only h1/h2/h3 are rejected — the assembler never claims h4+, so a fragment
+# using one internally still passes both the PR gate and (temperloop#1542's
+# acceptance bar) the shape the release-cut assembler will accept.
+echo "40. an h4 sub-heading in the body is fine — only h1/h2/h3 are owned"
+D="$TMP/r40"; BASE="$(new_repo "$D")"
+echo "# build v2" > "$D/claude/commands/build.md"
+frag "$D" "1542-h4-ok.added.md" "- entry with detail below:" "" "#### Detail" "" "  more text"
+git -C "$D" add -A >/dev/null
+git -C "$D" commit -aqm "tweak the build command spec"
+run_gate "$D" "$BASE"
+assert_status 0 "$RUN_STATUS" "passes — h4 is not an owned heading"
+assert_has "$RUN_OUT" "OK —" "reports OK"
 
 echo
 echo "test_check_changelog_entry: $pass passed, $fail failed"
