@@ -1399,6 +1399,47 @@ function discriminationEvidenceSection() {
   ];
 }
 
+// changelogFragmentSection — the §3c "add your own changelog.d/ fragment"
+// instruction (temperloop#1530), a SELF-CONTAINED section appended once into
+// workerPrompt()'s array, mirroring principlesSection()'s /
+// discriminationEvidenceSection()'s shape so a sibling edit to workerPrompt()
+// rebases cleanly. WHY THE WORKER, NOT A PARENT-SIDE CHECK: the issue's own
+// prose names two options (tell the worker vs. run check-changelog-entry.sh
+// parent-side before pr.sh open) — this instructs the worker because that is
+// PREVENTION (the fragment lands in the same commit, no round trip) rather
+// than DETECTION (a parent-side check still costs a re-spawn once it fires,
+// just earlier than CI); it does not restate the fragment's filename grammar
+// or body rules here — those live in ONE place, changelog.d/README.md — so
+// this section and that file can't drift out of sync with each other. The
+// escape hatch it names is the ONE opt-out channel that works before a PR
+// exists (a commit-message trailer — check-changelog-entry.sh's own header),
+// so a worker that judges its change non-shipping RECORDS that choice rather
+// than silently omitting the fragment.
+function changelogFragmentSection(item) {
+  return [
+    '',
+    '## Changelog fragment — contract-surface changes need one (temperloop#1530)',
+    'If this item touches contract surface (a public interface, schema, CLI flag,',
+    'or gate behavior — see `VERSIONING.md` § The contract surface for the exact',
+    'set), add your OWN changelog fragment as part of this change, in the same',
+    'commit as the change or a follow-up commit on this branch — the same way you',
+    'are told to run the gates. Read `changelog.d/README.md` for the filename',
+    'grammar and body rules; this prompt does not restate them, so follow that',
+    'file, not a guess. Name the file',
+    `\`changelog.d/${item.slug}.<category>.md\` (prefix the item's own issue number`,
+    "when you know it from the item block above, per the README's `<issue#>-<slug>`",
+    "convention — the slug alone is still a valid filename if you don't).",
+    '',
+    'If this change genuinely ships nothing changelog-worthy, do not just omit the',
+    'fragment — RECORD that choice: add a `Changelog: none — <reason>` line as a',
+    'commit-message trailer (the one opt-out channel that works before a PR',
+    'exists; see `changelog.d/README.md` § Status). An omitted fragment with no',
+    'recorded reason reads as an oversight, not a decision — CI will fail on it',
+    'exactly once (check-changelog-entry.sh), costing a re-spawn round trip this',
+    'section exists to avoid.',
+  ];
+}
+
 function workerPrompt(item, worktreePath, extraSection) {
   const accList = acceptanceList(item);
   const accBullets = accList
@@ -1508,6 +1549,7 @@ function workerPrompt(item, worktreePath, extraSection) {
     '  ~5-min cache-TTL budget above — NARROW or split it, or return `blocked` / `failed`',
     '  and let the orchestrator run it parent-side — never background-and-wait.',
     '',
+    ...changelogFragmentSection(item),
     ...principlesSection(item),
     '',
     extraSection ?? '',
