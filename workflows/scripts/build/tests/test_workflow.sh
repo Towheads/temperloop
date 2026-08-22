@@ -2771,6 +2771,168 @@ grep -q 'DEFERRED to the parent-side 3e.5 gate' "$MJS" \
   || fail "#1663/#997: the worker prompt must still route a repo-wide acceptance criterion to §3e.5 — removing the stale WORDING must not remove the deferral CONTRACT"
 echo "PASS: #1663 superseded-premise guard — no live artifact still claims §3e.5 is the bare repo-wide catch; the deferral contract survives"
 
+# --- K1694: gateScopeEnv's emitted shell fragment is EXECUTED, not merely --
+#   grepped for ------------------------------------------------------------
+# The grep guards above prove the SOURCE mentions the right tokens. They
+# cannot catch a dropped backslash that turns the JS template literal's
+# \${BUILD_GATE_SCOPED:-1} escape into a REAL js interpolation against an
+# undefined `BUILD_GATE_SCOPED` binding — a change every grep above still
+# passes, while the gate silently reverts to the full per-item suite (the
+# exact #1663 failure, back under a green guard suite).
+#
+# This test extracts sq() and the gateScopeEnv template-literal expression
+# VERBATIM from build-level.mjs's own source (not a hand-copied re-encoding
+# of it — a re-encoding would only test itself), evaluates that extracted
+# JS against a caller-supplied `configBin`, and RUNS the resulting shell
+# fragment under bash against three fixtures.
+GATE_SCOPE_EXTRACT="$WF_TEST_TMPDIR/extract-gate-scope.cjs"
+cat > "$GATE_SCOPE_EXTRACT" <<'NODE_EOF'
+'use strict';
+const fs = require('fs');
+const [, , mjsPath, configBin] = process.argv;
+if (!mjsPath || configBin === undefined) {
+  console.error('usage: extract-gate-scope.cjs <build-level.mjs path> <configBin>');
+  process.exit(2);
+}
+const src = fs.readFileSync(mjsPath, 'utf8');
+// sq() is a top-level function declaration; its closing brace is the first
+// line consisting solely of "}" after the opening line.
+const sqMatch = src.match(/^function sq\(value\) \{[\s\S]*?^\}/m);
+if (!sqMatch) {
+  console.error('EXTRACT_FAILED: sq() function not found');
+  process.exit(2);
+}
+// gateScopeEnv is a single-line-declared, backtick-delimited template
+// literal expression. Capture just the expression (with its backticks), not
+// the `const gateScopeEnv =` binding, so it can be eval'd as a bare
+// expression below.
+const gateMatch = src.match(/const gateScopeEnv =\s*\n\s*(`[\s\S]*?`);/);
+if (!gateMatch) {
+  console.error('EXTRACT_FAILED: gateScopeEnv template literal not found');
+  process.exit(2);
+}
+let gateScopeEnv;
+try {
+  // new Function isolates evaluation in a fresh scope — configBin is the
+  // only free variable the extracted expression needs, passed as a real
+  // parameter rather than relying on any scope-leak trick. A dropped
+  // backslash in the source turns \${BUILD_GATE_SCOPED:-1} into a real JS
+  // interpolation; ":-1" is not valid JS in expression position, so this
+  // throws a SyntaxError right here — the RED half of the discrimination.
+  const factory = new Function('configBin', `${sqMatch[0]}\nreturn ${gateMatch[1]};`);
+  gateScopeEnv = factory(configBin);
+} catch (e) {
+  console.error(`EVAL_FAILED: ${e.constructor.name}: ${e.message}`);
+  process.exit(3);
+}
+process.stdout.write(gateScopeEnv);
+NODE_EOF
+
+# resolve_gate_scoped <mjs-path> <configBin-path>
+# Extracts the fragment from <mjs-path> and actually RUNS it under bash,
+# printing the resolved QUALITY_GATES_SCOPED value. Returns non-zero (with
+# the extraction/eval diagnostic on stderr) if extraction or eval failed —
+# the caller distinguishes "wrong value" from "couldn't even build it".
+resolve_gate_scoped() {
+  local mjs="$1" configBin="$2" out rc errfile
+  errfile="$(mktemp "$WF_TEST_TMPDIR/gate-scope-err.XXXXXX")"
+  out="$(node "$GATE_SCOPE_EXTRACT" "$mjs" "$configBin" 2>"$errfile")"
+  rc=$?
+  if [ $rc -ne 0 ]; then
+    echo "EXTRACTION_FAILED: $(cat "$errfile")" >&2
+    rm -f "$errfile"
+    return 1
+  fi
+  rm -f "$errfile"
+  bash -c "$out; echo \"\${QUALITY_GATES_SCOPED}\""
+}
+
+GATE_FIX_DIR="$WF_TEST_TMPDIR/gate-scope-fixtures"
+mkdir -p "$GATE_FIX_DIR"
+
+# Fixture 1: build.config.sh does not exist at all.
+GATE_FIX_MISSING="$GATE_FIX_DIR/does-not-exist/build.config.sh"
+
+# Fixture 2: an ordinary config carrying the explicit override.
+GATE_FIX_ZERO="$GATE_FIX_DIR/zero.sh"
+printf 'BUILD_GATE_SCOPED=0\n' > "$GATE_FIX_ZERO"
+
+# Fixture 3: a config that sets `set -euo pipefail` (mirroring a plausible
+# future hardening of build.config.sh) and then genuinely FAILS mid-file —
+# `false` is a real, unguarded failing command, not an if-condition trick.
+# It runs with -e disabled (`set +e`) specifically so the failure survives
+# to be sourcing's own nonzero return rather than an -e-triggered abort of
+# the containing subshell (an abort would kill the fragment's inner
+# `$(...)` outright and produce NO value at all under either separator —
+# that failure mode can't discriminate ';' from '&&', so it's not what this
+# fixture is for). BUILD_GATE_SCOPED is never assigned, so the default must
+# carry the result home.
+GATE_FIX_POISON="$GATE_FIX_DIR/poison.sh"
+cat > "$GATE_FIX_POISON" <<'POISON_EOF'
+set -euo pipefail
+echo "probing" >/dev/null
+set +e
+false
+POISON_EOF
+
+# --- GREEN: the real, unmodified build-level.mjs ---------------------------
+v="$(resolve_gate_scoped "$MJS" "$GATE_FIX_MISSING")" \
+  || fail "gate-scope-exec: extraction from the real .mjs must succeed (missing-config fixture)"
+[ "$v" = "1" ] || fail "gate-scope-exec: a missing build.config.sh must resolve QUALITY_GATES_SCOPED=1 (got '$v')"
+
+v="$(resolve_gate_scoped "$MJS" "$GATE_FIX_ZERO")" \
+  || fail "gate-scope-exec: extraction from the real .mjs must succeed (zero fixture)"
+[ "$v" = "0" ] || fail "gate-scope-exec: a BUILD_GATE_SCOPED=0 fixture must resolve QUALITY_GATES_SCOPED=0 (got '$v')"
+
+v="$(resolve_gate_scoped "$MJS" "$GATE_FIX_POISON")" \
+  || fail "gate-scope-exec: extraction from the real .mjs must succeed (poison fixture)"
+[ "$v" = "1" ] || fail "gate-scope-exec: a set -euo pipefail mid-source failure must still resolve QUALITY_GATES_SCOPED=1 (got '$v')"
+echo "PASS: gate-scope-exec — the real gateScopeEnv fragment resolves correctly under bash for all three fixtures (missing/zero/poisoned)"
+
+# The load-bearing half of fixture 3 (per the item notes): prove the ';'
+# (not '&&') separator between `. configBin` and `echo` is what makes the
+# poisoned fixture resolve at all. Swap the SAME extracted fragment's ';'
+# for '&&' and confirm it stops resolving to the default — demonstrating
+# fixture 3 actually exercises that design choice rather than passing
+# vacuously regardless of it.
+frag_semi="$(node "$GATE_SCOPE_EXTRACT" "$MJS" "$GATE_FIX_POISON")" \
+  || fail "gate-scope-exec: extraction for the &&-vs-; check must succeed"
+# Prefix/suffix split rather than ${var/pat/repl} — an unescaped '&' in a
+# parameter-expansion REPLACEMENT is special (it re-inserts the matched
+# text), so a naive `/; echo/ && echo/` silently corrupts the fragment.
+gate_and_prefix="${frag_semi%%; echo*}"
+gate_and_suffix="${frag_semi#*; echo}"
+frag_and="${gate_and_prefix} && echo${gate_and_suffix}"
+[ "$frag_semi" != "$frag_and" ] \
+  || fail "gate-scope-exec: could not construct the '&&' variant — the fragment shape changed unexpectedly"
+v_and="$(bash -c "$frag_and; echo \"\${QUALITY_GATES_SCOPED}\"")"
+[ "$v_and" != "1" ] \
+  || fail "gate-scope-exec: the '&&' variant must NOT also resolve to 1 — otherwise fixture 3 isn't discriminating the ';' choice at all"
+echo "PASS: gate-scope-exec — fixture 3 is load-bearing: swapping ';' for '&&' changes the resolved value (got '$v_and' instead of '1')"
+
+# --- RED: the same extraction against a MUTATED copy where the backslash
+# escape is dropped — \${BUILD_GATE_SCOPED:-1} becomes ${BUILD_GATE_SCOPED:-1},
+# a REAL js interpolation. ":-1" is not valid JS in expression position, so
+# this must fail extraction/eval outright (not silently produce a wrong
+# value) — proving this suite is RED without the escape and GREEN with it,
+# demonstrated both ways rather than asserted.
+GATE_MUTANT="$WF_TEST_TMPDIR/build-level.mutant.mjs"
+node -e '
+const fs = require("fs");
+const [, mjsPath, outPath] = process.argv;
+const src = fs.readFileSync(mjsPath, "utf8");
+const needle = "\\${BUILD_GATE_SCOPED:-1}";
+if (!src.includes(needle)) {
+  console.error("mutant: escaped token not found in source");
+  process.exit(2);
+}
+fs.writeFileSync(outPath, src.split(needle).join("${BUILD_GATE_SCOPED:-1}"));
+' "$MJS" "$GATE_MUTANT" || fail "gate-scope-exec: could not construct the dropped-backslash mutant"
+if resolve_gate_scoped "$GATE_MUTANT" "$GATE_FIX_MISSING" >/dev/null 2>&1; then
+  fail "gate-scope-exec: the dropped-backslash mutant must NOT extract/eval cleanly — it should throw at eval time, proving this test goes RED without the escape"
+fi
+echo "PASS: gate-scope-exec — RED demonstrated: dropping the backslash breaks extraction/eval of gateScopeEnv where the real .mjs passes clean"
+
 # ============================================================================
 # TEST (K1080): worker return-value OUTPUT SHAPE reaches the prompt, and its
 #   bounds come from the orchestrator hand-off (Step 0) — not a hardcoded
