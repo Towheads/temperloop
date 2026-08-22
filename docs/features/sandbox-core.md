@@ -70,6 +70,67 @@ reshaping what already exists. A follow-up item, "sandbox-integrity"
 tripwire, and a symlink-aware tree-manifest-diff helper onto this same
 file rather than a second one — see `docs/features/sandbox-integrity.md`.
 
+## Root-leak guard (temperloop#1723)
+
+A throwaway root is ~1GB for the install-surface suites, and every suite
+removed it with a single `sandbox_down` on its **last line**. That line is
+only reached on the happy path — `fail()` is `exit 1` — so a failed
+assertion, a timeout kill, a CI cancellation, or an ENOSPC walked straight
+past it. Measured cost: `$TMPDIR` holding **215 leaked roots totalling
+~180GB**, which filled a 460GB disk and killed a validation batch mid-run.
+
+`sandbox_up` now installs the cleanup traps **itself** (`EXIT`, `HUP`,
+`INT`, `TERM`), so every existing caller became safe with no edit and no new
+caller can forget:
+
+- **Registered, not latest-only.** Every root created in the shell is
+  reclaimed, not just the one `$SANDBOX_ROOT` names at the moment of death
+  (`bin/subcommands/tests/test_uninstall.sh` calls `sandbox_up` 13 times).
+- **Chained, never clobbering.** A caller's own `EXIT`/signal handler is
+  captured via `trap -p` — whose output is bash's own re-runnable quoting,
+  so nothing is hand-unescaped — and runs **first**, while the root it may
+  still need exists. Traps are re-armed on every `sandbox_up`, so a caller
+  that installs its trap *between* two `sandbox_up` calls (which
+  `test_sandbox.sh` does) is re-chained rather than left clobbered. A signal
+  the caller deliberately ignores (`trap '' TERM`) is left alone.
+- **Idempotent.** The explicit trailing `sandbox_down` the suites already
+  carry and the trap can both run; `sandbox_down` de-registers, and `rm -rf`
+  on an absent root is a no-op — so `test_install_lifecycle.sh`'s trailing
+  "the root is gone" assertion still means what it did.
+
+**Debuggability escape:** `SANDBOX_KEEP=1` retains every root (loudly, on
+stderr) so a developer can inspect one while diagnosing a red suite. It
+applies to the explicit `sandbox_down` too, so *keep* means keep — a suite
+that asserts its root was removed therefore fails under `SANDBOX_KEEP`, and
+that is the flag working, not a regression.
+
+**What the guard cannot cover: SIGKILL.** `kill -9`, an OOM kill, and the
+SIGKILL leg of a candidate timeout are untrappable by construction, so no
+in-process guard reaches them — and roots leaked *before* this guard existed
+carry no marker. Both are the sweeper's job:
+
+```sh
+bash workflows/scripts/tests/lib/sandbox-sweep.sh              # dry run: list + total
+bash workflows/scripts/tests/lib/sandbox-sweep.sh --apply      # reclaim
+bash workflows/scripts/tests/lib/sandbox-sweep.sh --older-than 5 --dir /some/tmp
+```
+
+It scans `$TMPDIR` (or `--dir`) and recognises a root by two **positive,
+structural** signals rather than a `mktemp`-prefix glob somebody would have
+to remember to extend: the `.sandbox-root` marker `sandbox_up` now writes,
+or — for the pre-guard leaks — `sandbox_up`'s exact directory signature
+(`home/`, `bin/`, and all four `xdg/{config,state,data,cache}`). Two safety
+valves keep it off a live suite: a root newer than `--older-than` (default
+60 minutes) is skipped, and so is a marker-bearing root whose recorded pid
+is still alive. It is a **dry run by default** — nothing is removed until
+`--apply`.
+
+`workflows/scripts/tests/lib/tests/test_sandbox_trap.sh` is the gate. Every
+scenario runs a generated fixture suite as a **separate process** with
+`$TMPDIR` re-pointed at a throwaway scan directory, then asserts on what
+that directory holds once the fixture is dead — the only place "the root is
+gone after the process died" is observable at all.
+
 ## Resource impact
 
 Local filesystem only: a `mktemp -d` throwaway root per test run, removed
