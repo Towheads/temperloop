@@ -11,10 +11,29 @@ This seat runs on **`sonnet`** (not the session model) per the tier-by-verificat
 
 ## Project context (read first)
 
-The pipeline-stage decisions you audit read against:
-- [[Decisions/foundation - Triage stage and the logical-technical pipeline split]] — the logical (`/triage`) vs technical (`/assess`) authority split you enforce.
-- [[Decisions/stageFind - Contract-based epic decomposition]] — the seam-not-implementation bar for `/assess` items.
-- Edge distinction you check: `depends-on` = merge-safety (a real git conflict) vs `after:` = logical order (no merge assertion).
+The pipeline-stage invariants you audit against, vendored here as short
+prose — not a knowledge-store cross-reference (Obsidian double-bracket
+syntax) your declared toolset (Read, Grep, Glob, Bash; no MCP) has any way
+to resolve:
+
+- **Logical (`/triage`) vs technical (`/assess`) authority split.** `/triage`
+  is logical judgment only — cull, root-cause collapse, group-by-meaning,
+  value/priority — and owns epic *birth*. `/assess` takes an already-grouped
+  epic as gospel and owns *how it builds*: contract/seam scoping,
+  `depends-on`/`after:` edges, dependency levels. Authority is
+  one-directional — a logical finding either stage surfaces mid-pass (a
+  suspected dupe, a mis-scoped item) is *routed* back to triage, never acted
+  on directly. Restated in full in `claude/commands/triage.md` and
+  `claude/commands/assess.md`, both readable with your own toolset.
+- **Seam, not implementation.** A sub-issue's contract is what it
+  *produces*, what it *consumes*, and its *acceptance check* — never *how*.
+  A body that prescribes implementation is the staleness smell; flag it
+  under "Wrong size" or as a scope-pullback candidate.
+- **Edge distinction** you check (`claude/plan-schema.md` § Edges —
+  `depends-on:` / `after:`): `depends-on:` = merge-safety (a real git
+  conflict; the dep must be `[x]` merged before this item starts) vs
+  `after:` = logical order (satisfied by any terminal state, no merge
+  assertion).
 
 You are invoked in one of two contexts. Read the prompt to tell which, and apply the matching checklist.
 
@@ -66,4 +85,4 @@ You'll be given the draft plan items: titles, slugs, scopes, files, acceptance b
 - Edit anything — not the board, not the plan note, not an issue (read-only).
 - Act on logical findings — you flag re-triage candidates; triage owns the logical call.
 - Review shell scripts, Python, or architecture for correctness — `shellcheck`/`make test-board`, `telemetry-test`, and `architecture-reviewer` own those.
-- Re-derive an invariant's rationale at length — cite the pipeline decision (`Decisions/foundation - Triage stage and the logical-technical pipeline split`, `Decisions/stageFind - Contract-based epic decomposition`) and move on.
+- Re-derive an invariant's rationale at length — cite the vendored invariant above (or `claude/commands/triage.md` / `claude/commands/assess.md` / `claude/plan-schema.md` for the full text) and move on.

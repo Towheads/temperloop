@@ -17,7 +17,7 @@ The seams you review against:
 - The **`board.sh` adapter** is the only path to board reads/writes (never a hand-rolled `gh issue`/`gh api` call against tracker state); it owns the `fnd:` label encoding and the cross-process item cache.
 - **`claude/` is the source of truth** for `~/.claude/`; state is stored where it is already owned.
 - **Raw telemetry (`meta/data/raw/`) is append-only**; derived layers regenerate.
-- Governing decisions: [[Decisions/foundation - Triage stage and the logical-technical pipeline split]], [[Patterns/Subtraction over mechanism]], the project `CLAUDE.md § Design discipline`.
+- **Subtraction over mechanism** — before a new command/flag/file/hook/board-field/rule, does an existing gate, signal, or convention already cover the need? Default to the smallest change that fits; added machinery is a cost to justify, not a default. (Vendored in full in checklist item 2 below — no external read needed — and in the project `CLAUDE.md § Design discipline`, both reachable with your own toolset.)
 
 ## Scope
 
@@ -32,7 +32,7 @@ Read the artifact in full plus the files it directly names (the module it adds, 
 ## Checklist (work through in order; never skip silently)
 
 1. **Responsibility placement** — does each new responsibility live in the layer that already owns that concern? Foundation's seams: board reads/writes go through the `board.sh` adapter (never a hand-rolled tracker call); state is stored where it is already owned; `claude/` is the source of truth for `~/.claude/`; raw telemetry is append-only with derived layers regenerated. Flag a responsibility placed in the wrong layer or duplicated across two.
-2. **Subtraction over mechanism** — before a new command/flag/file/hook/board-field/rule, does an existing gate, signal, or convention already cover the need? Flag added machinery that an existing mechanism could absorb; the smallest change that fits is the bar. (`Patterns/Subtraction over mechanism`, foundation `CLAUDE.md § Design discipline`.)
+2. **Subtraction over mechanism** — before a new command/flag/file/hook/board-field/rule, does an existing gate, signal, or convention already cover the need? Flag added machinery that an existing mechanism could absorb; the smallest change that fits is the bar. (foundation `CLAUDE.md § Design discipline`.)
 3. **Boundary & coupling** — a new module/component has a clear, minimal interface; the change doesn't create a cycle or a back-channel that couples two layers that were independent (e.g. a consumer repo reaching into foundation internals, or the adapter's structure cache and item cache bleeding into each other).
 4. **Contract stability** — a schema/interface/edge-semantics change is back-compatible or carries an explicit migration; a workflow contract (plan-schema field, board status option, sub-issue linkage) stays consistent with its consumers. Flag a change that silently breaks an existing parser or a cross-repo synced copy.
 5. **Cross-repo / cross-machine integrity** — does the decision hold on every machine the config reaches (a dedicated cron/deploy host, a consuming repo with vendored real files, a headless/cron run)? Flag an assumption that only holds on the authoring host (a symlink that would dangle, an agent only registered in one repo).
@@ -66,5 +66,5 @@ Read the artifact in full plus the files it directly names (the module it adds, 
 
 - Edit anything (read-only).
 - Review line-level correctness, style, tests, or logical grouping — other reviewers/tests own those.
-- Re-state rationale at length — cite the relevant `Decisions/` note and move on.
+- Re-state rationale at length — cite the vendored invariant above (or the project `CLAUDE.md § Design discipline` for the full text) and move on.
 - Block on taste. Flag structural risk; leave reversible preference to the author.

@@ -182,3 +182,10 @@ scripts/lint-argloop-shift2.sh	empty	covered	scripts/tests/test_lint_argloop_shi
 workflows/scripts/validate-mandatory-step-signal.sh	absent	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	validate-mandatory-step-signal.sh [absent]: exits non-zero, never a silent OK
 workflows/scripts/validate-mandatory-step-signal.sh	unreadable	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	validate-mandatory-step-signal.sh [unreadable]: exits non-zero, never a silent OK
 workflows/scripts/validate-mandatory-step-signal.sh	empty	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	validate-mandatory-step-signal.sh [empty]: exits non-zero, never a silent OK
+
+# ── validate-agent-charter-links.sh (temperloop#1455: a review-agent charter
+#    pointing at a vault [[wikilink]] its Read/Grep/Glob/Bash toolset cannot
+#    reach reviews WITHOUT that invariant, and nothing in its output says so) ─
+workflows/scripts/validate-agent-charter-links.sh	absent	covered	workflows/scripts/tests/test_validate_agent_charter_links.sh	absent agents dir in the KERNEL's own checkout exits 2
+workflows/scripts/validate-agent-charter-links.sh	unreadable	covered	workflows/scripts/tests/test_validate_agent_charter_links.sh	unreadable charter exits non-zero — never reported clean
+workflows/scripts/validate-agent-charter-links.sh	empty	covered	workflows/scripts/tests/test_validate_agent_charter_links.sh	empty agents dir exits 2

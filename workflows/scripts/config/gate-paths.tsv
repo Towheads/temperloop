@@ -394,3 +394,5 @@ make shellcheck	*.sh
 bash scripts/tests/test_ensure_shellcheck.sh	scripts/ensure-shellcheck.sh scripts/tests/test_ensure_shellcheck.sh
 bash workflows/scripts/validate-docs-footer.sh	README.md docs/** workflows/scripts/validate-docs-footer.sh
 bash workflows/scripts/tests/test_validate_docs_footer.sh	workflows/scripts/validate-docs-footer.sh workflows/scripts/tests/test_validate_docs_footer.sh
+bash workflows/scripts/validate-agent-charter-links.sh	claude/agents/** workflows/scripts/validate-agent-charter-links.sh
+bash workflows/scripts/tests/test_validate_agent_charter_links.sh	workflows/scripts/validate-agent-charter-links.sh workflows/scripts/tests/test_validate_agent_charter_links.sh
