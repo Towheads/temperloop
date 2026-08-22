@@ -345,3 +345,399 @@ out="$(bash "$SCRIPT" create "$REPO" nosrc)"
 [ ! -e "$REPO.wt/nosrc/.claude" ] \
   || fail "#1005: a repo with no claude/agents/ source got a spurious .claude/ directory"
 echo "PASS: create is a clean no-op in a repo with no claude/agents/ source (#1005)"
+
+# =============================================================================
+# Unlanded-work preservation (temperloop#1699)
+# =============================================================================
+# `clear_path` force-removes the worktree AND `git branch -D`s build/<slug>, so
+# committing is not protection. The guard captures whatever would be lost to a
+# LOCAL-ONLY ref outside refs/heads/ before the destruction, and reports the
+# verdict as CREATED fields (never a new outcome string, never a refusal).
+#
+# A private upstream/clone pair per case keeps each assertion independent, in
+# the same local-bare-upstream fixture style as the suite above. `gh` is stubbed
+# onto PATH for every call in this section so nothing here touches the network:
+# both merged-detect's Method 1 and the reap's issue-disposition gate would
+# otherwise shell out to the real binary.
+mkdir -p "$TMP/bin"
+cat > "$TMP/bin/gh" <<'STUB'
+#!/usr/bin/env bash
+# Offline gh stub. Default: fail like an unauthenticated/offline gh, which is
+# the conservative arm every caller here is specified to take. `issue view` is
+# answered from $GH_ISSUE_STATE when it is set, so the reap's disposition gate
+# is exercised deterministically.
+if [ "${1:-}" = "issue" ] && [ "${2:-}" = "view" ] && [ -n "${GH_ISSUE_STATE:-}" ]; then
+  printf '%s\n' "$GH_ISSUE_STATE"
+  exit 0
+fi
+exit 1
+STUB
+chmod +x "$TMP/bin/gh"
+export PATH="$TMP/bin:$PATH"
+
+# mkfix <name> — a fresh upstream+clone pair; prints the clone's abs path.
+mkfix() {
+  git init -q --initial-branch=main "$TMP/up_$1"
+  git -C "$TMP/up_$1" commit -q --allow-empty -m init
+  git clone -q "$TMP/up_$1" "$TMP/repo_$1"
+  (cd "$TMP/repo_$1" && pwd -P)
+}
+
+parked_refs() { git -C "$1" for-each-ref --format='%(refname)' 'refs/parked/*'; }
+
+# --- committed-but-unlanded work survives clear_path --------------------------
+R1="$(mkfix committed)"
+bash "$SCRIPT" create "$R1" work-101 >/dev/null
+printf 'reviewed work\n' > "$R1.wt/work-101/feature.txt"
+git -C "$R1.wt/work-101" add feature.txt
+git -C "$R1.wt/work-101" commit -q -m "the escalated worker's committed work"
+lostsha="$(git -C "$R1.wt/work-101" rev-parse HEAD)"
+
+out="$(bash "$SCRIPT" create "$R1" work-101)"
+[ "$(jq -r .outcome <<<"$out")" = "CREATED" ] || fail "#1699: re-create not CREATED (got: $out)"
+[ "$(jq -r .preserved <<<"$out")" = "true" ] || fail "#1699: committed work not preserved (got: $out)"
+pref="$(jq -r .preserved_ref <<<"$out")"
+case "$pref" in
+  refs/parked/work-101-*) : ;;
+  *) fail "#1699: preservation ref not refs/parked/<slug>-<sha8> (got: $pref)" ;;
+esac
+# The whole point: the destruction DID happen, and the work survived it anyway.
+[ "$(git -C "$R1" rev-parse "$pref")" = "$lostsha" ] \
+  || fail "#1699: preservation ref does not point at the destroyed commit"
+git -C "$R1" cat-file -e "$lostsha^{commit}" \
+  || fail "#1699: the committed work was garbage — the ref did not root it"
+[ "$(git -C "$R1.wt/work-101" rev-parse HEAD)" = "$(git -C "$R1" rev-parse origin/main)" ] \
+  || fail "#1699: the re-created worktree is not on a fresh base"
+echo "PASS: clear_path preserves COMMITTED unlanded work to a local-only ref before destroying it (#1699)"
+
+# The ref is outside refs/heads/, so it can never collide with an item whose own
+# branch type is `build` (the build/<slug> == <type>/<slug> collision, #1702).
+case "$pref" in
+  refs/heads/*) fail "#1699: preservation ref lives in refs/heads/ — collides with build/<slug>" ;;
+esac
+git -C "$R1" show-ref --verify --quiet "refs/heads/${pref#refs/parked/}" \
+  && fail "#1699: a refs/heads/ sibling of the preservation ref exists"
+# `git push` moves refs/heads and tags only — assert the ref is invisible to the
+# two refspecs a caller could plausibly reach for.
+git -C "$R1" push -q --dry-run origin --all 2>/dev/null || true
+[ -n "$(parked_refs "$R1")" ] || fail "#1699: preservation ref vanished"
+echo "PASS: the preservation ref is local-only, outside refs/heads/ (#1699)"
+
+# --- dirty work is captured WITHOUT authoring a semantic commit ---------------
+R2="$(mkfix dirty)"
+bash "$SCRIPT" create "$R2" work-202 >/dev/null
+basetip="$(git -C "$R2.wt/work-202" rev-parse HEAD)"
+printf 'uncommitted edit\n' > "$R2.wt/work-202/scratch.txt"
+printf 'machinery\n' > "$R2.wt/work-202/.build-verification.md"
+out="$(bash "$SCRIPT" create "$R2" work-202)"
+[ "$(jq -r .preserved <<<"$out")" = "true" ] || fail "#1699: dirty tree not preserved (got: $out)"
+pref2="$(jq -r .preserved_ref <<<"$out")"
+psha2="$(git -C "$R2" rev-parse "$pref2")"
+[ "$psha2" != "$basetip" ] || fail "#1699: dirty capture is just the tip — the edit was dropped"
+[ "$(git -C "$R2" rev-parse "$pref2^")" = "$basetip" ] \
+  || fail "#1699: the WIP capture's parent is not the branch tip"
+git -C "$R2" show "$pref2:scratch.txt" > "$TMP/snap-scratch.txt" 2>/dev/null \
+  || fail "#1699: scratch.txt is absent from the preserved snapshot"
+grep -q 'uncommitted edit' "$TMP/snap-scratch.txt" \
+  || fail "#1699: the uncommitted edit is not in the preserved snapshot"
+# recover-probe's own exclusion pathspec: machinery artifacts are never captured.
+git -C "$R2" cat-file -e "$pref2:.build-verification.md" 2>/dev/null \
+  && fail "#1699: .build-verification.md was re-committed into the snapshot"
+git -C "$R2" cat-file -e "$pref2:.build-guard" 2>/dev/null \
+  && fail "#1699: .build-guard was re-committed into the snapshot"
+# No semantic commit: the branch pointer never moved before it was destroyed —
+# the capture is a detached WIP object, so a failed capture can never leave a
+# half-committed branch behind (the false-PUSHED failure path).
+[ "$(git -C "$R2" rev-parse "$pref2^{tree}")" != "$(git -C "$R2" rev-parse "$basetip^{tree}")" ] \
+  || fail "#1699: the snapshot tree equals the tip tree — nothing was captured"
+echo "PASS: dirty state is captured as a detached WIP object, machinery artifacts excluded (#1699)"
+
+# The exclusion must be recover-probe's OWN PATHSPEC, not a lucky info/exclude.
+# In this repo both markers are also ignored, which would let a pathspec-less
+# `add -A` pass; a CONSUMING repo that never ignored them is the case the
+# pathspec exists for (pr.sh's own comment on the same exclusion). Reproduce it
+# by clearing the shared info/exclude before the capture runs.
+R2B="$(mkfix dirtynoignore)"
+bash "$SCRIPT" create "$R2B" work-212 >/dev/null
+excl2b="$(cd "$R2B" && cd "$(git rev-parse --git-common-dir)" && pwd -P)/info/exclude"
+: > "$excl2b"
+printf 'real work\n' > "$R2B.wt/work-212/real.txt"
+printf 'machinery\n' > "$R2B.wt/work-212/.build-verification.md"
+[ -n "$(git -C "$R2B.wt/work-212" status --porcelain -- .build-guard)" ] \
+  || fail "#1699 test setup bug: .build-guard must read as UNtracked here"
+out="$(bash "$SCRIPT" create "$R2B" work-212)"
+[ "$(jq -r .preserved <<<"$out")" = "true" ] || fail "#1699: un-ignored fixture did not preserve (got: $out)"
+pref2b="$(jq -r .preserved_ref <<<"$out")"
+git -C "$R2B" cat-file -e "$pref2b:real.txt" 2>/dev/null \
+  || fail "#1699: the worker's real file is missing from the snapshot"
+git -C "$R2B" cat-file -e "$pref2b:.build-verification.md" 2>/dev/null \
+  && fail "#1699: .build-verification.md was captured — the exclusion PATHSPEC is missing"
+git -C "$R2B" cat-file -e "$pref2b:.build-guard" 2>/dev/null \
+  && fail "#1699: .build-guard was captured — the exclusion PATHSPEC is missing"
+echo "PASS: the capture's exclusion is recover-probe's own pathspec, correct even where the markers are not ignored (#1699)"
+
+# --- never a FALSE `preserved` -----------------------------------------------
+# (a) nothing to lose → preserved:false with a reason, no ref minted
+R3="$(mkfix clean)"
+out="$(bash "$SCRIPT" create "$R3" work-303)"
+[ "$(jq -r .preserved <<<"$out")" = "false" ] || fail "#1699: a virgin path claimed preservation (got: $out)"
+[ "$(jq -r .preserved_detail <<<"$out")" = "no-occupant" ] || fail "#1699: virgin-path detail (got: $out)"
+out="$(bash "$SCRIPT" create "$R3" work-303)"
+[ "$(jq -r .preserved <<<"$out")" = "false" ] \
+  || fail "#1699: a clean zero-commit worktree claimed preservation (got: $out)"
+[ -z "$(parked_refs "$R3")" ] || fail "#1699: a ref was minted with nothing to preserve"
+echo "PASS: nothing-to-preserve resolves to preserved:false with no ref minted (#1699)"
+
+# (b) a FAILED capture resolves AWAY from claiming preservation
+# Force the mint to fail deterministically with a directory/file ref conflict:
+# `refs/parked/<slug>-<sha8>` cannot be created while `<...>/x` exists.
+R4="$(mkfix mintfail)"
+bash "$SCRIPT" create "$R4" work-404 >/dev/null
+git -C "$R4.wt/work-404" commit -q --allow-empty -m "work that will fail to preserve"
+fsha="$(git -C "$R4.wt/work-404" rev-parse HEAD)"
+git -C "$R4" update-ref "refs/parked/work-404-${fsha:0:8}/x" "$fsha"
+out="$(bash "$SCRIPT" create "$R4" work-404)"
+[ "$(jq -r .outcome <<<"$out")" = "CREATED" ] \
+  || fail "#1699: a failed capture must not turn create into a refusal (got: $out)"
+[ "$(jq -r .preserved <<<"$out")" = "false" ] \
+  || fail "#1699: a failed capture claimed preservation (got: $out)"
+case "$(jq -r .preserved_detail <<<"$out")" in
+  capture-failed:*) : ;;
+  *) fail "#1699: a failed capture must SAY so (got: $(jq -r .preserved_detail <<<"$out"))" ;;
+esac
+echo "PASS: a failed capture resolves AWAY from preserved, and create still CREATES (#1699)"
+
+# (c) the ref already exists naming a DIFFERENT sha → disambiguate, never clobber
+R5="$(mkfix refexists)"
+bash "$SCRIPT" create "$R5" work-505 >/dev/null
+git -C "$R5.wt/work-505" commit -q --allow-empty -m "work to preserve twice"
+csha="$(git -C "$R5.wt/work-505" rev-parse HEAD)"
+squatter="$(git -C "$R5" rev-parse origin/main)"
+git -C "$R5" update-ref "refs/parked/work-505-${csha:0:8}" "$squatter"
+out="$(bash "$SCRIPT" create "$R5" work-505)"
+[ "$(jq -r .preserved <<<"$out")" = "true" ] || fail "#1699: collision case did not preserve (got: $out)"
+[ "$(jq -r .preserved_ref <<<"$out")" = "refs/parked/work-505-${csha:0:8}-2" ] \
+  || fail "#1699: collision was not disambiguated with a -2 suffix (got: $out)"
+[ "$(git -C "$R5" rev-parse "refs/parked/work-505-${csha:0:8}")" = "$squatter" ] \
+  || fail "#1699: the pre-existing ref was CLOBBERED"
+[ "$(git -C "$R5" rev-parse "refs/parked/work-505-${csha:0:8}-2")" = "$csha" ] \
+  || fail "#1699: the disambiguated ref does not name the preserved commit"
+# Re-preserving the SAME sha is idempotent — one ref, not a third.
+git -C "$R5" update-ref "refs/heads/build/work-505" "$csha"
+out="$(bash "$SCRIPT" create "$R5" work-505)"
+[ "$(jq -r .preserved_ref <<<"$out")" = "refs/parked/work-505-${csha:0:8}-2" ] \
+  || fail "#1699: re-preserving the same sha minted a new ref (got: $out)"
+echo "PASS: a preservation ref that already exists is disambiguated, never clobbered; same-sha is idempotent (#1699)"
+
+# (d) work that ALREADY LANDED needs nothing — merged_detect_is_merged, not a
+#     re-derived ancestry test (a squash-merged tip is not an ancestor).
+# The SQUASH shape specifically: the tip is NOT an ancestor of origin/main even
+# though the work landed, so a re-derived ancestry test would read it as
+# unlanded and mint a pointless ref. merged_detect_is_merged is what gets it
+# right (its Method-2 patch-id heuristic, offline).
+R6="$(mkfix merged)"
+bash "$SCRIPT" create "$R6" work-606 >/dev/null
+printf 'landed content\n' > "$R6.wt/work-606/landed.txt"
+git -C "$R6.wt/work-606" add landed.txt
+git -C "$R6.wt/work-606" commit -q -m "work that squash-lands"
+printf 'landed content\n' > "$TMP/up_merged/landed.txt"
+git -C "$TMP/up_merged" add landed.txt
+git -C "$TMP/up_merged" commit -q -m "work-606 (#1) squash-merged"
+git -C "$TMP/up_merged" commit -q --allow-empty -m "main advances past the squash"
+git -C "$R6" fetch -q origin main
+git -C "$R6.wt/work-606" merge-base --is-ancestor HEAD origin/main \
+  && fail "#1699 test setup bug: a squash-merged tip must NOT be an ancestor of origin/main"
+out="$(bash "$SCRIPT" create "$R6" work-606)"
+[ "$(jq -r .preserved <<<"$out")" = "false" ] || fail "#1699: merged work was needlessly preserved (got: $out)"
+[ "$(jq -r .preserved_detail <<<"$out")" = "not-needed:merged" ] \
+  || fail "#1699: merged detail (got: $out)"
+[ -z "$(parked_refs "$R6")" ] || fail "#1699: a ref was minted for already-merged work"
+echo "PASS: already-landed work is not preserved (merged_detect ancestry gate, #1699)"
+
+# (e) work already PUSHED needs nothing — recover-probe's RECOVER_PUSHED rung
+R7="$(mkfix pushed)"
+bash "$SCRIPT" create "$R7" work-707 >/dev/null
+git -C "$R7.wt/work-707" commit -q --allow-empty -m "work that was pushed"
+git -C "$R7.wt/work-707" push -q origin HEAD:refs/heads/build/work-707
+out="$(bash "$SCRIPT" create "$R7" work-707)"
+[ "$(jq -r .preserved <<<"$out")" = "false" ] || fail "#1699: pushed work was needlessly preserved (got: $out)"
+[ "$(jq -r .preserved_detail <<<"$out")" = "not-needed:pushed" ] \
+  || fail "#1699: RECOVER_PUSHED rung not consumed (got: $out)"
+echo "PASS: RECOVER_PUSHED / RECOVER_PR_OPEN need nothing — the probe's ladder is composed, not re-derived (#1699)"
+
+# --- `remove` takes the same guard (the /sweep park finale, #1725) ------------
+R8="$(mkfix removepark)"
+bash "$SCRIPT" create "$R8" sweepitem-808 >/dev/null
+printf 'sweep worker output\n' > "$R8.wt/sweepitem-808/out.txt"
+git -C "$R8.wt/sweepitem-808" add out.txt
+git -C "$R8.wt/sweepitem-808" commit -q -m "unattended sweep work"
+sweepsha="$(git -C "$R8.wt/sweepitem-808" rev-parse HEAD)"
+out="$(bash "$SCRIPT" remove "$R8" sweepitem-808)"
+[ "$(jq -r .outcome <<<"$out")" = "REMOVED" ] || fail "#1725: remove outcome (got: $out)"
+[ "$(jq -r .preserved <<<"$out")" = "true" ] || fail "#1725: remove destroyed unlanded work (got: $out)"
+[ "$(git -C "$R8" rev-parse "$(jq -r .preserved_ref <<<"$out")")" = "$sweepsha" ] \
+  || fail "#1725: remove's preservation ref does not name the destroyed commit"
+[ ! -e "$R8.wt/sweepitem-808" ] || fail "#1725: worktree survived remove"
+echo "PASS: remove preserves before destroying too — /sweep's unattended park finale (#1725)"
+
+# =============================================================================
+# restore: re-apply a preservation ref WITHOUT assuming a fast-forward
+# =============================================================================
+
+# (a) the DIVERGED base — origin/<default> advanced while the question sat open.
+#     This is the case the superseded prose asserted could not happen.
+R9="$(mkfix restore)"
+bash "$SCRIPT" create "$R9" item-909 >/dev/null
+printf 'worker output\n' > "$R9.wt/item-909/worker.txt"
+git -C "$R9.wt/item-909" add worker.txt
+git -C "$R9.wt/item-909" commit -q -m "escalated worker's committed work"
+wsha="$(git -C "$R9.wt/item-909" rev-parse HEAD)"
+out="$(bash "$SCRIPT" remove "$R9" item-909)"
+ref909="$(jq -r .preserved_ref <<<"$out")"
+[ -n "$ref909" ] && [ "$ref909" != "null" ] || fail "#1699: restore fixture did not preserve (got: $out)"
+# main advances underneath the parked work (a sibling item merges).
+printf 'someone else landed this\n' > "$TMP/up_restore/other.txt"
+git -C "$TMP/up_restore" add other.txt
+git -C "$TMP/up_restore" commit -q -m "main advances while the question sits open"
+git -C "$R9" fetch -q origin main
+git -C "$R9" merge-base --is-ancestor origin/main "$ref909" \
+  && fail "#1699 test setup bug: the base must have DIVERGED (fast-forward must be impossible)"
+
+out="$(bash "$SCRIPT" restore "$R9" item-909)"
+[ "$(jq -r .outcome <<<"$out")" = "RESTORED" ] || fail "#1699: diverged restore not RESTORED (got: $out)"
+[ "$(jq -r .strategy <<<"$out")" = "merge" ] \
+  || fail "#1699: a diverged base must restore by MERGE, not fast-forward (got: $out)"
+[ -f "$R9.wt/item-909/worker.txt" ] || fail "#1699: the preserved work is not in the restored worktree"
+[ -f "$R9.wt/item-909/other.txt" ] || fail "#1699: the advanced base is not in the restored worktree"
+git -C "$R9.wt/item-909" merge-base --is-ancestor "$wsha" HEAD \
+  || fail "#1699: the preserved commit is not an ancestor of the restored HEAD"
+git -C "$R9.wt/item-909" merge-base --is-ancestor origin/main HEAD \
+  || fail "#1699: the restored HEAD does not contain the advanced base"
+[ -z "$(git -C "$R9.wt/item-909" status --porcelain)" ] \
+  || fail "#1699: restore left the worktree dirty"
+echo "PASS: restore re-applies a preservation ref onto a DIVERGED base by merge, never assuming a fast-forward (#1699)"
+
+# (b) the fast-forwardable case still fast-forwards (no gratuitous merge commit)
+R10="$(mkfix restoreff)"
+bash "$SCRIPT" create "$R10" item-1010 >/dev/null
+printf 'ff work\n' > "$R10.wt/item-1010/ff.txt"
+git -C "$R10.wt/item-1010" add ff.txt
+git -C "$R10.wt/item-1010" commit -q -m "ff-able work"
+ffsha="$(git -C "$R10.wt/item-1010" rev-parse HEAD)"
+bash "$SCRIPT" remove "$R10" item-1010 >/dev/null
+out="$(bash "$SCRIPT" restore "$R10" item-1010)"
+[ "$(jq -r .outcome <<<"$out")" = "RESTORED" ] || fail "#1699: ff restore not RESTORED (got: $out)"
+[ "$(jq -r .strategy <<<"$out")" = "fast-forward" ] || fail "#1699: ff case did not fast-forward (got: $out)"
+[ "$(git -C "$R10.wt/item-1010" rev-parse HEAD)" = "$ffsha" ] \
+  || fail "#1699: fast-forward did not land exactly on the preserved commit"
+echo "PASS: restore fast-forwards when it genuinely can (#1699)"
+
+# (c) a CONFLICT is a named result, never a silent partial merge
+R11="$(mkfix restoreconflict)"
+printf 'original\n' > "$TMP/up_restoreconflict/shared.txt"
+git -C "$TMP/up_restoreconflict" add shared.txt
+git -C "$TMP/up_restoreconflict" commit -q -m "seed shared.txt"
+git -C "$R11" fetch -q origin main
+bash "$SCRIPT" create "$R11" item-1111 >/dev/null
+printf 'worker version\n' > "$R11.wt/item-1111/shared.txt"
+git -C "$R11.wt/item-1111" commit -q -am "worker edits shared.txt"
+bash "$SCRIPT" remove "$R11" item-1111 >/dev/null
+printf 'main version\n' > "$TMP/up_restoreconflict/shared.txt"
+git -C "$TMP/up_restoreconflict" commit -q -am "main edits shared.txt too"
+git -C "$R11" fetch -q origin main
+
+out="$(bash "$SCRIPT" restore "$R11" item-1111)"
+[ "$(jq -r .outcome <<<"$out")" = "RESTORE_CONFLICT" ] \
+  || fail "#1699: a conflicting restore is not a named result (got: $out)"
+[ "$(jq -r '.conflicts | index("shared.txt")' <<<"$out")" != "null" ] \
+  || fail "#1699: RESTORE_CONFLICT must name the conflicted path (got: $out)"
+[ "$(jq -r .aborted <<<"$out")" = "true" ] || fail "#1699: conflict was not aborted (got: $out)"
+[ -z "$(git -C "$R11.wt/item-1111" status --porcelain)" ] \
+  || fail "#1699: a conflicted restore left a partial merge on disk"
+grep -q '<<<<<<<' "$R11.wt/item-1111/shared.txt" \
+  && fail "#1699: conflict markers were left in the worktree"
+# Nothing is lost: the preservation ref still holds the work.
+[ -n "$(parked_refs "$R11")" ] || fail "#1699: a conflicting restore consumed the preservation ref"
+echo "PASS: a restore conflict is a named result with the merge aborted and the ref intact (#1699)"
+
+# (d) no preservation ref for the slug → RESTORE_NOT_FOUND, not a silent success
+R12="$(mkfix restorenone)"
+out="$(bash "$SCRIPT" restore "$R12" item-1212)"
+[ "$(jq -r .outcome <<<"$out")" = "RESTORE_NOT_FOUND" ] \
+  || fail "#1699: a missing preservation ref must be RESTORE_NOT_FOUND (got: $out)"
+[ ! -e "$R12.wt/item-1212" ] || fail "#1699: RESTORE_NOT_FOUND must not stand a worktree up"
+rc=0; out="$(bash "$SCRIPT" restore "$R12" item-1212 --ref refs/heads/build/item-1212 2>/dev/null)" || rc=$?
+[ "$rc" -ne 0 ] || fail "#1699: a refs/heads/ --ref did not exit non-zero"
+[ "$(jq -r .outcome <<<"$out")" = "ERROR" ] \
+  || fail "#1699: a refs/heads/ --ref must be a structured ERROR (got: $out)"
+echo "PASS: restore reports RESTORE_NOT_FOUND / ERROR rather than a silent success (#1699)"
+
+# =============================================================================
+# prune: the preservation ref's named reap owner
+# =============================================================================
+# Gate 1 (ancestry): the preserved commit reached the merged tip → reap.
+R13="$(mkfix reapland)"
+bash "$SCRIPT" create "$R13" reap-1313 >/dev/null
+git -C "$R13.wt/reap-1313" commit -q --allow-empty -m "work that will land"
+bash "$SCRIPT" remove "$R13" reap-1313 >/dev/null
+landref="$(parked_refs "$R13")"
+[ -n "$landref" ] || fail "#1699: reap fixture did not preserve"
+landsha="$(git -C "$R13" rev-parse "$landref")"
+git -C "$TMP/up_reapland" fetch -q "$R13" "$landref:refs/heads/landing"
+git -C "$TMP/up_reapland" merge -q --no-edit landing
+out="$(bash "$SCRIPT" prune "$R13")"
+[ "$(jq -r --arg r "$landref" 'select(.ref==$r).outcome' <<<"$out")" = "PARKED_REF_REAPED" ] \
+  || fail "#1699: a landed preservation ref was not reaped (got: $out)"
+[ -z "$(parked_refs "$R13")" ] || fail "#1699: the landed ref survived the reap"
+git -C "$R13" cat-file -e "$landsha^{commit}" 2>/dev/null || true
+echo "PASS: prune reaps a preservation ref whose commit is an ancestor of the merged tip (#1699)"
+
+# Gate 2 (disposition) + the floor: an UNLANDED ref is reaped only once its
+# originating issue reaches a terminal state; an OPEN or UNEVALUABLE issue is
+# REPORTED and never reaped.
+R14="$(mkfix reapissue)"
+bash "$SCRIPT" create "$R14" featurework-1699 >/dev/null
+git -C "$R14.wt/featurework-1699" commit -q --allow-empty -m "unlanded parked work"
+bash "$SCRIPT" remove "$R14" featurework-1699 >/dev/null
+iref="$(parked_refs "$R14")"
+[ -n "$iref" ] || fail "#1699: issue-gate fixture did not preserve"
+
+# unevaluable (the stub's default: an offline/unauthenticated gh) → FALSE
+out="$(bash "$SCRIPT" prune "$R14")"
+line="$(jq -c --arg r "$iref" 'select(.ref==$r)' <<<"$out")"
+[ "$(jq -r .outcome <<<"$line")" = "PARKED_REF" ] \
+  || fail "#1699: an unevaluable issue check must NOT reap (got: $line)"
+[ "$(jq -r .issue <<<"$line")" = "1699" ] \
+  || fail "#1699: the originating issue was not parsed off the slug (got: $line)"
+[ "$(jq -r .issue_state <<<"$line")" = "unknown" ] || fail "#1699: unevaluable issue_state (got: $line)"
+[ "$(jq -r .landed <<<"$line")" = "false" ] || fail "#1699: unlanded ref reported landed (got: $line)"
+[ -n "$(parked_refs "$R14")" ] || fail "#1699: an unevaluable check reaped the ref"
+
+# OPEN → reported, never reaped
+out="$(GH_ISSUE_STATE=OPEN bash "$SCRIPT" prune "$R14")"
+line="$(jq -c --arg r "$iref" 'select(.ref==$r)' <<<"$out")"
+[ "$(jq -r .outcome <<<"$line")" = "PARKED_REF" ] \
+  || fail "#1699: a ref whose originating issue is OPEN was reaped (got: $line)"
+[ "$(jq -r .issue_state <<<"$line")" = "open" ] || fail "#1699: OPEN issue_state (got: $line)"
+[ -n "$(parked_refs "$R14")" ] || fail "#1699: the open-issue ref was reaped"
+
+# CLOSED → the disposition gate fires. This is the ONLY gate that can ever fire
+# for a /sweep-originated ref, which is never restored in place and so never
+# becomes an ancestor of the merged tip.
+out="$(GH_ISSUE_STATE=CLOSED bash "$SCRIPT" prune "$R14")"
+line="$(jq -c --arg r "$iref" 'select(.ref==$r)' <<<"$out")"
+[ "$(jq -r .outcome <<<"$line")" = "PARKED_REF_REAPED" ] \
+  || fail "#1699: a terminal-disposition ref was not reaped (got: $line)"
+[ "$(jq -r .reason <<<"$line")" = "reaped:issue-terminal" ] || fail "#1699: reap reason (got: $line)"
+[ -z "$(parked_refs "$R14")" ] || fail "#1699: the terminal-disposition ref survived"
+echo "PASS: prune's reap gates — ancestry OR terminal disposition, unevaluable is FALSE, an open issue is reported not reaped (#1699)"
+
+# prune's parked-ref lines must never inflate deploy-mini.sh's PRUNED count.
+R15="$(mkfix reapcount)"
+bash "$SCRIPT" create "$R15" count-1515 >/dev/null
+git -C "$R15.wt/count-1515" commit -q --allow-empty -m "parked"
+bash "$SCRIPT" remove "$R15" count-1515 >/dev/null
+out="$(bash "$SCRIPT" prune "$R15")"
+[ "$(grep -c '"outcome":"PRUNED"' <<<"$out")" = "0" ] \
+  || fail "#1699: a parked-ref line was counted as a PRUNED worktree (got: $out)"
+echo "PASS: parked-ref outcomes are distinct from PRUNED (deploy-mini's counter is unaffected) (#1699)"
