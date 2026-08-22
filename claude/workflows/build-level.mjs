@@ -1465,8 +1465,10 @@ function workerPrompt(item, worktreePath, extraSection) {
     // run the BARE, repo-wide suite in its own context at all. That run is minutes-
     // scale, and one blocking turn that long blows the ~5-min prompt-cache TTL — the
     // worker's whole ~213K-token context is then re-WRITTEN (weight 1.25) instead of
-    // re-READ (0.1) on the next call. The bare repo-wide run stays parent-side at
-    // 3e.5 (unchanged, still the authority — the PR #309 silent-red lesson). The two
+    // re-READ (0.1) on the next call. The ACCEPTANCE run stays parent-side at 3e.5
+    // (unchanged, still the authority — the PR #309 silent-red lesson; since
+    // temperloop#1663 that run is itself diff-scoped through the same map, which
+    // changes WHICH gates it runs but not WHO decides acceptance). The two
     // halves live in ONE section on purpose: foreground-only governs HOW the worker
     // runs its checks, #997 governs WHICH checks it runs, and dropping either one
     // re-opens a measured defect. build.md §3c carries both in lockstep.
@@ -1493,11 +1495,13 @@ function workerPrompt(item, worktreePath, extraSection) {
     '  touched. Keep EACH call to seconds. If you cannot cheaply tell which gates',
     '  apply, run none and say so.',
     '- That subset is FAST LOCAL FEEDBACK ONLY — it is NOT the acceptance authority.',
-    '  The orchestrator runs the bare, repo-wide suite parent-side (build.md §3e.5) and',
-    '  THAT run is the authority; a red there comes back to you as a re-spawn. So when',
-    '  an acceptance criterion names the bare repo-wide suite, do NOT run it: report it',
+    '  The orchestrator runs the acceptance gate parent-side (build.md §3e.5) and THAT',
+    '  run is the authority; a red there comes back to you as a re-spawn. So when an',
+    '  acceptance criterion names the bare repo-wide suite, do NOT run it: report it',
     '  `passed: true` only if your targeted subset is green, and state plainly in its',
-    '  `evidence` that the bare repo-wide run was DEFERRED to the parent-side 3e.5 gate.',
+    '  `evidence` that the repo-wide check was DEFERRED to the parent-side 3e.5 gate',
+    '  (itself diff-scoped since #1663 — the deferral is to a different ACTOR, the',
+    '  orchestrator running against your commit, not to a wider PATH scope).',
     '  Never report `passed: false` for a merely DEFERRED criterion — that reads as',
     '  blocked and stalls the whole level on a check you were never meant to run.',
     '- If a single command would exceed the ~10-min Bash foreground cap — or the tighter',
@@ -1564,7 +1568,7 @@ const FOREGROUND_CURE = [
   'scoped gate run (`scripts/quality-gates.sh --scoped`) above all — in the FOREGROUND, never `run_in_background` /',
   'Monitor, and END this turn with exactly the fenced verdict JSON and nothing after',
   'it. Do NOT run the bare, repo-wide `scripts/quality-gates.sh` here either (#997) —',
-  'that run is the orchestrator\'s, parent-side at build.md 3e.5, and it is the',
+  'acceptance is the orchestrator\'s, parent-side at build.md 3e.5, and THAT is the',
   'acceptance authority; a minutes-long blocking turn is what blows the prompt-cache',
   'TTL. A stall is never cured by running MORE gate.',
 ].join('\n');
@@ -2766,16 +2770,79 @@ async function driveItem(item) {
   // /tmp/qg-<slug>.log stays the single artifact an operator reads, carrying the
   // union of every slice exactly as an unsliced run's log did.
   const gateLog = `/tmp/qg-${item.slug}.log`;
-  const gateCmd = (startAt) =>
+  // temperloop#1663: run the acceptance gate DIFF-SCOPED — only the gates this
+  // item's own changed paths can reach, resolved through gate-paths.tsv.
+  //
+  // WHY. The full per-item suite could not survive within-level parallelism, and
+  // the ceiling it hit is not tunable. Measured on a 3-item level: 55 minutes,
+  // 21 agents, 1.24M subagent tokens, ZERO items landed — all three escalated
+  // `acceptance-gate-timeout` with every worker finished and committed and only
+  // the verdict missing. Three concurrent full suites is 3x QUALITY_GATES_JOBS
+  // workers on one machine; contention inflated the gate tail 200-300% (gates
+  // that take seconds took 121s), while GATE_SLICE_SECS_MAX sits only 20% above
+  // the budget that failed and CANNOT be raised past AGENT_BASH_CAP_MS. So the
+  // suite has to get SHORTER, not the budget longer — and the map that knows
+  // which gates a diff can reach already exists and was already trusted.
+  //
+  // WHY IT IS SAFE. This puts §3e.5 on exactly the same footing as the
+  // `pull_request` run of CI's `checks` job, which has been scoped through this
+  // same map since #1024 — so scoping here adds no failure mode that the PR
+  // check does not already carry. What actually gates `main` is the UNSCOPED
+  // merge_group run, and that is untouched. Every resolution failure in the
+  // selector widens to the full set (gate-selection.sh's four silent-green
+  // defenses), and a scoped run names every gate it skipped, twice.
+  //
+  // THE SEAM IS AN ENV VAR, NOT THE `--scoped` FLAG, for the same reason the
+  // slice budget below is: a consuming repo vendoring an OLDER quality-gates.sh
+  // ignores an unknown env var and runs the whole suite (the pre-#1663 behavior,
+  // still correct), whereas an unknown FLAG exits 2 "usage" and reads back here
+  // as a GATE FAILURE.
+  //
+  // BUILD_GATE_SCOPED is read HERE, in the emitted shell, rather than plumbed in
+  // as an orchestrator `input.*` key like gateSliceSecs. That is deliberate and
+  // is the narrower seam, not a shortcut: gateSliceSecs must reach the .mjs's
+  // OWN control flow (it derives GATE_BASH_TIMEOUT_MS and bounds the slice
+  // loop), and the Workflow runtime has no shell to source build.config.sh with
+  // — DESIGN NOTE 1. This value is needed ONLY inside the command string, which
+  // is bash, and it is read from the WORKTREE'S config, i.e. the version of the
+  // setting the change under test actually ships. The read is a subshell so the
+  // #1241 scrub below still governs the gate's own environment; an absent or
+  // older config file leaves `${BUILD_GATE_SCOPED:-1}` at the default.
+  const configBin = `${wt}/workflows/scripts/build/build.config.sh`;
+  const gateScopeEnv =
+    `QUALITY_GATES_SCOPED=$(. ${sq(configBin)} >/dev/null 2>&1; echo "\${BUILD_GATE_SCOPED:-1}")`;
+  // SLICE-STABLE SELECTION (temperloop#1663). `QUALITY_GATES_START_AT` is an
+  // ORDINAL into the gate list, and now that the list can be a SCOPED subset
+  // re-derived from a live working-tree probe, two slices of one suite could
+  // resolve DIFFERENT lists — leaving the ordinal pointing at a different gate,
+  // silently skipping one, and still exiting 0. Before scoping, §3e.5 always
+  // resolved the static full array, so the ordinal was stable by construction.
+  //
+  // The pin file is the prevention half: slice 0 writes the resolved changed set
+  // there and every later slice reads it instead of re-probing, so the selection's
+  // INPUT cannot move mid-suite. It is removed on slice 0 for the same reason the
+  // log is truncated there — a re-drive must not inherit a previous attempt's
+  // state.
+  //
+  // The fingerprint is the detection half behind it: each slice reports the
+  // identity of the list its resume index was measured in, and the next slice is
+  // handed it back. On a mismatch the gate restarts from 0 on the FULL set and
+  // says so, rather than resuming an index that no longer means anything.
+  const gatePin = `/tmp/qg-${item.slug}.selection-pin`;
+  const gateCmd = (startAt, expectSelection) =>
     `set -o pipefail; if [ ! -x ${sq(qgBin)} ]; then echo '{"outcome":"GATE_ABSENT"}'; ` +
-    `else ( cd ${sq(wt)} && unset $(bash ${sq(settingsBin)} 2>/dev/null) && ` +
+    `else ${startAt === 0 ? `rm -f ${sq(gatePin)}; ` : ''}` +
+    `( cd ${sq(wt)} && unset $(bash ${sq(settingsBin)} 2>/dev/null) && ` +
+    `${gateScopeEnv} QUALITY_GATES_SELECTION_PIN=${sq(gatePin)} ` +
+    `${expectSelection ? `QUALITY_GATES_EXPECT_SELECTION=${sq(expectSelection)} ` : ''}` +
     `QUALITY_GATES_START_AT=${startAt} QUALITY_GATES_BUDGET_SECS=${GATE_SLICE_SECS} ${sq(qgBin)} ) ` +
     `${startAt === 0 ? '>' : '>>'}${gateLog} 2>&1; __rc=$?; ` +
     `__el=$(sed -n 's/.*passed in \\([0-9]*\\)s.*/\\1/p;s/.*of [0-9]* in \\([0-9]*\\)s.*/\\1/p' ${gateLog} | tail -1); ` +
     `__f=$(sed -n 's/^QUALITY_GATES_FAILED=//p' ${gateLog} | tail -1); ` +
     `__r=$(sed -n 's/^QUALITY_GATES_RESUME_AT=//p' ${gateLog} | tail -1); ` +
+    `__s=$(sed -n 's/^QUALITY_GATES_SELECTION=//p' ${gateLog} | tail -1); ` +
     `if [ "$__rc" = 75 ] && [ -n "$__r" ]; then ` +
-    `printf '{"outcome":"GATE_SLICE","resumeAt":%s,"failed":%s,"elapsedSecs":%s,"budgetSecs":${GATE_SLICE_SECS}}\\n' "$__r" "\${__f:-0}" "\${__el:-0}"; ` +
+    `printf '{"outcome":"GATE_SLICE","resumeAt":%s,"failed":%s,"elapsedSecs":%s,"selection":"%s","budgetSecs":${GATE_SLICE_SECS}}\\n' "$__r" "\${__f:-0}" "\${__el:-0}" "$__s"; ` +
     `elif [ "$__rc" = 0 ]; then ` +
     `printf '{"outcome":"GATE_PASS","failed":0,"elapsedSecs":%s,"budgetSecs":${GATE_SLICE_SECS}}\\n' "\${__el:-0}"; ` +
     `else printf '{"outcome":"GATE_FAIL","failed":%s,"elapsedSecs":%s,"budgetSecs":${GATE_SLICE_SECS}}\\n' "\${__f:-1}" "\${__el:-0}"; fi; fi`;
@@ -2788,6 +2855,11 @@ async function driveItem(item) {
   let gateStartAt = 0;
   let gateElapsed = 0;
   let gateSlices = 0;
+  // The selection fingerprint the PREVIOUS slice reported (temperloop#1663).
+  // Empty on the first slice — there is nothing to compare a fresh start against,
+  // and an older vendored quality-gates.sh reports none at all, in which case this
+  // stays empty forever and the gate behaves exactly as it did before.
+  let gateSelection = '';
   // gateSliceLedger — the AUTHORITATIVE record of what this gate run found
   // (temperloop#1587): one entry per slice that actually ran, carrying that
   // slice's own outcome and normalized failure count (gateSliceFailed()).
@@ -2797,7 +2869,7 @@ async function driveItem(item) {
   // because two counters that can disagree is exactly the defect #1587 filed.
   const gateSliceLedger = [];
   for (; gateSlices < GATE_MAX_SLICES; gateSlices++) {
-    gateOut = await runMachinery(gateCmd(gateStartAt), {
+    gateOut = await runMachinery(gateCmd(gateStartAt, gateSelection), {
       label: `gate:${item.slug}`,
       slug: item.slug,
       phase: enterStage(STAGE_GATE),
@@ -2834,6 +2906,10 @@ async function driveItem(item) {
     });
     if (gateOut.outcome !== 'GATE_SLICE') break;
     gateStartAt = Number(gateOut.resumeAt) || 0;
+    // Carry the list identity forward with the index it belongs to. A slice that
+    // reports no fingerprint (an older vendored gate script) leaves this empty,
+    // which disarms the check rather than tripping it.
+    gateSelection = typeof gateOut.selection === 'string' ? gateOut.selection : '';
     log(`[${item.slug}] 3e.5 gate slice ${gateSlices + 1}/${GATE_MAX_SLICES} spent its ${GATE_SLICE_SECS}s budget — resuming at gate ${gateStartAt}`);
   }
 

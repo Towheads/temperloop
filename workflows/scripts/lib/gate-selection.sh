@@ -38,6 +38,14 @@
 #   3. AN EXPLICIT ESCALATION ROW (`ALL`). Paths whose blast radius is the gate
 #      machinery itself (quality-gates.sh, this lib, the map, the Makefile, the
 #      CI workflows, the kernel manifest) force the full set outright.
+#   KNOWN, BOUNDED GAP (temperloop#1695): git reports a RENAME as a single line
+#      carrying the DESTINATION path, so moving a file OUT of a gated tree does
+#      not put the source tree in the changed set and that tree's gates are not
+#      selected. Equally true of the `pull_request` path since #1024; the
+#      unscoped merge_group run still catches it before the default branch. It is
+#      a latency gap, not a hole in what gates `main` — tracked, not silently
+#      inherited. `--no-renames` would list both paths and is the likely fix.
+#
 #   4. AN UNMAPPED GATE ALWAYS RUNS. A gate with no row in the map is selected
 #      unconditionally rather than skipped, so a map that has fallen behind the
 #      gate list over-runs instead of under-running. The companion validator
@@ -106,6 +114,12 @@
 #                              its own comment block). Non-zero, with a stderr
 #                              line, when no base resolves — the caller must
 #                              then degrade to the full set.
+#   gate_selection_local_changed_to_file <root> <outfile>
+#                              the same resolution, paths written to <outfile>,
+#                              run in the CALLER'S shell so the
+#                              GATE_SELECTION_LOCAL_BASE out-param survives
+#                              (temperloop#1663 — a command substitution is a
+#                              subshell and silently swallowed it).
 #
 # Settings:
 #   QUALITY_GATES_SCOPE  auto (default) | full | diff.  `auto` scopes only on a
@@ -229,6 +243,48 @@ gate_selection_local_changed() {
     git -C "$root" diff --name-only HEAD 2>/dev/null
     git -C "$root" ls-files --others --exclude-standard 2>/dev/null
   } | sort -u | grep -v '^$'
+  return 0
+}
+
+# --- gate_selection_local_changed_to_file <root> <outfile> --------------------
+# The same resolution as above, but the PATHS go to <outfile> and the function
+# runs in the CALLER'S shell, so GATE_SELECTION_LOCAL_BASE actually survives.
+#
+# WHY THIS EXISTS (temperloop#1663). The out-param above is real but was
+# unreachable: quality-gates.sh's only caller invoked it as
+# `x="$(gate_selection_local_changed …)"`, and a command substitution is a
+# SUBSHELL — the assignment died with it, so the base-disclosure line guarded by
+# `[[ -n "$GATE_SELECTION_LOCAL_BASE" ]]` could never print. That line is the
+# only place a scoped run names the tree state it scoped against, which is
+# exactly what an operator needs when a run narrows more than they expected.
+# Latent since #957; it became load-bearing when #1663 put scoping on the
+# acceptance path.
+#
+# Returns non-zero (leaving <outfile> untouched) on the same no-base condition
+# the sibling reports, so the caller degrades to the full set identically.
+# GATE_SELECTION_LOCAL_BASE is an OUT-PARAM read by the sourcing caller — the
+# same false positive the sibling above carries, and the same blanket disable.
+# shellcheck disable=SC2034
+gate_selection_local_changed_to_file() {
+  local root="${1:-.}" out="$2" paths
+  # The inner call still runs in a substitution, so re-do the base resolution
+  # here rather than reading the sibling's out-param through the same trap this
+  # function exists to avoid.
+  paths="$(gate_selection_local_changed "$root")" || return 1
+  # ...and recompute the base in THIS shell so the global lands where the caller
+  # can see it. Cheap (one merge-base), and it cannot disagree with the sibling:
+  # both walk the identical candidate list against the identical HEAD.
+  local default_ref cand base=""
+  default_ref="$(git -C "$root" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+  for cand in "$default_ref" origin/main origin/master main master; do
+    [[ -n "$cand" ]] || continue
+    if base="$(git -C "$root" merge-base "$cand" HEAD 2>/dev/null)" && [[ -n "$base" ]]; then
+      break
+    fi
+    base=""
+  done
+  GATE_SELECTION_LOCAL_BASE="$base"
+  printf '%s\n' "$paths" >"$out" || return 1
   return 0
 }
 

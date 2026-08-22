@@ -419,6 +419,54 @@ fi
 # that resolves it to an empty string, lands on that default unchanged.
 : "${BUILD_GATE_SLICE_SECS:=300}"
 
+# claude/workflows/build-level.mjs — whether the 3e.5 parent-side acceptance gate
+# runs DIFF-SCOPED (1, the default) or as the full repo-wide suite (0).
+#
+# WHY IT EXISTS (temperloop#1663). The full per-item suite could not survive
+# within-level parallelism. Measured on a 3-item level: 55 minutes, 21 agents,
+# 1.24M subagent tokens, ZERO items landed — all three escalated
+# `acceptance-gate-timeout` with every worker finished and committed and only the
+# gate verdict missing. N concurrent items means N concurrent full suites, each
+# with its own $QUALITY_GATES_JOBS workers; contention inflated the gate tail
+# 200-300%. And the budget cannot absorb it: the .mjs's GATE_SLICE_SECS_MAX sits
+# only ~20% above the budget that failed, because the derived Bash-tool timeout is
+# clamped to the executor agent's own ~10-min hard cap. The suite had to get
+# SHORTER, not the budget longer.
+#
+# WHEN SCOPED, the gate runs only the gates the item's changed paths can reach,
+# resolved through workflows/scripts/config/gate-paths.tsv by
+# workflows/scripts/lib/gate-selection.sh — the SAME map and selector that CI's
+# `checks` job has used on the `pull_request` event since temperloop#1024. So
+# scoping the acceptance gate carries no failure mode the PR check does not
+# already carry, and what gates `main` is unchanged: the merge_group run of
+# `checks` is unscoped and always runs everything.
+#
+# SET IT TO 0 to restore the pre-#1663 full-suite acceptance gate — the escape
+# hatch if a scoped gate is ever found to have let something through that the
+# full one would have caught. Doing so re-exposes the parallel-item timeout
+# above, so prefer fixing the gate-paths.tsv row that was wrong.
+#
+# SET IT IN A CONFIG FILE, NOT THE ENVIRONMENT. This is the one setting whose
+# env layer does NOT reach its consumer, and the reason is structural rather
+# than an oversight: the gate command SCRUBS every build.config.sh value-setting
+# from its own environment before running (foundation#1241, so the suite's
+# config-precedence tests see tracked defaults exactly as CI does), and this
+# name is in that scrub set. `export BUILD_GATE_SCOPED=0` is therefore erased
+# before it is read and the gate stays scoped — verified, not assumed. The
+# scrub deliberately leaves the config-FILE layers alone, so the working escape
+# hatches are this file's own default, the repo-local
+# workflows/scripts/build/build.config.local.sh ($BUILD_CONFIG_LOCAL), or the
+# machine config ($BUILD_CONFIG_MACHINE).
+#
+# READ IN THE EMITTED SHELL, not plumbed as an orchestrator `input.*` key like
+# BUILD_GATE_SLICE_SECS above. That is the narrower seam, not a shortcut: the
+# slice budget must reach the .mjs's own control flow (it derives the Bash-tool
+# timeout and bounds the slice loop) and the Workflow runtime has no shell to
+# source this file with — DESIGN NOTE 1 — whereas this value is needed only
+# inside the gate command string, which is bash. It is read from the WORKTREE'S
+# copy of this file, i.e. the version the change under test ships.
+: "${BUILD_GATE_SCOPED:=1}"
+
 # claude/workflows/build-level.mjs — the per-STEP WALL-CLOCK LIVENESS BOUND on a
 # machinery-executor step (the `prelude` / `pr-batch` / `ci-batch` batches and the
 # solo `gate` / `recover-probe` / `push-retry` calls), in seconds.
@@ -847,7 +895,15 @@ fi
 # redundancy, so the ratchet moves up instead — raised past #1319's own
 # immediate need to leave #1430 headroom too, rather than raising twice in
 # one day for two items landing the same week.
-: "${PROSE_BUDGET_TIER2_FILE_CAP:=1130}"
+# Raised again 1130 -> 1140 (temperloop#1663). §3e.5 gained ONE bullet, and it
+# is a contract bullet rather than commentary: §3e.5 stopped being the bare
+# repo-wide run it had been since PR #309, so the section now has to state what
+# scopes it, why that is safe, which seam carries it, and where the escape hatch
+# actually lives (a config FILE — the env layer is scrubbed by #1241). Folding
+# that into a neighbouring bullet would bury a safety property inside prose about
+# pipefail. Same call, same reason, as the #1319/#1430 raise above: taken past the
+# immediate need (+1) so the next build.md edit does not spend a PR on a ratchet.
+: "${PROSE_BUDGET_TIER2_FILE_CAP:=1140}"
 
 # ── Pipeline spend profiler (temperloop#958) ───────────────────────────────
 # Settings for `workflows/scripts/pipeline-spend-report.sh` and its

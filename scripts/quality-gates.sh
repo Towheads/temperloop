@@ -14,8 +14,11 @@
 # PR-body-lint registries, the validator/corpus lints, and a whole-tree static
 # shell lint. Each gate is a `make` target (the shell-lint pipeline lives behind
 # the `make shellcheck` target) so this file stays a flat, splittable command
-# list. They run BARE and repo-wide — no path scoping — so a failure is caught
-# the way CI sees it (the PR #309 silent-red lesson).
+# list. A BARE invocation runs all of them with no path scoping, which is what
+# `main` is gated on — the merge_group run of CI's `checks` job (the PR #309
+# silent-red lesson). The two DIFF-SCOPED callers below (CI's `pull_request`
+# run, #1024; a local/`--scoped` run, #957/#1663) narrow that same list through
+# workflows/scripts/config/gate-paths.tsv and say so loudly.
 #
 # LAYERING (foundation #774, epic #762 "kernel split: seams in place"): the
 # gate set is two layers unioned at run time, so the coming kernel/overlay
@@ -54,9 +57,9 @@
 # DIFF-SCOPED SELECTION (temperloop#1024): on a GitHub `pull_request` event with
 # a resolvable base SHA, the run is narrowed to the gates the diff can affect,
 # per workflows/scripts/config/gate-paths.tsv. Everywhere else — merge_group,
-# push:main, nightly, /build's 3e.5 gate, any local run — the FULL set runs
-# exactly as before, so what gates `main` is unchanged. See the "Diff-scoped
-# gate selection" block below and workflows/scripts/lib/gate-selection.sh.
+# push:main, nightly, any bare local run — the FULL set runs exactly as before,
+# so what gates `main` is unchanged. See the "Diff-scoped gate selection" block
+# below and workflows/scripts/lib/gate-selection.sh.
 # PARALLELISM (temperloop#1025): the gate set is ~109 INDEPENDENT suites, and
 # the `checks` job's ~5.5 min wall time was almost entirely the cost of running
 # them one after another (measured 2026-08-02: test-cli-subcommands 56s, test-build 55s,
@@ -79,13 +82,17 @@
 # `1` restores the exact pre-parallel serial loop, which is what a bisect or a
 # flake hunt should use).
 #
-# CHANGED-FILE SCOPING FOR A LOCAL, MID-WORK RUN (temperloop#957): `--scoped`
-# applies the same selector to the LOCAL working tree — committed, staged,
-# unstaged and untracked changes vs. the default-branch merge-base — so a
-# /build item worker's ITERATIVE verification runs only the gates its own
-# changes can reach. It is a fast-feedback mode ONLY: /build's §3e.5 parent-side
-# acceptance gate and every pre-push/CI invocation stay BARE and repo-wide, and
-# a `--scoped` run says loudly, in three places, that it is not a full run.
+# CHANGED-FILE SCOPING FOR A LOCAL RUN (temperloop#957, #1663): `--scoped` (and
+# its env twin $QUALITY_GATES_SCOPED) applies the same selector to the LOCAL
+# working tree — committed, staged, unstaged and untracked changes vs. the
+# default-branch merge-base — so a run that only needs to cover ONE branch's
+# changes runs only the gates those changes can reach. Two callers use it: a
+# /build item worker's ITERATIVE mid-work verification (#957), and /build's
+# §3e.5 parent-side acceptance gate (#1663 — a full per-item suite could not
+# survive parallel items, and scoping puts §3e.5 on exactly the same footing as
+# the `pull_request` run that gates the PR). A `--scoped` run says loudly, in
+# three places, that it is not a full run, and the FULL set is still what gates
+# `main`: merge_group runs it unscoped on every merge.
 #
 # Usage:
 #   scripts/quality-gates.sh          run the applicable gate set; exit non-zero if any fail
@@ -95,7 +102,9 @@
 #                                     with the one-line selection reason (dry run)
 #   scripts/quality-gates.sh --scoped run only the gates the LOCAL working-tree
 #                                     changes reach, plus the always-run floor
-#                                     (combinable with --list-selected)
+#                                     (combinable with --list-selected;
+#                                      $QUALITY_GATES_SCOPED=1 is its env twin,
+#                                      for callers that can only pass env vars)
 
 set -uo pipefail
 
@@ -1867,7 +1876,32 @@ if [[ "${1:-}" == "--list" ]]; then
 fi
 
 LIST_SELECTED=0
+# --- `--scoped` has an ENV TWIN: $QUALITY_GATES_SCOPED (temperloop#1663) ------
+# /build's §3e.5 parent-side acceptance gate needs this mode, and it reaches
+# this script through a command string assembled by claude/workflows/build-level.mjs
+# and run in a WORKER'S vendored checkout. That caller's whole interface to this
+# script is ENV VARS, deliberately NOT flags, for one reason spelled out at the
+# SLICED EXECUTION block below: a consuming repo vendoring an OLDER
+# quality-gates.sh IGNORES an unknown env var and runs the whole suite in one
+# go — the pre-#1663 behavior, and still correct — whereas an unknown FLAG
+# would exit 2 ("usage") and read back to the caller as a GATE FAILURE.
+#
+# So the env var is the twin of the flag, not a second mode: both set the same
+# SCOPED=1, and everything downstream (the local changed-set resolution, the skip
+# reporting, the verdict stamp) is byte-identical between them. That equivalence
+# is EARNED, not automatic — a command-prefix env var is exported to every child,
+# so without the scrub below the flag would reach no child gate while the env var
+# reached all ~176 of them, which is not one mode wearing two names. The scrub is
+# what makes the sentence above true; do not remove one without the other.
+#
+# Any value other than `1` leaves the run FULL — the widening default, matching
+# every other degradation in this selector — and an explicit QUALITY_GATES_SCOPE=full
+# beats a scoped request from EITHER surface (see the precedence note at the
+# selection block below; `full` widens, so honouring it can never cost coverage).
 SCOPED=0
+if [[ "${QUALITY_GATES_SCOPED:-0}" == 1 ]]; then
+  SCOPED=1
+fi
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --list-selected) LIST_SELECTED=1; shift ;;
@@ -1939,6 +1973,11 @@ done
 #
 # Partial-run protocol (only ever emitted when a budget is set AND gates remain):
 #   stdout marker  QUALITY_GATES_RESUME_AT=<next 0-based index>
+#   stdout marker  QUALITY_GATES_SELECTION=<count>:<digest> — identifies the
+#                  gate list that index is an ordinal into (temperloop#1663).
+#                  Feed it back as $QUALITY_GATES_EXPECT_SELECTION on the next
+#                  slice to turn a drifted selection into a loud full restart
+#                  instead of a silently skipped gate.
 #   stdout marker  QUALITY_GATES_FAILED=<failures seen in THIS slice>
 #   exit code      75   (EX_TEMPFAIL — distinct from 0 pass and 1 fail, so a
 #                        caller can never confuse "budget spent" with "red")
@@ -1951,6 +1990,28 @@ done
 # unchanged 0/1. CI, `make quality-gates` and a human run are untouched.
 qg_uint() { case "$1" in ''|*[!0-9]*) printf '0' ;; *) printf '%s' "$1" ;; esac; }
 QG_START_AT="$(qg_uint "${QUALITY_GATES_START_AT:-0}")"
+# --- SLICE-STABLE SELECTION (temperloop#1663) --------------------------------
+# $QUALITY_GATES_START_AT is an ORDINAL into the gate list, and since #1663 that
+# list can be the SCOPED subset rather than the static array. A scoped list is
+# re-derived from a LIVE working-tree probe on every invocation, so two slices of
+# one suite could resolve DIFFERENT lists and the ordinal would then point at a
+# different gate — silently skipping one, or (if the list shrank below the index)
+# running none and exiting 0. Before #1663 §3e.5 always resolved mode=full, so the
+# ordinal was stable by construction; scoping removed that guarantee.
+#
+# Two mechanisms close it, prevention first and detection behind it:
+#
+#   $QUALITY_GATES_SELECTION_PIN  a file path. Slice 1 resolves the changed set
+#     and WRITES it here; every later slice READS it instead of re-probing, so the
+#     input to the selection cannot drift mid-suite. Unset = no pinning (a
+#     single-shot run has nothing to drift against).
+#   $QUALITY_GATES_EXPECT_SELECTION  the fingerprint the PREVIOUS slice reported.
+#     On a resume, a mismatch means the pin failed to do its job; rather than
+#     resume a now-meaningless ordinal, the run RESTARTS from gate 0 on the FULL
+#     set and says so loudly. Widening, never skipping — the same posture as every
+#     other degradation in this selector.
+QG_SELECTION_PIN="${QUALITY_GATES_SELECTION_PIN:-}"
+QG_EXPECT_SELECTION="${QUALITY_GATES_EXPECT_SELECTION:-}"
 QG_BUDGET_SECS="$(qg_uint "${QUALITY_GATES_BUDGET_SECS:-0}")"
 # …then DROP them from the environment, so no gate this run spawns inherits the
 # harness's own slicing state. The caller sets them as a command-prefix
@@ -1960,7 +2021,17 @@ QG_BUDGET_SECS="$(qg_uint "${QUALITY_GATES_BUDGET_SECS:-0}")"
 # sliced run, scripts/tests/test_quality_gates_slice.sh inherited
 # START_AT=50/BUDGET=240 and failed. Same hermeticity concern the build.config.sh
 # scrub addresses at the other end (temperloop#1241).
-unset QUALITY_GATES_START_AT QUALITY_GATES_BUDGET_SECS
+#
+# The three SCOPING vars joined this list for exactly the same reason
+# (temperloop#1663), and it is not hypothetical: §3e.5 sets $QUALITY_GATES_SCOPED
+# as a command-prefix assignment, so without this every one of ~176 child gates
+# would inherit it — and the two gates that ARE this script's own test suites
+# would then run scoped against the PARENT's tree instead of their own fixtures.
+# Clearing them here is also what makes the env twin's contract true: the flag
+# and the env var are byte-identical downstream ONLY if neither leaks past this
+# line. (Both suites additionally clear them for themselves, which covers the
+# case of an OLDER vendored parent that predates this line.)
+unset QUALITY_GATES_START_AT QUALITY_GATES_BUDGET_SECS QUALITY_GATES_SCOPED QUALITY_GATES_SELECTION_PIN QUALITY_GATES_EXPECT_SELECTION
 
 # Run gates from the repo root so the `make` targets resolve regardless of the
 # caller's CWD (build 3e.5 runs this from a throwaway worker checkout).
@@ -1994,28 +2065,61 @@ GATE_SELECTION_MAP_FILE="$REPO_ROOT/workflows/scripts/config/gate-paths.tsv"
 GATE_SELECTION_ALL_GATES="$(printf '%s\n' "${GATES[@]}")"
 GATE_SELECTION_BASE="${LEAK_GUARD_BASE:-}"  # setting:exempt — reused verbatim from ci.yml's existing export (owning script: check-pr-leak-guard.sh)
 # --- `--scoped`: the LOCAL, mid-work changed-file mode (temperloop#957) -------
-# The CI path above needs a pushed head and an exported base. A /build item
-# worker has neither — it is mid-work in a throwaway worktree — which is why its
+# The CI path above needs a pushed head and an exported base. Neither of this
+# mode's two callers has one: a /build item worker is mid-work in a throwaway
+# worktree (#957), and §3e.5's parent-side acceptance gate runs in that same
+# worktree BEFORE the branch is pushed (#1663). That is why the worker's
 # self-verification had to be a hand-picked subset of `--list` output, chosen by
 # a model's judgment about which gates its files touch (claude/commands/build.md
 # §3c). `--scoped` replaces that judgment call with THIS map: the same selector,
 # the same silent-green defenses, fed the local working-tree changed set instead
 # of a PR diff. Everything it cannot resolve degrades to the full set.
 GATE_SELECTION_LOCAL_BASE=""
+# An explicit QUALITY_GATES_SCOPE=full WINS over a scoped request (temperloop#1663).
+# The registry documents that value as "disables scoping outright", and before the
+# env twin existed only an explicit `--scoped` could contradict it. Now an
+# INHERITED $QUALITY_GATES_SCOPED could too — silently, since §3e.5 exports it —
+# which would leave an operator's own kill switch doing nothing. `full` is also the
+# WIDENING choice, so honouring it can never cost coverage; it is the one direction
+# this precedence is safe to resolve in.
+if (( SCOPED )) && [[ "${QUALITY_GATES_SCOPE:-auto}" == "full" ]]; then
+  printf 'NOTE: a scoped run was requested but QUALITY_GATES_SCOPE=full is set — running the FULL set.\n' >&2
+  SCOPED=0
+fi
 if (( SCOPED )); then
-  QUALITY_GATES_SCOPE="diff"   # setting:exempt — the flag's whole meaning is "force a scoped attempt"; a caller's own value is deliberately overridden by the explicit flag
+  QUALITY_GATES_SCOPE="diff"   # setting:exempt — the request's whole meaning is "force a scoped attempt"; an explicit `full` is honoured above, and no other caller value survives it
   # A caller-supplied GATE_SELECTION_CHANGED wins (the fixture seam), so a test
   # can exercise this mode without a git tree to stage changes in.
   if [[ -z "${GATE_SELECTION_CHANGED+x}" ]]; then
-    if _qg_local_changed="$(gate_selection_local_changed "$REPO_ROOT")"; then
-      GATE_SELECTION_CHANGED="$_qg_local_changed"
+    if [[ -n "$QG_SELECTION_PIN" && -s "$QG_SELECTION_PIN" ]]; then
+      # A LATER SLICE. Reuse slice 1's changed set verbatim rather than re-probing
+      # a working tree that may have moved under us — this is what keeps the
+      # resume ordinal meaning the same gate it meant when it was issued.
+      GATE_SELECTION_CHANGED="$(cat "$QG_SELECTION_PIN")"
+      printf 'scoped selection PINNED from an earlier slice (%s) — not re-probed.\n' "$QG_SELECTION_PIN"
     else
-      printf 'NOTE: --scoped could not resolve a local changed set — running the FULL set.\n' >&2
+      # FIRST SLICE (or an unpinned single-shot run). Resolve, and persist when a
+      # pin path was supplied. Written via the _to_file entry point, not a command
+      # substitution, so GATE_SELECTION_LOCAL_BASE survives to be reported below.
+      _qg_pin="$QG_SELECTION_PIN"
+      if [[ -z "$_qg_pin" ]]; then
+        _qg_pin="$(mktemp "${TMPDIR:-/tmp}/qg-changed-XXXXXX")" || _qg_pin=""
+      fi
+      if [[ -n "$_qg_pin" ]] && gate_selection_local_changed_to_file "$REPO_ROOT" "$_qg_pin"; then
+        GATE_SELECTION_CHANGED="$(cat "$_qg_pin")"
+      else
+        printf 'NOTE: --scoped could not resolve a local changed set — running the FULL set.\n' >&2
+        [[ -n "$QG_SELECTION_PIN" ]] || rm -f "$_qg_pin"
+      fi
+      # A throwaway (unpinned) temp file has served its purpose; a caller-supplied
+      # pin is the caller's to clean up — build-level.mjs removes it on slice 0.
+      [[ -n "$QG_SELECTION_PIN" ]] || rm -f "$_qg_pin"
+      unset _qg_pin
     fi
-    unset _qg_local_changed
   fi
 fi
 gate_selection_resolve
+
 
 # qg_print_skipped_gates — name every gate the selection left out, and why.
 # A no-op on a full run (nothing was skipped) and on an older gate-selection.sh
@@ -2031,7 +2135,7 @@ qg_print_skipped_gates() {
     [[ -n "$gate" ]] || continue
     printf '  not run (out of scope): %s\n' "$gate"
   done <<<"$skipped"
-  printf 'A green SCOPED run is NOT a green full run — the authority is the BARE, repo-wide invocation (CI checks job, /build 3e.5).\n'
+  printf 'A green SCOPED run is NOT a green full run — the authority is the UNSCOPED merge_group run of the CI checks job, which gates the default branch (temperloop#1024).\n'
 }
 
 if [[ "$GATE_SELECTION_MODE" == "diff" && -n "$GATE_SELECTION_SELECTED" ]]; then
@@ -2042,6 +2146,51 @@ if [[ "$GATE_SELECTION_MODE" == "diff" && -n "$GATE_SELECTION_SELECTED" ]]; then
   done <<<"$GATE_SELECTION_SELECTED"
   GATES=("${SELECTED_GATES[@]}")
   unset _sel_gate
+fi
+
+# --- SELECTION FINGERPRINT + STALE-RESUME GUARD (temperloop#1663) ------------
+# Computed HERE, after the narrowing above, because $GATES is only now the list
+# the run will actually walk — fingerprinting before the narrowing would digest
+# the full array on every scoped run and match trivially, which is the same
+# false-negative shape as the defect this guards.
+#
+# Count PLUS a digest of the members: a count alone would miss a same-size list
+# with different gates in it, which is exactly what a shifted changed set
+# produces.
+qg_selection_fingerprint() {
+  local n hash
+  n="${#GATES[@]}"
+  hash="$(printf '%s\n' "${GATES[@]}" | { shasum -a 256 2>/dev/null || sha256sum 2>/dev/null; } | cut -c1-12)"
+  printf '%s:%s' "$n" "${hash:-nohash}"
+}
+QG_SELECTION="$(qg_selection_fingerprint)"
+
+# A RESUME INDEX IS ONLY MEANINGFUL AGAINST THE LIST IT WAS MEASURED IN.
+# $QUALITY_GATES_START_AT is an ordinal into $GATES, and since #1663 that list can
+# be a SCOPED subset re-derived from a live working-tree probe. If the probe moves
+# between slices, the ordinal points at a different gate: one is silently never
+# run and the suite still exits 0 — or, if the list shrank below the index, the
+# loop runs zero gates and exits 0. Both report green.
+#
+# The pin above is what PREVENTS that. This is what makes it LOUD if prevention
+# ever fails: restart from gate 0 on the FULL set rather than resume a stale
+# index. Over-running is a cost; under-running while reporting green is a defect.
+if (( QG_START_AT > 0 )) && [[ -n "$QG_EXPECT_SELECTION" && "$QG_EXPECT_SELECTION" != "$QG_SELECTION" ]]; then
+  printf 'NOTE: gate selection CHANGED between slices (expected %s, resolved %s) — the resume index no longer identifies the same gates.\n' \
+    "$QG_EXPECT_SELECTION" "$QG_SELECTION" >&2
+  printf 'NOTE: restarting from gate 0 on the FULL set rather than resuming a stale index (temperloop#1663).\n' >&2
+  QG_START_AT=0
+  SCOPED=0
+  QUALITY_GATES_SCOPE="full"   # setting:exempt — internal recovery override, not an operator default
+  unset GATE_SELECTION_CHANGED
+  gate_selection_resolve
+  GATES=()
+  while IFS= read -r _sel_gate; do
+    [[ -n "$_sel_gate" ]] || continue
+    GATES+=("$_sel_gate")
+  done <<<"$GATE_SELECTION_ALL_GATES"
+  unset _sel_gate
+  QG_SELECTION="$(qg_selection_fingerprint)"
 fi
 
 if [[ $LIST_SELECTED -eq 1 ]]; then
@@ -2452,6 +2601,12 @@ if [[ -n "$qg_resume_at" ]]; then
     "$QG_START_AT" "$(( qg_resume_at - 1 ))" "${#GATES[@]}" "$qg_elapsed" "$QG_BUDGET_SECS" "$qg_resume_at"
   printf 'QUALITY_GATES_FAILED=%d\n' "${#failures[@]}"
   printf 'QUALITY_GATES_RESUME_AT=%s\n' "$qg_resume_at"
+  # The resume index is an ordinal into THIS list, so the list's identity travels
+  # with it (temperloop#1663). A caller that feeds this back as
+  # $QUALITY_GATES_EXPECT_SELECTION gets a loud restart instead of a silent skip
+  # if the next slice resolves a different list; a caller that ignores it behaves
+  # exactly as before.
+  printf 'QUALITY_GATES_SELECTION=%s\n' "$QG_SELECTION"
   exit 75
 fi
 

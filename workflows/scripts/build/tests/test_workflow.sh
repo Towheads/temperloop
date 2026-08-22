@@ -2673,20 +2673,103 @@ grep -q 'FAST LOCAL FEEDBACK ONLY — it is NOT the acceptance authority' "$MJS"
   || fail "#997: worker prompt must state the path-scoped subset is fast local feedback only, NOT the acceptance authority (3e.5 is)"
 grep -q 'DEFERRED to the parent-side 3e.5 gate' "$MJS" \
   || fail "#997: worker prompt must tell the worker how to report a criterion naming the bare repo-wide suite (passed:true + deferred evidence, never passed:false)"
-# The #997 narrowing applies to the WORKER only — 3e.5's parent-side gate stays
-# bare and repo-wide (the PR #309 silent-red lesson). Guard that the gate command
-# still invokes the script with no path arguments appended: the subshell must
-# CLOSE immediately after the script path. temperloop#1021 prepends the sliced-run
-# ENV VARS (which scope the run in TIME, never in PATH — the gate list is still
-# the whole repo-wide set, just walked across slices), so the guard pins the
-# budget-env prefix and the bare, argument-free invocation together.
+# The #997 narrowing applies to the WORKER only. 3e.5's parent-side gate remains
+# the acceptance authority — and what makes it one is that it is the ORCHESTRATOR'S
+# OWN run against the worker's commit, not the worker's self-report (the PR #309
+# silent-red lesson turns on that, not on the gate's breadth).
+#
+# The invariant guarded here, unchanged since #997, is that NO PATH ARGUMENTS are
+# ever appended to the invocation: the subshell must CLOSE immediately after the
+# script path, so which gates run is decided by the VALIDATED map
+# (gate-paths.tsv, linted by check-gate-paths.sh) and never by a hand-written
+# path list at this call site. Both env-var prefixes ride in front of it and
+# neither weakens that: #1021's budget/resume pair scopes the run in TIME, and
+# #1663's QUALITY_GATES_SCOPED scopes it through that same validated map, whose
+# every resolution failure widens to the full set.
 # shellcheck disable=SC2016  # grepping for the LITERAL ${sq(qgBin)} token in source
 grep -q 'QUALITY_GATES_BUDGET_SECS=${GATE_SLICE_SECS} ${sq(qgBin)} ) ' "$MJS" \
-  || fail "#997/#309: the 3e.5 parent-side gate must still invoke quality-gates.sh BARE (no path scoping) — it is the acceptance authority"
+  || fail "#997/#309: the 3e.5 parent-side gate must invoke quality-gates.sh with NO path arguments — selection belongs to the validated map, not this call site"
 # shellcheck disable=SC2016  # literal-token grep
 grep -q 'QUALITY_GATES_START_AT=${startAt}' "$MJS" \
   || fail "#1021: the 3e.5 gate must pass its resume index as an ENV VAR (a FLAG would exit 2 'usage' on an older vendored quality-gates.sh and read back as a gate failure)"
-echo "PASS: #997 worker-gate-scope guard — worker prompt + cure ban the bare repo-wide run; 3e.5 stays bare and repo-wide"
+echo "PASS: #997 worker-gate-scope guard — worker prompt + cure ban the bare repo-wide worker run; 3e.5's own invocation takes no path arguments"
+
+# --- K1663: the 3e.5 gate is DIFF-SCOPED, and the seam is an ENV VAR ----------
+# A full per-item suite could not survive within-level parallelism: a measured
+# 3-item level burned 55 min / 1.24M subagent tokens and landed ZERO items, all
+# three escalating acceptance-gate-timeout with every worker already finished and
+# committed. Two properties have to hold at this call site, and both are the kind
+# a well-meaning simplification would quietly drop:
+#
+#   1. The seam is $QUALITY_GATES_SCOPED, NOT the `--scoped` FLAG. A consuming
+#      repo vendoring an OLDER quality-gates.sh IGNORES an unknown env var and
+#      runs the whole suite (the pre-#1663 behavior, still correct), whereas an
+#      unknown FLAG exits 2 "usage" and reads back here as a GATE FAILURE — it
+#      would red every item in the fleet's un-updated repos at once.
+#   2. The value comes from $BUILD_GATE_SCOPED with a DEFAULT, read from the
+#      WORKTREE'S build.config.sh, so the escape hatch exists and an absent or
+#      older config file still resolves.
+# shellcheck disable=SC2016  # literal-token grep
+grep -q 'QUALITY_GATES_SCOPED=\$(\. ${sq(configBin)}' "$MJS" \
+  || fail "#1663: the 3e.5 gate must scope via the QUALITY_GATES_SCOPED ENV VAR resolved from the worktree's build.config.sh (a --scoped FLAG exits 2 'usage' on an older vendored quality-gates.sh and reads back as a gate failure)"
+grep -q 'BUILD_GATE_SCOPED:-1' "$MJS" \
+  || fail "#1663: the 3e.5 gate's scope must come from \$BUILD_GATE_SCOPED with a default, so the escape hatch exists and an absent/older build.config.sh still resolves"
+# ...and pin the SPLICE, not just the DECLARATION. Both greps above match
+# `gateScopeEnv`'s definition; deleting the line that interpolates it into
+# `gateCmd` leaves them BOTH green while silently reverting 3e.5 to the full
+# per-item suite — the exact 55-min/zero-items failure #1663 exists to fix, under
+# a green guard suite. #1021's analogous guard cannot drift this way because its
+# token lives inside the template itself; this branch introduced the indirection,
+# so the indirection needs its own assertion. -qF: fixed-string, no BRE escaping.
+grep -qF '`${gateScopeEnv} QUALITY_GATES_SELECTION_PIN=' "$MJS" \
+  || fail "#1663: gateScopeEnv must be SPLICED INTO gateCmd, not merely declared — a defined-but-unused const silently restores the full per-item suite"
+# The slice-stability half (temperloop#1663 HIGH): a scoped gate list is
+# re-derived per slice, so QUALITY_GATES_START_AT -- an ORDINAL into that list --
+# can point at a different gate on a later slice, silently skipping one while the
+# suite still exits 0. Both halves must be present: the PIN that stops the input
+# drifting, and the FINGERPRINT that makes a drift loud if it happens anyway.
+grep -q 'QUALITY_GATES_SELECTION_PIN=' "$MJS" \
+  || fail "#1663: the 3e.5 gate must pin the scoped changed set across slices — without it a resume index can silently address a different gate"
+grep -q 'QUALITY_GATES_EXPECT_SELECTION=' "$MJS" \
+  || fail "#1663: the 3e.5 gate must feed the previous slice's selection fingerprint back, so a drifted list restarts loudly instead of resuming a stale ordinal"
+echo "PASS: #1663 scoped-acceptance-gate guard — 3e.5 scopes through QUALITY_GATES_SCOPED (env, not flag) from \$BUILD_GATE_SCOPED"
+
+# --- K1663 superseded-premise guard: the OLD contract must not come back ------
+# Before #1663, §3e.5 was documented in SEVEN live artifacts as the BARE,
+# repo-wide run, and two of them stated a safety property that scoping REMOVED:
+# that a repo-wide red the worker's scoped subset missed would be caught at
+# §3e.5. It is not, and cannot be — §3e.5 and the worker's own `--scoped` run
+# now resolve the same diff through the same map, so they select nearly the same
+# gates. A red outside that set is caught by the UNSCOPED merge_group run, before
+# `main` but after push.
+#
+# Six of the seven sites were rewritten by hand for #1663; the seventh survived
+# the sweep and had to be caught in review. That is precisely the "purge the
+# superseded premise from every live artifact" failure the kernel names, and a
+# prose contradiction has no other test — so it gets a mechanical one here.
+#
+# These patterns are the FALSE CLAIMS, not the topic: prose that accurately
+# describes what §3e.5 does and does not catch (including the words "repo-wide")
+# is expected and must keep passing.
+BUILD_MD="$REPO_ROOT/claude/commands/build.md"
+[ -f "$BUILD_MD" ] || fail "#1663: claude/commands/build.md not found at $BUILD_MD"
+for stale_claim in \
+  'repo-wide red the subset missed is caught' \
+  'bare repo-wide run was DEFERRED' \
+  'bare repo-wide run was \*\*deferred'
+do
+  for surface in "$BUILD_MD" "$MJS"; do
+    if grep -q "$stale_claim" "$surface"; then
+      fail "#1663: '$(basename "$surface")' still asserts the pre-#1663 contract ('$stale_claim') — §3e.5 is diff-scoped and does NOT catch a repo-wide red outside the item's scoped set; the unscoped merge_group run does"
+    fi
+  done
+done
+# The positive half: §3e.5 must still be named as the acceptance AUTHORITY, so a
+# future edit cannot "fix" the above by deleting the deferral contract wholesale
+# and leaving the worker with no instruction at all.
+grep -q 'DEFERRED to the parent-side 3e.5 gate' "$MJS" \
+  || fail "#1663/#997: the worker prompt must still route a repo-wide acceptance criterion to §3e.5 — removing the stale WORDING must not remove the deferral CONTRACT"
+echo "PASS: #1663 superseded-premise guard — no live artifact still claims §3e.5 is the bare repo-wide catch; the deferral contract survives"
 
 # ============================================================================
 # TEST (K1080): worker return-value OUTPUT SHAPE reaches the prompt, and its
