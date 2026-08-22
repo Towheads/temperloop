@@ -387,6 +387,8 @@ command-declared workflows/scripts/lib/tests/test_command_declared.sh
 # same style as the command-declared sibling above.
 review-agents workflows/scripts/lib/agent_declared.sh
 review-agents workflows/scripts/lib/tests/test_agent_declared.sh
+review-agents workflows/scripts/validate-agent-charter-links.sh
+review-agents workflows/scripts/tests/test_validate_agent_charter_links.sh
 
 # ── quality-gates — the static gate set, lints, kernel scrubs, setting registry ─
 quality-gates workflows/scripts/validate-docs-footer.sh

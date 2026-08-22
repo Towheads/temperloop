@@ -45,9 +45,26 @@ ROOT="${AGENT_CHARTER_LINKS_ROOT%/}"
 
 AGENTS_DIR="$ROOT/claude/agents"
 
+# ABSENT INPUT IS NOT AUTOMATICALLY A PASS (epic temperloop#1409, "a check that
+# could not run reports success"). A bare `exit 0` here would mean this gate goes
+# GREEN in the one situation it is least entitled to: the kernel's own checkout
+# with its charter directory missing. That is breakage, not "nothing to check".
+#
+# But an absent dir IS legitimately nothing to check for a VENDORING CONSUMER,
+# which may adopt the kernel's build machinery without adopting its review
+# agents. The repo already has a discriminator for exactly that distinction — a
+# repo-root `.kernel-pin`, the same signal quality-gates.sh uses to class-gate
+# kernel-content gates — so use it rather than inventing a second one:
+#
+#   .kernel-pin PRESENT (a vendoring consumer)  -> no-op, exit 0, and SAY so
+#   .kernel-pin ABSENT  (the kernel itself)     -> exit 2, this is breakage
 if [[ ! -d "$AGENTS_DIR" ]]; then
-  echo "validate-agent-charter-links: no claude/agents/ dir under $ROOT — nothing to check" >&2
-  exit 0
+  if [[ -f "$ROOT/.kernel-pin" ]]; then
+    echo "validate-agent-charter-links: no claude/agents/ dir under $ROOT and a repo-root .kernel-pin is present — a vendoring consumer that did not adopt the review agents; nothing to check." >&2
+    exit 0
+  fi
+  echo "validate-agent-charter-links: no claude/agents/ dir under $ROOT, and no repo-root .kernel-pin — this is the kernel's own checkout, where the charter directory is expected to exist. Refusing to report success on an input this gate could not evaluate (epic temperloop#1409)." >&2
+  exit 2
 fi
 
 violations=0
@@ -60,6 +77,16 @@ while IFS= read -r -d '' file; do
   # Extended regex: "[[" then a character that is neither "[", "]", nor a
   # space. That excludes bash's "[[ " / "[[]]" test-syntax shapes while
   # matching a real Obsidian link's "[[Decisions/..." / "[[Patterns/...".
+  # UNREADABLE IS NOT CLEAN (epic temperloop#1409). `grep` on a file it cannot
+  # open returns no matches, which is byte-identical to "this charter has no
+  # wikilinks" — so without this guard an unreadable charter passes the gate
+  # while never having been examined. Refuse instead: an input this gate could
+  # not read is a failure, not a pass.
+  if [[ ! -r "$file" ]]; then
+    violations=$((violations + 1))
+    echo "FAIL  $file — UNREADABLE: this gate could not examine the charter, so it cannot report it clean (epic temperloop#1409)."
+    continue
+  fi
   matches="$(grep -nE '\[\[[^][ ]' "$file" 2>/dev/null || true)"
   if [[ -n "$matches" ]]; then
     violations=$((violations + 1))
