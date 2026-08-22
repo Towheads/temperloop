@@ -2811,17 +2811,38 @@ async function driveItem(item) {
   const configBin = `${wt}/workflows/scripts/build/build.config.sh`;
   const gateScopeEnv =
     `QUALITY_GATES_SCOPED=$(. ${sq(configBin)} >/dev/null 2>&1; echo "\${BUILD_GATE_SCOPED:-1}")`;
-  const gateCmd = (startAt) =>
+  // SLICE-STABLE SELECTION (temperloop#1663). `QUALITY_GATES_START_AT` is an
+  // ORDINAL into the gate list, and now that the list can be a SCOPED subset
+  // re-derived from a live working-tree probe, two slices of one suite could
+  // resolve DIFFERENT lists — leaving the ordinal pointing at a different gate,
+  // silently skipping one, and still exiting 0. Before scoping, §3e.5 always
+  // resolved the static full array, so the ordinal was stable by construction.
+  //
+  // The pin file is the prevention half: slice 0 writes the resolved changed set
+  // there and every later slice reads it instead of re-probing, so the selection's
+  // INPUT cannot move mid-suite. It is removed on slice 0 for the same reason the
+  // log is truncated there — a re-drive must not inherit a previous attempt's
+  // state.
+  //
+  // The fingerprint is the detection half behind it: each slice reports the
+  // identity of the list its resume index was measured in, and the next slice is
+  // handed it back. On a mismatch the gate restarts from 0 on the FULL set and
+  // says so, rather than resuming an index that no longer means anything.
+  const gatePin = `/tmp/qg-${item.slug}.selection-pin`;
+  const gateCmd = (startAt, expectSelection) =>
     `set -o pipefail; if [ ! -x ${sq(qgBin)} ]; then echo '{"outcome":"GATE_ABSENT"}'; ` +
-    `else ( cd ${sq(wt)} && unset $(bash ${sq(settingsBin)} 2>/dev/null) && ` +
-    `${gateScopeEnv} ` +
+    `else ${startAt === 0 ? `rm -f ${sq(gatePin)}; ` : ''}` +
+    `( cd ${sq(wt)} && unset $(bash ${sq(settingsBin)} 2>/dev/null) && ` +
+    `${gateScopeEnv} QUALITY_GATES_SELECTION_PIN=${sq(gatePin)} ` +
+    `${expectSelection ? `QUALITY_GATES_EXPECT_SELECTION=${sq(expectSelection)} ` : ''}` +
     `QUALITY_GATES_START_AT=${startAt} QUALITY_GATES_BUDGET_SECS=${GATE_SLICE_SECS} ${sq(qgBin)} ) ` +
     `${startAt === 0 ? '>' : '>>'}${gateLog} 2>&1; __rc=$?; ` +
     `__el=$(sed -n 's/.*passed in \\([0-9]*\\)s.*/\\1/p;s/.*of [0-9]* in \\([0-9]*\\)s.*/\\1/p' ${gateLog} | tail -1); ` +
     `__f=$(sed -n 's/^QUALITY_GATES_FAILED=//p' ${gateLog} | tail -1); ` +
     `__r=$(sed -n 's/^QUALITY_GATES_RESUME_AT=//p' ${gateLog} | tail -1); ` +
+    `__s=$(sed -n 's/^QUALITY_GATES_SELECTION=//p' ${gateLog} | tail -1); ` +
     `if [ "$__rc" = 75 ] && [ -n "$__r" ]; then ` +
-    `printf '{"outcome":"GATE_SLICE","resumeAt":%s,"failed":%s,"elapsedSecs":%s,"budgetSecs":${GATE_SLICE_SECS}}\\n' "$__r" "\${__f:-0}" "\${__el:-0}"; ` +
+    `printf '{"outcome":"GATE_SLICE","resumeAt":%s,"failed":%s,"elapsedSecs":%s,"selection":"%s","budgetSecs":${GATE_SLICE_SECS}}\\n' "$__r" "\${__f:-0}" "\${__el:-0}" "$__s"; ` +
     `elif [ "$__rc" = 0 ]; then ` +
     `printf '{"outcome":"GATE_PASS","failed":0,"elapsedSecs":%s,"budgetSecs":${GATE_SLICE_SECS}}\\n' "\${__el:-0}"; ` +
     `else printf '{"outcome":"GATE_FAIL","failed":%s,"elapsedSecs":%s,"budgetSecs":${GATE_SLICE_SECS}}\\n' "\${__f:-1}" "\${__el:-0}"; fi; fi`;
@@ -2834,6 +2855,11 @@ async function driveItem(item) {
   let gateStartAt = 0;
   let gateElapsed = 0;
   let gateSlices = 0;
+  // The selection fingerprint the PREVIOUS slice reported (temperloop#1663).
+  // Empty on the first slice — there is nothing to compare a fresh start against,
+  // and an older vendored quality-gates.sh reports none at all, in which case this
+  // stays empty forever and the gate behaves exactly as it did before.
+  let gateSelection = '';
   // gateSliceLedger — the AUTHORITATIVE record of what this gate run found
   // (temperloop#1587): one entry per slice that actually ran, carrying that
   // slice's own outcome and normalized failure count (gateSliceFailed()).
@@ -2843,7 +2869,7 @@ async function driveItem(item) {
   // because two counters that can disagree is exactly the defect #1587 filed.
   const gateSliceLedger = [];
   for (; gateSlices < GATE_MAX_SLICES; gateSlices++) {
-    gateOut = await runMachinery(gateCmd(gateStartAt), {
+    gateOut = await runMachinery(gateCmd(gateStartAt, gateSelection), {
       label: `gate:${item.slug}`,
       slug: item.slug,
       phase: enterStage(STAGE_GATE),
@@ -2880,6 +2906,10 @@ async function driveItem(item) {
     });
     if (gateOut.outcome !== 'GATE_SLICE') break;
     gateStartAt = Number(gateOut.resumeAt) || 0;
+    // Carry the list identity forward with the index it belongs to. A slice that
+    // reports no fingerprint (an older vendored gate script) leaves this empty,
+    // which disarms the check rather than tripping it.
+    gateSelection = typeof gateOut.selection === 'string' ? gateOut.selection : '';
     log(`[${item.slug}] 3e.5 gate slice ${gateSlices + 1}/${GATE_MAX_SLICES} spent its ${GATE_SLICE_SECS}s budget — resuming at gate ${gateStartAt}`);
   }
 

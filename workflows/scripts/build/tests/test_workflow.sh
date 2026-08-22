@@ -2714,6 +2714,24 @@ grep -q 'QUALITY_GATES_SCOPED=\$(\. ${sq(configBin)}' "$MJS" \
   || fail "#1663: the 3e.5 gate must scope via the QUALITY_GATES_SCOPED ENV VAR resolved from the worktree's build.config.sh (a --scoped FLAG exits 2 'usage' on an older vendored quality-gates.sh and reads back as a gate failure)"
 grep -q 'BUILD_GATE_SCOPED:-1' "$MJS" \
   || fail "#1663: the 3e.5 gate's scope must come from \$BUILD_GATE_SCOPED with a default, so the escape hatch exists and an absent/older build.config.sh still resolves"
+# ...and pin the SPLICE, not just the DECLARATION. Both greps above match
+# `gateScopeEnv`'s definition; deleting the line that interpolates it into
+# `gateCmd` leaves them BOTH green while silently reverting 3e.5 to the full
+# per-item suite — the exact 55-min/zero-items failure #1663 exists to fix, under
+# a green guard suite. #1021's analogous guard cannot drift this way because its
+# token lives inside the template itself; this branch introduced the indirection,
+# so the indirection needs its own assertion. -qF: fixed-string, no BRE escaping.
+grep -qF '`${gateScopeEnv} QUALITY_GATES_SELECTION_PIN=' "$MJS" \
+  || fail "#1663: gateScopeEnv must be SPLICED INTO gateCmd, not merely declared — a defined-but-unused const silently restores the full per-item suite"
+# The slice-stability half (temperloop#1663 HIGH): a scoped gate list is
+# re-derived per slice, so QUALITY_GATES_START_AT -- an ORDINAL into that list --
+# can point at a different gate on a later slice, silently skipping one while the
+# suite still exits 0. Both halves must be present: the PIN that stops the input
+# drifting, and the FINGERPRINT that makes a drift loud if it happens anyway.
+grep -q 'QUALITY_GATES_SELECTION_PIN=' "$MJS" \
+  || fail "#1663: the 3e.5 gate must pin the scoped changed set across slices — without it a resume index can silently address a different gate"
+grep -q 'QUALITY_GATES_EXPECT_SELECTION=' "$MJS" \
+  || fail "#1663: the 3e.5 gate must feed the previous slice's selection fingerprint back, so a drifted list restarts loudly instead of resuming a stale ordinal"
 echo "PASS: #1663 scoped-acceptance-gate guard — 3e.5 scopes through QUALITY_GATES_SCOPED (env, not flag) from \$BUILD_GATE_SCOPED"
 
 # --- K1663 superseded-premise guard: the OLD contract must not come back ------

@@ -18,7 +18,7 @@
 # to the full set instead of narrowing; an uncommitted or brand-new file is in
 # scope (this runs MID-work, not after a commit); and a red gate is still red.
 #
-# ALSO COVERED HERE (cases 16-18, temperloop#1423): the OTHER selector that
+# ALSO COVERED HERE (cases 19-21, temperloop#1423): the OTHER selector that
 # decides which gates a run contains — the CLASS gating applied while the list
 # is BUILT, on a repo-root `.kernel-pin`. Same contract, same reason to test it:
 # a gate may only leave a run's set if the omission is NAMED. Those three cases
@@ -72,6 +72,9 @@ for i in 1 2 3 4; do
   cat >"$FAKE/g$i.sh" <<EOF
 #!/usr/bin/env bash
 echo "g$i" >> "\$QG_SCOPED_MARK"
+# A per-gate SLOW sentinel (temperloop#1663): lets a case burn the soft budget so
+# the run SLICES, which is the only way to exercise the resume-ordinal path.
+if [ -f "\$(dirname "\$0")/g$i.slow" ]; then sleep 2; fi
 if [ "$i" = 4 ] && [ -f "\$(dirname "\$0")/g4.red" ]; then echo "g4 is red"; exit 1; fi
 exit 0
 EOF
@@ -123,7 +126,7 @@ echo lic >"$FAKE/LICENSE"
 # The red-gate sentinel and the per-run mark files are test scaffolding, not
 # changes to the tree under test — ignore them so they never enter the changed
 # set (and so case 8 tests a RED GATE rather than an unmapped-path escalation).
-printf 'g4.red\n' >"$FAKE/.gitignore"
+printf 'g4.red\n*.slow\n' >"$FAKE/.gitignore"
 git -C "$FAKE" add -A
 git -C "$FAKE" commit -qm base
 git -C "$FAKE" branch -M main
@@ -436,10 +439,149 @@ $RUN_OUT"
 done
 [ -n "${junk_bad:-}" ] || pass "an unrecognised \$QUALITY_GATES_SCOPED value WIDENS to the full set (true/yes/2/' 1')"
 
+# --------------------------------------------------------------------------
+# 16. A scoped run DISCLOSES the base it scoped against, and how many paths it
+#     found. This is the only line that tells an operator debugging a
+#     wrongly-narrowed run WHICH tree state produced the narrowing — and it
+#     could never print before temperloop#1663: the caller resolved the changed
+#     set inside a command substitution, so gate_selection_local_changed()'s
+#     GATE_SELECTION_LOCAL_BASE out-param died with the subshell and the guard
+#     on that printf was permanently false. Latent since #957; it only became
+#     load-bearing when scoping moved onto the acceptance path, and it had no
+#     test, which is why it went unnoticed for that long.
+# --------------------------------------------------------------------------
+reset_tree
+echo edited >>"$FAKE/src/lib/thing.sh"
+M="$WORK/m16"; : >"$M"
+run_qg "$M" --scoped
+if [ "$RUN_RC" -eq 0 ] \
+   && grep -qE 'scoped against local working tree \(base [0-9a-f]{7,}\): [0-9]+ changed path' <<<"$RUN_OUT"; then
+  pass "a scoped run names the base it scoped against and the changed-path count"
+else
+  fail "base disclosure: rc=$RUN_RC
+$RUN_OUT"
+fi
+
+# ==========================================================================
+# SLICE-STABLE SELECTION (temperloop#1663) — the resume ordinal must keep
+# meaning the same gate
+#
+# THE DEFECT. `$QUALITY_GATES_START_AT` is an ORDINAL into the gate list, and
+# once §3e.5 runs SCOPED that list is re-derived from a LIVE working-tree probe
+# on every invocation. Two slices of one suite could therefore resolve DIFFERENT
+# lists, leaving the ordinal pointing at a different gate: one gate silently
+# never runs and the suite still exits 0. Worse, the widening is the trigger —
+# an untracked artifact appearing mid-run escalates slice 2 to the FULL set, and
+# slice 2's banner then reads "full set", which is MORE reassuring than slice 1's.
+# Before #1663 the acceptance gate always resolved mode=full, so the ordinal was
+# stable by construction; scoping removed that guarantee silently.
+#
+# TWO MECHANISMS, TESTED SEPARATELY BECAUSE THEY FAIL SEPARATELY:
+#   19. PREVENTION — the pin. Slice 1 records the changed set; slice 2 reuses it
+#       instead of re-probing, so the selection cannot move and the resume is
+#       still valid. This is the path every real run takes.
+#   20. DETECTION — the fingerprint. With the pin deliberately absent (an older
+#       vendored caller, a wiped /tmp), a drifted list must produce a LOUD full
+#       restart, never a quiet resume into a stale index.
+#
+# Both run with QUALITY_GATES_JOBS=1: the ordinal only has a meaning in a serial
+# walk, and a parallel pool would make which-gate-ran-when nondeterministic.
+# ==========================================================================
+
+# --------------------------------------------------------------------------
+# 17. THE PIN keeps a sliced scoped run addressing the same gates.
+#     g1 (the ALWAYS floor) is made slow so slice 1 spends its budget after it;
+#     an unmapped untracked file then appears, which WOULD widen slice 2 to the
+#     full set. With the pin, slice 2 reuses slice 1's changed set, resumes at
+#     the right gate, and g1 is not re-run or skipped.
+# --------------------------------------------------------------------------
+reset_tree
+rm -f "$FAKE/artifact.tmp" "$FAKE"/g*.slow "$WORK/pin19"
+echo edited >>"$FAKE/src/lib/thing.sh"
+: >"$FAKE/g1.slow"
+M="$WORK/m19"; : >"$M"
+RUN_RC=0
+RUN_OUT="$(env QG_SCOPED_MARK="$M" QUALITY_GATES_SKIP_FRESHNESS=1 \
+  GATE_MAX_ATTEMPTS=1 GATE_RETRY_BACKOFF=0 QUALITY_GATES_JOBS=1 \
+  QUALITY_GATES_SCOPED=1 QUALITY_GATES_BUDGET_SECS=1 \
+  QUALITY_GATES_SELECTION_PIN="$WORK/pin19" \
+  bash "$FAKE/scripts/quality-gates.sh" 2>&1)" || RUN_RC=$?
+sel19="$(printf '%s\n' "$RUN_OUT" | sed -n 's/^QUALITY_GATES_SELECTION=//p' | tail -1)"
+res19="$(printf '%s\n' "$RUN_OUT" | sed -n 's/^QUALITY_GATES_RESUME_AT=//p' | tail -1)"
+# The drift trigger: an untracked path no glob in the fixture map claims.
+echo junk >"$FAKE/artifact.tmp"
+RUN2_RC=0
+RUN2_OUT="$(env QG_SCOPED_MARK="$M" QUALITY_GATES_SKIP_FRESHNESS=1 \
+  GATE_MAX_ATTEMPTS=1 GATE_RETRY_BACKOFF=0 QUALITY_GATES_JOBS=1 \
+  QUALITY_GATES_SCOPED=1 QUALITY_GATES_START_AT="${res19:-9}" \
+  QUALITY_GATES_SELECTION_PIN="$WORK/pin19" \
+  QUALITY_GATES_EXPECT_SELECTION="$sel19" \
+  bash "$FAKE/scripts/quality-gates.sh" 2>&1)" || RUN2_RC=$?
+if [ "$RUN_RC" -eq 75 ] && [ -n "$sel19" ] && [ "$res19" = 1 ] \
+   && [ "$RUN2_RC" -eq 0 ] \
+   && grep -q 'PINNED from an earlier slice' <<<"$RUN2_OUT" \
+   && ! grep -q 'gate selection CHANGED between slices' <<<"$RUN2_OUT" \
+   && [ "$(grep -cx g1 "$M")" = 1 ] && [ "$(grep -cx g2 "$M")" = 1 ]; then
+  pass "the selection PIN survives a mid-run tree change: slice 2 resumes into the same list, every scoped gate ran exactly once"
+else
+  fail "slice-stable pin: rc1=$RUN_RC sel='$sel19' resume='$res19' rc2=$RUN2_RC ran='$(cat "$M")'
+--- slice 1 ---
+$RUN_OUT
+--- slice 2 ---
+$RUN2_OUT"
+fi
+rm -f "$FAKE/artifact.tmp" "$FAKE"/g*.slow
+
+# --------------------------------------------------------------------------
+# 18. WITHOUT the pin, a drifted selection must RESTART, loudly, on the full
+#     set — never resume a stale ordinal. Same drift as case 19; the only
+#     difference is that slice 2 gets no pin to reuse, so it re-probes and
+#     resolves a DIFFERENT (wider) list than the index was measured in.
+#
+#     The failure this pins down is specific: resuming index 1 into the widened
+#     4-gate list would run g2/g3/g4 and NEVER run g1, then exit 0. So the
+#     assertion is not merely "it restarted" — it is that g1 RAN.
+# --------------------------------------------------------------------------
+reset_tree
+rm -f "$FAKE/artifact.tmp" "$FAKE"/g*.slow "$WORK/pin20"
+echo edited >>"$FAKE/src/lib/thing.sh"
+: >"$FAKE/g1.slow"
+M="$WORK/m20"; : >"$M"
+RUN_RC=0
+RUN_OUT="$(env QG_SCOPED_MARK="$M" QUALITY_GATES_SKIP_FRESHNESS=1 \
+  GATE_MAX_ATTEMPTS=1 GATE_RETRY_BACKOFF=0 QUALITY_GATES_JOBS=1 \
+  QUALITY_GATES_SCOPED=1 QUALITY_GATES_BUDGET_SECS=1 \
+  QUALITY_GATES_SELECTION_PIN="$WORK/pin20" \
+  bash "$FAKE/scripts/quality-gates.sh" 2>&1)" || RUN_RC=$?
+sel20="$(printf '%s\n' "$RUN_OUT" | sed -n 's/^QUALITY_GATES_SELECTION=//p' | tail -1)"
+res20="$(printf '%s\n' "$RUN_OUT" | sed -n 's/^QUALITY_GATES_RESUME_AT=//p' | tail -1)"
+rm -f "$FAKE"/g*.slow          # let the restart finish fast
+rm -f "$WORK/pin20"            # the pin is gone: slice 2 must re-probe
+echo junk >"$FAKE/artifact.tmp"
+: >"$M"                        # count only what the RESUMED slice runs
+RUN2_RC=0
+RUN2_OUT="$(env QG_SCOPED_MARK="$M" QUALITY_GATES_SKIP_FRESHNESS=1 \
+  GATE_MAX_ATTEMPTS=1 GATE_RETRY_BACKOFF=0 QUALITY_GATES_JOBS=1 \
+  QUALITY_GATES_SCOPED=1 QUALITY_GATES_START_AT="${res20:-9}" \
+  QUALITY_GATES_EXPECT_SELECTION="$sel20" \
+  bash "$FAKE/scripts/quality-gates.sh" 2>&1)" || RUN2_RC=$?
+if [ "$RUN2_RC" -eq 0 ] \
+   && grep -q 'gate selection CHANGED between slices' <<<"$RUN2_OUT" \
+   && grep -q 'restarting from gate 0 on the FULL set' <<<"$RUN2_OUT" \
+   && ran "$M" g1 && ran "$M" g2 && ran "$M" g3 && ran "$M" g4; then
+  pass "a drifted selection RESTARTS on the full set and says so — the gate a stale ordinal would have skipped still runs"
+else
+  fail "stale-resume guard: rc1=$RUN_RC sel='$sel20' resume='$res20' rc2=$RUN2_RC ran='$(cat "$M")'
+--- slice 2 ---
+$RUN2_OUT"
+fi
+rm -f "$FAKE/artifact.tmp" "$FAKE"/g*.slow
+reset_tree
+
 # ==========================================================================
 # CLASS-GATED GATE COMPOSITION (temperloop#691, temperloop#1423)
 #
-# Same subject as cases 1-12 above — WHICH gates a run contains, and whether
+# Same subject as cases 1-18 above — WHICH gates a run contains, and whether
 # every omission is NAMED — but keyed on the OTHER selector: the gate CLASS
 # gating quality-gates.sh applies while it BUILDS the list, before any flag is
 # parsed. Two classes share one signal, a repo-root `.kernel-pin` (present in a
@@ -453,7 +595,7 @@ done
 # These cases run an UNPATCHED copy of the real script — the synthetic 4-gate
 # splice used above would erase the very list under test — with `--list`, which
 # prints the composed set and exits before a single gate runs (fast, hermetic,
-# no `make`). Case 15 is the ANTI-BURIAL guard: a gate that goes red in a
+# no `make`). Case 21 is the ANTI-BURIAL guard: a gate that goes red in a
 # vendored tree because of a REAL BUG must stay in the consumer's set, red,
 # rather than being swept into the skip class.
 # ==========================================================================
@@ -472,12 +614,12 @@ KC_GATES=(
 )
 
 # --------------------------------------------------------------------------
-# 16. THE KERNEL'S OWN CHECKOUT (no .kernel-pin) keeps FULL coverage — every
+# 19. THE KERNEL'S OWN CHECKOUT (no .kernel-pin) keeps FULL coverage — every
 #     kernel-content gate still runs. A regression here would silently shrink
 #     the kernel's own gate set, which is the whole risk of adding a class.
 #
 #     Runs against a SYNTHESIZED pin-less fixture — the exact mirror of case
-#     14's pinned one — never the real repo root (temperloop#1543): a
+#     20's pinned one — never the real repo root (temperloop#1543): a
 #     vendoring consumer structurally carries a root .kernel-pin, so the old
 #     real-root "this checkout has no pin" precondition could never hold in a
 #     composed overlay tree and false-failed there. The pin-less BRANCH of
@@ -499,7 +641,7 @@ else
 fi
 
 # --------------------------------------------------------------------------
-# 17. A VENDORING CONSUMER (.kernel-pin at the repo root) skips the class —
+# 20. A VENDORING CONSUMER (.kernel-pin at the repo root) skips the class —
 #     and NAMES every member it skipped, exactly as the self-distribution
 #     class does. Never a silent drop.
 # --------------------------------------------------------------------------
@@ -525,7 +667,7 @@ else
 fi
 
 # --------------------------------------------------------------------------
-# 18. ANTI-BURIAL (the load-bearing one, temperloop#1423). A gate that goes red
+# 21. ANTI-BURIAL (the load-bearing one, temperloop#1423). A gate that goes red
 #     in a vendored tree because of a REAL UPSTREAM BUG — lint-pipe-grep-q.sh
 #     flagging its own help text (temperloop#1420), the spend report finding
 #     zero agent definitions through a symlinked claude/agents (temperloop#1424)
@@ -540,7 +682,7 @@ fi
 #         into kernel/, and the in-place mutate+restore silently materializes
 #         it into a 1,669-line forked copy. A live correctness bug, not a
 #         content mismatch.
-#       - temperloop#1543 — three kernel tests (this file's own case 13,
+#       - temperloop#1543 — three kernel tests (this file's own case 19,
 #         test_cannot_evaluate.sh case 3, test_check_changelog_entry.sh
 #         case 35) assert against the REAL repo root for surfaces a composed
 #         overlay legitimately lacks or relocates, and false-fail there. The
