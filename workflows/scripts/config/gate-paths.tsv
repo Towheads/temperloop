@@ -9,13 +9,15 @@
 # ONLY; merge_group (the run that actually gates `main`) stays unscoped, so
 # full-set coverage of the default branch is unchanged.
 #
-# SECOND CONSUMER (temperloop#957): `scripts/quality-gates.sh --scoped` applies
-# this same map to the LOCAL working tree, so a /build item worker's iterative
-# MID-WORK verification runs only the gates its own changes reach instead of
-# the minutes-scale full suite. That path's pre-push/final invocation — /build
-# §3e.5's parent-side acceptance gate — stays BARE and repo-wide, exactly like
-# merge_group. Both consumers share every safety property below; neither can
-# narrow the run that gates `main`.
+# SECOND CONSUMER (temperloop#957, #1663): `scripts/quality-gates.sh --scoped`
+# (and its env twin $QUALITY_GATES_SCOPED) applies this same map to the LOCAL
+# working tree. Two callers use it — a /build item worker's iterative MID-WORK
+# verification (#957), and /build §3e.5's parent-side acceptance gate (#1663,
+# because a full per-item suite could not survive within-level parallelism: a
+# measured 3-item level burned 55 min and landed ZERO items, all three timing
+# out with every worker already finished). Both consumers share every safety
+# property below, and neither can narrow the run that gates `main`: merge_group
+# stays unscoped and always runs the full set.
 #
 # FORMAT — TAB-separated, exactly two columns:
 #   1. KEY    a gate command EXACTLY as it appears in scripts/quality-gates.sh's

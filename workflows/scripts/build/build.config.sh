@@ -419,6 +419,42 @@ fi
 # that resolves it to an empty string, lands on that default unchanged.
 : "${BUILD_GATE_SLICE_SECS:=300}"
 
+# claude/workflows/build-level.mjs — whether the 3e.5 parent-side acceptance gate
+# runs DIFF-SCOPED (1, the default) or as the full repo-wide suite (0).
+#
+# WHY IT EXISTS (temperloop#1663). The full per-item suite could not survive
+# within-level parallelism. Measured on a 3-item level: 55 minutes, 21 agents,
+# 1.24M subagent tokens, ZERO items landed — all three escalated
+# `acceptance-gate-timeout` with every worker finished and committed and only the
+# gate verdict missing. N concurrent items means N concurrent full suites, each
+# with its own $QUALITY_GATES_JOBS workers; contention inflated the gate tail
+# 200-300%. And the budget cannot absorb it: the .mjs's GATE_SLICE_SECS_MAX sits
+# only ~20% above the budget that failed, because the derived Bash-tool timeout is
+# clamped to the executor agent's own ~10-min hard cap. The suite had to get
+# SHORTER, not the budget longer.
+#
+# WHEN SCOPED, the gate runs only the gates the item's changed paths can reach,
+# resolved through workflows/scripts/config/gate-paths.tsv by
+# workflows/scripts/lib/gate-selection.sh — the SAME map and selector that CI's
+# `checks` job has used on the `pull_request` event since temperloop#1024. So
+# scoping the acceptance gate carries no failure mode the PR check does not
+# already carry, and what gates `main` is unchanged: the merge_group run of
+# `checks` is unscoped and always runs everything.
+#
+# SET IT TO 0 to restore the pre-#1663 full-suite acceptance gate — the escape
+# hatch if a scoped gate is ever found to have let something through that the
+# full one would have caught. Doing so re-exposes the parallel-item timeout
+# above, so prefer fixing the gate-paths.tsv row that was wrong.
+#
+# READ IN THE EMITTED SHELL, not plumbed as an orchestrator `input.*` key like
+# BUILD_GATE_SLICE_SECS above. That is the narrower seam, not a shortcut: the
+# slice budget must reach the .mjs's own control flow (it derives the Bash-tool
+# timeout and bounds the slice loop) and the Workflow runtime has no shell to
+# source this file with — DESIGN NOTE 1 — whereas this value is needed only
+# inside the gate command string, which is bash. It is read from the WORKTREE'S
+# copy of this file, i.e. the version the change under test ships.
+: "${BUILD_GATE_SCOPED:=1}"
+
 # claude/workflows/build-level.mjs — the per-STEP WALL-CLOCK LIVENESS BOUND on a
 # machinery-executor step (the `prelude` / `pr-batch` / `ci-batch` batches and the
 # solo `gate` / `recover-probe` / `push-retry` calls), in seconds.

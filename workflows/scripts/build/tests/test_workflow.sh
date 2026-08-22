@@ -2673,20 +2673,48 @@ grep -q 'FAST LOCAL FEEDBACK ONLY — it is NOT the acceptance authority' "$MJS"
   || fail "#997: worker prompt must state the path-scoped subset is fast local feedback only, NOT the acceptance authority (3e.5 is)"
 grep -q 'DEFERRED to the parent-side 3e.5 gate' "$MJS" \
   || fail "#997: worker prompt must tell the worker how to report a criterion naming the bare repo-wide suite (passed:true + deferred evidence, never passed:false)"
-# The #997 narrowing applies to the WORKER only — 3e.5's parent-side gate stays
-# bare and repo-wide (the PR #309 silent-red lesson). Guard that the gate command
-# still invokes the script with no path arguments appended: the subshell must
-# CLOSE immediately after the script path. temperloop#1021 prepends the sliced-run
-# ENV VARS (which scope the run in TIME, never in PATH — the gate list is still
-# the whole repo-wide set, just walked across slices), so the guard pins the
-# budget-env prefix and the bare, argument-free invocation together.
+# The #997 narrowing applies to the WORKER only. 3e.5's parent-side gate remains
+# the acceptance authority — and what makes it one is that it is the ORCHESTRATOR'S
+# OWN run against the worker's commit, not the worker's self-report (the PR #309
+# silent-red lesson turns on that, not on the gate's breadth).
+#
+# The invariant guarded here, unchanged since #997, is that NO PATH ARGUMENTS are
+# ever appended to the invocation: the subshell must CLOSE immediately after the
+# script path, so which gates run is decided by the VALIDATED map
+# (gate-paths.tsv, linted by check-gate-paths.sh) and never by a hand-written
+# path list at this call site. Both env-var prefixes ride in front of it and
+# neither weakens that: #1021's budget/resume pair scopes the run in TIME, and
+# #1663's QUALITY_GATES_SCOPED scopes it through that same validated map, whose
+# every resolution failure widens to the full set.
 # shellcheck disable=SC2016  # grepping for the LITERAL ${sq(qgBin)} token in source
 grep -q 'QUALITY_GATES_BUDGET_SECS=${GATE_SLICE_SECS} ${sq(qgBin)} ) ' "$MJS" \
-  || fail "#997/#309: the 3e.5 parent-side gate must still invoke quality-gates.sh BARE (no path scoping) — it is the acceptance authority"
+  || fail "#997/#309: the 3e.5 parent-side gate must invoke quality-gates.sh with NO path arguments — selection belongs to the validated map, not this call site"
 # shellcheck disable=SC2016  # literal-token grep
 grep -q 'QUALITY_GATES_START_AT=${startAt}' "$MJS" \
   || fail "#1021: the 3e.5 gate must pass its resume index as an ENV VAR (a FLAG would exit 2 'usage' on an older vendored quality-gates.sh and read back as a gate failure)"
-echo "PASS: #997 worker-gate-scope guard — worker prompt + cure ban the bare repo-wide run; 3e.5 stays bare and repo-wide"
+echo "PASS: #997 worker-gate-scope guard — worker prompt + cure ban the bare repo-wide worker run; 3e.5's own invocation takes no path arguments"
+
+# --- K1663: the 3e.5 gate is DIFF-SCOPED, and the seam is an ENV VAR ----------
+# A full per-item suite could not survive within-level parallelism: a measured
+# 3-item level burned 55 min / 1.24M subagent tokens and landed ZERO items, all
+# three escalating acceptance-gate-timeout with every worker already finished and
+# committed. Two properties have to hold at this call site, and both are the kind
+# a well-meaning simplification would quietly drop:
+#
+#   1. The seam is $QUALITY_GATES_SCOPED, NOT the `--scoped` FLAG. A consuming
+#      repo vendoring an OLDER quality-gates.sh IGNORES an unknown env var and
+#      runs the whole suite (the pre-#1663 behavior, still correct), whereas an
+#      unknown FLAG exits 2 "usage" and reads back here as a GATE FAILURE — it
+#      would red every item in the fleet's un-updated repos at once.
+#   2. The value comes from $BUILD_GATE_SCOPED with a DEFAULT, read from the
+#      WORKTREE'S build.config.sh, so the escape hatch exists and an absent or
+#      older config file still resolves.
+# shellcheck disable=SC2016  # literal-token grep
+grep -q 'QUALITY_GATES_SCOPED=\$(\. ${sq(configBin)}' "$MJS" \
+  || fail "#1663: the 3e.5 gate must scope via the QUALITY_GATES_SCOPED ENV VAR resolved from the worktree's build.config.sh (a --scoped FLAG exits 2 'usage' on an older vendored quality-gates.sh and reads back as a gate failure)"
+grep -q 'BUILD_GATE_SCOPED:-1' "$MJS" \
+  || fail "#1663: the 3e.5 gate's scope must come from \$BUILD_GATE_SCOPED with a default, so the escape hatch exists and an absent/older build.config.sh still resolves"
+echo "PASS: #1663 scoped-acceptance-gate guard — 3e.5 scopes through QUALITY_GATES_SCOPED (env, not flag) from \$BUILD_GATE_SCOPED"
 
 # ============================================================================
 # TEST (K1080): worker return-value OUTPUT SHAPE reaches the prompt, and its

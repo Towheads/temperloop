@@ -14,8 +14,11 @@
 # PR-body-lint registries, the validator/corpus lints, and a whole-tree static
 # shell lint. Each gate is a `make` target (the shell-lint pipeline lives behind
 # the `make shellcheck` target) so this file stays a flat, splittable command
-# list. They run BARE and repo-wide — no path scoping — so a failure is caught
-# the way CI sees it (the PR #309 silent-red lesson).
+# list. A BARE invocation runs all of them with no path scoping, which is what
+# `main` is gated on — the merge_group run of CI's `checks` job (the PR #309
+# silent-red lesson). The two DIFF-SCOPED callers below (CI's `pull_request`
+# run, #1024; a local/`--scoped` run, #957/#1663) narrow that same list through
+# workflows/scripts/config/gate-paths.tsv and say so loudly.
 #
 # LAYERING (foundation #774, epic #762 "kernel split: seams in place"): the
 # gate set is two layers unioned at run time, so the coming kernel/overlay
@@ -54,9 +57,9 @@
 # DIFF-SCOPED SELECTION (temperloop#1024): on a GitHub `pull_request` event with
 # a resolvable base SHA, the run is narrowed to the gates the diff can affect,
 # per workflows/scripts/config/gate-paths.tsv. Everywhere else — merge_group,
-# push:main, nightly, /build's 3e.5 gate, any local run — the FULL set runs
-# exactly as before, so what gates `main` is unchanged. See the "Diff-scoped
-# gate selection" block below and workflows/scripts/lib/gate-selection.sh.
+# push:main, nightly, any bare local run — the FULL set runs exactly as before,
+# so what gates `main` is unchanged. See the "Diff-scoped gate selection" block
+# below and workflows/scripts/lib/gate-selection.sh.
 # PARALLELISM (temperloop#1025): the gate set is ~109 INDEPENDENT suites, and
 # the `checks` job's ~5.5 min wall time was almost entirely the cost of running
 # them one after another (measured 2026-08-02: test-cli-subcommands 56s, test-build 55s,
@@ -79,13 +82,17 @@
 # `1` restores the exact pre-parallel serial loop, which is what a bisect or a
 # flake hunt should use).
 #
-# CHANGED-FILE SCOPING FOR A LOCAL, MID-WORK RUN (temperloop#957): `--scoped`
-# applies the same selector to the LOCAL working tree — committed, staged,
-# unstaged and untracked changes vs. the default-branch merge-base — so a
-# /build item worker's ITERATIVE verification runs only the gates its own
-# changes can reach. It is a fast-feedback mode ONLY: /build's §3e.5 parent-side
-# acceptance gate and every pre-push/CI invocation stay BARE and repo-wide, and
-# a `--scoped` run says loudly, in three places, that it is not a full run.
+# CHANGED-FILE SCOPING FOR A LOCAL RUN (temperloop#957, #1663): `--scoped` (and
+# its env twin $QUALITY_GATES_SCOPED) applies the same selector to the LOCAL
+# working tree — committed, staged, unstaged and untracked changes vs. the
+# default-branch merge-base — so a run that only needs to cover ONE branch's
+# changes runs only the gates those changes can reach. Two callers use it: a
+# /build item worker's ITERATIVE mid-work verification (#957), and /build's
+# §3e.5 parent-side acceptance gate (#1663 — a full per-item suite could not
+# survive parallel items, and scoping puts §3e.5 on exactly the same footing as
+# the `pull_request` run that gates the PR). A `--scoped` run says loudly, in
+# three places, that it is not a full run, and the FULL set is still what gates
+# `main`: merge_group runs it unscoped on every merge.
 #
 # Usage:
 #   scripts/quality-gates.sh          run the applicable gate set; exit non-zero if any fail
@@ -95,7 +102,9 @@
 #                                     with the one-line selection reason (dry run)
 #   scripts/quality-gates.sh --scoped run only the gates the LOCAL working-tree
 #                                     changes reach, plus the always-run floor
-#                                     (combinable with --list-selected)
+#                                     (combinable with --list-selected;
+#                                      $QUALITY_GATES_SCOPED=1 is its env twin,
+#                                      for callers that can only pass env vars)
 
 set -uo pipefail
 
@@ -1867,7 +1876,26 @@ if [[ "${1:-}" == "--list" ]]; then
 fi
 
 LIST_SELECTED=0
+# --- `--scoped` has an ENV TWIN: $QUALITY_GATES_SCOPED (temperloop#1663) ------
+# /build's §3e.5 parent-side acceptance gate needs this mode, and it reaches
+# this script through a command string assembled by claude/workflows/build-level.mjs
+# and run in a WORKER'S vendored checkout. That caller's whole interface to this
+# script is ENV VARS, deliberately NOT flags, for one reason spelled out at the
+# SLICED EXECUTION block below: a consuming repo vendoring an OLDER
+# quality-gates.sh IGNORES an unknown env var and runs the whole suite in one
+# go — the pre-#1663 behavior, and still correct — whereas an unknown FLAG
+# would exit 2 ("usage") and read back to the caller as a GATE FAILURE.
+#
+# So the env var is the twin of the flag, not a second mode: both set the same
+# SCOPED=1, and everything downstream (the local changed-set resolution, the
+# skip reporting, the verdict stamp) is byte-identical between them. The flag
+# still wins when both are present, since an explicit flag is the more specific
+# instruction. Any value other than `1` leaves the run FULL — the widening
+# default, matching every other degradation in this selector.
 SCOPED=0
+if [[ "${QUALITY_GATES_SCOPED:-0}" == 1 ]]; then
+  SCOPED=1
+fi
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --list-selected) LIST_SELECTED=1; shift ;;
@@ -1994,8 +2022,10 @@ GATE_SELECTION_MAP_FILE="$REPO_ROOT/workflows/scripts/config/gate-paths.tsv"
 GATE_SELECTION_ALL_GATES="$(printf '%s\n' "${GATES[@]}")"
 GATE_SELECTION_BASE="${LEAK_GUARD_BASE:-}"  # setting:exempt — reused verbatim from ci.yml's existing export (owning script: check-pr-leak-guard.sh)
 # --- `--scoped`: the LOCAL, mid-work changed-file mode (temperloop#957) -------
-# The CI path above needs a pushed head and an exported base. A /build item
-# worker has neither — it is mid-work in a throwaway worktree — which is why its
+# The CI path above needs a pushed head and an exported base. Neither of this
+# mode's two callers has one: a /build item worker is mid-work in a throwaway
+# worktree (#957), and §3e.5's parent-side acceptance gate runs in that same
+# worktree BEFORE the branch is pushed (#1663). That is why the worker's
 # self-verification had to be a hand-picked subset of `--list` output, chosen by
 # a model's judgment about which gates its files touch (claude/commands/build.md
 # §3c). `--scoped` replaces that judgment call with THIS map: the same selector,
@@ -2031,7 +2061,7 @@ qg_print_skipped_gates() {
     [[ -n "$gate" ]] || continue
     printf '  not run (out of scope): %s\n' "$gate"
   done <<<"$skipped"
-  printf 'A green SCOPED run is NOT a green full run — the authority is the BARE, repo-wide invocation (CI checks job, /build 3e.5).\n'
+  printf 'A green SCOPED run is NOT a green full run — the authority is the UNSCOPED merge_group run of the CI checks job, which gates `main` (temperloop#1024).\n'
 }
 
 if [[ "$GATE_SELECTION_MODE" == "diff" && -n "$GATE_SELECTION_SELECTED" ]]; then

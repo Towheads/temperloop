@@ -18,7 +18,7 @@
 # to the full set instead of narrowing; an uncommitted or brand-new file is in
 # scope (this runs MID-work, not after a commit); and a red gate is still red.
 #
-# ALSO COVERED HERE (cases 13-15, temperloop#1423): the OTHER selector that
+# ALSO COVERED HERE (cases 16-18, temperloop#1423): the OTHER selector that
 # decides which gates a run contains — the CLASS gating applied while the list
 # is BUILT, on a repo-root `.kernel-pin`. Same contract, same reason to test it:
 # a gate may only leave a run's set if the omission is NAMED. Those three cases
@@ -38,6 +38,13 @@ set -uo pipefail
 # Same hermeticity guard as the sibling slice suite: this file may itself run AS
 # A GATE inside a sliced/scoped parent run, which exports its own state.
 unset QUALITY_GATES_START_AT QUALITY_GATES_BUDGET_SECS QUALITY_GATES_SCOPE
+# QUALITY_GATES_SCOPED specifically (temperloop#1663): since /build's §3e.5
+# acceptance gate now runs SCOPED, it exports this var into the environment of
+# every gate it runs — including this file. Inheriting it would silently turn
+# case 1's BARE run into a scoped one and break the very assertion that the
+# unscoped path is unchanged. Clearing it is what keeps this suite's verdict a
+# statement about the code rather than about who invoked it.
+unset QUALITY_GATES_SCOPED
 unset GATE_SELECTION_CHANGED GITHUB_EVENT_NAME LEAK_GUARD_BASE
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -352,6 +359,84 @@ $RUN_OUT"
 fi
 
 # ==========================================================================
+# THE ENV TWIN OF `--scoped`: $QUALITY_GATES_SCOPED (temperloop#1663)
+#
+# /build's §3e.5 parent-side acceptance gate needs this mode, and it reaches
+# quality-gates.sh through a command string assembled by build-level.mjs whose
+# whole interface is ENV VARS, not flags — because a consuming repo vendoring an
+# OLDER quality-gates.sh ignores an unknown env var and runs the whole suite
+# (still correct), whereas an unknown FLAG exits 2 "usage" and reads back to the
+# caller as a GATE FAILURE. That makes the env var load-bearing for the SAFETY
+# case, not just the ergonomics: if it ever narrowed a run the flag would not,
+# or narrowed on a value it does not understand, §3e.5 would silently gate less
+# than it reports. The three cases below are exactly those two properties.
+# ==========================================================================
+
+# --------------------------------------------------------------------------
+# 13. $QUALITY_GATES_SCOPED=1 selects the SAME gates as the --scoped flag.
+#     Equivalence, asserted against case 2's own expectation rather than
+#     restated: same tree state, same reached gate, same skipped pair.
+# --------------------------------------------------------------------------
+reset_tree
+echo edited >>"$FAKE/src/lib/thing.sh"
+M="$WORK/m13"; : >"$M"
+RUN_RC=0
+RUN_OUT="$(env QG_SCOPED_MARK="$M" QUALITY_GATES_SKIP_FRESHNESS=1 \
+  GATE_MAX_ATTEMPTS=1 GATE_RETRY_BACKOFF=0 QUALITY_GATES_SCOPED=1 \
+  bash "$FAKE/scripts/quality-gates.sh" 2>&1)" || RUN_RC=$?
+if [ "$RUN_RC" -eq 0 ] && ran "$M" g1 && ran "$M" g2 \
+   && ! ran "$M" g3 && ! ran "$M" g4 \
+   && grep -q 'SCOPED RUN' <<<"$RUN_OUT" \
+   && grep -q 'SCOPED SUBSET' <<<"$RUN_OUT"; then
+  pass "\$QUALITY_GATES_SCOPED=1 narrows exactly as --scoped does, and still names what it skipped"
+else
+  fail "env twin narrowing: rc=$RUN_RC ran='$(cat "$M")'
+$RUN_OUT"
+fi
+
+# --------------------------------------------------------------------------
+# 14. $QUALITY_GATES_SCOPED=0 leaves the run FULL. This is the escape hatch
+#     ($BUILD_GATE_SCOPED=0 resolves to it) and the shape an older vendored
+#     copy degrades to, so it must be byte-for-byte the bare run of case 1.
+# --------------------------------------------------------------------------
+M="$WORK/m14"; : >"$M"
+RUN_RC=0
+RUN_OUT="$(env QG_SCOPED_MARK="$M" QUALITY_GATES_SKIP_FRESHNESS=1 \
+  GATE_MAX_ATTEMPTS=1 GATE_RETRY_BACKOFF=0 QUALITY_GATES_SCOPED=0 \
+  bash "$FAKE/scripts/quality-gates.sh" 2>&1)" || RUN_RC=$?
+if [ "$RUN_RC" -eq 0 ] && [ "$(ran_count "$M")" = 4 ] \
+   && ! grep -q 'SCOPED RUN' <<<"$RUN_OUT" \
+   && ! grep -q 'SCOPED SUBSET' <<<"$RUN_OUT"; then
+  pass "\$QUALITY_GATES_SCOPED=0 runs the FULL set — the escape hatch is a real bare run"
+else
+  fail "env twin off: rc=$RUN_RC ran=$(ran_count "$M")
+$RUN_OUT"
+fi
+
+# --------------------------------------------------------------------------
+# 15. A value the parser does not understand WIDENS, never narrows. Every
+#     other degradation in this selector defaults to the full set; a truthy-
+#     looking "true"/"yes" that silently scoped would be the one place a typo
+#     could quietly shrink §3e.5's coverage.
+# --------------------------------------------------------------------------
+for junk in true yes 2 " 1"; do
+  M="$WORK/m15"; : >"$M"
+  RUN_RC=0
+  RUN_OUT="$(env QG_SCOPED_MARK="$M" QUALITY_GATES_SKIP_FRESHNESS=1 \
+    GATE_MAX_ATTEMPTS=1 GATE_RETRY_BACKOFF=0 QUALITY_GATES_SCOPED="$junk" \
+    bash "$FAKE/scripts/quality-gates.sh" 2>&1)" || RUN_RC=$?
+  if [ "$RUN_RC" -eq 0 ] && [ "$(ran_count "$M")" = 4 ] \
+     && ! grep -q 'SCOPED RUN' <<<"$RUN_OUT"; then
+    : # widened, as required
+  else
+    fail "env twin junk value '$junk' did not widen to the full set: rc=$RUN_RC ran=$(ran_count "$M")
+$RUN_OUT"
+    junk_bad=1
+  fi
+done
+[ -n "${junk_bad:-}" ] || pass "an unrecognised \$QUALITY_GATES_SCOPED value WIDENS to the full set (true/yes/2/' 1')"
+
+# ==========================================================================
 # CLASS-GATED GATE COMPOSITION (temperloop#691, temperloop#1423)
 #
 # Same subject as cases 1-12 above — WHICH gates a run contains, and whether
@@ -387,7 +472,7 @@ KC_GATES=(
 )
 
 # --------------------------------------------------------------------------
-# 13. THE KERNEL'S OWN CHECKOUT (no .kernel-pin) keeps FULL coverage — every
+# 16. THE KERNEL'S OWN CHECKOUT (no .kernel-pin) keeps FULL coverage — every
 #     kernel-content gate still runs. A regression here would silently shrink
 #     the kernel's own gate set, which is the whole risk of adding a class.
 #
@@ -414,7 +499,7 @@ else
 fi
 
 # --------------------------------------------------------------------------
-# 14. A VENDORING CONSUMER (.kernel-pin at the repo root) skips the class —
+# 17. A VENDORING CONSUMER (.kernel-pin at the repo root) skips the class —
 #     and NAMES every member it skipped, exactly as the self-distribution
 #     class does. Never a silent drop.
 # --------------------------------------------------------------------------
@@ -440,7 +525,7 @@ else
 fi
 
 # --------------------------------------------------------------------------
-# 15. ANTI-BURIAL (the load-bearing one, temperloop#1423). A gate that goes red
+# 18. ANTI-BURIAL (the load-bearing one, temperloop#1423). A gate that goes red
 #     in a vendored tree because of a REAL UPSTREAM BUG — lint-pipe-grep-q.sh
 #     flagging its own help text (temperloop#1420), the spend report finding
 #     zero agent definitions through a symlinked claude/agents (temperloop#1424)

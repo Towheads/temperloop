@@ -33,6 +33,10 @@ set -uo pipefail
 # against an older caller that doesn't. (Same shape as
 # test_quality_gates_freshness.sh's QUALITY_GATES_SKIP_FRESHNESS unset.)
 unset QUALITY_GATES_START_AT QUALITY_GATES_BUDGET_SECS
+# ...and QUALITY_GATES_SCOPED for the same reason (temperloop#1663): §3e.5 now
+# exports it into every gate's environment, and a scoped copy would run a
+# different number of gates than this suite's slice/resume arithmetic expects.
+unset QUALITY_GATES_SCOPED
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
