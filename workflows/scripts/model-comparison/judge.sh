@@ -709,7 +709,25 @@ _je_one_record() {
     _je_unavailable "response-empty: the envelope's .result/.raw carried no text to judge from" "$duration_ms"; return $?
   fi
   if ! parsed="$(_je_extract_json_response "$resp_text")"; then
-    _je_unavailable "response-unparseable: the judge's reply was not the contracted JSON object (nor a markdown-fenced one): $(printf '%s' "$resp_text" | head -c 300)" "$duration_ms"; return $?
+    # TRUNCATION vs MALFORMED are different failures and get different names
+    # (temperloop#1605). A reply that BEGINS as the contracted object and then
+    # does not parse is the signature of an output-cap or capture truncation --
+    # the judge understood the contract and was cut off -- while a reply that
+    # never starts as an object is a judge that answered in prose.
+    #
+    # The evidence carries the LENGTH and the TAIL, not just the head. The head
+    # of a truncated reply looks perfect, which is exactly why the original
+    # head-300 notice left an operator unable to see where parsing failed.
+    local _first _reason _shape
+    _first="$(printf '%s' "$resp_text" | sed -e 's/^[[:space:]]*//' | cut -c1)"
+    if [ "$_first" = "{" ]; then
+      _reason="response-truncated"
+      _shape="the judge's reply BEGINS as the contracted JSON object and then stops parsing -- the signature of an output-cap or reply-capture truncation, NOT a malformed judgment"
+    else
+      _reason="response-unparseable"
+      _shape="the judge's reply was not the contracted JSON object (nor a markdown-fenced one), and does not begin as one either"
+    fi
+    _je_unavailable "$_reason: $_shape. ${#resp_text} bytes. HEAD: $(printf '%s' "$resp_text" | head -c 200) ||| TAIL: $(printf '%s' "$resp_text" | tail -c 200)" "$duration_ms"; return $?
   fi
   if ! _je_response_schema_ok <<<"$parsed"; then
     _je_unavailable "response-schema-invalid: the judge's reply parsed as JSON but did not carry a numeric quality_score (0-100) and a dimensions object: $parsed" "$duration_ms"; return $?
@@ -741,6 +759,79 @@ _je_one_record() {
 
   rm -rf "$scratch_dir"
   return 0
+}
+
+# ── bounded retry for a reply-shaped judge failure (temperloop#1605) ─────
+# `_je_one_record` spends a judge call and can come back UNAVAILABLE for two
+# very different reasons, and only one of them is worth another attempt:
+#
+#   * REPLY-SHAPED  — the judge answered and the answer was unusable
+#                     (truncated, unparseable, schema-invalid, empty). The
+#                     motivating case (#1262 / PR 1437) is a reply that BEGINS
+#                     as the contracted object and is cut mid-string. Another
+#                     attempt genuinely recovers these.
+#   * STRUCTURAL    — no envelope, no usable modelUsage block, a refused
+#                     provider. Re-running cannot fix any of it, and the
+#                     attempt costs real spend, so these are NEVER retried.
+#
+# The split is made on the notice PREFIX, which is the same vocabulary the
+# degradation notice publishes, so a reader can see from the row itself which
+# class it fell into.
+#
+# Wrapped at the call sites rather than inside `_je_one_record`, so the retry
+# covers the single-record path, the batch row loop and each rotation member
+# through one seam, and so a retried row rebuilds its prompt exactly as a first
+# attempt does (the prompt build is deterministic, so this costs nothing and
+# keeps the two paths byte-identical).
+_je_notice_is_retryable() {  # <row-json> -> 0 when another attempt is worth spending
+  local n
+  n="$(jq -r '(.judge // {}).degradation_notice // ""' <<<"${1:-}" 2>/dev/null)" || return 1
+  case "$n" in
+    response-truncated:*|response-unparseable:*|response-schema-invalid:*|response-empty:*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# _je_one_record_retrying <same args as _je_one_record>
+# Prints the final row, stamped with the attempt count so a reader can tell a
+# first-attempt success from a recovered one, and returns _je_one_record's own
+# exit code for the LAST attempt.
+_je_one_record_retrying() {
+  local max="${MODEL_COMPARISON_JUDGE_MAX_ATTEMPTS:-2}"
+  case "$max" in ''|*[!0-9]*) max=1 ;; esac
+  [ "$max" -ge 1 ] || max=1
+  local attempts=0 rc=0 out=""
+  while :; do
+    attempts=$((attempts + 1))
+    rc=0
+    out="$(_je_one_record "$@")" || rc=$?
+    [ "$rc" -eq 4 ] || break
+    [ "$attempts" -lt "$max" ] || break
+    _je_notice_is_retryable "$out" || break
+    printf 'judge.sh: judge reply was unusable — retrying (attempt %s of %s): %s\n' \
+      "$((attempts + 1))" "$max" \
+      "$(jq -r '(.judge // {}).degradation_notice // "" | .[0:120]' <<<"$out" 2>/dev/null)" >&2
+  done
+  # Stamp the count ONLY when it carries information, i.e. when a retry
+  # actually happened. A first-attempt row is left BYTE-IDENTICAL to what it
+  # was before this wrapper existed, which keeps two things true: the rotation
+  # suite's byte-identical single-judge golden still holds, and `attempts` on a
+  # row means "this row was recovered" rather than being a 1 on every record
+  # that a reader has to learn to ignore.
+  #
+  # If the stamp itself fails the ORIGINAL row is printed unchanged — a
+  # bookkeeping field is never allowed to eat a real verdict.
+  local stamped
+  if [ "$attempts" -le 1 ]; then
+    printf '%s\n' "$out"
+  elif stamped="$(jq -c --argjson a "$attempts" \
+        'if (.judge|type) == "object" then .judge += {attempts: $a} else . end' <<<"$out" 2>/dev/null)" \
+     && [ -n "$stamped" ]; then
+    printf '%s\n' "$stamped"
+  else
+    printf '%s\n' "$out"
+  fi
+  return "$rc"
 }
 
 # ── record preservation for judge-batch (temperloop#1556) ────────────────
@@ -820,7 +911,7 @@ cmd_judge() {
   fi
 
   local result rc=0
-  result="$(_je_one_record "$record" "$rubric" "$provider" "$model" "$runner" "$live" "$prompt_out" "$owner_repo")" || rc=$?
+  result="$(_je_one_record_retrying "$record" "$rubric" "$provider" "$model" "$runner" "$live" "$prompt_out" "$owner_repo")" || rc=$?
   printf '%s\n' "$result"
   if [ -n "$out" ] && [ "$rc" -ne 1 ]; then printf '%s\n' "$result" >"$out"; fi
 
@@ -919,7 +1010,7 @@ cmd_judge_batch() {
     fi
 
     row_rc=0
-    row_out="$(_je_one_record "$row_file" "$rubric" "$provider" "$model" "$runner" "$live" "" "$owner_repo")" || row_rc=$?
+    row_out="$(_je_one_record_retrying "$row_file" "$rubric" "$provider" "$model" "$runner" "$live" "" "$owner_repo")" || row_rc=$?
 
     # ── rule 1: no input record is ever dropped OR overwritten. rc 0/4 are
     #    already "the record, annotated" (_je_one_record merged the judge
@@ -1068,7 +1159,7 @@ cmd_judge_rotate() {
     jp="${jr_providers[$idx]}"
     jm="${jr_models[$idx]}"
     one_rc=0
-    one_out="$(_je_one_record "$record" "$rubric" "$jp" "$jm" "$runner" "$live" "" "$owner_repo")" || one_rc=$?
+    one_out="$(_je_one_record_retrying "$record" "$rubric" "$jp" "$jm" "$runner" "$live" "" "$owner_repo")" || one_rc=$?
 
     tagged="$(jq -c --arg jp "$jp" --arg jm "$jm" \
       'if has("judge") then {rotation_provider:$jp, rotation_model:$jm} + .judge
