@@ -46,7 +46,7 @@ FAKE_KEY="sk-test-runner-gate-000000000000"
 for prov in openai gemini; do
   var=OPENAI_API_KEY; [ "$prov" = gemini ] && var=GEMINI_API_KEY
   out="$(env "$var=$FAKE_KEY" bash "$SUT" preflight --provider "$prov" 2>&1)"; rc=$?
-  if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q 'has no runner registered'; then
+  if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep 'has no runner registered' >/dev/null; then
     ok "'$prov' is refused at preflight even with $var SET (the runner gate, not the key gate)"
   else
     bad "$prov.refused" "rc=$rc out=$(printf '%s' "$out" | head -1)"
@@ -65,8 +65,8 @@ fi
 # Collapsing "unknown" into "no runner" would tell an operator to register a
 # provider that is already registered, and vice versa.
 out="$(bash "$SUT" preflight --provider mistral 2>&1)"; rc=$?
-if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q 'unknown provider' \
-   && ! printf '%s' "$out" | grep -q 'has no runner registered'; then
+if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep 'unknown provider' >/dev/null \
+   && ! printf '%s' "$out" | grep 'has no runner registered' >/dev/null; then
   ok "an unregistered provider reports 'unknown provider', NOT the runner message"
 else
   bad "unknown.distinct" "rc=$rc out=$(printf '%s' "$out" | head -1)"
@@ -91,7 +91,7 @@ fi
 # ── 6. the test seam FAILS CLOSED: EXTRA alone does not open the gate ───────
 out="$(env OPENAI_API_KEY="$FAKE_KEY" CANDIDATE_PROVIDER_RUNNER_EXTRA='openai:stub-runner' \
       bash "$SUT" preflight --provider openai 2>&1)"; rc=$?
-if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q 'has no runner registered'; then
+if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep 'has no runner registered' >/dev/null; then
   ok "CANDIDATE_PROVIDER_RUNNER_EXTRA is IGNORED without the explicit seam flag"
 else
   bad "seam.failclosed" "rc=$rc out=$(printf '%s' "$out" | head -1)"
@@ -109,7 +109,7 @@ fi
 out="$(env GEMINI_API_KEY="$FAKE_KEY" CANDIDATE_PROVIDER_TEST_SEAM=1 \
       CANDIDATE_PROVIDER_RUNNER_EXTRA='openai:stub-runner' \
       bash "$SUT" preflight --provider gemini 2>&1)"; rc=$?
-if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q 'has no runner registered'; then
+if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep 'has no runner registered' >/dev/null; then
   ok "…and a provider the seam does NOT name is still refused"
 else
   bad "seam.scoped" "rc=$rc out=$(printf '%s' "$out" | head -1)"
@@ -141,7 +141,7 @@ else
 fi
 
 out="$(env -u OPENAI_API_KEY bash "$SUT" preflight --provider openai --execution recorded 2>&1)"; rc=$?
-if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q 'API key is unset'; then
+if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep 'API key is unset' >/dev/null; then
   ok "…but --execution recorded still enforces the KEY gate"
 else
   bad "recorded.keygate" "rc=$rc out=$(printf '%s' "$out" | head -1)"
@@ -161,7 +161,7 @@ else
 fi
 
 out="$(env OPENAI_API_KEY="$FAKE_KEY" bash "$SUT" preflight --provider openai --execution sometimes 2>&1)"; rc=$?
-if [ "$rc" -eq 2 ] && printf '%s' "$out" | grep -q 'live|recorded'; then
+if [ "$rc" -eq 2 ] && printf '%s' "$out" | grep 'live|recorded' >/dev/null; then
   ok "an unrecognized --execution value is rejected (exit 2), never treated as recorded"
 else
   bad "execution.invalid" "rc=$rc out=$(printf '%s' "$out" | head -1)"
