@@ -100,6 +100,15 @@ _registry() {
 
 # _run <root> [extra env assignments...] — invoke the gate against <root>,
 # capture combined output in RUN_OUT and the exit code in RUN_RC.
+#
+# EVERY config path is pinned inside the fixture, including the two overlay
+# extensions (temperloop#1755). Leaving those at their defaults resolves them to
+# the REAL $SCRIPT_DIR/config/*.overlay.tsv — absent in this repo, so the suite
+# looked green, but present in a composed overlay, where the gate then read the
+# adopter's live rows while running against a scratch fixture root and reported
+# every one of their specs as missing. A test that reads config outside the
+# fixture it was handed is not testing the fixture. The `"$@"` below still lets
+# an individual case override either pin.
 RUN_OUT=""
 RUN_RC=0
 _run() {
@@ -113,6 +122,8 @@ _run() {
       MANDATORY_STEP_DISCOVERY_FILE="$root/ledger.tsv" \
       MANDATORY_STEP_SPEC_DIR="$root/claude/commands" \
       MANDATORY_STEP_QUALITY_GATES_FILE="$root/scripts/quality-gates.sh" \
+      MANDATORY_STEP_REGISTRY_OVERLAY_FILE="$WORK/no-such-registry.overlay.tsv" \
+      MANDATORY_STEP_DISCOVERY_OVERLAY_FILE="$WORK/no-such-discovery.overlay.tsv" \
       "$@" \
       bash "$GATE" 2>&1
   )"
@@ -480,6 +491,37 @@ printf 'claude/commands/never-adopted.md%sStep 1%s**Mandatory for every run:**%s
   "$TAB" "$TAB" "$TAB" "$TAB" "$TAB" "$TAB" "$TAB" >"$UA/registry.overlay.tsv"
 _run "$UA" MANDATORY_STEP_REGISTRY_OVERLAY_FILE="$UA/registry.overlay.tsv"
 _expect "an overlay-authored row naming a missing spec is still SPEC-NOT-FOUND" 1 "SPEC-NOT-FOUND"
+
+# ---------------------------------------------------------------------------
+# 31. temperloop#1755 — THE HARNESS ITSELF IS HERMETIC.
+#
+# Structural, not behavioural, and deliberately so: the failure it guards
+# cannot be reproduced from inside this suite without writing a file into the
+# repo's REAL config dir, which a test must never do. So instead it asserts
+# that every MANDATORY_STEP_*_FILE seam the gate reads is pinned inside _run.
+# Adding a third config file and forgetting to pin it is exactly how #1755
+# shipped — green here, and red in every composed overlay.
+# ---------------------------------------------------------------------------
+# Read the body once into a variable and match with `case`, rather than piping
+# into `grep -q` — lint-pipe-grep-q forbids that shape, and a `case` needs no
+# subprocess anyway.
+_run_body="$(awk '/^_run\(\) \{/,/^\}/' "$0")"
+count_pinned=0
+for _v in MANDATORY_STEP_REGISTRY_FILE MANDATORY_STEP_DISCOVERY_FILE \
+          MANDATORY_STEP_REGISTRY_OVERLAY_FILE MANDATORY_STEP_DISCOVERY_OVERLAY_FILE \
+          MANDATORY_STEP_QUALITY_GATES_FILE; do
+  case "$_run_body" in
+    *"$_v="*)
+    count_pinned=$((count_pinned + 1))
+    ;;
+  *)
+    bad "_run pins every config seam" "$_v is not pinned inside _run — it will resolve to the REAL config file and contaminate every fixture in a composed overlay (temperloop#1755)"
+    ;;
+  esac
+done
+if [ "$count_pinned" -eq 5 ]; then
+  ok "_run pins every config seam inside the fixture (harness hermeticity)"
+fi
 
 echo "---"
 echo "passed: $pass | failed: $fail"
