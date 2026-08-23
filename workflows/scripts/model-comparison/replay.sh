@@ -1799,10 +1799,31 @@ cmd_execute() {
   # `prompt_sha256`; comparability against the ORIGINAL run is not claimed,
   # and `template_sha` (recorded at the item's own base) is what lets a
   # later reader see whether the two trees' templates even agreed.
-  {
+  #
+  # WHAT prompt_sha256 COVERS (temperloop#1582): the prompt's CONTENT — the
+  # template text and the item's title / scope / source / acceptance list. It
+  # deliberately EXCLUDES the per-leg worktree path, which is an artifact of
+  # this harness's own isolation mechanism and differs between the two arms of
+  # every pair by construction. Two legs given the same item content therefore
+  # produce the same hash, which is the only thing that makes a DIFFERENCE
+  # meaningful.
+  # ONE generator, rendered twice (temperloop#1582). The workspace line is
+  # load-bearing in the prompt that is SENT — temperloop#1376 established that
+  # prompt prose plus the spawn cwd is how isolation is communicated — but $wt
+  # is unique per leg by construction, so hashing it made prompt_sha256 differ
+  # between the two arms of EVERY pair, always. Measured on the 2026-08-14 A/A
+  # run: records=21, identical_sha=0, differing_sha=21, on arms that received
+  # byte-identical item content. The field's one job is telling a reader whether
+  # two legs got the same prompt, and it was saturated at 100% noise — a false
+  # negative on every genuine divergence.
+  #
+  # Rendering the sent and hashed forms from the SAME function is what keeps
+  # this honest: a change to the template text moves both, so the hash stays
+  # sensitive to everything except the one token deliberately neutralised.
+  _exec_render_prompt() {  # <workspace-string>
     printf 'You are a /build implementation worker for a replayed item.\n\n'
     printf '## Workspace — STRICT isolation\n'
-    printf -- '- Your Bash cwd and ALL edits MUST be under: %s\n' "$wt"
+    printf -- '- Your Bash cwd and ALL edits MUST be under: %s\n' "$1"
     printf -- '- Commit on the current branch. Do NOT push. Do NOT open a PR.\n\n'
     printf '## Item\n'
     printf -- '- title: %s\n' "$(jq -r '.title // ""' "$record_file")"
@@ -1810,14 +1831,23 @@ cmd_execute() {
     printf -- '- source: %s\n\n' "$(jq -r '.issue // .pr // ""' "$record_file")"
     printf '## Acceptance (self-verify each before returning done)\n'
     jq -r '(.acceptance // [])[] | "  - " + .' "$record_file"
-  } >"$prompt_file"
+  }
+  _exec_render_prompt "$wt" >"$prompt_file"
   if [ -n "$prompt_out" ]; then cp "$prompt_file" "$prompt_out" 2>/dev/null || true; fi
+
+  # The CANONICAL form: identical except that the per-leg worktree path is
+  # replaced by a fixed token. Never sent anywhere — it exists only to be
+  # hashed. Substituted at RENDER time rather than by rewriting the sent
+  # prompt, so a worktree path that happened to contain regex or sed
+  # metacharacters cannot corrupt it.
+  local canon_file="$scratch_dir/prompt.canonical.txt"
+  _exec_render_prompt '<REPLAY_WORKTREE>' >"$canon_file"
 
   local prompt_sha
   if command -v sha256sum >/dev/null 2>&1; then
-    prompt_sha="$(sha256sum <"$prompt_file" | awk '{print $1}')"
+    prompt_sha="$(sha256sum <"$canon_file" | awk '{print $1}')"
   else
-    prompt_sha="$(shasum -a 256 <"$prompt_file" | awk '{print $1}')"
+    prompt_sha="$(shasum -a 256 <"$canon_file" | awk '{print $1}')"
   fi
 
   # ── run the candidate ─────────────────────────────────────────────────

@@ -1410,6 +1410,72 @@ count
 rm -f "$CANARY"
 ok "K2 the canary is functional — K1 is a measurement, not a tautology"
 
+# ═══════════════════════════════════════════════════════════════════════════
+# SECTION P — prompt_sha256 is invariant to per-leg incidentals (#1582)
+# ═══════════════════════════════════════════════════════════════════════════
+# The worktree path was hashed into prompt_sha256, and $wt is unique per leg by
+# construction — so the hash differed between the two arms of EVERY pair, always,
+# even on byte-identical item content. Measured on the 2026-08-14 A/A run:
+# records=21, identical_sha=0, differing_sha=21. The field exists to tell a
+# reader whether two legs got the same prompt; saturated at 100% noise it gave a
+# false negative on every genuine divergence instead.
+
+count
+# P1 — THE ACCEPTANCE CHECK: the same record, replayed under two DIFFERENT
+# worktree paths, produces the SAME hash.
+pw1="$(mk_wt)"; pw2="$(mk_wt)"
+[ "$pw1" != "$pw2" ] || fail "P1: the two fixture worktrees are the same path, so this proves nothing"
+run_exec good --record "$RECORD" --repo-root "$REPO" --worktree "$pw1" \
+  --candidate-runner "bash $STUB" >"$WORK/p1a.json" 2>/dev/null || true
+run_exec good --record "$RECORD" --repo-root "$REPO" --worktree "$pw2" \
+  --candidate-runner "bash $STUB" >"$WORK/p1b.json" 2>/dev/null || true
+p_sha_a="$(jq -r '.candidate.prompt_sha256 // ""' "$WORK/p1a.json")"
+p_sha_b="$(jq -r '.candidate.prompt_sha256 // ""' "$WORK/p1b.json")"
+[ -n "$p_sha_a" ] || fail "P1: no prompt_sha256 on the first leg: $(head -c 200 "$WORK/p1a.json")"
+[ "$p_sha_a" = "$p_sha_b" ] \
+  || fail "P1: the same record under two worktree paths must hash identically, got $p_sha_a vs $p_sha_b — the per-leg path is still in the hash"
+ok "P1 the same record replayed under two different worktree paths produces the SAME prompt_sha256"
+
+count
+# P2 — and the hash is still SENSITIVE. Hashing a constant would satisfy P1 and
+# destroy the field, so every substantive input must still move it.
+p_prev="$p_sha_a"
+for fld in title scope issue; do
+  MUT_REC="$WORK/rec-mut-$fld.json"
+  jq --arg f "$fld" '.[$f] = "MUTATED-\($f)"' "$RECORD" >"$MUT_REC"
+  run_exec good --record "$MUT_REC" --repo-root "$REPO" --worktree "$(mk_wt)" \
+    --candidate-runner "bash $STUB" >"$WORK/p2.json" 2>/dev/null || true
+  p_sha_m="$(jq -r '.candidate.prompt_sha256 // ""' "$WORK/p2.json")"
+  [ -n "$p_sha_m" ] || fail "P2: no prompt_sha256 after mutating $fld"
+  [ "$p_sha_m" != "$p_prev" ] \
+    || fail "P2: mutating '$fld' did not change prompt_sha256 — the hash has lost its sensitivity"
+done
+MUT_REC="$WORK/rec-mut-acceptance.json"
+jq '.acceptance = ["A completely different acceptance bullet."]' "$RECORD" >"$MUT_REC"
+run_exec good --record "$MUT_REC" --repo-root "$REPO" --worktree "$(mk_wt)" \
+  --candidate-runner "bash $STUB" >"$WORK/p2.json" 2>/dev/null || true
+[ "$(jq -r '.candidate.prompt_sha256 // ""' "$WORK/p2.json")" != "$p_prev" ] \
+  || fail "P2: mutating the acceptance list did not change prompt_sha256"
+ok "P2 …and the hash still moves on title, scope, source and acceptance — sensitivity is preserved, not traded away"
+
+count
+# P3 — the prompt actually SENT still names the real worktree. This is a change
+# to what is HASHED, never to what is sent: temperloop#1376 established that the
+# prompt prose plus the spawn cwd is how isolation is communicated, so quietly
+# dropping the path would break isolation to fix a diagnostic.
+P_OUT="$WORK/prompt-sent.txt"
+run_exec good --record "$RECORD" --repo-root "$REPO" --worktree "$pw1" \
+  --candidate-runner "bash $STUB" --prompt-out "$P_OUT" >/dev/null 2>&1 || true
+if [ -s "$P_OUT" ]; then
+  grep -F "$pw1" "$P_OUT" >/dev/null \
+    || fail "P3: the SENT prompt no longer names the real worktree path — isolation is communicated through that line"
+  grep -F '<REPLAY_WORKTREE>' "$P_OUT" >/dev/null \
+    && fail "P3: the canonical placeholder leaked into the prompt that is SENT"
+  ok "P3 the prompt SENT still names the real worktree path, and the canonical placeholder never leaks into it"
+else
+  fail "P3: --prompt-out produced nothing, so the sent prompt could not be inspected"
+fi
+
 echo
 echo "test_replay_score.sh: $pass/$total checks passed"
 [ "$pass" -eq "$total" ] || exit 1
