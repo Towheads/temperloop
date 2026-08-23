@@ -270,6 +270,23 @@ _mss_tsv_file() { # <file> -> \x1f-joined lines on stdout
 # _mss_tsv_files <file...> -> \x1f-joined rows, each PREFIXED with its source
 # file, so a failure names the file the row actually came from rather than
 # hardcoding the kernel path once the overlay extension is unioned in.
+# _mss_row_unadopted_upstream <src> -> rc 0 iff a row from <src> naming a spec
+# ABSENT here should be tolerated rather than failed (temperloop#1740). Same
+# rule as the check-surface gate: a vendoring consumer (repo-root .kernel-pin)
+# adopts a SUBSET of the kernel's command specs, so an upstream row naming an
+# unadopted one is expected. A row from an OVERLAY extension naming a missing
+# spec is still stale, and still fails.
+# Declared HERE, not beside the ratchet: `ratchet_lines=()` is initialised
+# after the parse loops, so a note appended during parsing would be wiped.
+unadopted_lines=()
+_mss_row_unadopted_upstream() {
+  [[ -f "$MANDATORY_STEP_GIT_REPO_ROOT/.kernel-pin" ]] || return 1
+  case "$1" in
+    "$MANDATORY_STEP_REGISTRY_OVERLAY_FILE" | "$MANDATORY_STEP_DISCOVERY_OVERLAY_FILE") return 1 ;;
+  esac
+  return 0
+}
+
 _mss_tsv_files() {
   local _f
   for _f in "$@"; do
@@ -378,7 +395,11 @@ if [[ -f "$MANDATORY_STEP_DISCOVERY_FILE" || -f "$MANDATORY_STEP_DISCOVERY_OVERL
     # line). Prune it in the same change that reworded the prose.
     spec_path="$(_mss_resolve_path "$d_spec")"
     if [[ ! -r "$spec_path" ]]; then
-      failures+=("LEDGER-SPEC-NOT-FOUND  $d_spec :: $d_anchor — the spec file does not exist or is not readable at $spec_path")
+      if _mss_row_unadopted_upstream "$src"; then
+        unadopted_lines+=("note: ledger row $d_spec :: $d_anchor names a command spec this repo did not adopt — an upstream row for unadopted content, skipped (temperloop#1740)")
+      else
+        failures+=("LEDGER-SPEC-NOT-FOUND  $d_spec :: $d_anchor — the spec file does not exist or is not readable at $spec_path")
+      fi
       continue
     fi
     if [[ "$(_mss_count_fixed "$spec_path" "$d_anchor")" -eq 0 ]]; then
@@ -431,7 +452,11 @@ while IFS=$'\x1f' read -r src r_spec r_step r_decl r_kind r_signal r_anchor r_ga
   # --- the DECLARATION half -------------------------------------------------
   spec_path="$(_mss_resolve_path "$r_spec")"
   if [[ ! -r "$spec_path" ]]; then
-    failures+=("SPEC-NOT-FOUND  $r_spec :: $r_decl — the spec file does not exist or is not readable at $spec_path")
+    if _mss_row_unadopted_upstream "$src"; then
+      unadopted_lines+=("note: registry row $r_spec :: $r_decl names a command spec this repo did not adopt — an upstream row for unadopted content, skipped (temperloop#1740)")
+    else
+      failures+=("SPEC-NOT-FOUND  $r_spec :: $r_decl — the spec file does not exist or is not readable at $spec_path")
+    fi
     continue
   fi
   decl_hits="$(_mss_count_fixed "$spec_path" "$r_decl")"
@@ -691,6 +716,9 @@ fi
 echo "Checked $n_registered registered (declaration, signal) pair(s) over $n_discovered discovered marker line(s) in ${MANDATORY_STEP_SPEC_DIR#"$MANDATORY_STEP_REPO_ROOT"/}"
 echo "Dispositions: $n_excluded excluded, $n_pending pending (see ${MANDATORY_STEP_DISCOVERY_FILE#"$MANDATORY_STEP_REPO_ROOT"/})"
 printf '%s\n' "${ratchet_lines[@]}"
+if (( ${#unadopted_lines[@]} > 0 )); then
+  printf '%s\n' "${unadopted_lines[@]}"
+fi
 if (( ${#notes[@]} > 0 )); then
   printf '%s\n' "${notes[@]}"
 fi

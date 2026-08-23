@@ -1539,6 +1539,77 @@ $out" ;;
 esac
 ok "40b temperloop#1738: the overlay pending set is shrink-only too — not a debt parking lot"
 
+# ---------------------------------------------------------------------------
+# 43-45. temperloop#1740 — AN UPSTREAM ROW FOR UNADOPTED CONTENT.
+#
+# A consumer adopts a SUBSET of the kernel's scripts, so a kernel-authored row
+# naming one it did not adopt is expected, not stale. The discriminator is a
+# repo-root .kernel-pin (the same one validate-agent-charter-links.sh uses).
+# 45 is the limit that keeps this from being a blanket mute.
+# ---------------------------------------------------------------------------
+UA="$WORK/d-unadopted"
+mkdir -p "$UA"
+: >"$UA/check-alpha.sh"
+printf 'check "%s" true\n' "$D_ANCHOR" >"$UA/test_alpha.sh"
+printf '#!/usr/bin/env bash\nGATES=(\n  "bash test_alpha.sh"\n)\n' >"$UA/quality-gates.sh"
+: >"$UA/allowlist.tsv"
+{
+  printf 'check-alpha.sh\tabsent\tcovered\ttest_alpha.sh\t%s\n' "$D_ANCHOR"
+  printf 'check-alpha.sh\tunreadable\tnot-applicable\t-\tno file-shaped input\n'
+  printf 'check-alpha.sh\tempty\tnot-applicable\t-\tno file-shaped input\n'
+} >"$UA/registry.tsv"
+# A kernel-authored ledger row naming a script this tree never adopted.
+printf 'workflows/scripts/dev/never-adopted.sh\texcluded\tupstream-only dev helper\n' >"$UA/ledger.tsv"
+
+# 43 FIRST — the baseline. With NO .kernel-pin this repo IS the kernel, so the
+# same row is a genuinely stale reference and must still be RED.
+count
+rc=0
+out="$(CSD_TEST_DISCOVERY_ROOT="$UA" CSD_TEST_DISCOVERY_FILE="$UA/ledger.tsv" \
+  run_gate "$UA/registry.tsv" "$UA/allowlist.tsv" "$UA/quality-gates.sh" "$UA" 2>&1)" || rc=$?
+[[ "$rc" -ne 0 ]] || fail "43: with no .kernel-pin a row naming a missing script must stay RED, got rc=0:
+$out"
+case "$out" in
+  *"SURFACE-NOT-FOUND"*) ;;
+  *) fail "43: expected SURFACE-NOT-FOUND without a .kernel-pin:
+$out" ;;
+esac
+ok "43 temperloop#1740: without a .kernel-pin a row naming a missing script is still stale (the baseline)"
+
+# 44. WITH a .kernel-pin the same kernel-authored row is tolerated.
+printf 'tag v0.0.0\n' >"$UA/.kernel-pin"
+count
+rc=0
+out="$(CSD_TEST_DISCOVERY_ROOT="$UA" CSD_TEST_DISCOVERY_FILE="$UA/ledger.tsv" \
+  run_gate "$UA/registry.tsv" "$UA/allowlist.tsv" "$UA/quality-gates.sh" "$UA" 2>&1)" || rc=$?
+[[ "$rc" -eq 0 ]] || fail "44: a vendoring consumer should tolerate an upstream row for unadopted content, got rc=$rc:
+$out"
+case "$out" in
+  *"did not adopt"*) ;;
+  *) fail "44: the tolerated row should still be REPORTED as a note:
+$out" ;;
+esac
+ok "44 temperloop#1740: a vendoring consumer tolerates an upstream row for content it did not adopt"
+
+# 45. THE LIMIT. The SAME missing path, in the consumer's OWN overlay
+#     extension, is genuinely stale and must still be RED — otherwise the
+#     .kernel-pin becomes a blanket mute and real rot hides behind it.
+: >"$UA/ledger.tsv"
+printf 'workflows/scripts/dev/never-adopted.sh\texcluded\tI wrote this row myself\n' >"$UA/mine.overlay.tsv"
+count
+rc=0
+out="$(CSD_TEST_DISCOVERY_ROOT="$UA" CSD_TEST_DISCOVERY_FILE="$UA/ledger.tsv" \
+  CSD_TEST_DISCOVERY_OVERLAY="$UA/mine.overlay.tsv" \
+  run_gate "$UA/registry.tsv" "$UA/allowlist.tsv" "$UA/quality-gates.sh" "$UA" 2>&1)" || rc=$?
+[[ "$rc" -ne 0 ]] || fail "45: an OVERLAY-authored row naming a missing script must stay RED, got rc=0:
+$out"
+case "$out" in
+  *"SURFACE-NOT-FOUND"*) ;;
+  *) fail "45: expected SURFACE-NOT-FOUND for the overlay-authored stale row:
+$out" ;;
+esac
+ok "45 temperloop#1740: an overlay-authored row naming a missing script is still stale — not a blanket mute"
+
 echo
 echo "$pass/$total tests passed"
 [[ "$pass" -eq "$total" ]] || exit 1

@@ -447,6 +447,40 @@ SPEC
   _expect "the overlay pending set is shrink-only too — not a debt parking lot" 1 "PENDING-GREW"
 fi
 
+# ---------------------------------------------------------------------------
+# 28-30. temperloop#1740 — AN UPSTREAM ROW FOR AN UNADOPTED COMMAND SPEC.
+#
+# A consumer adopts a SUBSET of the kernel's command specs, so a kernel registry
+# row naming one it did not adopt is expected, not broken. 30 is the limit.
+# ---------------------------------------------------------------------------
+UA="$(_scaffold unadopted)"
+_registry "$UA" tally sig/runner.mjs 'mandatory_ok: !skipped.length' -
+# A kernel registry row naming a spec this tree never adopted.
+printf 'claude/commands/never-adopted.md%sStep 1%s**Mandatory for every run:**%stally%ssig/runner.mjs%smandatory_ok%s-%sthe pass emits a per-run tally\n' \
+  "$TAB" "$TAB" "$TAB" "$TAB" "$TAB" "$TAB" "$TAB" >>"$UA/registry.tsv"
+: >"$UA/ledger.tsv"
+
+# 28 FIRST — the baseline. No .kernel-pin means this IS the kernel, so a row
+# naming a missing spec is genuinely broken and must stay RED.
+_run "$UA"
+_expect "without a .kernel-pin a row naming a missing spec is still SPEC-NOT-FOUND" 1 "SPEC-NOT-FOUND"
+
+# 29. WITH a .kernel-pin the same upstream row is tolerated.
+printf 'tag v0.0.0\n' >"$UA/.kernel-pin"
+_run "$UA"
+_expect "a vendoring consumer tolerates an upstream row for an unadopted spec" 0 "did not adopt"
+
+# 30. THE LIMIT. The same missing spec named by the consumer's OWN overlay
+#     registry is still broken — the .kernel-pin is not a blanket mute.
+#     The kernel registry is reset to the clean fixture first: leaving the row
+#     in BOTH files trips REGISTRY-DUPLICATE, which fails for the wrong reason
+#     and would prove nothing about the spec check.
+_registry "$UA" tally sig/runner.mjs 'mandatory_ok: !skipped.length' -
+printf 'claude/commands/never-adopted.md%sStep 1%s**Mandatory for every run:**%stally%ssig/runner.mjs%smandatory_ok%s-%sthe pass emits a per-run tally\n' \
+  "$TAB" "$TAB" "$TAB" "$TAB" "$TAB" "$TAB" "$TAB" >"$UA/registry.overlay.tsv"
+_run "$UA" MANDATORY_STEP_REGISTRY_OVERLAY_FILE="$UA/registry.overlay.tsv"
+_expect "an overlay-authored row naming a missing spec is still SPEC-NOT-FOUND" 1 "SPEC-NOT-FOUND"
+
 echo "---"
 echo "passed: $pass | failed: $fail"
 [ "$fail" -eq 0 ] || exit 1
