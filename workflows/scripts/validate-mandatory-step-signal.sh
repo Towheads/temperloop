@@ -635,11 +635,58 @@ _mss_file_added() {
   printf '%s\n' "$added" | grep -Fx -- "$relpath" >/dev/null
 }
 
+# _mss_physical_path <abs-path> -> the fully symlink-resolved (physical) form
+# on stdout: the final-component symlink chain is followed via the repo's
+# standard readlink loop (portable — no GNU readlink -f), then the containing
+# directory is physicalized with `cd -P`. A path whose parent directory does
+# not exist passes through unchanged (downstream -f/-r checks own that
+# failure). Ported from _csd_physical_path in
+# validate-check-surface-degenerate-coverage.sh (temperloop#1559), which
+# solved this for the sibling ratchet; temperloop#1787 is the same bug here.
+_mss_physical_path() {
+  local p="$1" dir
+  while [[ -L "$p" ]]; do
+    dir="$(cd -P "$(dirname "$p")" 2>/dev/null && pwd)" || { printf '%s\n' "$p"; return 0; }
+    p="$(readlink "$p")"
+    case "$p" in /*) ;; *) p="$dir/$p" ;; esac
+  done
+  dir="$(cd -P "$(dirname "$p")" 2>/dev/null && pwd)" || { printf '%s\n' "$p"; return 0; }
+  printf '%s/%s\n' "$dir" "$(basename "$p")"
+}
+
+# _mss_relpath <resolved-abs-path> -> the PHYSICAL path relative to the
+# PHYSICAL MANDATORY_STEP_GIT_REPO_ROOT on stdout, rc 1 (no output) if it is
+# not under that root at all.
+#
+# BOTH SIDES ARE PHYSICALIZED (temperloop#1787). In a composed overlay the
+# ledger files are compat SYMLINKS into the vendored kernel subtree, and
+# `git show <ref>:<symlink-path>` returns the link's TARGET TEXT rather than
+# the file content — while still exiting 0, so a `|| fallback` never fires.
+# The baseline then parses to zero rows and every current `pending` row reads
+# as newly added, false-failing the shrink-only ratchet on every run. It stayed
+# hidden until the symlinks stopped being new: the vendor that created them hit
+# the bootstrap exemption below, and the gate only broke once that PR MERGED.
+# Physicalizing the root too keeps a symlink-bearing root (e.g. macOS
+# /var -> /private/var) comparing apples to apples.
 _mss_relpath() {
-  local resolved="$1" relpath
-  relpath="${resolved#"$MANDATORY_STEP_GIT_REPO_ROOT"/}"
+  local resolved="$1" relpath root_phys
+  resolved="$(_mss_physical_path "$resolved")"
+  root_phys="$(cd -P "$MANDATORY_STEP_GIT_REPO_ROOT" 2>/dev/null && pwd)" || root_phys="$MANDATORY_STEP_GIT_REPO_ROOT"
+  relpath="${resolved#"$root_phys"/}"
   [[ "$relpath" != "$resolved" ]] || return 1
   printf '%s\n' "$relpath"
+}
+
+# _mss_kernel_squash_commit -> the newest subtree squash commit reachable from
+# HEAD carrying a `git-subtree-dir: kernel` trailer (the commit
+# `git subtree pull --prefix=kernel --squash` minted), empty + rc 1 if none.
+# Its tree IS the kernel repo root (unprefixed), so a path inside it drops the
+# leading `kernel/`. Ported alongside _mss_physical_path from the sibling gate.
+_mss_kernel_squash_commit() {
+  local squash
+  squash="$(git -C "$MANDATORY_STEP_GIT_REPO_ROOT" log -1 --format=%H --grep='^git-subtree-dir: kernel$' HEAD 2>/dev/null)"
+  [[ -n "$squash" ]] || return 1
+  printf '%s\n' "$squash"
 }
 
 # The pending set is a UNION across the kernel ledger and its overlay twin
@@ -691,7 +738,37 @@ if [[ -z "$_mss_ratchet_skip_reason" ]]; then
     fi
     _mss_prev="$(git -C "$MANDATORY_STEP_GIT_REPO_ROOT" show "${_mss_base_ref}:${_mss_ledger_relpath}" 2>/dev/null)" || _mss_prev=""
     _mss_allow_add "$(_mss_pending_from_content "$_mss_prev")"
-    ratchet_lines+=("pending ratchet: checked against $_mss_base_ref:$_mss_ledger_relpath")
+
+    # Vendored-kernel subtree arm (temperloop#1787, mirroring the sibling
+    # gate's temperloop#1559 arm). When this repo carries `.kernel-pin` AND the
+    # PHYSICAL ledger path lands under `kernel/`, its rows are upstream-owned:
+    # hand edits inside kernel/ are forbidden, and upstream's own CI already ran
+    # this same shrink-only ratchet when a row was added there. Re-ratcheting
+    # them against the OVERLAY's base ref would false-fail every vendor bump
+    # that grows the ledger. So a current row also passes when present in the
+    # vendored kernel's own pulled content — the tree of the newest subtree
+    # squash commit. A row hand-edited into kernel/'s copy is in NEITHER set and
+    # still fails PENDING-GREW, so the shrink-only intent survives per-row.
+    _mss_ledger_squash=""
+    _mss_ledger_arm_note=""
+    if [[ -f "$MANDATORY_STEP_GIT_REPO_ROOT/.kernel-pin" ]]; then
+      case "$_mss_ledger_relpath" in
+        kernel/*)
+          _mss_ledger_squash="$(_mss_kernel_squash_commit)" || _mss_ledger_squash=""
+          if [[ -z "$_mss_ledger_squash" ]]; then
+            # Degrade FAIL-CLOSED and SAY so: .kernel-pin is present and the
+            # ledger is under kernel/, but the upstream side of the comparison
+            # could not be read. Reporting a fully-checked ratchet when half its
+            # input was unavailable is the failure this notice exists to prevent.
+            _mss_ledger_arm_note=" (vendored-kernel arm SKIPPED — .kernel-pin present and $_mss_ledger_relpath is under kernel/, but no git-subtree-dir squash commit is reachable, so the upstream pending set could not be read)"
+          else
+            _mss_up="$(git -C "$MANDATORY_STEP_GIT_REPO_ROOT" show "${_mss_ledger_squash}:${_mss_ledger_relpath#kernel/}" 2>/dev/null)" || _mss_up=""
+            _mss_allow_add "$(_mss_pending_from_content "$_mss_up")"
+          fi
+          ;;
+      esac
+    fi
+    ratchet_lines+=("pending ratchet: checked against $_mss_base_ref:$_mss_ledger_relpath${_mss_ledger_squash:+ + vendored-kernel squash $_mss_ledger_squash}${_mss_ledger_arm_note:-}")
   done
   if [[ -n "$ledger_pending" ]]; then
     while IFS= read -r cur; do

@@ -523,6 +523,71 @@ if [ "$count_pinned" -eq 5 ]; then
   ok "_run pins every config seam inside the fixture (harness hermeticity)"
 fi
 
+echo "== the ratchet reads a SYMLINKED ledger's content, not its link target (temperloop#1787) =="
+
+# In a composed overlay the ledger is a compat SYMLINK into the vendored kernel
+# subtree. `git show <ref>:<symlink-path>` returns the link's TARGET TEXT rather
+# than the file content -- and exits 0, so a `|| fallback` never fires. The
+# baseline then parses to ZERO rows and every current 'pending' row reads as
+# newly added, false-failing this shrink-only ratchet on every run.
+#
+# Every other fixture in this file uses a REAL ledger file, which is exactly why
+# the whole suite passed while the gate was broken in every composed consumer.
+# These cases use a symlinked ledger on purpose.
+if ! command -v git >/dev/null 2>&1; then
+  echo "  skip  symlinked-ledger cases — git not available"
+else
+  SL="$(_scaffold symlinkledger)"
+  _registry "$SL" tally sig/runner.mjs 'mandatory_ok: !skipped.length' -
+  # The ledger lives under kernel/ and is reached through a compat symlink,
+  # mirroring the composed-overlay layout.
+  mkdir -p "$SL/kernel"
+  printf 'claude/commands/demo.md%sSome ordinary prose%spending%spre-existing debt\n' \
+    "$TAB" "$TAB" "$TAB" >"$SL/kernel/ledger.tsv"
+  rm -f "$SL/ledger.tsv"
+  ln -s kernel/ledger.tsv "$SL/ledger.tsv"
+  (
+    cd "$SL" || exit 1
+    git init -q .
+    git config user.email t@example.com
+    git config user.name t
+    git add -A
+    git commit -qm base
+  ) >/dev/null 2>&1
+  SL_BASE="$(git -C "$SL" rev-parse HEAD)"
+
+  # The symlink is COMMITTED at the base ref, so the bootstrap exemption does not
+  # fire -- which is the whole point. The bug stayed hidden until the symlinks
+  # stopped being new: the vendor that created them was exempt, and the gate only
+  # broke once that PR MERGED.
+  MSS_GIT_ROOT="$SL" _run "$SL" MANDATORY_STEP_BASE_REF="$SL_BASE"
+  _expect "an unchanged SYMLINKED ledger ratchets green (link target is not TSV)" 0 "validate-mandatory-step-signal: OK"
+
+  # And the ratchet must say WHICH path it actually compared -- the physical one.
+  case "$RUN_OUT" in
+    *"kernel/ledger.tsv"*) ok "the ratchet reports the PHYSICAL ledger path it compared" ;;
+    *) bad "the ratchet reports the PHYSICAL ledger path it compared" "expected the resolved kernel/ledger.tsv path in the ratchet line, got: $RUN_OUT" ;;
+  esac
+
+  # Shrink-only intent must SURVIVE the fix: resolving the path must not also
+  # swallow real growth. A fix that turns a false failure into a false pass has
+  # traded one silent failure for another.
+  printf 'claude/commands/demo.md%s**Mandatory for every run:**%spending%snewly parked through a symlinked ledger\n' \
+    "$TAB" "$TAB" "$TAB" >>"$SL/kernel/ledger.tsv"
+  MSS_GIT_ROOT="$SL" _run "$SL" MANDATORY_STEP_BASE_REF="$SL_BASE"
+  _expect "a NEW pending row through a SYMLINKED ledger still fails" 1 "PENDING-GREW"
+
+  # Fail-closed arm: .kernel-pin present and the ledger under kernel/, but no
+  # subtree squash commit reachable. The upstream half of the comparison is
+  # UNKNOWN, and the verdict line must SAY so rather than read as fully checked.
+  printf 'tag v0.0.0\n' >"$SL/.kernel-pin"
+  MSS_GIT_ROOT="$SL" _run "$SL" MANDATORY_STEP_BASE_REF="$SL_BASE"
+  case "$RUN_OUT" in
+    *"vendored-kernel arm SKIPPED"*) ok "an unreachable subtree squash is ANNOUNCED, not silently treated as checked" ;;
+    *) bad "an unreachable subtree squash is ANNOUNCED" "expected a 'vendored-kernel arm SKIPPED' notice, got: $RUN_OUT" ;;
+  esac
+fi
+
 echo "---"
 echo "passed: $pass | failed: $fail"
 [ "$fail" -eq 0 ] || exit 1
