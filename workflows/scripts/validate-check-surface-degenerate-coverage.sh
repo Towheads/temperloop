@@ -334,6 +334,7 @@ unset _csd_ov
 
 # Named once so the EMPTY-REGISTRY message below reports what was actually
 # read, not just the kernel half.
+superseded_lines=()
 _csd_registry_overlay_note=""
 [[ -f "$CHECK_SURFACE_REGISTRY_OVERLAY_FILE" ]] \
   && _csd_registry_overlay_note=" (+ overlay extension $CHECK_SURFACE_REGISTRY_OVERLAY_FILE)"
@@ -382,6 +383,28 @@ _csd_tsv_file() { # <file> -> \x1f-joined lines on stdout
 # someone hunting a bad row in a file that does not contain it. A missing or
 # unreadable file contributes nothing here — both are dispositioned by the
 # explicit guards above, so silence at this point is already decided, not lost.
+# _csd_row_unadopted_upstream <src> -> rc 0 iff a row from <src> naming a path
+# that is ABSENT here should be tolerated rather than failed (temperloop#1740).
+#
+# True only when BOTH hold: this repo is a vendoring consumer (a repo-root
+# .kernel-pin, the same discriminator validate-agent-charter-links.sh already
+# uses for "a consumer that did not adopt the review agents"), AND the row came
+# from a KERNEL-owned source file rather than an overlay extension. A consumer
+# adopts a SUBSET of the kernel's scripts and command specs, so an upstream row
+# naming one it did not adopt is expected, not stale.
+#
+# The overlay extensions are excluded deliberately: a row a consumer wrote
+# ITSELF, naming a file that is not there, IS stale and must still fail. That is
+# the difference between "upstream ships more than I adopted" and "my own ledger
+# has rotted", and collapsing the two would let real rot hide.
+_csd_row_unadopted_upstream() {
+  [[ -f "$CHECK_SURFACE_GIT_REPO_ROOT/.kernel-pin" ]] || return 1
+  case "$1" in
+    "$CHECK_SURFACE_REGISTRY_OVERLAY_FILE" | "$CHECK_SURFACE_DISCOVERY_OVERLAY_FILE") return 1 ;;
+  esac
+  return 0
+}
+
 _csd_tsv_files() {
   local _f
   for _f in "$@"; do
@@ -545,7 +568,11 @@ while IFS=$'\x1f' read -r src surface case_ status test_file detail || [[ -n "${
   # newly-seen surface (cheap, and avoids 3 duplicate failure lines for the
   # same bad surface across its three case rows).
   if [[ "$is_new_surface" -eq 1 ]] && ! _csd_surface_exists "$surface"; then
-    failures+=("SURFACE-NOT-FOUND  $surface — the script half ($(_csd_surface_script "$surface")) does not exist in the tree")
+    if _csd_row_unadopted_upstream "$src"; then
+      superseded_lines+=("note: registry row $surface names a script this repo did not adopt ($(_csd_surface_script "$surface")) — an upstream row for unadopted content, skipped (temperloop#1740)")
+    else
+      failures+=("SURFACE-NOT-FOUND  $surface — the script half ($(_csd_surface_script "$surface")) does not exist in the tree")
+    fi
   fi
 
   if [[ "$status" == "covered" ]]; then
@@ -668,7 +695,11 @@ if [[ -f "$CHECK_SURFACE_DISCOVERY_FILE" || -f "$CHECK_SURFACE_DISCOVERY_OVERLAY
       failures+=("DISPOSITION-UNJUSTIFIED  $d_surface — every discovery-ledger row requires a non-empty REASON (a disposition without a reason is the silence this ledger exists to end)")
     fi
     if ! _csd_discovery_surface_exists "$d_surface"; then
-      failures+=("SURFACE-NOT-FOUND  $d_surface — the script half ($(_csd_surface_script "$d_surface")) does not exist in the tree (a stale discovery-ledger row: prune it)")
+      if _csd_row_unadopted_upstream "$src"; then
+        superseded_lines+=("note: discovery-ledger row $d_surface names a script this repo did not adopt ($(_csd_surface_script "$d_surface")) — an upstream row for unadopted content, skipped (temperloop#1740)")
+      else
+        failures+=("SURFACE-NOT-FOUND  $d_surface — the script half ($(_csd_surface_script "$d_surface")) does not exist in the tree (a stale discovery-ledger row: prune it)")
+      fi
     fi
     discovery_surfaces="$discovery_surfaces$d_surface
 "
@@ -682,7 +713,6 @@ fi
 # would make every such registration a two-PR dance. The row is reported so
 # it gets pruned, and it can never HIDE anything — the surface is compliant
 # by the registry's own rules either way.
-superseded_lines=()
 if [[ -n "$discovery_surfaces" ]]; then
   while IFS= read -r d_surface; do
     [[ -z "$d_surface" ]] && continue
