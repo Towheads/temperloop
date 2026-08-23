@@ -1429,6 +1429,40 @@ count
   || fail "Q7: expected 22 candidate-judged rows"
 ok "Q7 a row judged in only one arm contributes no delta rather than a substituted zero"
 
+count
+# Q8 — AN ARM THAT JUDGED NOTHING. A batch whose candidate legs are every one
+# an integration-error record produces exactly this: baseline rows judged,
+# candidate rows carrying no judge block at all. The relative-delta bindings
+# guard the DENOMINATOR (the baseline mean), which is not enough — the
+# numerator can be null too, and `null - 70` aborts the whole derivation,
+# taking the entire report down with it rather than reporting one axis as
+# unavailable. Caught in CI by test_replay_batch.sh J1, pinned here at the
+# producer where the defect actually lives.
+NOJ="$WORK/no-judged-candidate"
+mkrepo "$NOJ"
+record 700 claude-opus-4-8 5000 100 pass true JUDGED 70 2026-08-20 scored \
+  >"$NOJ/.temperloop/model-comparison/baseline.jsonl"
+record 700 claude-sonnet-5 4200 100 pass true none 0 2026-08-20 scored \
+  >"$NOJ/.temperloop/model-comparison/candidate.jsonl"
+lake "$NOJ" pipeline-drive-safe retro-judge
+run "$NOJ"
+NOJ_OUT="$WORK/no-judged-candidate.json"; cp "$RUN_OUT" "$NOJ_OUT"
+[ "$RUN_RC" -eq 0 ] \
+  || fail "Q8: an arm with zero judged rows must not take the report down, got rc=$RUN_RC: $(head -c 300 "$NOJ_OUT")"
+jq -e 'type == "object" and has("schema_version")' "$NOJ_OUT" >/dev/null 2>&1 \
+  || fail "Q8: the producer skipped instead of reporting: $(head -c 300 "$NOJ_OUT")"
+[ "$(jqf "$NOJ_OUT" '.quality_comparison.paired.n')" = "0" ] \
+  || fail "Q8: expected 0 paired quality outcomes, got $(jqf "$NOJ_OUT" '.quality_comparison.paired.n')"
+[ "$(jqf "$NOJ_OUT" '.quality_comparison.unpaired.candidate_mean')" = "null" ] \
+  || fail "Q8: an arm that judged nothing must report a null mean, never a substituted 0"
+[ "$(jqf "$NOJ_OUT" '.quality_comparison.statistics_unavailable_reason')" != "null" ] \
+  || fail "Q8: the quality axis must say WHY it has no statistics, not fall silent"
+# The COST axis is untouched by a quality-side absence — the two must degrade
+# independently, or one missing judge takes the whole comparison with it.
+[ "$(jqf "$NOJ_OUT" '.comparison.paired_outcomes_n')" = "1" ] \
+  || fail "Q8: the cost axis must still pair normally when the quality axis cannot: $(jqf "$NOJ_OUT" '.comparison.paired_outcomes_n')"
+ok "Q8 an arm that judged nothing degrades the quality axis alone — named reason, null means, cost axis intact"
+
 echo
 echo "test_comparison_report.sh: $pass/$total checks passed"
 [ "$pass" -eq "$total" ] || exit 1
