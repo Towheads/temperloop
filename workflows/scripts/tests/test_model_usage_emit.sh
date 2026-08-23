@@ -212,12 +212,25 @@ for _m in "not a model" "CLAUDE-OPUS-5" "claude-" "-claude" "x"; do
   check_not "a malformed model id still FAILS: '$_m'" bash "$LINT" --file "$TMP/malformed.jsonl"
 done
 
-# The `unknown` sentinel gets its OWN verdict — different owner, different fix
-# (temperloop#1643) — rather than being swallowed into a malformed-id failure.
+# THE HONEST-DEGRADATION CASE (temperloop#1643). `usage_source: "unavailable"`
+# is the emitter saying "a seat spawned and I could not observe it" — provider,
+# tokens and weighted_units all null. There is genuinely no model to name.
+#
+# #1643 framed this as a fork (skip the record, or admit the sentinel). The epic
+# settles it: #1225 Produces #1 requires "every kernel-spawned seat emits one
+# record per run", and the emit-coverage percentage is computed from those
+# records EXISTING — so skipping would break the contract the stream is for.
+printf '%s\n' '{"schema_version":"1","ts":"2026-08-14T23:06:52Z","session_id":null,"repo":null,"seat":"replay-candidate","model":"unknown","provider":null,"usage_source":"unavailable","tokens":null,"weighted_units":null,"duration_ms":3732,"outcome_ref":"issue:1485"}' > "$TMP/degraded.jsonl"
+check "an 'unknown' model on an UNAVAILABLE record VALIDATES — honest degradation, not a defect" \
+  bash "$LINT" --file "$TMP/degraded.jsonl"
+
+# DISCRIMINATION, which is what keeps the fix from being a blanket exemption:
+# a cli-envelope record means a real call returned a real envelope, so a model
+# WAS resolvable and `unknown` there is a genuine emitter defect.
 printf '%s\n' '{"schema_version":"1","ts":"2026-08-08T12:00:00Z","session_id":null,"repo":null,"seat":"x","model":"unknown","provider":"anthropic","usage_source":"cli-envelope","tokens":{"input":1,"output":1,"cache_read":0,"cache_creation":0},"weighted_units":6,"duration_ms":null,"outcome_ref":"issue:1"}' > "$TMP/unresolved.jsonl"
-check_not "the 'unknown' sentinel still FAILS" bash "$LINT" --file "$TMP/unresolved.jsonl"
-check "...under its OWN verdict, naming the emitter disagreement rather than a bad id" bash -c \
-  "bash '$LINT' --file '$TMP/unresolved.jsonl' 2>&1 | grep -F 'MODEL-UNRESOLVED' >/dev/null"
+check_not "…but 'unknown' on an OBSERVED (cli-envelope) record still FAILS" bash "$LINT" --file "$TMP/unresolved.jsonl"
+check "...under its OWN verdict, naming what made it a defect rather than a bad id" bash -c \
+  "bash '$LINT' --file '$TMP/unresolved.jsonl' 2>&1 | grep -F \"not 'unavailable'\" >/dev/null"
 
 echo "── 7. NO CROSS-REPO IDENTIFIER: a record carrying 'host' FAILS (ADR 0028) ──"
 printf '{"schema_version":"1","ts":"2026-08-08T12:00:00Z","session_id":null,"repo":null,"seat":"x","model":"claude-sonnet-5","provider":null,"usage_source":"unavailable","tokens":null,"weighted_units":null,"duration_ms":null,"outcome_ref":"issue:1","host":"my-mac"}\n' > "$TMP/host.jsonl"

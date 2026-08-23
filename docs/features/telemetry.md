@@ -97,7 +97,14 @@ The streams a bare checkout of this repo emits:
   on). A `usage_source` field (`cli-envelope` vs `unavailable`) discriminates
   a token-bearing record from an attribution-only one, since not every
   emit-feasible seat can see both a seat identity and a token count at spawn
-  time. Unlike every sibling stream above, this one deliberately carries no
+  time. **On an `unavailable` record the `model` field may be the literal
+  `unknown`**, and content validation admits it there: the seat spawned and
+  nothing about it could be observed, so there is genuinely no model to name,
+  and the record still counts toward emit coverage — the stream's contract is
+  one record per spawned seat, so suppressing it would hide the spawn rather
+  than report it honestly. The same `unknown` on a `cli-envelope` record is a
+  **defect** and fails validation: an observed call returned an envelope, so a
+  model was resolvable and the emitter failed to resolve it. Unlike every sibling stream above, this one deliberately carries no
   `host` field — ADR 0028 requires attribution records to carry a seat role
   name rather than any cross-repo operator identifier, so two repos'
   streams can never be correlated. See

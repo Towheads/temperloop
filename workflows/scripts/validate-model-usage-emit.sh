@@ -386,11 +386,35 @@ def validate_line(line):
     # into a malformed-id failure: it has a different owner and a different fix
     # (temperloop#1643, the emitter/validator disagreement over honest
     # degradation).
+    # THE HONEST-DEGRADATION CASE (temperloop#1643).
+    #
+    # `usage_source: "unavailable"` is the emitter saying "a seat spawned, and I
+    # could not observe it" — provider, tokens and weighted_units all null. There
+    # is genuinely no model to name, and `unknown` is the sanctioned sentinel
+    # (emit-model-usage.sh requires a non-empty --model, so a caller with nothing
+    # to report has to write something).
+    #
+    # #1643 framed this as a fork — either the emitter should skip the record, or
+    # the validator should admit `unknown`. The epic settles it rather than taste:
+    # #1225 Produces #1 requires "every kernel-spawned seat emits one record per
+    # run", and its acceptance has "a validator flags any spawn site without
+    # emission". The emit-coverage percentage is computed from those records
+    # EXISTING. So skipping would break the contract the stream is for, and the
+    # validator is the half that has to move.
+    #
+    # Admitted ONLY under `unavailable`. A `cli-envelope` record means a real call
+    # returned a real envelope, so a model was resolvable and `unknown` there is a
+    # genuine emitter defect — not degradation to forgive.
     if model == "unknown":
-        return ("FAIL MODEL-UNRESOLVED: model is the literal 'unknown' sentinel — the emitter could "
-                "not resolve which model actually ran. That is an emitter/validator disagreement "
-                "about honest degradation, not a malformed id (temperloop#1643)")
-    if not _MODEL_ID_RE.match(model):
+        if rec.get("usage_source") == "unavailable":
+            pass
+        else:
+            return ("FAIL MODEL-UNRESOLVED: model is the literal 'unknown' sentinel on a record whose "
+                    "usage_source is " + repr(rec.get("usage_source")) + ", not 'unavailable'. An "
+                    "observed call returned an envelope, so a model WAS resolvable and the emitter "
+                    "failed to resolve it — that is a defect, not honest degradation. `unknown` is "
+                    "admitted only where nothing could be observed (temperloop#1643)")
+    elif not _MODEL_ID_RE.match(model):
         return ("FAIL MODEL-SHAPE: model '" + model + "' does not look like a vendor model id — "
                 "want lowercase alphanumeric segments joined by - . _ or / (e.g. claude-opus-4-8, "
                 "claude-fable-5, gpt-4.1-mini). Deliberately vendor-agnostic: this harness compares "
