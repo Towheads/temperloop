@@ -225,10 +225,34 @@ check_not "the ACCEPTANCE-MANDATED case: valid shape, provider=openai (not in th
   bash "$LINT" --file "$TMP/bad-provider.jsonl"
 check "...and names the violation" bash -c \
   "bash '$LINT' --file '$TMP/bad-provider.jsonl' 2>&1 | grep -F \"PROVIDER-ENUM: provider 'openai'\" >/dev/null"
-printf '{"schema_version":"1","ts":"2026-08-08T12:00:00Z","session_id":null,"repo":null,"seat":"x","model":"claude-turbo-1","provider":"anthropic","usage_source":"cli-envelope","tokens":{"input":1,"output":1,"cache_read":0,"cache_creation":0},"weighted_units":6,"duration_ms":null,"outcome_ref":"issue:1"}\n' > "$TMP/bad-model.jsonl"
-check_not "valid shape, model='claude-turbo-1' (no known family) FAILS" bash "$LINT" --file "$TMP/bad-model.jsonl"
+# temperloop#1756: the model check is STRUCTURAL, not a family enum. It was
+# `("opus","sonnet","haiku")` behind a required `claude-` prefix, which
+# hard-FAILED 14 records of the real, current `claude-fable-5` and could never
+# express the cross-vendor candidates this harness exists to compare.
+printf '%s\n' '{"schema_version":"1","ts":"2026-08-08T12:00:00Z","session_id":null,"repo":null,"seat":"x","model":"Claude Opus","provider":"anthropic","usage_source":"cli-envelope","tokens":{"input":1,"output":1,"cache_read":0,"cache_creation":0},"weighted_units":6,"duration_ms":null,"outcome_ref":"issue:1"}' > "$TMP/bad-model.jsonl"
+check_not "valid shape, model='Claude Opus' (spaces and capitals — not an id) FAILS" bash "$LINT" --file "$TMP/bad-model.jsonl"
 check "...and names the violation" bash -c \
-  "bash '$LINT' --file '$TMP/bad-model.jsonl' 2>&1 | grep -F 'MODEL-ENUM' >/dev/null"
+  "bash '$LINT' --file '$TMP/bad-model.jsonl' 2>&1 | grep -F 'MODEL-SHAPE' >/dev/null"
+
+# THE REGRESSION THIS SECTION EXISTS FOR: a real model must validate. Each of
+# these was rejected by the family enum, or would have been.
+for _m in claude-fable-5 claude-opus-4-8 claude-sonnet-5 gpt-4.1-mini meta-llama/llama-3 gemini-2.0-flash; do
+  printf '%s\n' "{\"schema_version\":\"1\",\"ts\":\"2026-08-08T12:00:00Z\",\"session_id\":null,\"repo\":null,\"seat\":\"x\",\"model\":\"$_m\",\"provider\":\"anthropic\",\"usage_source\":\"cli-envelope\",\"tokens\":{\"input\":1,\"output\":1,\"cache_read\":0,\"cache_creation\":0},\"weighted_units\":6,\"duration_ms\":null,\"outcome_ref\":\"issue:1\"}" > "$TMP/ok-model.jsonl"
+  check "a real model id validates: $_m" bash "$LINT" --file "$TMP/ok-model.jsonl"
+done
+
+# …and genuinely malformed ids still fail, so the check kept its teeth.
+for _m in "not a model" "CLAUDE-OPUS-5" "claude-" "-claude" "x"; do
+  printf '%s\n' "{\"schema_version\":\"1\",\"ts\":\"2026-08-08T12:00:00Z\",\"session_id\":null,\"repo\":null,\"seat\":\"x\",\"model\":\"$_m\",\"provider\":\"anthropic\",\"usage_source\":\"cli-envelope\",\"tokens\":{\"input\":1,\"output\":1,\"cache_read\":0,\"cache_creation\":0},\"weighted_units\":6,\"duration_ms\":null,\"outcome_ref\":\"issue:1\"}" > "$TMP/malformed.jsonl"
+  check_not "a malformed model id still FAILS: '$_m'" bash "$LINT" --file "$TMP/malformed.jsonl"
+done
+
+# The `unknown` sentinel gets its OWN verdict — different owner, different fix
+# (temperloop#1643) — rather than being swallowed into a malformed-id failure.
+printf '%s\n' '{"schema_version":"1","ts":"2026-08-08T12:00:00Z","session_id":null,"repo":null,"seat":"x","model":"unknown","provider":"anthropic","usage_source":"cli-envelope","tokens":{"input":1,"output":1,"cache_read":0,"cache_creation":0},"weighted_units":6,"duration_ms":null,"outcome_ref":"issue:1"}' > "$TMP/unresolved.jsonl"
+check_not "the 'unknown' sentinel still FAILS" bash "$LINT" --file "$TMP/unresolved.jsonl"
+check "...under its OWN verdict, naming the emitter disagreement rather than a bad id" bash -c \
+  "bash '$LINT' --file '$TMP/unresolved.jsonl' 2>&1 | grep -F 'MODEL-UNRESOLVED' >/dev/null"
 
 echo "── 7. NO CROSS-REPO IDENTIFIER: a record carrying 'host' FAILS (ADR 0028) ──"
 printf '{"schema_version":"1","ts":"2026-08-08T12:00:00Z","session_id":null,"repo":null,"seat":"x","model":"claude-sonnet-5","provider":null,"usage_source":"unavailable","tokens":null,"weighted_units":null,"duration_ms":null,"outcome_ref":"issue:1","host":"my-mac"}\n' > "$TMP/host.jsonl"
@@ -365,17 +389,17 @@ chmod +x "$FIXR/workflows/scripts/validate-model-usage-emit.sh"
 check_not "RESTORED: the isolated-NaN fixture is rejected again" \
   bash "$FIXR/workflows/scripts/validate-model-usage-emit.sh" --file "$TMP/nan-isolated.jsonl"
 
-echo "── 13. MUTATION: the model-family enum check is load-bearing ──"
-check_not "BEFORE tamper: fixture validator rejects claude-turbo-1" \
+echo "── 13. MUTATION: the model-id SHAPE check is load-bearing ──"
+check_not "BEFORE tamper: fixture validator rejects 'Claude Opus'" \
   bash "$FIXR/workflows/scripts/validate-model-usage-emit.sh" --file "$TMP/bad-model.jsonl"
-sed -e 's/if segments\[0\] != "claude" or not any(seg in KNOWN_FAMILIES for seg in segments\[1:\]):/if False:/' \
+sed -e 's/if not _MODEL_ID_RE.match(model):/if False:/' \
   "$LINT" > "$FIXR/workflows/scripts/validate-model-usage-emit.sh"
 chmod +x "$FIXR/workflows/scripts/validate-model-usage-emit.sh"
-check "AFTER tamper (family check neutered): claude-turbo-1 WRONGLY passes" \
+check "AFTER tamper (shape check neutered): 'Claude Opus' WRONGLY passes" \
   bash "$FIXR/workflows/scripts/validate-model-usage-emit.sh" --file "$TMP/bad-model.jsonl"
 cp "$LINT" "$FIXR/workflows/scripts/validate-model-usage-emit.sh"
 chmod +x "$FIXR/workflows/scripts/validate-model-usage-emit.sh"
-check_not "RESTORED: claude-turbo-1 is rejected again" \
+check_not "RESTORED: 'Claude Opus' is rejected again" \
   bash "$FIXR/workflows/scripts/validate-model-usage-emit.sh" --file "$TMP/bad-model.jsonl"
 
 echo "── 14. MUTATION: the provider-allowlist membership check is load-bearing ──"
@@ -607,16 +631,20 @@ A4_RC=$?
 check_eq "a directory matching the glob: exits 0 cleanly (nothing real to scan)" "0" "$A4_RC"
 check "...no bash 'unbound variable' trace leaked" bash -c "! grep -Fiq 'unbound variable' <<<\"\$1\"" _ "$A4_OUT"
 
+# The failing records here are malformed IDS ("Bad Model Name"), not
+# out-of-enum families: temperloop#1756 replaced the family enum with a
+# structural check, so `claude-turbo-1` is now a perfectly valid SHAPE and
+# would no longer fail. This section only needs SOME failing record.
 echo "── 27. advisory A5: FAIL line numbers are per-FILE (reset), not a running total across files ──"
 A5_DIR="$TMP/a5-lake"
 mkdir -p "$A5_DIR"
 printf '%s\n%s\n%s\n' \
   '{"schema_version":"1","ts":"2026-08-08T12:00:00Z","session_id":null,"repo":null,"seat":"x","model":"claude-sonnet-5","provider":null,"usage_source":"unavailable","tokens":null,"weighted_units":null,"duration_ms":null,"outcome_ref":"issue:1"}' \
   '{"schema_version":"1","ts":"2026-08-08T12:00:00Z","session_id":null,"repo":null,"seat":"x","model":"claude-sonnet-5","provider":null,"usage_source":"unavailable","tokens":null,"weighted_units":null,"duration_ms":null,"outcome_ref":"issue:2"}' \
-  '{"schema_version":"1","ts":"2026-08-08T12:00:00Z","session_id":null,"repo":null,"seat":"x","model":"claude-turbo-1","provider":null,"usage_source":"unavailable","tokens":null,"weighted_units":null,"duration_ms":null,"outcome_ref":"issue:3"}' \
+  '{"schema_version":"1","ts":"2026-08-08T12:00:00Z","session_id":null,"repo":null,"seat":"x","model":"Bad Model Name","provider":null,"usage_source":"unavailable","tokens":null,"weighted_units":null,"duration_ms":null,"outcome_ref":"issue:3"}' \
   > "$A5_DIR/model-usage-2026-06.jsonl"
 printf '%s\n' \
-  '{"schema_version":"1","ts":"2026-08-08T12:00:00Z","session_id":null,"repo":null,"seat":"x","model":"claude-turbo-2","provider":null,"usage_source":"unavailable","tokens":null,"weighted_units":null,"duration_ms":null,"outcome_ref":"issue:4"}' \
+  '{"schema_version":"1","ts":"2026-08-08T12:00:00Z","session_id":null,"repo":null,"seat":"x","model":"Another Bad Name","provider":null,"usage_source":"unavailable","tokens":null,"weighted_units":null,"duration_ms":null,"outcome_ref":"issue:4"}' \
   > "$A5_DIR/model-usage-2026-07.jsonl"
 A5_OUT="$(MODEL_USAGE_RAW_DIR="$A5_DIR" bash "$LINT" 2>&1)"
 check "file 1's bad record is cited at ITS OWN line 3" bash -c \
