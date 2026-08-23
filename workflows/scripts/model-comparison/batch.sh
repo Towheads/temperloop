@@ -440,6 +440,35 @@ bd_slugify() {  # <text> -> [a-z0-9-]+ (filename-safe leg key component)
   printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | sed -e 's/[^a-z0-9]/-/g'
 }
 
+# bd_write_state <path> — write a leg state file ATOMICALLY (temperloop#1764).
+#
+# Reads the JSON on stdin, writes it to a temp file in the SAME directory, and
+# renames it into place. A rename within one filesystem is atomic, so a reader
+# sees either the whole previous state or the whole new one — never a prefix.
+#
+# The plain `>` redirect this replaces truncates first and writes second, so an
+# interrupt in between leaves a TORN file. The resume path then reads no
+# `.state` from it and converts a leg that may have SCORED — real money spent,
+# a real record on disk — into a failure no resume will ever re-drive. The
+# #1656 run survived exactly this: 49 of 49 state files happened to be valid
+# JSON after an ENOSPC mid-write, which is luck, not a guarantee.
+#
+# The parse check before the rename is deliberate and cheap: it means a
+# malformed object can never be renamed INTO place either, so the only two
+# states on disk are "the old one" and "a well-formed new one".
+bd_write_state() {
+  local dest="$1" dir tmp
+  dir="$(dirname "$dest")"
+  tmp="$(mktemp "$dir/.state.XXXXXX")" || return 1
+  cat >"$tmp"
+  if ! jq -e 'type == "object" and (.state | type) == "string"' <"$tmp" >/dev/null 2>&1; then
+    rm -f "$tmp"
+    return 1
+  fi
+  mv -f "$tmp" "$dest" || { rm -f "$tmp"; return 1; }
+  return 0
+}
+
 # bd_arm_order <record-index> -> "<first-arm> <second-arm>" (temperloop#1571)
 #
 # THE ONE PLACE the execution order of a record's two legs is decided. It is a
@@ -873,9 +902,31 @@ cmd_run() {
       #    refusal path is exactly that shape) and a blind retry would
       #    re-spend it.
       if [ -f "$leg_state" ]; then
-        local prev_state; prev_state="$(jq -r '.state // ""' <"$leg_state" 2>/dev/null)"
+        # A TORN state file is its own case (temperloop#1764), never a silent
+        # generic failure. Before this, a file with no readable `.state` fell
+        # through to the catch-all below and was counted `legs_failed` with the
+        # reason "no reason recorded" — for a leg that may well have SCORED,
+        # with a real record already in the arm file. That reads as a knowable
+        # failure, is inconsistent with the arm file, and no resume re-drives it.
+        #
+        # Writes are atomic since bd_write_state, so this should not arise from
+        # this driver again — but a state dir can predate that fix, or be
+        # damaged by something else, and "I cannot tell what happened to this
+        # leg" is a real answer that deserves saying out loud.
+        local prev_state
+        if jq -e 'type == "object" and (.state | type) == "string"' <"$leg_state" >/dev/null 2>&1; then
+          prev_state="$(jq -r '.state' <"$leg_state" 2>/dev/null)"
+        else
+          prev_state="state-unreadable"
+        fi
         local retryable=0
         [ "$prev_state" = "cannot-evaluate" ] && [ "$retry_failed" -eq 1 ] && retryable=1
+        # An unreadable state is the SAME risk class as cannot-evaluate: the leg
+        # may have failed after the candidate ran, so a blind re-spend is what
+        # the default protects against — and `--retry-failed` is the operator
+        # saying they have judged it worth spending. Recoverable, but only on
+        # an explicit ask (temperloop#1764).
+        [ "$prev_state" = "state-unreadable" ] && [ "$retry_failed" -eq 1 ] && retryable=1
         # A `not-attempted` leg (temperloop#1554) is ALWAYS retryable, with or
         # without --retry-failed: --retry-failed exists to protect a leg that
         # may have failed AFTER the candidate ran from a blind re-spend, and a
@@ -887,6 +938,12 @@ cmd_run() {
           case "$prev_state" in
             scored) legs_done=$((legs_done + 1)); legs_scored=$((legs_scored + 1)) ;;
             integration-error) legs_done=$((legs_done + 1)); legs_interr=$((legs_interr + 1)) ;;
+            state-unreadable)
+              legs_failed=$((legs_failed + 1))
+              jq -cn --arg a "$arm" --arg r "$sel_ref" \
+                '{arm:$a, outcome_ref:$r,
+                  reason:"this leg\u0027s state file exists but carries no readable state — a torn or damaged write. What happened to this leg is UNKNOWN: it may have scored (and its record may already be in the arm file), or it may never have run. Nothing is re-spent by default because the candidate may already have been billed; `--retry-failed` re-drives it as a deliberate operator choice (temperloop#1764)",
+                  from:"a previous invocation of this batch"}' >>"$failures_file" ;;
             *)
               legs_failed=$((legs_failed + 1))
               jq -cn --arg a "$arm" --arg r "$sel_ref" \
@@ -912,7 +969,7 @@ cmd_run() {
           '{state:"not-attempted",
             reason:("the circuit breaker tripped earlier in this batch after " + ($n|tostring)
                     + " consecutive \"" + $stage + "\" integration errors, so this leg was NEVER EXECUTED. This is not a claim that this record is incompatible — nothing was attempted, nothing was spent, and a resume re-drives it"),
-            stage:null, execution_order:$eo}' >"$leg_state"
+            stage:null, execution_order:$eo}' | bd_write_state "$leg_state"
         rm -f "$leg_rec"
         legs_unattempted=$((legs_unattempted + 1))
         rec_skipped=$((rec_skipped + 1))
@@ -942,7 +999,7 @@ cmd_run() {
         jq -cn --arg s "cannot-evaluate" \
           --arg r "worktree-prepare failed for slug $slug: $(printf '%s' "$prep_out" | head -c 400) $(head -c 400 "$scratch/prep-stderr.txt" 2>/dev/null)" \
           --argjson eo "$exec_order_json" \
-          '{state:$s, reason:$r, execution_order:$eo}' >"$leg_state"
+          '{state:$s, reason:$r, execution_order:$eo}' | bd_write_state "$leg_state"
         legs_failed=$((legs_failed + 1))
         jq -cn --arg a "$arm" --arg r "$sel_ref" \
           --arg reason "worktree-prepare failed: $(printf '%s' "$prep_out" | head -c 200)" \
@@ -1006,7 +1063,7 @@ cmd_run() {
 
       if [ "$x_rc" -eq 0 ] && [ "$have_record" -eq 1 ]; then
         jq -cn --argjson eo "$exec_order_json" \
-          '{state:"scored", reason:null, stage:null, execution_order:$eo}' >"$leg_state"
+          '{state:"scored", reason:null, stage:null, execution_order:$eo}' | bd_write_state "$leg_state"
         legs_done=$((legs_done + 1)); legs_scored=$((legs_scored + 1))
         # A success is the one thing that proves the spawn path is alive, so
         # it zeroes the breaker's streak outright (temperloop#1554).
@@ -1021,7 +1078,7 @@ cmd_run() {
         [ -n "$ie_stage" ] || ie_stage="unknown"
         jq -cn --arg r "$(head -c 400 "$x_err" 2>/dev/null)" --arg s "$ie_stage" \
           --argjson eo "$exec_order_json" \
-          '{state:"integration-error", reason:$r, stage:$s, execution_order:$eo}' >"$leg_state"
+          '{state:"integration-error", reason:$r, stage:$s, execution_order:$eo}' | bd_write_state "$leg_state"
         legs_done=$((legs_done + 1)); legs_interr=$((legs_interr + 1))
         if [ "$ie_stage" = "$cb_stage" ]; then
           cb_streak=$((cb_streak + 1))
@@ -1040,7 +1097,7 @@ cmd_run() {
         why="replay.sh execute exited $x_rc and produced no usable record: $(head -c 400 "$x_err" 2>/dev/null)"
         rm -f "$leg_rec"
         jq -cn --arg r "$why" --argjson eo "$exec_order_json" \
-          '{state:"cannot-evaluate", reason:$r, execution_order:$eo}' >"$leg_state"
+          '{state:"cannot-evaluate", reason:$r, execution_order:$eo}' | bd_write_state "$leg_state"
         legs_failed=$((legs_failed + 1))
         jq -cn --arg a "$arm" --arg r "$sel_ref" --arg reason "$why" \
           '{arm:$a, outcome_ref:$r, reason:$reason, from:"this invocation"}' >>"$failures_file"
