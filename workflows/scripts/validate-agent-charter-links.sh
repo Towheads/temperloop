@@ -95,7 +95,14 @@ while IFS= read -r -d '' file; do
       [[ -n "$line" ]] && echo "        $line"
     done <<<"$matches"
   fi
-done < <(find "$AGENTS_DIR" -type f -name '*.md' -print0)
+# -L, not a bare walk (temperloop#1737). In a COMPOSED OVERLAY `claude/agents`
+# is a compat symlink into the vendored kernel subtree, and `find` does not
+# descend a symlinked START POINT without it — so the walk yielded zero files
+# on a correctly-wired tree. The `[[ -d ]]` guard above DOES follow the
+# symlink, so the two disagreed and the script took its "no charters" error
+# path instead of its consumer no-op path. `-L` also covers a symlinked
+# individual charter, which a trailing slash would not.
+done < <(find -L "$AGENTS_DIR" -type f -name '*.md' -print0)
 
 if [[ "$files_checked" -eq 0 ]]; then
   echo "validate-agent-charter-links: no *.md charters found under $AGENTS_DIR" >&2

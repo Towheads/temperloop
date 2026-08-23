@@ -74,6 +74,23 @@ printf -- '---\nname: fixture-good\ntools: Read, Grep, Glob, Bash\n---\n\nNo wik
 out="$(AGENT_CHARTER_LINKS_ROOT="$R2" bash "$SCRIPT" 2>&1)"; rc=$?
 [ "$rc" -eq 0 ] && ok "conforming fixture exits 0" || fail_test "conforming fixture exits 0" "rc=$rc, output: $out"
 
+# --- 3b. claude/agents/ is a SYMLINK to a directory (temperloop#1737) -------
+# The shape EVERY consuming repo has: the charter dir is a compat symlink into
+# the vendored kernel subtree. `[[ -d ]]` follows it, but a bare `find` does
+# not descend a symlinked start point, so the walk saw zero charters and the
+# gate failed on a correctly-wired tree. No prior case used a symlink, which is
+# why this shipped. Uses the SAME conforming charter as section 3, so a failure
+# here can only be the symlink.
+echo "section 3b: symlinked agents dir (the composed-overlay shape)"
+R2B="$TMP/tree2b"
+mkdir -p "$R2B/claude" "$R2B/real-agents"
+cp "$R2/claude/agents/fixture-good.md" "$R2B/real-agents/fixture-good.md"
+ln -s ../real-agents "$R2B/claude/agents"
+out="$(AGENT_CHARTER_LINKS_ROOT="$R2B" bash "$SCRIPT" 2>&1)"; rc=$?
+[ "$rc" -eq 0 ] && ok "symlinked agents dir exits 0" \
+  || fail_test "symlinked agents dir exits 0" "rc=$rc, output: $out"
+assert_not_has "$out" "no *.md charters found" "symlinked agents dir does not report an empty walk"
+
 # --- 4. ABSENT claude/agents/ — a pass ONLY for a vendoring consumer --------
 # The degenerate-input case epic temperloop#1409 exists for: a bare `exit 0` on
 # absent input means the gate reports success in the one situation it is least
