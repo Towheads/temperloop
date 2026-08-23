@@ -208,11 +208,36 @@ abs_dir() { (cd "$1" 2>/dev/null && pwd -P); }
 _SCORE_TMPDIR=""
 _score_cleanup() { [ -n "$_SCORE_TMPDIR" ] && rm -rf "$_SCORE_TMPDIR"; return 0; }
 trap _score_cleanup EXIT
-# scratch <name> — prints a path inside the scratch dir, creating the dir on
-# first use. Returns non-zero (and prints nothing) if the dir cannot be made.
+
+# _score_ensure_tmpdir — create the ONE scratch dir, IN THE CALLING SHELL
+# (temperloop#1724). This must be called directly, never inside `$( )`.
+#
+# THE BUG THIS EXISTS TO PREVENT. `scratch` is used as `x="$(scratch n.jsonl)"`,
+# and a command substitution is a SUBSHELL. So the lazy `_SCORE_TMPDIR=...`
+# assignment that used to live inside `scratch` ran in the subshell and never
+# reached the parent, with two consequences:
+#
+#   * the parent's _SCORE_TMPDIR stayed EMPTY, so the EXIT trap -- which is
+#     correctly installed, which is why this was hard to see -- removed nothing;
+#   * every scratch call found an empty variable and made ANOTHER dir, so one
+#     `score` invocation leaked ~9 of them rather than 1.
+#
+# Measured before the fix: one run of test_replay_score.sh leaked 174 dirs, and
+# 171,591 had accumulated on the host (inode use 56%). An isolated repro pinned
+# it exactly: 3 scratch calls -> 3 leaked dirs, parent variable empty, each call
+# returning a path under a DIFFERENT dir.
+_score_ensure_tmpdir() {
+  [ -n "$_SCORE_TMPDIR" ] && return 0
+  _SCORE_TMPDIR="$(mktemp -d "${TMPDIR:-/tmp}/replay-score.XXXXXX")" || { _SCORE_TMPDIR=""; return 1; }
+  return 0
+}
+
+# scratch <name> — prints a path inside the scratch dir. The dir must already
+# exist: creating it here would repeat the subshell bug above, so this only
+# READS _SCORE_TMPDIR and fails closed when the caller forgot to ensure it.
 scratch() {
   if [ -z "$_SCORE_TMPDIR" ]; then
-    _SCORE_TMPDIR="$(mktemp -d "${TMPDIR:-/tmp}/replay-score.XXXXXX")" || { _SCORE_TMPDIR=""; return 1; }
+    return 1
   fi
   printf '%s/%s\n' "$_SCORE_TMPDIR" "$1"
 }
@@ -472,6 +497,9 @@ _score_candidate_diff_text() {
 }
 
 cmd_score() {
+  # ONE scratch dir for this invocation, created HERE in the calling shell.
+  # Never inside a `$( )` — see _score_ensure_tmpdir (temperloop#1724).
+  _score_ensure_tmpdir || { cannot_evaluate "could not create a scratch dir under ${TMPDIR:-/tmp}"; return 1; }
   local repo_root="" wt="" record_file="" relpath="$REPLAY_SCORE_GATE_RELPATH"
   while [ $# -gt 0 ]; do
     case "$1" in
