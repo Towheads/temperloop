@@ -390,13 +390,13 @@ BATCH_ARMS_N=2
 # or $RANDOM, which would make the batch un-reproducible.
 BATCH_ARM_ORDER_RULE="counterbalanced-by-record-index-v1"
 BATCH_ARM_ORDER_SEED=0
-# shellcheck disable=SC2016  # `$RANDOM` here is PROSE naming what this rule is deliberately NOT drawn from; expanding it would replace the name with a number
 # replay.sh's integration-error stage vocabulary, in ONE place: the circuit
 # breaker keys its consecutive-failure streak on these, and `--retry-stage`
 # validates against them. Kept here rather than re-typed at each site so a
 # stage added to replay.sh has exactly one list to appear in.
 BATCH_INTEGRATION_ERROR_STAGES='candidate-spawn candidate-timeout envelope-parse vendor-error envelope-usage-missing unknown'
 
+# shellcheck disable=SC2016  # `$RANDOM` here is PROSE naming what this rule is deliberately NOT drawn from; expanding it would replace the name with a number
 BATCH_ARM_ORDER_EXPRESSION='the baseline arm runs FIRST on a record iff ((record_index + seed) % 2) == 1, over the 1-based selection-order record index; the candidate arm runs first otherwise. Deterministic and reproducible from this rule and seed alone — never wall-clock, never $RANDOM — and it GUARANTEES a half-and-half split at every N rather than achieving one in expectation'
 # The state subdirectory, hung off the records dir so a comparison's
 # resume state sits beside the arm files it is building (both under
