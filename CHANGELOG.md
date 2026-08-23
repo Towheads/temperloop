@@ -14,6 +14,937 @@ reads that marker; a stranger greps for it before pulling.
 
 ## [Unreleased]
 
+## [0.34.0] - 2026-08-22
+
+### Added
+
+- **A red asynchronous workflow now reaches a surface someone actually reads**
+  (#1297). Nothing surfaced a broken non-PR-triggered workflow, so a dead
+  quality gate could sit on `main` for weeks — `nightly-macos.yml` was red for
+  seven consecutive nights, and `install-tier2.yml` lost its only notification
+  silently when its weekly cron was retired.
+  `workflows/scripts/async-workflow-health.sh` classifies every workflow in
+  `.github/workflows/` from its own `on:` triggers, reports each asynchronous
+  one's **current** state (not just a red *transition* — both real instances
+  were found while already red), and renders into the kernel telemetry brief's
+  "1. Attention" section, which `/check-in` and `/telemetry` already render.
+  `workflows/scripts/config/async-workflow-registry.tsv` records each
+  workflow's disposition and **fails closed**: an unregistered asynchronous
+  workflow, an absent registry, or a stale row all raise an alarm instead of
+  going quiet.
+
+- **`make doctor` now detects when the INSTALLED `~/.claude/workflows/*.mjs`
+  has drifted from the checkout's own `claude/workflows/*.mjs`, instead of
+  leaving it discoverable only by hand-diffing the two** (temperloop#1397).
+  `/build` Step 3, `/sweep` Step 0.3 and `/fix` Step 3 all invoke the
+  orchestrator by `scriptPath` at `"$HOME/.claude/workflows/build-level.mjs"`,
+  so the INSTALLED copy is what executes — not the one being edited. Nothing
+  compared them. Two live reproductions: 2026-08-10 (installed 153,468 bytes
+  dated Aug 7 vs a repo copy of 169,056, 154 commits of machinery that never
+  ran) and 2026-08-21, when an entire overnight run executed a six-day-stale
+  orchestrator — including the batches that merged temperloop#1587's
+  escalation-payload fix, whose payloads still showed the pre-fix
+  contradiction because the installed copy never changed. Both were caught
+  only because a session happened to diff by hand first. The existing surfaces
+  structurally could not see it: `classify_entry()` compares a symlink's
+  TARGET STRING and `check_cross_checkout_split()` compares PATH IDENTITY, so
+  a correctly-targeted path whose CONTENT is weeks stale reads `OK` in both.
+  The new `check_installed_workflow_drift()` compares CONTENT by sha256 (byte
+  compare when no hasher is on PATH) and reports five distinct outcomes:
+  `OK` (byte-identical, digest shown); `DRIFT`, which prints BOTH sizes, BOTH
+  mtimes and BOTH digests, names which side is NEWER and by how much, and
+  names the physical directory the installed copy really lives in; `ABSENT`,
+  printed as its own outcome and explicitly neither drift nor in-sync, for a
+  host that never installed; `UNKNOWN` for an installed path that exists but
+  cannot be compared (dangling symlink, directory, unreadable) — indeterminate
+  and non-zero, never a silent pass; and `SKIPPED` for a checkout shipping no
+  workflows at all. `DRIFT` and `UNKNOWN` fail `make doctor`. It compares every
+  `*.mjs` the checkout ships, not just `build-level.mjs`. **Detect and report
+  only — it never writes to `~/.claude`**: installing is global shared state
+  and a deliberately operator-run action, so the check names the remedy and
+  leaves the decision to a human.
+
+- **`workflow-reviewer-coverage.sh` now reports execution coverage for every
+  routed reviewer, not only `workflow-reviewer`** (temperloop#1446). The gap in the
+  mandatory pre-push review gate (`claude/commands/build.md` §3e) — temperloop#1387
+  (routed reviews never ran) and temperloop#1430 (the gate moved into the
+  driver) — stayed invisible for roughly a month because nothing measured
+  whether reviews executed; temperloop#1450 (coverage measures execution, not
+  prose) fixed that for one reviewer over one path class (command-doc PRs) — every other routed reviewer (`shell-reviewer`,
+  `docs-reviewer`, `python-reviewer`, `typescript-reviewer`, …) still had no
+  execution signal at all. For every merged PR in the window, the rollup now
+  derives the reviewer SET `reviewer-routing.tsv`'s extension/path-glob axis
+  routes for that PR's changed files (plus the in-prose
+  `claude/commands/*.md -> workflow-reviewer` override), and checks each
+  routed reviewer for the same machine-emitted evidence temperloop#1450 introduced —
+  including its same-line skip-clause termination, generalized to every
+  reviewer rather than only `workflow-reviewer`. `--json` gains a purely
+  additive `by_reviewer` array, one row per reviewer in the tsv+override
+  roster: a reviewer with zero routed PRs this window reports `routed:false`
+  (nothing to review) and a reviewer that WAS routed but never documented as
+  having run reports `routed:true, coverage_pct:0` — the two states are
+  always distinguishable, and no routed reviewer is ever silently omitted
+  from the table. Stays a reporting rollup, never a `checks` gate.
+- A reviewer name from `reviewer-routing.tsv` is now escaped before it is used as a regex, and the coverage query's fail-open can no longer be silent. A name carrying a metacharacter made `jq`'s `test` throw, and the blanket `2>/dev/null || echo ''` rendered that throw as the all-zeros fallback — every count `0`, an empty `by_reviewer`, exit `0`: a false all-clear indistinguishable from a genuinely quiet window, on the one tool whose job is making an invisible gap visible. Because the pre-existing temperloop#1450 workflow-reviewer metric shares that single `jq` invocation, one bad routing row could take it down too. The fallback remains, but now prints what `jq` said and states that its figures measure nothing. Separately, an absent or unreadable routing table now warns that the per-reviewer roster is degraded and that other reviewers are **omitted, not measured as zero**. (temperloop#1446)
+
+- **Declaring a pipeline step mandatory now requires shipping its execution
+  signal in the same change, and CI enforces it** (temperloop#1448). A workflow
+  spec could declare a step MANDATORY in prose while nothing observable proved
+  it ever ran: `/build` §3e's command-doc reviewer pass read "mandatory" for
+  ~a month while the default path structurally could not spawn a reviewer at
+  all, and was found only when somebody wrote a coverage script after the fact.
+  `claude/CLAUDE.kernel.md` § Mandatory-step birth rule states the contract and
+  `workflows/scripts/validate-mandatory-step-signal.sh` enforces it, on the
+  `validate-capture-backstop.sh` mold: every mandatory declaration in
+  `claude/commands/*.md` is paired, in `mandatory-step-registry.tsv`, with an
+  execution signal — a per-run tally, a gate-wired static guard, a runtime
+  refusal, or a coverage rollup — and a HALF-PRESENT pair fails the build. The
+  gate does not rely on anyone remembering to register: it enumerates every
+  mandatory-marker line mechanically and fails any with no disposition, and its
+  `pending` debt ledger is a shrink-only ratchet, so a NEW mandatory declaration
+  cannot be parked as debt.
+
+- **The degenerate-input check-surface registry stopped being opt-in: an
+  unregistered check surface is now detected, not silently unchecked**
+  (temperloop#1491). `validate-check-surface-degenerate-coverage.sh` gained a
+  §5 **discovery pass** that enumerates the candidate set MECHANICALLY from
+  the tree — every tracked file whose basename matches this repo's three
+  check-script name families (`validate-*.sh`, `check-*.sh`, `lint-*.sh`),
+  with `tests/`/`fixtures/`/`node_modules/` and a composed overlay's vendored
+  `kernel/` pruned — and fails `UNREGISTERED-SURFACE` on any candidate that
+  is in none of its three legal homes: the registry, the shrink-only
+  allowlist, or the new `check-surface-discovery.tsv` disposition ledger.
+  Silence is no longer a disposition. The ledger's `pending` set carries its
+  own shrink-only ratchet (`PENDING-GREW`), so a newly discovered surface
+  cannot be parked behind a one-line excuse instead of registered, and an
+  enumeration that finds nothing fails `EMPTY-DISCOVERY` rather than passing
+  vacuously. The registry's bulk growth — 4 registered surfaces to 21, with
+  51 new fixtures in
+  `workflows/scripts/tests/test_check_surface_degenerate_backfill.sh` — is
+  the assertion's first OUTPUT, not the fix: a longer hand-written list is
+  still a list somebody sampled. Of the 37 surfaces the enumeration found, 17
+  carry a reasoned non-registration, three of them recording a MEASURED
+  fail-open (`check-setting-prose.sh`, `check-gitleaks-kernel.sh`,
+  `check-producer-egress.sh` each reported success on absent/unreadable/empty
+  input) that needs its own fix before it can be registered.
+
+- **`/assess` now audits plan sequencing for artifacts assumed to pre-exist untracked, and `/tidy` backstops it** (#697). New `claude/commands/assess.md` § Artifact-availability audit (Step 3) — **advisory, never a gate**, and run by `/assess` itself rather than a review subagent, so it still fires on a checkout with no review agents. It flags any plan-critical artifact on three tells — a session-scratch locator (`/tmp`, `$TMPDIR`, `…/scratchpad/…`), an untracked working-tree file, or no durable locator at all (consumed by an item, produced by none) — and resolves each hit into one of exactly two dispositions: stage the artifact durably (in-tree or in the knowledge store), or make authoring it from scratch part of the consuming item. Unresolvable hits ship as a `## Sequencing notes` bullet plus a new `artifact availability` row in the Step 5 `NEEDS ATTENTION` block. Its registered Capture/Backstop pair, `claude/commands/tidy.md` § Undurable plan artifacts, re-scans live `Plans/` notes for **all three** tells — the two textual ones mechanically, and the third by rebuilding the note's produces set from each item's `files:` / `acceptance:` and cross-referencing it against the artifacts items consume — and parks each finding on the pending-decisions surface for `/check-in`. Motivated by two observed near-misses that survived on sequencing luck alone (epic #606's "ADRs 0009/0010 are already authored (untracked)" against a clean tree; epic #671's L1 hand-off depending on a `/private/tmp/…/scratchpad/` draft) — a `/build` worker runs in a fresh, isolated worktree and inherits neither.
+
+### Changed
+
+- `/build`'s §3e.5 parent-side acceptance gate now runs **diff-scoped** — only the gates an item's changed paths can reach, resolved through `workflows/scripts/config/gate-paths.tsv`, the same map CI's `checks` job has used on the `pull_request` event since temperloop#1024. A full per-item suite could not survive within-level parallelism: a measured 3-item level spent 55 minutes and landed **zero** items, all three escalating `acceptance-gate-timeout` with every worker already finished and committed. N concurrent items meant N concurrent full suites, and the slice budget cannot absorb the contention because it is clamped by the executor agent's ~10-minute Bash cap. Typical single-file items now select 20–32 gates instead of 176. What gates the default branch is unchanged: the `merge_group` run of `checks` is unscoped and always runs everything. Set `BUILD_GATE_SCOPED=0` — in a config **file**, not the environment, which the hermeticity scrub erases — to restore the full-suite gate. (temperloop#1663)
+- `scripts/quality-gates.sh` gained `QUALITY_GATES_SCOPED`, an environment twin of the `--scoped` flag, for callers whose only interface is environment variables. An older vendored copy ignores an unknown env var and runs the whole suite, whereas an unknown *flag* would exit 2 `usage` and read back to the caller as a gate **failure**. An explicit `QUALITY_GATES_SCOPE=full` beats a scoped request from either surface. (temperloop#1663)
+- Sliced runs of a scoped suite are now selection-stable. `QUALITY_GATES_START_AT` is an ordinal into the gate list, and a scoped list is re-derived per slice, so a working tree that moved mid-run could leave the resume index addressing a *different* gate — silently skipping one while the suite still exited 0. `QUALITY_GATES_SELECTION_PIN` records slice 1's changed set for later slices to reuse, and a new `QUALITY_GATES_SELECTION=<count>:<digest>` marker is fed back as `QUALITY_GATES_EXPECT_SELECTION` so a drift that happens anyway restarts the run from gate 0 on the full set instead of resuming a stale index. (temperloop#1663)
+
+### Fixed
+
+- **`pr.sh open` no longer emits the issue-linkage block twice when a worker's
+  verification surface carries its own copy** (temperloop#1023). Linkage lives
+  in `pr.sh` alone, but the `## Verification` section is worker-authored content
+  spliced in verbatim — so a worker that copied the block into its
+  `.build-verification.md` produced a PR body declaring linkage twice (observed
+  on PR #1019). `open` now strips from the spliced surface exactly the lines
+  GitHub itself would honor *and* that can only duplicate its own emission: a
+  whole line that is nothing but `<keyword> #N` / `<keyword> owner/repo#N`.
+  Mid-sentence mentions, backticked and indented lines, and anything inside a
+  fenced code block are left byte-for-byte intact, and the removal count rides
+  the `PR_OPENED`/`EXISTS` outcome as `surface_closes_stripped` so the strip is
+  observable rather than silent.
+
+- **A stale tmux claim marker is now cleared automatically, in every window, and
+  the window's name is un-frozen** (#1037). Nothing ever cleared the
+  `@claimed_issue` marker that paints the `status-right` claim chip: `release.sh`
+  is a manual same-window call the task workflow explicitly makes *optional and
+  best-effort*, `reconcile --fix` repaired only the caller's own window, and the
+  close→Done cascade never reached tmux at all. So a marker outlived its work
+  indefinitely — observed live as one closed issue's marker branding all four
+  windows of a session for over a month, the status bar asserting a claim that
+  had not existed since the previous month. Three changes close it:
+  **(a)** `reconcile --fix`'s marker lens now sweeps **every window on the tmux
+  server** instead of just `$TMUX_PANE`'s, applying the *same* per-marker gates
+  to each. GH #297 (a claim branding a concurrent session's window — the
+  regression that pinned every marker *write* to the caller's own) is not
+  reintroduced, because what makes a cross-window *clear* safe is the **proof**,
+  not the ownership: an OPEN issue, an unreadable state, and a live same-host
+  claim are each still refused, in every window, and there is no age-based or
+  "looks stale" clear. Branding another window remains forbidden;
+  `lib/claim_marker.sh` ships no targeted `set`.
+  **(b)** The sweep no longer requires being *inside* tmux — the server is a
+  socket, not an environment variable — so `/tidy`'s nightly now runs the marker
+  lens with `--fix` and the repair happens without the operator noticing the
+  drift and hand-running a command in each affected window. It is the one
+  auto-applied repair in that step: unlike releasing a board claim, clearing a
+  chip whose issue is provably CLOSED/MERGED touches no board state, no claim
+  stamp and no work.
+  **(c)** Every clear now also restores that window's `automatic-rename`, which
+  `claim_marker_set`'s `rename-window` had turned off — previously the window
+  name stayed frozen at the claim string forever. The restore *unsets* the
+  window-local override rather than forcing `on`, so an operator who globally
+  disabled it keeps their setting.
+
+  Widening the sweep exposed a hazard that needed its own guard: a marker records
+  `#<n>` but never which **repo** the number belongs to, and every board numbers
+  into the same range, so a sweep of one board would misattribute — and wipe —
+  a live claim's marker that came from another. `--fix` now refuses to clear any
+  number that is a live In-Progress claim for this host on **any** registered
+  board. Relatedly, `make test-board` now strips `TMUX`/`TMUX_PANE`/
+  `CMUX_WORKSPACE_ID` from every test's environment, so a board test can no
+  longer reach the operator's real tmux server whatever isolation seam it missed
+  — the leak path that put a test fixture in the live status bar in the first
+  place.
+
+- **`pipeline-tick.sh`'s two optional-source guards are fail-open again** (#1132).
+  The script is `set -euo pipefail` and sources `build.config.sh` and
+  `../lib/command_declared.sh` behind `[ -f x ] && . x` guards so a checkout that
+  vendors only a subset still runs. That form leaves the whole statement at exit
+  status 1 when the file is absent — the guard whose job is to make the file
+  optional is the thing that publishes a failure. Mid-file that status is
+  survivable (bash suppresses errexit for a non-final `&&` operand, verified
+  against the real script), but it is fatal the moment such a guard lands last in
+  a file or a function, or an errexit caller sources the file, so the shape is a
+  latent trap rather than a live one. Both sites now use the house `if [ -f x ];
+  then . x; fi` form already used at `worklist.sh:50-53`, `gh-bench.sh:141` and in
+  this file's own `read_ready_items()`. A regression test (`test_pipeline_tick.sh`
+  test 33) pins the shape, demonstrates the terminal-position status difference
+  between the two forms, and runs a lone copy of the script with neither optional
+  file beside it through a full dry tick.
+
+- **112 argument loops that spun at 100% CPU forever when a value-taking flag
+  was the final argument are fixed, and the shape is now a build-failing lint**
+  (#1342). Bash's `shift n` **fails** (`shift count out of range`) when `n > $#`,
+  and a **failed shift does not shift** — the positional parameters are left
+  completely untouched. So the ubiquitous
+  `--format) format="${2:-brief}"; shift 2 ;;` inside `while [ $# -gt 0 ]`
+  never terminates when the script is invoked with `--format` last: `$#` stays
+  at 1, the same case arm re-matches, and the loop pins a core until something
+  kills it. The `${2:-…}` default is precisely what makes it a **hang** rather
+  than a crash — it removes the `set -u` unset-variable error that would
+  otherwise have ended the loop, and these scripts deliberately run without
+  `set -e`, so the non-zero shift is swallowed.
+
+  **Blast radius, both halves live.** A hung script that *is* a `KERNEL_GATES`
+  entry does **not fail** the gate — it burns the CI runner to the job timeout,
+  so the signal reads as "slow", not "broken". Worse for the `emit-*.sh`
+  telemetry family, whose own headers promise *"a telemetry emit must never fail
+  or block the calling spawn site"*: a hang is strictly worse than the failure
+  that contract exists to prevent, and the conventional `emit-… || true` call
+  shape cannot save a caller from it — an unset trailing variable at a spawn
+  site hangs the **spawn site** forever. `emit-item-efficiency.sh --slug` was
+  confirmed hanging for >8s before being killed.
+
+  **The sweep.** 112 sites across 26 files — the five `emit-*.sh` emitters the
+  issue names, plus `promote/`, `probe/`, `drain/`, `build/`, `kernel/` and the
+  telemetry/report scripts — now shift the **flag** first and the value only if
+  one is actually there: `shift; if [ $# -gt 0 ]; then shift; fi`. No shift can
+  be out of range, so no loop can spin.
+
+  **The structural half.** `scripts/lint-argloop-shift2.sh` is a new static lint
+  — fourth member of the family alongside `lint-bash32-ctlesc-ifs.sh`,
+  `lint-bash32-cmdsubst-comment.sh` and `lint-pipe-grep-q.sh` — that fails the
+  build on a `shift N` (N ≥ 2) reached inside a `$#`-conditioned loop with no
+  preceding `$#` guard and a non-fatal `$2` expansion. A **lint** and not only a
+  sweep because the defect was **independently re-derived in brand-new code**
+  (`async-workflow-health.sh`, #1297) by a worker that had never seen the
+  `emit-*.sh` sites: a sweep closes the instances, only a lint closes the class.
+  Nothing already in the gate set catches it — shellcheck exits 0 (every
+  affected file was shellcheck-clean), `bash -n` exits 0 (the line is
+  syntactically perfect), and merely *running* the code is not detection either,
+  because a hang does not fail a gate.
+
+  The rule is deliberately narrow, and the narrowing is **measured, not
+  assumed**: `${2:?…}` exits with its own message, and a bare `$2` under `set -u`
+  exits `$2: unbound variable`, so neither can spin and neither is flagged — an
+  earlier, wider cut would have false-positived ~58 live, correct
+  `bin/subcommands/` sites. Also exempt: a loop whose *condition* already
+  guarantees the arity (`while [ "$#" -ge 2 ]`, live in `board.sh`), and an
+  `if [ $# -lt 2 ]; then … continue; fi` preflight (live in
+  `emit-session-context.sh`) — a different, equally correct fix for the same
+  defect, which it would be perverse to punish.
+
+  **The runtime half.** `workflows/scripts/tests/test_argloop_trailing_flag.sh`
+  extracts every repaired loop verbatim from its shipped file and runs it with
+  each flag **last** (195 invocations across 27 files), plus the five `emit-*.sh`
+  scripts end-to-end with their raw-lake sink in a tmpdir. Coverage is *derived*
+  by grep from the fix idiom, so a new adopter is covered without anyone editing
+  a registry. Every run is **bounded by a watchdog** — an unbounded assertion for
+  this defect would hang the suite instead of failing it, which is worse than no
+  test at all — and the suite carries its own discrimination control: a
+  reintroduced `shift 2` must be killed by the watchdog *and* turn the lint red.
+
+- **`env-reconcile.sh` now detects a leaked worktree whose branch simply
+  LANDED — one whose commits are already contained in `origin/<default>`**
+  (temperloop#1404). `classify_worktree` decided `LEAKED_WORKTREE:MERGED` from
+  `merged_detect_is_merged` alone, and that helper is built for the opposite,
+  merge-queue/squash topology where a merged branch's tip is *not* an ancestor
+  of `origin/<default>`: its `gh pr view <branch>` probe returns nothing when
+  no PR was ever opened under that head-branch name, and its patch-equivalence
+  fallback is inconclusive over exactly the empty cumulative diff that
+  "contained in `origin/main`" produces. Both fail open to `false`, so the
+  whole class reported `OK` forever (observed 2026-08-13:
+  `<repo>.wt/land-probe-cwd-873` — clean tree, no PR, tip an ancestor of
+  `origin/main` — a leak the reconciler never surfaced, removed by hand). The
+  classifier now carries the cheap, network-free plain-ancestor arm its sibling
+  `scripts/prune-merged-branches.sh` has had since #173, emitting the same
+  `MERGED` reason. Two guards keep it from calling live work a leak
+  (temperloop#658's direction): ancestry must be **strict**, so a just-created
+  worktree whose tip *equals* `origin/<default>` (no commits of its own) stays
+  live, and an **`OPEN` PR** holds the arm back — GitHub saying the branch is
+  still in flight outranks local containment. The verdict still routes through
+  `_worktree_verdict`, so a landed worktree carrying uncommitted work is
+  `DIRTY_WORKTREE:MERGED`, report-only.
+
+- **`env-reconcile.sh` now surfaces harness agent worktrees as their own named
+  class with a remedy pointer, instead of letting them hide inside the parent
+  checkout's opaque `DIRTY`** (temperloop#1405). Claude Code's own agent
+  isolation (`isolation: "worktree"`) creates worktrees under
+  `<checkout>/.claude/worktrees/agent-<id>/` — inside the checkout, untracked,
+  on a machine-made `worktree-agent-<id>` branch. The reconciler only ever
+  walked the `<repo>.wt/<slug>` layout `worktree.sh` uses, so these were never
+  classified at all; what an operator saw was the *parent* checkout reporting a
+  bare `DIRTY` (cron role) or `STALE_UNTRACKED:.claude/worktrees/` (operator
+  role) — a class with no remedy pointer that said something was there but not
+  what to do, and masked any real drift beside it. Observed live on 2026-08-13
+  across two checkouts (4 worktrees 8 days stale, 3 worktrees 27 days stale,
+  plus their leftover `worktree-agent-*` branches). Three changes.
+  **A second scanned layout:** `<checkout>/.claude/worktrees/` is now walked
+  beside `<repo>.wt/`, under every cron and operator checkout that has one
+  (path-configurable via `ENV_RECONCILE_HARNESS_WT_SUBDIR`). **Its own class,
+  with the remedy on the finding line:** `HARNESS_WORKTREE:ACTIVE` (inside the
+  staleness horizon — reported on its own line, never counted as drift, since a
+  live agent may still be working in it), `HARNESS_WORKTREE:STALE` (past the
+  horizon and confirmed clean — the only removable one, and its finding carries
+  the exact `worktree remove` **plus** `branch -D` command, so the invisible
+  half of the leak gets cleaned up too), and the report-only
+  `HARNESS_WORKTREE:STALE_DIRTY` / `STALE_UNCERTAIN`. **No double-reporting:**
+  the parent checkout's `DIRTY` / `STALE_UNTRACKED` tests now exclude that one
+  path prefix *because* it is classified in its own right — every other dirty
+  or untracked path still reports `DIRTY` exactly as before, so nothing real
+  gets swallowed. `/tidy`'s env-hygiene step auto-heals `HARNESS_WORKTREE:STALE`
+  only, on the same never-`--force` terms as `LEAKED_WORKTREE`.
+
+- **`test_pipeline_retro_health.sh` tests 18 and 19 no longer read the real
+  checkout's telemetry lake** (#1408). Both cases exercise the **retro-runs
+  default** — so neither can pin `RETRO_RUNS_RAW_DIR` — and both ran
+  `pipeline-retro-health.sh` *in place*, whose checkout-relative root resolution
+  (`$here/../../..`) then pointed the assertion at the real `meta/data/raw/`.
+  The verdict was therefore a function of whatever telemetry the host happened
+  to hold: green on CI, which runs on a fresh clone where that lake is **always**
+  empty, and red in any checkout that had ever collected a retro-runs row. Test
+  18 flipped pass→fail with **no code change at all**, purely from the calendar
+  advancing one real July row out of the 30-day window, making `make test-build`
+  a deterministic local failure in any checkout old enough to have run a retro
+  and then gone quiet. Because CI could never see it, the gate was structurally
+  blind to its own non-hermeticity.
+
+  Both cases now fabricate a **fixture checkout** (a copy of the script under
+  `<fixture>/workflows/scripts/build/` plus a seeded `<fixture>/meta/data/raw/`,
+  the technique test 14 already used for the symlink-climb case) and probe that
+  copy, so the checkout-relative root they resolve is a directory the test owns.
+  The suite's output is now byte-identical whether the real lake is empty,
+  carries an out-of-window row, or carries an in-window one.
+
+  The subject of each test is **sharpened, not hollowed out**. Each lake is
+  seeded so the right root and every wrong root yield *different* verdicts: the
+  fixture checkout root holds an in-window row (correct → `healthy`), while the
+  decoy the test guards against — `$HOME/dev/foundation/meta/data/raw` for t18,
+  `MODEL_USAGE_RAW_DIR` for t19 — holds an out-of-window one (leaked →
+  `defect(stalled)`), and a `retro_dir` converged onto `$pipeline_dir` finds no
+  stream at all (→ `defect(never-had-a-row)`). Where the old assertion could
+  only observe that the retro-runs stream had *not* found the decoy, the new one
+  proves it positively resolved the checkout root and read that root's row.
+
+- **`lint-pipe-grep-q` no longer fires on the shape inside PRINTED TEXT — its
+  own usage block included, which is what blocked the v0.29.0 vendor** (#1420).
+  The lint already stripped `#` comments quote-aware, so it never fired on prose
+  *describing* the `<writer> | grep -q <pat>` footgun it guards. It did not do
+  the same for **quoted string literals or heredoc bodies**, so a `grep -q`
+  inside an `echo`/`printf` help string was read as an executed pipeline. Two
+  consequences, both live: the linter flagged **its own** error-message line
+  (`echo "     <writer> | grep -Fxq \"\$needle\"" >&2`) wherever the vendored
+  `kernel/scripts/lint-pipe-grep-q.sh` path is reachable, and it flagged
+  ordinary overlay code that merely *echoes* a `curl … | grep -q …` probe
+  instruction. Because the gate line is a **KERNEL_GATES** entry an overlay
+  vendors as a symlink and cannot amend downstream, this was release-blocking
+  rather than cosmetic — measured on the real composed overlay checkout it was
+  **23 findings before, 0 after**, with every one of the 23 confirmed printed
+  text rather than code.
+
+  The scanner now reduces each line to its **executable part** before matching:
+  the comment strip as before, plus the *contents* of every quoted string
+  literal blanked, plus heredoc bodies skipped. **The exemption is by parse
+  position, never by filename** — a filename allowlist would only move the
+  defect to the next file that documents the shape. What decides is the simple
+  command *consuming* the text: hand it to a shell (`bash -c`/`sh -c`, `eval`,
+  `ssh`, `env`, `xargs`, `timeout`, a `bash <<EOF` heredoc) and it is still
+  scanned, so the real in-a-string sites the #1050 sweep found stay flagged.
+  The strip is content-only — quote *delimiters* survive — so `echo "x" | grep
+  -q y` still reads as a pipeline and still fires. Heredoc detection is
+  deliberately tight (a `<<<` herestring and an arithmetic `$(( a << B ))`
+  shift are both rejected) because a false heredoc would swallow the rest of the
+  file; a probe that appended a genuine violation to the end of all 404 tracked
+  shell files confirmed **zero** files go blind that way.
+
+  Both strips err toward a **missed site, never a false alarm on prose** — the
+  stated safe direction for a guard whose false positives block a release. The
+  bounded cost is spelled out in the script's own header: a heredoc body written
+  to a file rather than printed is no longer scanned (~3.8% of the shell corpus,
+  almost all test fixtures, hiding no site that exists today). `T8` asserts the
+  discrimination on byte-identical text — code line named, printed and heredoc
+  lines not — and `T9` reproduces the whole thing on a synthetic
+  composed/vendoring overlay layout, where the defect actually fired.
+
+- **`test_board_host_label.sh`'s "exactly one inlining site" check no longer
+  depends on which `grep` is on `PATH` or on how the board toolkit was
+  vendored** (#1422). The check enumerated its file set with `grep -rlE …
+  "$BOARD_DIR"`, and a recursive grep's treatment of symlinks is not portable,
+  so the *verdict* was a function of the host rather than of the code being
+  audited. Two distinct failures, both measured:
+
+  - **Board dir reached through a directory symlink** — the shape every
+    vendoring overlay uses (`workflows/scripts/board -> ../../kernel/workflows/
+    scripts/board` in foundation since 2026-07-03). GNU `grep -r` descends into
+    a symlinked top-level argument; real macOS/BSD `grep` (`/usr/bin/grep`)
+    does not, and `-R` does not help there either. The v0.29.0 test was
+    therefore **green on Linux CI and red on every operator's Mac at the same
+    commit**, reporting `found:` with an empty list — which reads as "the
+    helper was deleted" when the truth is "the walk never entered the
+    directory". `d3163bf` (#1490) had already made this particular arm pass by
+    resolving `BOARD_DIR` with `pwd -P`, but only as a side effect of path
+    resolution: the enumeration itself was still non-portable, and nothing
+    tested that it stayed fixed.
+  - **Board dir is a real directory whose *files* are per-file symlinks** into
+    a vendored `kernel/` copy — the other shape in the fleet. `-r` on *neither*
+    grep follows a symlink met during the walk, so this layout found **zero**
+    sites on **both** platforms, which `pwd -P` cannot rescue. This arm was
+    still red.
+
+  The file set is now enumerated with `find -L` (which follows symlinks at the
+  argument *and* during the walk) and grep is handed real files by name — the
+  direct-file form that already matched on both platforms, which is exactly
+  what made the recursive form's divergence look impossible at first read. Both
+  sides of the "is this the one permitted site?" identity comparison are also
+  canonicalized through a single `phys_path` helper, so a layout that reaches
+  `lib/` or `tests/` through a symlink cannot make two spellings of the same
+  file read as two sites.
+
+  **The assertion is sharpened, not hollowed out.** A new sibling suite,
+  `test_board_host_label_layouts.sh`, materializes all three layouts (real
+  directory, directory symlink, per-file symlinks) and runs the subject test in
+  each under every distinct `grep` the host can reach — the system `/usr/bin/
+  grep` (BSD on macOS) and a `ggrep` if installed (GNU). For every
+  layout × grep cell it proves three things in sequence: the clean tree is
+  green, **adding a second inlining site turns it red and names that file**,
+  and removing that site returns it to green. A portability fix that worked by
+  weakening the check would pass the first assertion and fail the second. On a
+  Homebrew Mac that is 6 cells; on Linux CI, where the flavors collapse, 3.
+
+- **`workflow-reviewer-coverage.sh` now measures whether the reviewer RAN, not
+  whether the PR body happens to contain the word `MAJOR`** (temperloop#1450).
+  The rollup classified a merged command-doc PR as covered when its body matched
+  `workflow-reviewer|BLOCKING|MAJOR`, which measured prose and was wrong in both
+  directions: any changelog line, risk note or quoted finding scored as a
+  documented pass, and — worst of all — the legible `skipped — workflow-reviewer
+  …` degradation notice, which says in so many words that the reviewer did NOT
+  run, contains the string `workflow-reviewer` and so scored as *covered*. Before
+  temperloop#1430 that skip was structurally guaranteed on every Workflow-path
+  command-doc PR (temperloop#1429), so the metric read highest exactly when the
+  gate was most broken. It is now keyed on the two structured shapes
+  `claude/workflows/build-level.mjs` §3e EMITS into the PR body via the verdict
+  summary: the line-anchored tally `§3e review — ran: <reviewer>[, …]`, and the
+  spliced `## Review notes` / `### <reviewer>` findings blocks. A prose heading
+  such as `## The §3e review caught a destructive default` no longer matches —
+  the tally must be at line start and carry the literal `ran:` list.
+  Measured against `Towheads/temperloop` over the same 28-day window, the
+  reported figure moves from `{command_doc_prs:51, with_workflow_reviewer:18,
+  coverage_pct:35}` to `{command_doc_prs:51, with_workflow_reviewer:7,
+  coverage_pct:13}` — 11 of the 18 were prose, two of them the skip notice.
+  `--json` gains three purely additive fields that make the residue legible
+  rather than silently folded into the numerator: `any_reviewer_ran` (a §3e
+  record naming any reviewer), `skip_notice_only` (the gate degraded legibly —
+  never counted as covered), and `no_review_record` (the build path emitted
+  nothing at all); the three partition the denominator. The window fetch also
+  collapses from an N+1 fan-out of `gh pr view` calls into a single
+  `gh pr list --json number,body,files`, falling back to the old two-call path
+  on a `gh` too old to accept `files` there — 112s to 13s against that same
+  window, and ~200 fewer calls against the shared GraphQL budget.
+
+- Review-agent charters no longer instruct the agent to read knowledge-store `[[wikilinks]]` its declared toolset cannot resolve. `requirements-auditor` and `architecture-reviewer` each opened with a "## Project context (read first)" section of vault links, while declaring `tools: Read, Grep, Glob, Bash` and no MCP — so both lenses reviewed *without* the governing decisions they were told to read first, and nothing in their output distinguished that from having read them. The load-bearing invariants are now vendored into the charters as prose, matching the shape `red-team-lens` and the persona agents already use. Affects `/triage` Step 3, `/assess` Step 3, and `/workshop` 3.3.2. (temperloop#1455)
+- New `workflows/scripts/validate-agent-charter-links.sh` gate (wired into `KERNEL_GATES`) fails the build if any `claude/agents/**/*.md` charter reintroduces an unresolvable wikilink. Its match shape — `[[` followed by a non-space, non-bracket character — deliberately never matches the bash `[[ ... ]]` test syntax a shell-focused charter legitimately quotes. Both degenerate-input paths refuse rather than pass: an **unreadable** charter fails instead of counting as clean (a `grep` that cannot open a file returns no matches, which is byte-identical to "no wikilinks"), and an **absent** `claude/agents/` directory fails in the kernel's own checkout while staying a real no-op for a vendoring consumer, discriminated by a repo-root `.kernel-pin`. (temperloop#1455, epic temperloop#1409)
+
+- **`architecture-reviewer` now pins its own model tier (`model: opus`)
+  instead of declaring `model: inherit`** (temperloop#1456). The seat's own
+  charter says its boundary calls "are the gate" and that it is therefore
+  "never down-tiered" — but `inherit` resolves to whatever tier the *calling*
+  context runs on, so the guarantee held only when a human happened to be
+  driving on the strong tier. This went live the moment temperloop#1430 made
+  the §3e reviewer gate actually run on the default Workflow path: an
+  autonomous drive runs cheap by design (`$PIPELINE_DRIVE_MODEL`), and the
+  seat would have silently inherited that tier on exactly the
+  `kind: architectural` items it exists to protect — nothing errors, the
+  review just runs weaker than designed. The declared intent was taken as
+  authoritative and the mechanism corrected to match it. The tier is pinned in
+  the agent's **frontmatter** rather than passed as a caller-side override,
+  because the harness reads that file at every spawn: one declaration covers
+  `/build` 3e, `/assess` Step 3 and `/workshop` Step 3.3/3.5 alike, and a
+  future call site inherits the guarantee without knowing it needs to. This
+  also brings the seat into line with the kernel's own § Subagent usage
+  cost-tier rule, which asks that a seat's tier be set *explicitly* to fit the
+  work — `inherit` being the one value that makes tier a function of the
+  caller instead. `runReviewers()` in `claude/workflows/build-level.mjs` is
+  unchanged and still passes no `model` override, so the change is a strict
+  no-op for the three sibling reviewers that already pin `model: sonnet`
+  (`workflow-reviewer`, `docs-reviewer`, `requirements-auditor`).
+
+- **The review-agent availability probe no longer reports every reviewer
+  unavailable on a checkout whose agents live in `~/.claude/agents/`** (#1462).
+  The canonical predicate names two surfaces — `CLAUDE.md § Subagents` or
+  `.claude/agents/` — and the kernel's own dogfooding checkout has neither:
+  `.claude/agents/` is gitignored (`project-agents.sh` deploys it per-checkout,
+  so a fresh clone has none) and `CLAUDE.md` carries no `## Subagents` heading.
+  All eleven agents are nonetheless installed and spawnable from
+  `$HOME/.claude/agents/`, so read literally the predicate returned
+  *unavailable* for every one of them — and `build.md` §3e's **mandatory**
+  `workflow-reviewer` pass and `/workshop` §3.3's adversarial panel both gate on
+  it, so both emitted all-skip lines for agents that would have spawned fine. A
+  skip line that fires for an available agent is itself a mandatory step
+  silently not running: the temperloop#1387 all-skip outcome by a second,
+  independent route. `docs/adr/0008-command-declared-probe.md` had documented
+  this exact false-negative class for slash commands and noted the subagent
+  probe lacked the equivalent; `workflows/scripts/lib/agent_declared.sh` (ADR
+  0029) is that equivalent, mirroring `command_declared.sh`'s three-surface
+  order with `agents/` for `commands/` rather than inventing a new one, and
+  keeping the canonical predicate's `CLAUDE.md § Subagents` clause as a
+  declaration surface probed first. Availability is now three-valued —
+  `agent_declared_state` prints `installed`, `source-only`, or `absent` — so
+  the two degradation-notice forms are *selected* rather than guessed:
+  `installed` is the spawn gate, `source-only` gets the remedy-bearing "run
+  `project-agents.sh` to enable" line, and `absent` still gets the bare
+  `skipped — <agent> unavailable`. Absence and indeterminacy stay
+  distinguishable on purpose: a probe that made everything look available would
+  fabricate reviews that never ran, exactly as wrong as the bug it replaces. A
+  live surface also outranks a source hit, so an agent that both ships and is
+  installed reads `installed` — first-resolved-wins there would have
+  re-introduced the same skip one layer in. `test_agent_declared.sh` pins each
+  surface independently, the genuinely-absent case, the shipped-and-installed
+  case, and the `AGENT_DECLARED_OVERRIDE` fixture seam.
+
+- **The "cannot evaluate" idiom's `ONE emission path` claim is now true, and its one
+  exception is named** (temperloop#1487). `claude/presentation-plane.md` froze
+  `workflows/scripts/lib/cannot-evaluate.sh` as "the ONE emission path" while six sites
+  still emitted the contract independently — the claim was aspirational. The blocker was
+  structural: each model-comparison entry point's `command -v jq` bootstrap guard *is* a
+  cannot-evaluate, and the helper built its JSON with `jq`, the very tool that was missing.
+  So the guards hand-rolled their own shapes and drifted: `batch.sh` put the machine JSON on
+  **stderr** with no human line, and `replay.sh` emitted `outcome:"ERROR"` there instead of
+  `CANNOT_EVALUATE` — a consumer parsing stdout for the verdict saw nothing from either.
+  `cannot_evaluate_emit` is now **jq-free** (it encodes with `jq` when present and with a
+  pure-shell escaper when not, byte-identically), so all four guards in
+  `{batch,judge,score,replay}.sh` route through it and emit both frozen shapes on the
+  correct streams; each keeps its own documented process exit code (`1`). The fifth site,
+  `tagging.sh crosscheck`'s `_cc_eval`, is a **registered carve-out** rather than a silent
+  gap: its stdout is its own human `OK`/`FAIL` verdict stream, so it emits the frozen human
+  line and *no* machine JSON on either stream, and returns its own documented `1`. That
+  accepted shape is stated in the frozen row and pinned by a test, so a future drift into a
+  partial emitter goes red.
+
+- **The changelog gate no longer stops enforcing — while reporting success —
+  when `VERSIONING.md` is absent** (temperloop#1494; epic #1620).
+  `check-changelog-entry.sh` probes three files it needs, and two of them
+  already discriminated an absent input from a clean one: no `CHANGELOG.md` and
+  no `changelog.d/` each **fail loudly** in a tree carrying no `.kernel-pin`
+  (the kernel's own checkout, which has lost one of its own files) and skip
+  **legibly** in a tree that has one (a vendoring consumer that genuinely keeps
+  neither). The `VERSIONING.md` probe was the odd one out: a bare
+  `say "skipped …"; exit 0`, taken regardless of the pin.
+
+  That is the "quietly narrows to zero" failure the script's own header refuses
+  twice, applied to the one file whose absence causes it most directly.
+  `VERSIONING.md § The contract surface` is the table this gate **parses** to
+  decide what a PR owes a changelog entry for — it *is* the enforced surface
+  set. Rename, move or lose that file in the kernel's own checkout and the set
+  is empty, so every PR passes property (1) by default while the gate prints a
+  skip and exits 0.
+
+  The probe now carries the siblings' `.kernel-pin` discriminator verbatim in
+  shape: **absent and unpinned FAILS** (naming the missing file, the
+  discriminator, why an empty surface set is not a pass, and how to restore or
+  repoint it); **absent and pinned still skips**, now naming the pinned kernel
+  tag the way its two siblings do. The pinned arm is load-bearing, not a
+  hedge — a composed overlay checkout legitimately carries no `VERSIONING.md`
+  at its repo root, since it does not run the kernel's release workflow there,
+  and breaking that layout was the one thing this fix had to avoid.
+
+  Two cases pin the pair (36, 37), and both fail against the previous
+  implementation: the unpinned tree exited 0 with `skipped —` where it now
+  exits 1.
+
+- **`archive-plan.sh` no longer reports success for a plan snapshot that never
+  landed, and a later run no longer destroys one that is still pending**
+  (temperloop#1523). The step printed one `plan-archive-pr-queued: <pr>` line
+  that read as success while the snapshot sat only on `chore/plan-archive` —
+  and because the shared protected-main kernel force-rebuilt that branch off
+  `origin/main` every run, a prior run's snapshot whose PR had not merged was
+  overwritten and gone (observed: the 2026-08-10 snapshot, PR #1395 open four
+  days, discarded by the next run). Two changes. **Never-destroy:**
+  `land-on-protected-main.sh` now bases the archive worktree on
+  `origin/<branch>` whenever that branch carries commits `origin/main` does
+  not, so an un-merged payload is carried forward and extended, and rebuilds
+  off the default branch only when nothing unlanded sits on it.
+  **Verdict-matches-payload:** the status vocabulary splits into
+  `plan-archived:` (LANDED, the only success), `plan-archive-pending: <pr>`
+  (on the PR, auto-merge armed, not on `main`), `plan-archive-failed: <why>`
+  (nothing landed and nothing will), and `plan-archive-skipped:` (not
+  attempted). The `gh pr merge --auto` result is no longer discarded with
+  `|| true` — a PR whose auto-merge could not be armed reports failed instead
+  of queued (an already-queued PR still counts as armed) — an empty staged
+  diff is now read as "already present" only when the payload is genuinely
+  tracked, so a snapshot the index refused (an ignored path) reports failed
+  instead of `already current`, and the copy itself is checked and verified
+  against the source rather than aborting the script mid-run.
+
+- **`/build` workers are now told to add their own `changelog.d/` fragment for
+  contract-surface changes** (#1530). Previously nothing told a worker about
+  the fragment requirement, so a contract-surface PR passed every local gate
+  (the changelog gate skips cleanly with no resolvable base outside a PR
+  event) and then failed CI once, by design, on `check-changelog-entry.sh`
+  alone — observed live on three separate PRs in one session. `workerPrompt()`
+  (`claude/workflows/build-level.mjs`) now embeds a self-contained
+  `## Changelog fragment` section pointing the worker at
+  `changelog.d/README.md` for the filename shape and naming the
+  `Changelog: none — <reason>` commit-trailer opt-out (the one escape hatch
+  that works before a PR exists); `build.md` §3c carries the identical
+  instruction, and a static guard in `test_workflow.sh` keeps the two in
+  lockstep.
+
+- **`check-changelog-entry.sh` now rejects a fragment shape
+  `scripts/assemble-changelog.sh` will reject too** (temperloop#1542). A
+  fragment body carrying its own `#`/`##`/`###` heading, or one of the
+  assembler's control tokens (`##BEGIN##`, `##CATEGORY##`), used to pass the
+  PR-time gate and only fail at release-cut time — the observed break:
+  cutting v0.31.0 hit a hard stop on `changelog.d/1508-…fixed.md`, whose body
+  opened with `### Fixed`, a shape this gate had already accepted.
+
+  The two gates now share the SAME validation — `check-changelog-entry.sh`
+  runs the exact functions `assemble-changelog.sh` calls
+  (`changelog_fragment_body_offenders`, `changelog_fragment_empty` in
+  `workflows/scripts/lib/changelog.sh`) against every fragment a PR adds or
+  modifies, so the two copies of the rule this bug came from are now one. A
+  malformed fragment is a cheap PR-time fix instead of a hard stop that writes
+  nothing at the release cut.
+
+- **A `/build` acceptance-gate escalation can no longer contradict its own
+  payload** (#1587). `build-level.mjs` §3e.5 maintained **two** independent
+  failure counters — an accumulated `failedGates` and the terminal slice's own
+  `gateOut.failed` — and shipped both in one escalation:
+  `{gateOut:{outcome:"GATE_PASS",failed:0,…}, failedGates:1}` under
+  `kind=acceptance-gate-failed`. A consumer that trusted either field acted on a
+  fiction, and the operator who read the gate log's closing
+  `OK — gates 96..162 of 163 passed in 241s (final slice)` line reasonably
+  concluded the escalation was a false positive. It was not — an earlier slice
+  really had failed, and that green line covers only the gates the *last* slice
+  ran — but nothing in the payload said so.
+
+  There is now exactly one record of what a gate run found: a per-slice
+  `sliceLedger` the loop appends to. Every figure reported anywhere derives from
+  it — `verdict` (`RED` / `UNKNOWN` / `GREEN`, the one field a consumer may
+  trust), `failedGates` (the ledger's sum), `slices` (its length), the escalation
+  kind, and the reason prose, all computed in a single `gateVerdict()`
+  reconciliation point. The raw terminal `gateOut` — whose `failed` was the
+  contradicting field — is no longer embedded; its content survives as the
+  ledger's last entry, which cannot disagree with the sum of the ledger it is
+  part of. `slices` also stops over-reporting by one on slice-cap exhaustion,
+  where it was read off the loop index rather than the ledger.
+
+  Three behavior changes fall out, each closing a verdict/payload disagreement
+  rather than widening the gate:
+
+  - A `GATE_FAIL` whose failure count could not be parsed from the log (a stale
+    or absent `QUALITY_GATES_FAILED=` trailer) now reports **at least one**
+    failure. "Failed, 0 failures" was the mirror image of the same defect.
+  - An **observed failure dominates an unfinished remainder**: a run that failed
+    in slice 1 and was then killed by the executor's Bash ceiling escalates
+    `acceptance-gate-failed`, with a reason naming both halves, instead of
+    laundering a known-red branch into `acceptance-gate-timeout`. temperloop#1021
+    is preserved exactly — and sharpened: the timeout kind is now reserved for
+    runs where *nothing* failed in the slices that did run, which is the case
+    this repo hits today (temperloop#1663).
+  - A gate outcome outside the closed set no longer falls through to the
+    pass arm and pushes a branch whose gate never returned a verdict. It
+    escalates as `UNKNOWN`, with a reason naming the outcome verbatim.
+
+  Covered by three new fixture cases in
+  `workflows/scripts/build/tests/test_workflow.sh` (`1587 agreement` /
+  `1587 observed` / `1587 honesty`) that construct all four gate outcomes
+  against the .mjs's own offline harness — no live gate run — and assert the
+  structural invariants on every escalation: no embedded `gateOut`, no second
+  counter, `failedGates` equal to its own ledger's sum, `slices` equal to the
+  ledger's length, the kind equal to the verdict in both directions, and a
+  reason that agrees with the verdict it accompanies. All three fail against the
+  pre-fix file.
+
+- **`issue-state.sh resolve` can no longer fabricate a verdict for a target it
+  never read** (temperloop#1591, #1518; epic #1626). The probe every `/fix` run
+  starts with — before any mutation — collapsed *every* failure of
+  `gh issue view` into `{}` (`... 2>/dev/null || echo '{}'`), and the next line's
+  `jq -r '.state // "OPEN"'` then invented an open issue out of it. A
+  **nonexistent** number resolved `route: fresh` with `issue_state: open`, so a
+  consumer would claim-first and drive a target that does not exist (found live
+  by `/fix 1710` in a temperloop checkout, aimed at `Towheads/foundation#1710`).
+  A **transient** failure — auth, rate-limit, network — was indistinguishable
+  from that genuine 404. And because the terminal arm tested one specific value
+  (`= "closed"`), a **merged pull request** number fell through to the same
+  `fresh` default, emitting `issue_state: merged` beside
+  `reason: "open, unclaimed, no linked PR"` — the self-contradiction epic #1626
+  is named for.
+
+  The read is now a three-way envelope (`ok` / `not-found` / `error`) instead of
+  a swallowed `{}`, and the route table gained three **terminal** arms ordered
+  ahead of every other: `not-found` (`issue_state: absent`), `probe-failed`
+  (`issue_state: unknown` — the state is genuinely unknown, which is not the
+  same as open), and `not-an-issue` for a pull-request target, discriminated by
+  the `url` field's `/pull/` vs `/issues/` at no extra API call. Only GitHub's
+  own "could not resolve to an issue or pull request" signature counts as a 404;
+  an unresolvable *repository*, an auth error and a network error all stay
+  `probe-failed`, because asserting "this issue does not exist" off a read that
+  never reached the issue is the same fabrication in a new costume.
+  `already-done` widened from `closed` to any non-open state, a new
+  `is_pull_request` field rides the verdict, the two failure routes print one
+  human-readable line to stderr, and neither costs the second `gh` call the
+  open-PR linkage probe would have made. `resolve` still always exits 0 once it
+  has a verdict — failure is carried by `route`, never the exit code, so a
+  caller capturing stdout under `set -e` cannot have the honest verdict killed
+  out from under it.
+
+  That ordering is what makes the fix structural rather than four patches: no
+  arm below it — `fresh` above all — is reachable unless the target is a
+  genuinely open issue, so the `reason` string can no longer name a state the
+  `issue_state` field contradicts. Sixteen offline fixture cases pin it
+  (nonexistent, merged PR, open PR, simulated auth/network/404/bad-repo
+  failures, an unexpected non-open state, plus the open/closed baselines), each
+  asserting the route *and* running a mechanical cross-field check that the
+  `reason` asserts no lifecycle state other than the reported one; all of them
+  fail against the previous implementation. `/fix`'s route table gained the
+  matching **4g — no drivable target** arm, which touches nothing and reports.
+
+- **The five macOS-only quality gates that had been red on `main` for eight
+  nights now pass, and the shell-version footgun behind them is guarded
+  mechanically** (#1649). `nightly-macos.yml` failed on every scheduled run from
+  2026-08-14 onward — deterministically, byte-identically on retry — while the
+  `ubuntu-timing` leg of the same workflow stayed green. Two distinct causes, one
+  shared shape: **a bash-VERSION difference, not the BSD-vs-GNU userland dialect
+  family** (#1549 / #1422) that this repo's macOS regressions usually belong to.
+  The macos-latest runner's `bash scripts/quality-gates.sh` resolves to the
+  system `/bin/bash`, which on macOS is **3.2.57**; ubuntu-latest ships bash 5.x.
+
+  **(a)** `validate-check-surface-degenerate-coverage.sh` and
+  `validate-exec-bit-registry.sh` (and therefore both of their test suites — four
+  of the five gates) parsed their TSV registries by re-joining fields on `\x01`
+  and reading them back with `IFS=$'\x01'`. **0x01 is bash's own CTLESC marker
+  byte** (0x7f is CTLNUL), and bash 3.2's word splitting is not 8-bit clean for
+  either: `read` returns the whole line — marker bytes included — in the *first*
+  variable and leaves the rest empty. Every registry row therefore parsed as one
+  field, and the gates reported `Checked 0 registered surface(s)` plus a
+  `BAD-CASE` per row. Both now join on `\x1f` (ASCII US), which splits correctly
+  on 3.2 and 5.x alike. The awk stage was never at fault: it emits byte-identical
+  output under BSD and GNU awk, and holding awk fixed while swapping only the
+  bash binary flips the result — which is how the dialect hypothesis was ruled
+  out rather than assumed.
+
+  **(b)** `test_model_usage_emit.sh`'s §47 mutation check asserted that removing
+  `set +o posix` from `validate-model-usage-emit.sh` makes its CANNOT EVALUATE
+  diagnostic vanish under `POSIXLY_CORRECT=1`. That is a bash 4+ behaviour: only
+  bash 4+ aborts a posix-mode shell on a special-builtin redirection error inside
+  an `if !` condition. Bash 3.2 does not, so the guard is provably *inert* there
+  and the assertion was simply false. The check now **measures the host shell**
+  with a minimal reproduction of the production shape, prints the verdict, and
+  asserts the correct claim for that shell — the original strict "diagnostic is
+  lost" on a bash that aborts, and the equally falsifiable inverse "diagnostic
+  survives" on one that does not. Nothing is skipped or exempted, and the
+  production guard is unchanged.
+
+  **The structural half.** `scripts/lint-bash32-ctlesc-ifs.sh` is a new static
+  lint — third member of the family alongside `lint-bash32-cmdsubst-comment.sh`
+  and `lint-pipe-grep-q.sh` — that fails the build on any `IFS=` assignment
+  naming byte 0x01 or 0x7f, in every spelling bash accepts. A static lint is the
+  only detector that fires on *both* CI legs: shellcheck and `bash -n` exit 0 on
+  the shape, and a runtime test only catches it under a bash 3.2 that the
+  ubuntu-only pre-merge leg (#963) does not have. It deliberately does **not**
+  flag the awk side (`awk -F'\1'`, `OFS="\x01"`) — measured 8-bit clean on both
+  bashes, and live-and-correct in `validate-activation-registry.sh`, which an
+  earlier, wider cut of the rule false-positived on. Its regression suite fires
+  the lint at the verbatim pre-fix lines, fences the false positives, and — on
+  any host that actually has a bash 3.2 — re-measures the lint's own premise so
+  the claim cannot rot into folklore.
+
+- **The knowledge-search backend home is now a declared, disclosed removal
+  scope — and `test_install_lifecycle.sh` returns the same verdict with or
+  without `uv` on the host** (temperloop#1658). Since temperloop#1113 the
+  pinned `basic-memory` tool is *installed* rather than resolved per run,
+  which materialises a full virtualenv (plus uv's cache, any managed CPython
+  it downloaded, and the derived search index) under
+  `${KNOWLEDGE_SEARCH_BM_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/foundation/basic-memory-home}`.
+  Nothing recorded it, `temperloop uninstall` never removed it, and no
+  removal surface named it — so case 7c failed on every workstation with
+  `uv` while CI, which has none, stayed green and never exercised the path at
+  all. The tree now has an explicit disposition: **deliberately unmanaged,
+  regenerable tool state** — scope **(g)** of `bin/README.md` § Uninstall,
+  alongside the issue-cache store root it most resembles. `temperloop
+  uninstall` names the tree and prints its exact `rm -rf` whenever it is on
+  disk (and stays silent when it is not, since a host without `uv` never
+  grows one), honoring an explicit `KNOWLEDGE_SEARCH_BM_HOME`; the lifecycle
+  suite's new case **7f** fails if the tree survives uninstall and the
+  uninstall output did not name it, so the 7c exclusion cannot quietly become
+  an *undisclosed* one.
+
+- **Test sandbox roots can no longer leak on a failed, timed-out or cancelled
+  run** (#1723). `sandbox_up` (`workflows/scripts/tests/lib/sandbox.sh`) now
+  installs the cleanup traps **itself** — `EXIT`, `HUP`, `INT`, `TERM` — so all
+  six existing caller suites became safe with **no edit**, and no future suite
+  can forget. Previously every suite removed its ~1GB throwaway root with a
+  single `sandbox_down` on its **last line**, reached only on the happy path
+  (`fail()` is `exit 1`), so a failed assertion, a timeout kill, a CI
+  cancellation or an ENOSPC walked straight past it. Measured: `$TMPDIR` held
+  **215 leaked roots totalling ~180GB**, filling a 460GB disk and killing a
+  validation batch at record 25/28.
+
+  Three properties the guard holds. It is **registered, not latest-only** —
+  every root the shell created is reclaimed, not just the one `$SANDBOX_ROOT`
+  names at the moment of death (`test_uninstall.sh` calls `sandbox_up` 13
+  times). It is **chained, never clobbering** — a caller's own handler is
+  captured via `trap -p` (bash's own re-runnable quoting, so nothing is
+  hand-unescaped) and runs **first**, while the root it may still need exists;
+  traps are re-armed on every `sandbox_up`, so a trap installed *between* two
+  `sandbox_up` calls is re-chained rather than left clobbered, and a signal the
+  caller deliberately ignores (`trap '' TERM`) is left alone. And it is
+  **idempotent** with the explicit trailing `sandbox_down` the suites already
+  carry, so `test_install_lifecycle.sh`'s "the root is gone" assertion still
+  means what it did.
+
+  **`SANDBOX_KEEP=1`** retains every root (loudly, on stderr) for diagnosing a
+  red suite; it applies to the explicit `sandbox_down` too, so *keep* means
+  keep.
+
+  **SIGKILL is not covered and is not claimed to be** — `kill -9`, an OOM kill
+  and the SIGKILL leg of a candidate timeout are untrappable by construction.
+  For that path, and for roots already stranded before this guard existed, the
+  new sweeper `workflows/scripts/tests/lib/sandbox-sweep.sh` is the remedy: it
+  recognises a root by the `.sandbox-root` marker `sandbox_up` now writes, or
+  by `sandbox_up`'s exact directory signature for the pre-guard leaks — never a
+  `mktemp`-prefix glob — skips roots newer than `--older-than` (default 60m) and
+  roots whose recorded pid is still alive, and is a **dry run until `--apply`**.
+
+  `workflows/scripts/tests/lib/tests/test_sandbox_trap.sh` (new
+  `KERNEL_GATES` entry) asserts all of it from the OUTSIDE: each scenario runs a
+  generated fixture suite as a separate process with `$TMPDIR` re-pointed at a
+  throwaway scan dir, and checks that directory once the fixture is dead — mid-run
+  `fail()`, SIGTERM (exit 143), `SANDBOX_KEEP` in **both** directions, trap
+  chaining before and after `sandbox_up`, a deliberately-ignored signal staying
+  ignored, `sandbox_down`+trap idempotence, and the sweeper's find/skip/apply
+  behaviour.
+
+- **`/sweep`'s unattended escalation park no longer reads as destroying the
+  worker's unlanded work** (#1725). The park branch's `worktree.sh remove` now
+  runs first in the branch — `cmd_remove`'s own unlanded-work guard (#1699)
+  preserves committed and dirty state to a local `refs/parked/<slug>-<sha8>`
+  ref before the force-remove — and the park comment names that ref plus the
+  host holding it, since the ref is local-only and never pushed. The old
+  "resume = re-run, so discard it" rationale, which justified the destroy by
+  the very re-run it made lossy, is gone. A capture failure now surfaces as
+  `REMOVE_REFUSED` plus a non-zero exit (#1730) — which this branch reads as
+  the work-preservation SUCCESS case, not a park failure: it warns, keeps
+  disposing the chunk, and lands a distinct sentence in the park comment naming
+  the verbatim `preserved_detail`, the still-standing worktree path and the
+  host, so the failure is durable on the issue rather than lost to an
+  unattended run's stdout. The spec adds no destroy of its own after one. The
+  spec also now states the ref's reap rule: a sweep-originated ref is never
+  restored in place, so `prune` reaps it on the originating issue's terminal
+  disposition, never on the ancestry gate — which can never fire for it — with
+  `prune`'s `PARKED_REF` report and /tidy's stale-claim sweep named as the
+  crash-window backstop.
+
+- **`worktree.sh` no longer destroys work that preservation failed to capture**
+  (#1730). #1729 taught both destroying primitives to preserve unlanded work to
+  a local-only `refs/parked/*` ref first — but each then ran
+  `preserve_unlanded … || true` and destroyed **unconditionally**, so the guard
+  only ever protected the happy path: on `capture-failed:snapshot`,
+  `capture-failed:no-commit`, `capture-failed:ref-mint` or
+  `unclassifiable:no-default-branch` the worktree was force-removed and
+  `build/<slug>` was `git branch -D`'d with **nothing captured**.
+
+  `preserve_unlanded`'s **return value is now the destruction gate**: `0` means
+  the loss window is closed (nothing to preserve, not needed, or preserved),
+  non-zero means preservation was needed and failed. The `|| true` is gone from
+  both call sites, and the two callers deliberately **diverge**, because their
+  constraints do:
+
+  - **`remove` refuses.** A leaked worktree is recoverable by hand; a
+    force-deleted branch is not. It now emits
+    `{"outcome":"REMOVE_REFUSED", …}` carrying the verbatim `preserved_detail`
+    and the **still-standing** path, exits **non-zero**, and destroys nothing.
+  - **`create` sidelines and still `CREATED`s.** A refusing `create` would turn
+    `/build`'s prelude batch from *created* into *escalated*, so instead of
+    destroying, the un-preservable occupant is **moved aside** — `git worktree
+    move` to `<path>.unpreserved-<sha8>`, `git branch -m` to
+    `<branch>.unpreserved-<sha8>` — which frees the deterministic path for a
+    fresh worktree. The work survives **and** `create` still returns `CREATED`,
+    with the verdict riding that line as the new
+    `sidelined` / `sidelined_path` / `sidelined_branch` **fields** (never a new
+    `outcome` string — `SPINE_OUTCOME_SCHEMA` is a closed enum).
+
+  **`prune` owns the sidelined worktree's disposal**, reporting it as
+  `SIDELINED_WT` / `SIDELINED_WT_REAPED` on the same two-gate contract it
+  already applies to a preservation ref: ancestry of `origin/<default>` **or** a
+  terminal (CLOSED) originating issue, with an unevaluable check treated as
+  FALSE, an OPEN issue never reaped, a dirty tree never passing the ancestry
+  gate, and `--force` deliberately not plumbed in. The outcome strings stay
+  distinct from `PRUNED` so `deploy-mini.sh`'s counter is unaffected.
+
+  `workflows/scripts/build/tests/test_worktree.sh` extends #1729's cases with
+  the failure path: `remove`'s refusal is asserted against **each** of the four
+  capture-failure details (worktree *and* branch intact, named outcome, verbatim
+  detail, standing path, non-zero exit), `create`'s sideline is asserted to leave
+  the prior work recoverable at both halves while still returning `CREATED`, the
+  `prune` gates are asserted in all three dispositions, and an activation check
+  asserts the `|| true` is gone from both destroying primitives.
+
+- **`env-reconcile.sh` now classifies a worktree from its ACTUAL branch, and
+  never hands a consumer a removable verdict it could not establish**
+  (temperloop#658). `classify_worktree` computed the branch as
+  `build/$(basename "$wt")` — the naming convention `worktree.sh` happens to
+  use — so a worktree on any other prefix resolved to a branch name that had
+  never existed, missed `show-ref`, and was reported
+  `LEAKED_WORKTREE:BRANCH_GONE` while alive. `/tidy`'s env-hygiene auto-heal
+  then `git worktree remove --force`d it: on 2026-07-21 a live `fix/` worktree
+  — the isolated-worktree flow the kernel's own § Working-tree ownership rule
+  *prescribes* — was destroyed along with its uncommitted edit. Two changes.
+  **Classify from the real signal:** the branch is read from git's own
+  `worktree list --porcelain` record for that path (falling back to the
+  worktree's `HEAD` symref), so prefix has nothing to do with the verdict while
+  the genuinely-deleted ref is still detected. **Never remove on an
+  unestablished verdict:** the emitted class splits into `LEAKED_WORKTREE`
+  (leak reason held *and* the tree confirmed clean — the only auto-removable
+  one), `DIRTY_WORKTREE` (same reason, but uncommitted work present), and
+  `UNCERTAIN_WORKTREE` (the verdict could not be established at all — a
+  detached worktree, an unregistered directory, or a branch-gone worktree whose
+  deleted ref leaves `git status` no base to diff against). Each finding line
+  now carries its disposition, and `/tidy` removes only the clean class, run
+  **without `--force`** so git's own refusal is the last belt.
+
+- **`pr.sh rebase` now tells an unstaged-changes refusal apart from a genuine
+  rebase conflict** (#735). git refuses to *start* a rebase while tracked files
+  carry uncommitted edits, and that refusal exits non-zero exactly like a content
+  clash — so a worker that had FINISHED (commit made, gates green) but left one
+  tracked file unstaged was reported `{"outcome":"REBASE_CONFLICT","base":X,"tip":X}`:
+  base == tip, no rebase needed, no conflict anywhere, and the rebase-conflict
+  escalation would have discarded the finished work. The dirtiness is now probed
+  from git's own `status --porcelain` before anything is attempted and reported as
+  its own `DIRTY_WORKTREE` outcome (with `dirty_paths` and a `rebase_needed` flag
+  that also rides `REBASED`); `REBASE_CONFLICT` is left meaning only what it says.
+  `build-level.mjs` escalates it under a distinct `dirty-worktree` kind whose
+  disposition is commit-the-leftover-and-re-drive, and `issue-state.sh reattach`
+  no longer relabels it `stale-base-conflict`. A base that is already current now
+  skips the rebase invocation entirely.
+
 ## [0.33.1] - 2026-08-19
 
 ### Fixed
