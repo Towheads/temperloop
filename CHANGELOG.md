@@ -14,6 +14,16 @@ reads that marker; a stranger greps for it before pulling.
 
 ## [Unreleased]
 
+## [0.35.1] - 2026-08-23
+
+### Fixed
+
+- **A kernel disposition row naming content a consumer never adopted no longer fails that consumer's build** (#1740). `validate-check-surface-degenerate-coverage.sh` and `validate-mandatory-step-signal.sh` both treat a row whose referenced path is absent as a stale row to prune. That is right in this repo — and wrong in a composed overlay, where an adopter takes a **subset** of the kernel's scripts and command specs. Foundation's vendor hit both: `SPEC-NOT-FOUND claude/commands/promote.md` (a kernel command it deliberately does not carry) and `SURFACE-NOT-FOUND workflows/scripts/dev/validate-clean-host-ks-search.sh` (a kernel dev helper it never symlinked).
+
+  Both gates now tolerate such a row when **two** things hold: the repo is a vendoring consumer (a repo-root `.kernel-pin` — the same discriminator `validate-agent-charter-links.sh` already uses for "a consumer that did not adopt the review agents"), **and** the row came from a kernel-owned source file rather than an overlay extension. The row is reported as a note, never silently dropped.
+
+  The second condition is the point: a row an adopter wrote **itself**, naming a file that is not there, is genuinely stale and still fails. Without that split the `.kernel-pin` would become a blanket mute, and real ledger rot would hide behind it. Pinned by test in both suites, alongside the no-`.kernel-pin` baseline where the same row stays red.
+
 ## [0.35.0] - 2026-08-23
 
 ### Added
