@@ -237,6 +237,28 @@ DEFAULT_REPO_ROOT="$(cd -P "$SCRIPT_DIR/../.." && pwd)"
 : "${CHECK_SURFACE_REGISTRY_FILE:=$SCRIPT_DIR/config/check-surface-registry.tsv}"
 : "${CHECK_SURFACE_ALLOWLIST_FILE:=$SCRIPT_DIR/config/check-surface-degenerate-allowlist.tsv}"
 : "${CHECK_SURFACE_DISCOVERY_FILE:=$SCRIPT_DIR/config/check-surface-discovery.tsv}"
+# OVERLAY EXTENSION FILES (temperloop#1738). In a COMPOSED OVERLAY all three
+# config files above are compat symlinks into the vendored kernel subtree, so a
+# consumer that owns check surfaces of its own had NOWHERE to disposition them:
+# editing the vendored copy is forbidden (the next subtree pull overwrites it),
+# and replacing the symlink means owning a stale duplicate of every upstream
+# row. These siblings are that home. Absent in a kernel-only checkout, which is
+# why the default is "not present" rather than an error.
+#
+# Same shape as the kernel's two existing overlay-extension seams —
+# setting-registry.overlay.tsv (setting-registry-lib.sh) and
+# capture-backstop-registry.overlay.md (validate-capture-backstop.sh): a
+# `<base>.overlay.<ext>` sibling, unioned when present, env-overridable as a
+# test seam.
+#
+# The ALLOWLIST deliberately gets NO overlay twin. §4a is explicit that
+# overlay-authored allowlist growth "is never a place to add a newly-discovered
+# non-compliant surface"; an overlay allowlist would be exactly that hole. A
+# consumer's newly-discovered surface goes in the discovery ledger (`pending`
+# with a reason, shrink-only) or gets registered — the same two doors the
+# kernel's own surfaces use.
+: "${CHECK_SURFACE_REGISTRY_OVERLAY_FILE:=$SCRIPT_DIR/config/check-surface-registry.overlay.tsv}"
+: "${CHECK_SURFACE_DISCOVERY_OVERLAY_FILE:=$SCRIPT_DIR/config/check-surface-discovery.overlay.tsv}"
 : "${CHECK_SURFACE_QUALITY_GATES_FILE:=$CHECK_SURFACE_REPO_ROOT/scripts/quality-gates.sh}"
 # The tree §5's discovery pass enumerates. Defaults to the same root every
 # other relative path seam resolves against, so a fixture that redirects
@@ -275,6 +297,8 @@ CHECK_SURFACE_ALLOWLIST_FILE="$(_csd_resolve_path "$CHECK_SURFACE_ALLOWLIST_FILE
 CHECK_SURFACE_QUALITY_GATES_FILE="$(_csd_resolve_path "$CHECK_SURFACE_QUALITY_GATES_FILE")"
 CHECK_SURFACE_DISCOVERY_FILE="$(_csd_resolve_path "$CHECK_SURFACE_DISCOVERY_FILE")"
 CHECK_SURFACE_DISCOVERY_ROOT="$(_csd_resolve_path "$CHECK_SURFACE_DISCOVERY_ROOT")"
+CHECK_SURFACE_REGISTRY_OVERLAY_FILE="$(_csd_resolve_path "$CHECK_SURFACE_REGISTRY_OVERLAY_FILE")"
+CHECK_SURFACE_DISCOVERY_OVERLAY_FILE="$(_csd_resolve_path "$CHECK_SURFACE_DISCOVERY_OVERLAY_FILE")"
 
 [[ -f "$CHECK_SURFACE_REGISTRY_FILE" ]] || _csd_cannot_evaluate "registry file not found: $CHECK_SURFACE_REGISTRY_FILE"
 [[ -r "$CHECK_SURFACE_REGISTRY_FILE" ]] || _csd_cannot_evaluate "registry file exists but is not readable: $CHECK_SURFACE_REGISTRY_FILE"
@@ -293,8 +317,26 @@ if [[ -e "$CHECK_SURFACE_DISCOVERY_FILE" && ! -r "$CHECK_SURFACE_DISCOVERY_FILE"
   _csd_cannot_evaluate "discovery ledger exists but is not readable: $CHECK_SURFACE_DISCOVERY_FILE"
 fi
 
+# The overlay twins follow the same rule as the allowlist and the ledger:
+# ABSENT is legal (a kernel-only checkout, the common case) and contributes
+# zero rows; PRESENT-BUT-UNREADABLE is CANNOT EVALUATE, because a row this gate
+# cannot read is indistinguishable from a row that does not exist, and that is
+# precisely the silence epic #1409 exists to end.
+for _csd_ov in "$CHECK_SURFACE_REGISTRY_OVERLAY_FILE" "$CHECK_SURFACE_DISCOVERY_OVERLAY_FILE"; do
+  if [[ -e "$_csd_ov" && ! -r "$_csd_ov" ]]; then
+    _csd_cannot_evaluate "overlay extension file exists but is not readable: $_csd_ov"
+  fi
+done
+unset _csd_ov
+
 [[ -f "$CHECK_SURFACE_QUALITY_GATES_FILE" ]] || _csd_cannot_evaluate "quality-gates file not found: $CHECK_SURFACE_QUALITY_GATES_FILE"
 [[ -r "$CHECK_SURFACE_QUALITY_GATES_FILE" ]] || _csd_cannot_evaluate "quality-gates file exists but is not readable: $CHECK_SURFACE_QUALITY_GATES_FILE"
+
+# Named once so the EMPTY-REGISTRY message below reports what was actually
+# read, not just the kernel half.
+_csd_registry_overlay_note=""
+[[ -f "$CHECK_SURFACE_REGISTRY_OVERLAY_FILE" ]] \
+  && _csd_registry_overlay_note=" (+ overlay extension $CHECK_SURFACE_REGISTRY_OVERLAY_FILE)"
 
 failures=()
 n_surfaces=0
@@ -333,6 +375,19 @@ _CSD_ANCHOR_MIN_LEN=12
 # ---------------------------------------------------------------------------
 _csd_tsv_file() { # <file> -> \x1f-joined lines on stdout
   awk -F'\t' 'BEGIN{OFS="\x1f"} {$1=$1; print}' "$1"
+}
+# _csd_tsv_files <file...> -> \x1f-joined rows, each PREFIXED with the file it
+# came from. The prefix is what lets a failure name the ACTUAL source: with the
+# overlay extension unioned in, a message hardcoding the kernel path would send
+# someone hunting a bad row in a file that does not contain it. A missing or
+# unreadable file contributes nothing here — both are dispositioned by the
+# explicit guards above, so silence at this point is already decided, not lost.
+_csd_tsv_files() {
+  local _f
+  for _f in "$@"; do
+    [[ -f "$_f" && -r "$_f" ]] || continue
+    awk -F'\t' -v SRC="$_f" 'BEGIN{OFS="\x1f"} {$1=$1; print SRC OFS $0}' "$_f"
+  done
 }
 _csd_tsv_string() { # <string> -> \x1f-joined lines on stdout
   printf '%s' "$1" | awk -F'\t' 'BEGIN{OFS="\x1f"} {$1=$1; print}'
@@ -442,7 +497,7 @@ known_surfaces=""
 surface_cases_seen=""
 current_registry_status=""
 
-while IFS=$'\x1f' read -r surface case_ status test_file detail || [[ -n "${surface:-}" ]]; do
+while IFS=$'\x1f' read -r src surface case_ status test_file detail || [[ -n "${src:-}" ]]; do
   [[ -z "${surface:-}" ]] && continue
   case "$surface" in \#*) continue ;; esac
 
@@ -523,7 +578,7 @@ while IFS=$'\x1f' read -r surface case_ status test_file detail || [[ -n "${surf
       failures+=("NOT-APPLICABLE-UNJUSTIFIED  $surface [$case_] — status=not-applicable requires a non-empty justification in DETAIL")
     fi
   fi
-done < <(_csd_tsv_file "$CHECK_SURFACE_REGISTRY_FILE")
+done < <(_csd_tsv_files "$CHECK_SURFACE_REGISTRY_FILE" "$CHECK_SURFACE_REGISTRY_OVERLAY_FILE")
 
 # ---------------------------------------------------------------------------
 # 1b. EMPTY-REGISTRY (HIGH 1): a registry with zero parsed surfaces is a
@@ -534,7 +589,7 @@ done < <(_csd_tsv_file "$CHECK_SURFACE_REGISTRY_FILE")
 #    fires ONLY on the genuinely-empty/comment-only case.
 # ---------------------------------------------------------------------------
 if [[ -z "${known_surfaces:-}" ]]; then
-  failures+=("EMPTY-REGISTRY  $CHECK_SURFACE_REGISTRY_FILE parses to ZERO registered check surfaces — an empty or comment-only registry is a vacuous pass, exactly the defect class this gate exists to close")
+  failures+=("EMPTY-REGISTRY  $CHECK_SURFACE_REGISTRY_FILE${_csd_registry_overlay_note} parses to ZERO registered check surfaces — an empty or comment-only registry is a vacuous pass, exactly the defect class this gate exists to close")
 fi
 
 # ---------------------------------------------------------------------------
@@ -589,8 +644,11 @@ discovery_surfaces=""
 discovery_pending=""
 n_pending=0
 n_excluded=0
-if [[ -f "$CHECK_SURFACE_DISCOVERY_FILE" ]]; then
-  while IFS=$'\x1f' read -r d_surface d_disp d_reason || [[ -n "${d_surface:-}" ]]; do
+# EITHER source is enough to have dispositions to parse: a composed overlay may
+# legitimately carry only the overlay twin (its own surfaces) with no kernel
+# ledger symlinked in at all.
+if [[ -f "$CHECK_SURFACE_DISCOVERY_FILE" || -f "$CHECK_SURFACE_DISCOVERY_OVERLAY_FILE" ]]; then
+  while IFS=$'\x1f' read -r src d_surface d_disp d_reason || [[ -n "${src:-}" ]]; do
     [[ -z "${d_surface:-}" ]] && continue
     case "$d_surface" in \#*) continue ;; esac
     case "${d_disp:-}" in
@@ -601,7 +659,7 @@ if [[ -f "$CHECK_SURFACE_DISCOVERY_FILE" ]]; then
         ;;
       excluded) n_excluded=$((n_excluded + 1)) ;;
       *)
-        failures+=("BAD-DISPOSITION  $d_surface — unrecognized disposition '${d_disp:-}' in $CHECK_SURFACE_DISCOVERY_FILE (want: pending, excluded)")
+        failures+=("BAD-DISPOSITION  $d_surface — unrecognized disposition '${d_disp:-}' in $src (want: pending, excluded)")
         continue
         ;;
     esac
@@ -614,7 +672,7 @@ if [[ -f "$CHECK_SURFACE_DISCOVERY_FILE" ]]; then
     fi
     discovery_surfaces="$discovery_surfaces$d_surface
 "
-  done < <(_csd_tsv_file "$CHECK_SURFACE_DISCOVERY_FILE")
+  done < <(_csd_tsv_files "$CHECK_SURFACE_DISCOVERY_FILE" "$CHECK_SURFACE_DISCOVERY_OVERLAY_FILE")
 fi
 
 # A ledger row for a surface that has SINCE been registered (or allowlisted)
@@ -930,68 +988,96 @@ _csd_pending_from_content() {
 #         in the diff, the same trust model the registry's own
 #         `not-applicable` already runs on. Same vendored-kernel arm as 4a
 #         (a row upstream shipped is upstream-ratcheted, not overlay growth).
-if [[ -z "$_csd_ratchet_skip_reason" ]]; then
-  discovery_relpath="$(_csd_ratchet_relpath "$CHECK_SURFACE_DISCOVERY_FILE")" || discovery_relpath=""
-  if [[ ! -f "$CHECK_SURFACE_DISCOVERY_FILE" ]]; then
-    ratchet_lines+=("pending ratchet: SKIPPED (no discovery ledger at $CHECK_SURFACE_DISCOVERY_FILE — zero dispositions, which §5 enforces strictly rather than leniently)")
-  elif [[ -z "$discovery_relpath" ]]; then
-    ratchet_lines+=("pending ratchet: SKIPPED ($CHECK_SURFACE_DISCOVERY_FILE is not under $CHECK_SURFACE_GIT_REPO_ROOT)")
-  elif _csd_ratchet_file_added "$discovery_relpath"; then
-    ratchet_lines+=("pending ratchet: SKIPPED (bootstrap — $discovery_relpath was added in this diff, nothing to compare against)")
-  else
-    prev_disc_content="$(git -C "$CHECK_SURFACE_GIT_REPO_ROOT" show "${_csd_ratchet_base_ref}:${discovery_relpath}" 2>/dev/null)" || prev_disc_content=""
+# The pending set is now a UNION across the kernel ledger and its overlay twin
+# (temperloop#1738), so the ratchet has to be too. Ratcheting only the kernel
+# half would report every overlay-authored row as PENDING-GREW forever; NOT
+# ratcheting the overlay half would turn it into the unbounded debt parking lot
+# this ratchet exists to prevent. So each source contributes its own ALLOWED
+# set, and a current row is growth only if it is in none of them.
+_csd_allowed_pending=""
+# ALWAYS append through this helper (see the trailing-newline note below): a
+# bare `$( )` concatenation loses the terminator the membership test closes on,
+# making the LAST entry of that contribution unmatchable.
+_csd_allow_add() {
+  local chunk="$1"
+  [[ -n "$chunk" ]] || return 0
+  _csd_allowed_pending="$_csd_allowed_pending$chunk"$'\n'
+}
+for _csd_disc_file in "$CHECK_SURFACE_DISCOVERY_FILE" "$CHECK_SURFACE_DISCOVERY_OVERLAY_FILE"; do
+  if [[ -z "$_csd_ratchet_skip_reason" ]]; then
+    if [[ ! -f "$_csd_disc_file" ]]; then
+      continue
+    fi
+    _csd_disc_relpath="$(_csd_ratchet_relpath "$_csd_disc_file")" || _csd_disc_relpath=""
+    if [[ -z "$_csd_disc_relpath" ]]; then
+      # Not under the git root: the base-ref side is unreadable, so this file
+      # cannot be ratcheted at all. GRANDFATHER its rows and SAY so — silently
+      # contributing nothing would report them as growth, which is a false
+      # accusation, and silently passing them would hide that half the input
+      # was unavailable.
+      _csd_allow_add "$(_csd_pending_from_content "$(cat "$_csd_disc_file")")"
+      ratchet_lines+=("pending ratchet: SKIPPED for $_csd_disc_file (not under $CHECK_SURFACE_GIT_REPO_ROOT — its rows are grandfathered, not checked)")
+      continue
+    fi
+    if _csd_ratchet_file_added "$_csd_disc_relpath"; then
+      # Bootstrap: the file was added in this diff, so there is no previous
+      # version to shrink from. Its current rows become the baseline the NEXT
+      # run ratchets against.
+      _csd_allow_add "$(_csd_pending_from_content "$(cat "$_csd_disc_file")")"
+      ratchet_lines+=("pending ratchet: SKIPPED for $_csd_disc_relpath (bootstrap — added in this diff, nothing to compare against)")
+      continue
+    fi
+    _csd_prev_content="$(git -C "$CHECK_SURFACE_GIT_REPO_ROOT" show "${_csd_ratchet_base_ref}:${_csd_disc_relpath}" 2>/dev/null)" || _csd_prev_content=""
     # `$( )` strips EVERY trailing newline, and the membership test below closes
     # on one (`*$'\n'"$item"$'\n'*`) — so without re-adding it the LAST entry of
     # this set can never match, and is falsely reported PENDING-GREW on every
     # run. Every other membership set in this file is built inline in the same
-    # shell and keeps its terminator; these two are the only ones that round-trip
-    # through a subshell, which is why only they need it back. Caught by the §3e
-    # shell-reviewer, which reproduced the gate failing against its own
-    # byte-identical content.
-    prev_pending="$(_csd_pending_from_content "$prev_disc_content")"
-    [[ -n "$prev_pending" ]] && prev_pending="$prev_pending"$'\n'
-    upstream_pending=""
-    disc_kernel_squash=""
-    disc_kernel_arm_note=""
+    # shell and keeps its terminator; these round-trip through a subshell, which
+    # is why only they need it back. Caught by the §3e shell-reviewer, which
+    # reproduced the gate failing against its own byte-identical content.
+    _csd_prev_pending="$(_csd_pending_from_content "$_csd_prev_content")"
+    [[ -n "$_csd_prev_pending" ]] && _csd_prev_pending="$_csd_prev_pending"$'\n'
+    _csd_allow_add "$_csd_prev_pending"
+
+    _csd_disc_squash=""
+    _csd_disc_arm_note=""
     if [[ -f "$CHECK_SURFACE_GIT_REPO_ROOT/.kernel-pin" ]]; then
-      case "$discovery_relpath" in
+      case "$_csd_disc_relpath" in
         kernel/*)
-          disc_kernel_squash="$(_csd_kernel_squash_commit)" || disc_kernel_squash=""
-          if [[ -z "$disc_kernel_squash" ]]; then
+          _csd_disc_squash="$(_csd_kernel_squash_commit)" || _csd_disc_squash=""
+          if [[ -z "$_csd_disc_squash" ]]; then
             # Mirror §4a rather than degrading silently: a .kernel-pin present
             # and the ledger under kernel/, but no reachable subtree squash
             # commit, means the upstream side of this comparison is UNKNOWN.
             # §4a says so on its verdict line; §4c must too, or the ratchet
             # reads as fully checked when half its input was unavailable.
-            disc_kernel_arm_note=" (vendored-kernel arm SKIPPED — .kernel-pin present and $discovery_relpath is under kernel/, but no git-subtree-dir squash commit is reachable, so the upstream pending set could not be read)"
-          fi
-          if [[ -n "$disc_kernel_squash" ]]; then
-            upstream_disc_content="$(git -C "$CHECK_SURFACE_GIT_REPO_ROOT" show "${disc_kernel_squash}:${discovery_relpath#kernel/}" 2>/dev/null)" || upstream_disc_content=""
-            upstream_pending="$(_csd_pending_from_content "$upstream_disc_content")"
-            # Same trailing-newline restoration as prev_pending above.
-            [[ -n "$upstream_pending" ]] && upstream_pending="$upstream_pending"$'\n'
+            _csd_disc_arm_note=" (vendored-kernel arm SKIPPED — .kernel-pin present and $_csd_disc_relpath is under kernel/, but no git-subtree-dir squash commit is reachable, so the upstream pending set could not be read)"
+          else
+            _csd_up_content="$(git -C "$CHECK_SURFACE_GIT_REPO_ROOT" show "${_csd_disc_squash}:${_csd_disc_relpath#kernel/}" 2>/dev/null)" || _csd_up_content=""
+            _csd_up_pending="$(_csd_pending_from_content "$_csd_up_content")"
+            # Same trailing-newline restoration as above.
+            [[ -n "$_csd_up_pending" ]] && _csd_up_pending="$_csd_up_pending"$'\n'
+            _csd_allow_add "$_csd_up_pending"
           fi
           ;;
       esac
     fi
-    if [[ -n "$discovery_pending" ]]; then
-      while IFS= read -r cur_pending; do
-        [[ -z "$cur_pending" ]] && continue
-        case $'\n'"$prev_pending" in
-          *$'\n'"$cur_pending"$'\n'*) continue ;;
-        esac
-        if [[ -n "$upstream_pending" ]]; then
-          case $'\n'"$upstream_pending" in
-            *$'\n'"$cur_pending"$'\n'*) continue ;;
-          esac
-        fi
-        failures+=("PENDING-GREW  $cur_pending — listed 'pending' in $CHECK_SURFACE_DISCOVERY_FILE now but not at $_csd_ratchet_base_ref; the pending set is a shrink-only ratchet, so a NEWLY DISCOVERED check surface must be registered (or argued 'excluded'), never parked")
-      done <<<"$discovery_pending"
-    fi
-    ratchet_lines+=("pending ratchet: checked against $_csd_ratchet_base_ref:$discovery_relpath${disc_kernel_squash:+ + vendored-kernel squash $disc_kernel_squash}${disc_kernel_arm_note:-}")
+    ratchet_lines+=("pending ratchet: checked against $_csd_ratchet_base_ref:$_csd_disc_relpath${_csd_disc_squash:+ + vendored-kernel squash $_csd_disc_squash}${_csd_disc_arm_note:-}")
   fi
-else
+done
+if [[ -n "$_csd_ratchet_skip_reason" ]]; then
   ratchet_lines+=("pending ratchet: SKIPPED ($_csd_ratchet_skip_reason)")
+elif [[ -n "$discovery_pending" ]]; then
+  while IFS= read -r cur_pending; do
+    [[ -z "$cur_pending" ]] && continue
+    case $'\n'"$_csd_allowed_pending" in
+      *$'\n'"$cur_pending"$'\n'*) continue ;;
+    esac
+    failures+=("PENDING-GREW  $cur_pending — listed 'pending' now but not at $_csd_ratchet_base_ref in any disposition source; the pending set is a shrink-only ratchet, so a NEWLY DISCOVERED check surface must be registered (or argued 'excluded'), never parked")
+  done <<<"$discovery_pending"
+fi
+if [[ -z "$_csd_ratchet_skip_reason" && ! -f "$CHECK_SURFACE_DISCOVERY_FILE" && ! -f "$CHECK_SURFACE_DISCOVERY_OVERLAY_FILE" ]]; then
+  ratchet_lines+=("pending ratchet: SKIPPED (no discovery ledger at $CHECK_SURFACE_DISCOVERY_FILE — zero dispositions, which §5 enforces strictly rather than leniently)")
 fi
 
 # ---------------------------------------------------------------------------

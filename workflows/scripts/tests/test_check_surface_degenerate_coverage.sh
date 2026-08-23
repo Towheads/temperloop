@@ -99,6 +99,8 @@ run_gate() {
     CHECK_SURFACE_REPO_ROOT="$git_root" \
     CHECK_SURFACE_DISCOVERY_ROOT="${CSD_TEST_DISCOVERY_ROOT:-$DISCOVERY_NEUTRAL_ROOT}" \
     CHECK_SURFACE_DISCOVERY_FILE="${CSD_TEST_DISCOVERY_FILE:-$DISCOVERY_NEUTRAL_LEDGER}" \
+    CHECK_SURFACE_REGISTRY_OVERLAY_FILE="${CSD_TEST_REGISTRY_OVERLAY:-$WORK/no-such-registry.overlay.tsv}" \
+    CHECK_SURFACE_DISCOVERY_OVERLAY_FILE="${CSD_TEST_DISCOVERY_OVERLAY:-$WORK/no-such-discovery.overlay.tsv}" \
     bash "$GATE"
 }
 
@@ -1366,6 +1368,176 @@ out="$(CSD_TEST_DISCOVERY_ROOT="$R" CSD_TEST_DISCOVERY_FILE="$R/ledger.tsv" \
 [[ "$rc" -eq 0 ]] || fail "36: burning a pending row down into a registration should be GREEN, got rc=$rc:
 $out"
 ok "36 temperloop#1491: deleting a pending row because the surface got registered is a legal SHRINK"
+
+# ---------------------------------------------------------------------------
+# 37-42. temperloop#1738 — THE OVERLAY EXTENSION SEAM.
+#
+# In a composed overlay all three config files are compat symlinks into the
+# vendored kernel subtree, so a consumer owning check surfaces of its own had
+# nowhere to disposition them. These cases pin the seam AND its limits: it must
+# actually work (37, 39), it must be the thing that makes the difference (38),
+# and it must NOT become an unbounded debt parking lot (40) — the whole reason
+# §4c ratchets the kernel ledger in the first place.
+# ---------------------------------------------------------------------------
+OV="$WORK/d-overlay"
+mkdir -p "$OV"
+: >"$OV/check-alpha.sh"
+: >"$OV/validate-consumer.sh"
+printf 'check "%s" true\n' "$D_ANCHOR" >"$OV/test_alpha.sh"
+printf '#!/usr/bin/env bash\nGATES=(\n  "bash test_alpha.sh"\n)\n' >"$OV/quality-gates.sh"
+: >"$OV/allowlist.tsv"
+{
+  printf 'check-alpha.sh\tabsent\tcovered\ttest_alpha.sh\t%s\n' "$D_ANCHOR"
+  printf 'check-alpha.sh\tunreadable\tnot-applicable\t-\tno file-shaped input\n'
+  printf 'check-alpha.sh\tempty\tnot-applicable\t-\tno file-shaped input\n'
+} >"$OV/registry.tsv"
+: >"$OV/ledger.tsv"
+
+# 38 FIRST (the discrimination baseline): with NO overlay extension, the
+# consumer-owned surface is undispositioned and the gate is RED. If this ever
+# goes green the rest of this block proves nothing.
+count
+rc=0
+out="$(CSD_TEST_DISCOVERY_ROOT="$OV" CSD_TEST_DISCOVERY_FILE="$OV/ledger.tsv" \
+  run_gate "$OV/registry.tsv" "$OV/allowlist.tsv" "$OV/quality-gates.sh" "$OV" 2>&1)" || rc=$?
+[[ "$rc" -ne 0 ]] || fail "38: an overlay-owned surface with NO extension file should be RED, got rc=0:
+$out"
+case "$out" in
+  *"UNREGISTERED-SURFACE  validate-consumer.sh"*) ;;
+  *) fail "38: expected UNREGISTERED-SURFACE for the consumer surface:
+$out" ;;
+esac
+ok "38 temperloop#1738: without the overlay extension a consumer-owned surface is UNREGISTERED (the baseline)"
+
+# 37. The overlay DISCOVERY extension dispositions it -> GREEN.
+printf 'validate-consumer.sh\tpending\tconsumer-owned; fixture seam tracked downstream\n' \
+  >"$OV/discovery.overlay.tsv"
+count
+rc=0
+out="$(CSD_TEST_DISCOVERY_ROOT="$OV" CSD_TEST_DISCOVERY_FILE="$OV/ledger.tsv" \
+  CSD_TEST_DISCOVERY_OVERLAY="$OV/discovery.overlay.tsv" \
+  run_gate "$OV/registry.tsv" "$OV/allowlist.tsv" "$OV/quality-gates.sh" "$OV" 2>&1)" || rc=$?
+[[ "$rc" -eq 0 ]] || fail "37: an overlay discovery extension should disposition the surface, got rc=$rc:
+$out"
+ok "37 temperloop#1738: an overlay discovery extension dispositions a consumer-owned surface"
+
+# 39. The overlay REGISTRY extension registers it outright -> GREEN. Without
+#     this half a consumer could never burn a 'pending' row down: the only exit
+#     from the ledger is registration, and the registry is kernel-owned too.
+rm -f "$OV/discovery.overlay.tsv"
+printf 'check "%s" true\n' "consumer degenerate input: exit non-zero, never OK" >"$OV/test_consumer.sh"
+printf '#!/usr/bin/env bash\nGATES=(\n  "bash test_alpha.sh"\n  "bash test_consumer.sh"\n)\n' >"$OV/quality-gates.sh"
+{
+  printf 'validate-consumer.sh\tabsent\tcovered\ttest_consumer.sh\t%s\n' "consumer degenerate input: exit non-zero, never OK"
+  printf 'validate-consumer.sh\tunreadable\tnot-applicable\t-\tno file-shaped input\n'
+  printf 'validate-consumer.sh\tempty\tnot-applicable\t-\tno file-shaped input\n'
+} >"$OV/registry.overlay.tsv"
+count
+rc=0
+out="$(CSD_TEST_DISCOVERY_ROOT="$OV" CSD_TEST_DISCOVERY_FILE="$OV/ledger.tsv" \
+  CSD_TEST_REGISTRY_OVERLAY="$OV/registry.overlay.tsv" \
+  run_gate "$OV/registry.tsv" "$OV/allowlist.tsv" "$OV/quality-gates.sh" "$OV" 2>&1)" || rc=$?
+[[ "$rc" -eq 0 ]] || fail "39: an overlay registry extension should register the surface, got rc=$rc:
+$out"
+ok "39 temperloop#1738: an overlay registry extension registers a consumer-owned surface (the exit from 'pending')"
+
+# 41. An UNREADABLE overlay file is CANNOT EVALUATE, never a silent pass — the
+#     same fail-closed rule the kernel ledger already follows. Skipped as root,
+#     which can read a 000 file (mirrors case 34's own guard).
+if [[ "$(id -u)" -ne 0 ]]; then
+  rm -f "$OV/registry.overlay.tsv"
+  printf 'validate-consumer.sh\tpending\tconsumer-owned\n' >"$OV/unreadable.overlay.tsv"
+  chmod 000 "$OV/unreadable.overlay.tsv"
+  count
+  rc=0
+  out="$(CSD_TEST_DISCOVERY_ROOT="$OV" CSD_TEST_DISCOVERY_FILE="$OV/ledger.tsv" \
+    CSD_TEST_DISCOVERY_OVERLAY="$OV/unreadable.overlay.tsv" \
+    run_gate "$OV/registry.tsv" "$OV/allowlist.tsv" "$OV/quality-gates.sh" "$OV" 2>&1)" || rc=$?
+  chmod 644 "$OV/unreadable.overlay.tsv"
+  [[ "$rc" -ne 0 ]] || fail "41: an unreadable overlay extension should be CANNOT EVALUATE, got rc=0:
+$out"
+  case "$out" in
+    *"overlay extension file exists but is not readable"*) ;;
+    *) fail "41: expected the unreadable-overlay CANNOT EVALUATE message:
+$out" ;;
+  esac
+  ok "41 temperloop#1738: an unreadable overlay extension is CANNOT EVALUATE, never a silent pass"
+  rm -f "$OV/unreadable.overlay.tsv"
+fi
+
+# 42. A bad row in the overlay names the OVERLAY file. Before the source tag,
+#     every message hardcoded the kernel path and sent the reader hunting a row
+#     in a file that does not contain it.
+printf 'validate-consumer.sh\tmaybe-later\tnot a real disposition\n' >"$OV/bad.overlay.tsv"
+count
+rc=0
+out="$(CSD_TEST_DISCOVERY_ROOT="$OV" CSD_TEST_DISCOVERY_FILE="$OV/ledger.tsv" \
+  CSD_TEST_DISCOVERY_OVERLAY="$OV/bad.overlay.tsv" \
+  run_gate "$OV/registry.tsv" "$OV/allowlist.tsv" "$OV/quality-gates.sh" "$OV" 2>&1)" || rc=$?
+[[ "$rc" -ne 0 ]] || fail "42: a bad overlay disposition should be RED, got rc=0:
+$out"
+case "$out" in
+  *"BAD-DISPOSITION"*"bad.overlay.tsv"*) ;;
+  *) fail "42: the BAD-DISPOSITION message must name the OVERLAY file it came from:
+$out" ;;
+esac
+ok "42 temperloop#1738: a failure names the extension file the row actually came from"
+rm -f "$OV/bad.overlay.tsv"
+
+# 40. THE LIMIT. The overlay pending set is shrink-only too. A seam that let a
+#     consumer park newly-discovered surfaces forever would be strictly worse
+#     than the hole it closes: same debt, now invisible to upstream.
+OVR="$WORK/d-overlay-ratchet"
+mkdir -p "$OVR"
+: >"$OVR/check-alpha.sh"
+: >"$OVR/validate-consumer.sh"
+printf 'check "%s" true\n' "$D_ANCHOR" >"$OVR/test_alpha.sh"
+printf '#!/usr/bin/env bash\nGATES=(\n  "bash test_alpha.sh"\n)\n' >"$OVR/quality-gates.sh"
+: >"$OVR/allowlist.tsv"
+{
+  printf 'check-alpha.sh\tabsent\tcovered\ttest_alpha.sh\t%s\n' "$D_ANCHOR"
+  printf 'check-alpha.sh\tunreadable\tnot-applicable\t-\tno file-shaped input\n'
+  printf 'check-alpha.sh\tempty\tnot-applicable\t-\tno file-shaped input\n'
+} >"$OVR/registry.tsv"
+: >"$OVR/ledger.tsv"
+printf 'validate-consumer.sh\tpending\tconsumer-owned; fixture seam tracked downstream\n' \
+  >"$OVR/discovery.overlay.tsv"
+gitc -C "$OVR" init -q 2>/dev/null || git -C "$OVR" init -q
+gitc -C "$OVR" add -A
+GIT_AUTHOR_DATE="2024-01-01T00:00:00Z" GIT_COMMITTER_DATE="2024-01-01T00:00:00Z" \
+  gitc -C "$OVR" commit -q -m "base: one overlay pending disposition"
+OVR_BASE="$(git -C "$OVR" rev-parse HEAD)"
+
+# 40a. UNCHANGED overlay pending set is GREEN (it is a committed baseline now,
+#      not a bootstrap add).
+count
+rc=0
+out="$(CSD_TEST_DISCOVERY_ROOT="$OVR" CSD_TEST_DISCOVERY_FILE="$OVR/ledger.tsv" \
+  CSD_TEST_DISCOVERY_OVERLAY="$OVR/discovery.overlay.tsv" \
+  run_gate "$OVR/registry.tsv" "$OVR/allowlist.tsv" "$OVR/quality-gates.sh" "$OVR" "$OVR_BASE" 2>&1)" || rc=$?
+[[ "$rc" -eq 0 ]] || fail "40a: an UNCHANGED overlay pending set must be GREEN, got rc=$rc:
+$out"
+ok "40a temperloop#1738: an unchanged overlay pending set ratchets green"
+
+# 40b. GROWING it is RED — the parking-lot guard.
+: >"$OVR/validate-second.sh"
+{
+  printf 'validate-consumer.sh\tpending\tconsumer-owned; fixture seam tracked downstream\n'
+  printf 'validate-second.sh\tpending\tI would rather not write a fixture today\n'
+} >"$OVR/discovery.overlay.tsv"
+count
+rc=0
+out="$(CSD_TEST_DISCOVERY_ROOT="$OVR" CSD_TEST_DISCOVERY_FILE="$OVR/ledger.tsv" \
+  CSD_TEST_DISCOVERY_OVERLAY="$OVR/discovery.overlay.tsv" \
+  run_gate "$OVR/registry.tsv" "$OVR/allowlist.tsv" "$OVR/quality-gates.sh" "$OVR" "$OVR_BASE" 2>&1)" || rc=$?
+[[ "$rc" -ne 0 ]] || fail "40b: growing the OVERLAY pending set should be RED, got rc=0:
+$out"
+case "$out" in
+  *"PENDING-GREW  validate-second.sh"*) ;;
+  *) fail "40b: expected PENDING-GREW for the newly parked overlay surface:
+$out" ;;
+esac
+ok "40b temperloop#1738: the overlay pending set is shrink-only too — not a debt parking lot"
 
 echo
 echo "$pass/$total tests passed"
