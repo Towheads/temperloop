@@ -212,6 +212,10 @@ fi
 : "${SPEND_WEIGHT_CACHE_READ:=}"
 : "${SPEND_WEIGHT_CACHE_CREATE:=}"
 : "${SPEND_WEIGHT_OUTPUT:=}"
+: "${MODEL_COMPARISON_QUALITY_BASIS_DISAGREEMENT_PCT:=2}"
+QUALITY_BASIS_DISAGREEMENT_PCT="$MODEL_COMPARISON_QUALITY_BASIS_DISAGREEMENT_PCT"
+: "${MODEL_COMPARISON_QUALITY_TARGET_EFFECT_PCT:=5}"
+QUALITY_TARGET_EFFECT_PCT="$MODEL_COMPARISON_QUALITY_TARGET_EFFECT_PCT"
 
 # Human-facing display timezone. An IANA name so DST is automatic. Exported
 # because jq's strflocaltime reads $TZ from the environment — without the
@@ -336,6 +340,7 @@ jq -n \
   --argjson w_out "$SPEND_WEIGHT_OUTPUT" \
   --argjson price_table "$price_table" \
   --argjson order_ratio "$ORDER_EFFECT_COMPARABLE_RATIO" \
+  --argjson qgap_pct "$QUALITY_BASIS_DISAGREEMENT_PCT" \
   --arg tz "$DISPLAY_TIMEZONE" '
 
   def refof:
@@ -473,6 +478,21 @@ jq -n \
     map(select(.candidate.outcome == "scored" and refof != null and wu != null))
     | map({key: refof, value: wu});
 
+  # The QUALITY analogue of costmap (temperloop#1609). Same shape, same
+  # ref key, different value — so the quality axis pairs by exactly the rule
+  # the cost axis pairs by, and the two can never drift into pairing
+  # different record sets under the same word "paired".
+  #
+  # The membership test is the judge pass reaching JUDGED, NOT the replay
+  # being scored: a record can be scored-and-costed while its judge row came
+  # back UNAVAILABLE (a mid-batch judge outage), and folding that in as a
+  # zero would assert a judgment this run never obtained.
+  def qualmap:
+    map(select(refof != null
+               and (((.judge // {}).outcome // null) == "JUDGED")
+               and (((.judge // {}).quality_score // null) != null)))
+    | map({key: refof, value: (.judge.quality_score)});
+
   # --slurpfile binds the ARRAY of parsed values in the file, so $b/$c are
   # already the record arrays — never $b[0], which would be the first record.
   ($b) as $base
@@ -482,6 +502,42 @@ jq -n \
   | ($bpairs | from_entries) as $bm
   | ($cpairs | from_entries) as $cm
   | ([$cm | keys_unsorted[]] | map(select(($bm[.] // null) != null)) | sort) as $refs
+
+  # ── THE QUALITY AXIS AND ITS TWO BASES (temperloop#1609, #1744) ───────
+  # PAIRED: records JUDGED in both arms — the only basis on which a per-record
+  # delta exists, and therefore the only basis inferential statistics can run
+  # on. UNPAIRED: the judged rows of each arm alone, which is what the
+  # descriptive per-arm means in `arms.*.judge_quality` already report.
+  #
+  # They are kept as SEPARATE, separately-labelled figures rather than
+  # reconciled into one, because they answer different questions and can
+  # disagree materially — on the #1656 A/A run, -2.89% unpaired against
+  # -6.31% paired, straddling the 5% A/A bar, both arithmetically correct.
+  # Publishing whichever one happened to be computed is how a run clears a
+  # sanity bar on one quantity while reporting another.
+  | ($base | qualmap | from_entries) as $bq
+  | ($cand | qualmap | from_entries) as $cq
+  | ([$cq | keys_unsorted[]] | map(select(($bq[.] // null) != null)) | sort) as $qrefs
+  | ([$qrefs[] | ($cq[.] - $bq[.])]) as $qdeltas
+  | (if ($qrefs | length) > 0
+     then (([$qrefs[] | $bq[.]] | add) / ($qrefs | length)) else null end) as $qb_paired
+  | (if ($qrefs | length) > 0
+     then (([$qrefs[] | $cq[.]] | add) / ($qrefs | length)) else null end) as $qc_paired
+  | ([$bq[]]) as $bq_all
+  | ([$cq[]]) as $cq_all
+  | (if ($bq_all | length) > 0 then (($bq_all | add) / ($bq_all | length)) else null end) as $qb_unpaired
+  | (if ($cq_all | length) > 0 then (($cq_all | add) / ($cq_all | length)) else null end) as $qc_unpaired
+  # Relative deltas are expressed against the BASELINE mean of the SAME
+  # basis — never a delta from one basis over a denominator from the other,
+  # which is the subtler version of the mistake this block exists to catch.
+  | (if $qb_paired != null and $qb_paired != 0
+     then ((($qc_paired - $qb_paired) / $qb_paired) * 100) else null end) as $qrel_paired
+  | (if $qb_unpaired != null and $qb_unpaired != 0
+     then ((($qc_unpaired - $qb_unpaired) / $qb_unpaired) * 100) else null end) as $qrel_unpaired
+  | (if $qrel_paired != null and $qrel_unpaired != null
+     then (($qrel_paired - $qrel_unpaired) | fabs) else null end) as $qbasis_gap
+  | (if $qbasis_gap == null then null else ($qbasis_gap >= $qgap_pct) end) as $qbasis_disagrees
+
   | (($base + $cand)
      | map(select(((.score.gate_result // {}).ran // false) == true))
      | map({gate_script: (.score.gate_result.gate_script), base: (.score.base),
@@ -571,6 +627,44 @@ jq -n \
            else
              "arm order was COUNTERBALANCED across this corpus (\($refs_base_first | length) records ran the baseline first, \($refs_cand_first | length) ran the candidate first), so arm is not confounded with execution position. The estimated ORDER effect is \($order_effect) against an estimated ARM effect of \($arm_effect), in the same cost-weighted token units — small enough relative to the arm effect that the comparison reads as clean."
            end)
+      },
+
+      quality_pairing: {
+        basis: "the QUALITY axis, on two deliberately separate bases. PAIRED: one delta per outcome JUDGED in BOTH arms — candidate quality_score minus baseline, in judge points. A POSITIVE delta means the candidate scored higher. UNPAIRED: the mean over the judged rows of each arm alone, the same figure arms.*.judge_quality reports. The arms rarely judge the same set, so the two bases can disagree; both are published, each labelled, and neither is presented as the other. All inferential statistics run on the PAIRED basis, because a per-record delta exists only there",
+        paired_n: ($qrefs | length),
+        refs: $qrefs,
+        deltas: $qdeltas,
+        paired: {
+          basis: "records JUDGED in both arms",
+          n: ($qrefs | length),
+          baseline_mean: ($qb_paired | round1),
+          candidate_mean: ($qc_paired | round1),
+          absolute_delta: (if $qb_paired == null then null else (($qc_paired - $qb_paired) | round1) end),
+          relative_delta_pct: ($qrel_paired | round1)
+        },
+        unpaired: {
+          basis: "the judged rows of each arm alone — the arms need not have judged the same records",
+          baseline_judged_n: ($bq_all | length),
+          candidate_judged_n: ($cq_all | length),
+          baseline_mean: ($qb_unpaired | round1),
+          candidate_mean: ($qc_unpaired | round1),
+          absolute_delta: (if $qb_unpaired == null or $qc_unpaired == null then null
+                           else (($qc_unpaired - $qb_unpaired) | round1) end),
+          relative_delta_pct: ($qrel_unpaired | round1)
+        },
+        basis_agreement: {
+          gap_pct_points: ($qbasis_gap | round1),
+          threshold_pct_points: $qgap_pct,
+          bases_disagree: $qbasis_disagrees,
+          statement:
+            (if $qbasis_gap == null then
+               "only one of the two bases is computable on this run, so they cannot be compared"
+             elif $qbasis_disagrees then
+               "THE TWO QUALITY BASES DISAGREE: paired \($qrel_paired | round1)% against unpaired \($qrel_unpaired | round1)%, a gap of \($qbasis_gap | round1) percentage points against a disclosure threshold of \($qgap_pct). Both are correct arithmetic over different record sets — the arms did not judge the same rows. Read the PAIRED figure as the comparison, since it is the only one a per-record delta exists for and the only one the statistics below are computed on; the unpaired figure is each arm scored on whatever it managed to judge."
+             else
+               "the two quality bases agree to within \($qbasis_gap | round1) percentage points (threshold \($qgap_pct)), so the paired and unpaired readings tell the same story on this run."
+             end)
+        }
       },
 
       pairing: {
@@ -679,6 +773,55 @@ else
   fi
 fi
 
+# ── the QUALITY-axis statistics (temperloop#1609) ─────────────────────────
+# Same three stats.sh reads the cost axis takes, on the PAIRED quality deltas,
+# in judge points instead of cost-weighted token units. Run through the same
+# library so the two axes can never disagree about what a 95% interval or an
+# MDE means.
+#
+# THIS AXIS MINTS NO WINNER. The winner gate below reads the COST verdict and
+# nothing else, deliberately: temperloop#1609 ships the statistics, and moving
+# the mint onto them is temperloop#1606 layered on top. Publishing an interval
+# is not the same act as deciding a comparison on it, and the two are kept
+# separable so the second can be reviewed on its own terms.
+qdeltas="$(jq -c '.quality_pairing.deltas' "$DERIVED" 2>/dev/null)"
+qpaired_n="$(jq -r '.quality_pairing.deltas | length' "$DERIVED" 2>/dev/null)"
+case "$qpaired_n" in ''|*[!0-9]*) qpaired_n=0 ;; esac
+
+quality_verdict_json='null'
+quality_ci_json='null'
+quality_mde_json='null'
+quality_stddev_used=""
+quality_stats_unavailable_reason='null'
+
+if [ "$qpaired_n" -eq 0 ]; then
+  quality_stats_unavailable_reason='"no outcome was JUDGED in BOTH arms, so there is no paired quality delta array to run statistics over. A record scored in both arms but judged in only one contributes no quality delta rather than a substituted one"'
+else
+  qvj="$(bash "$STATS_SH" verdict --deltas "$qdeltas" 2>/dev/null)"
+  if [ -n "$qvj" ] && jq -e 'type == "object" and has("verdict")' <<<"$qvj" >/dev/null 2>&1; then
+    quality_verdict_json="$qvj"
+  else
+    quality_stats_unavailable_reason='"the comparison-statistics library could not be run over the quality deltas (see workflows/scripts/model-comparison/stats.sh — it requires python3 >= 3.8); no quality interval is reported rather than a substituted one"'
+  fi
+
+  qbj="$(bash "$STATS_SH" bootstrap-ci --deltas "$qdeltas" 2>/dev/null)"
+  if [ -n "$qbj" ] && jq -e 'type == "object" and has("below_min_sample")' <<<"$qbj" >/dev/null 2>&1; then
+    quality_ci_json="$qbj"
+  fi
+
+  # The dispersion probe, exactly as the cost axis takes it: .stddev only,
+  # its verdict and bounds discarded. See this file header.
+  qdj="$(bash "$STATS_SH" verdict --deltas "$qdeltas" --min-sample 1 2>/dev/null)"
+  qstddev="$(jq -r 'if (.stddev | type) == "number" then .stddev else empty end' <<<"${qdj:-}" 2>/dev/null)"
+  if [ -n "${qstddev:-}" ] && [ "$qstddev" != "0" ]; then
+    quality_stddev_used="$qstddev"
+    qmj="$(bash "$STATS_SH" mde --n "$qpaired_n" --stddev "$qstddev" 2>/dev/null)"
+    if [ -n "$qmj" ] && jq -e 'type == "object" and has("mde")' <<<"$qmj" >/dev/null 2>&1; then
+      quality_mde_json="$qmj"
+    fi
+  fi
+fi
+
 # ── emit coverage: consumed from stats.sh coverage ────────────────────────
 lake_dir="${MODEL_USAGE_RAW_DIR:-$PWD/meta/data/raw}"
 LAKE="$TMPROOT/lake.jsonl"
@@ -760,6 +903,12 @@ report_json="$(jq -n \
   --argjson ci "$ci_json" \
   --argjson mde "$mde_json" \
   --argjson stats_reason "$stats_unavailable_reason" \
+  --argjson qverdict "$quality_verdict_json" \
+  --argjson qci "$quality_ci_json" \
+  --argjson qmde "$quality_mde_json" \
+  --argjson qstats_reason "$quality_stats_unavailable_reason" \
+  --arg qmde_stddev "$quality_stddev_used" \
+  --argjson qtarget_pct "$QUALITY_TARGET_EFFECT_PCT" \
   --argjson coverage "$coverage_json" \
   --argjson coverage_reason "$coverage_unavailable_reason" \
   --argjson exclusions "$SEAT_EXCLUSIONS" \
@@ -794,6 +943,27 @@ report_json="$(jq -n \
      else
        "not computable at N=\($d.pairing.paired_outcomes_n): the paired deltas show no observed variance (or there is only one pair), and a detectable-effect threshold cannot be estimated without one — reported as absent rather than as a zero, which would falsely read as \"any effect is detectable\""
      end) as $mde_disclosure
+
+  | (if $qmde != null then
+       "at N=\($qmde.n) judged pairs, only quality differences of at least \(($qmde.mde * 100 | round) / 100) judge points (in absolute value) are detectable at \(($qmde.power * 100 | round))% power and a \($qmde.ci_width_pct)% confidence interval; a true difference smaller than that would not reliably show up in a run this size"
+     elif ($d.quality_pairing.paired_n // 0) == 0 then
+       "not computable: no outcome was judged in both arms, so there is no paired quality delta array and no detectable-effect threshold exists for this run"
+     else
+       "not computable at N=\($d.quality_pairing.paired_n): the paired quality deltas show no observed variance (or there is only one pair), and a detectable-effect threshold cannot be estimated without one — reported as absent rather than as a zero, which would falsely read as \"any difference is detectable\""
+     end) as $qmde_disclosure
+
+  # THE POWER PROJECTION (temperloop#1609). Inverted from the MDE stats.sh
+  # already returned rather than re-deriving the normal quantiles here: MDE =
+  # k * sd / sqrt(n), so k = mde * sqrt(n) / sd, and the n needed to detect a
+  # target effect is (k * sd / target)^2. Consequences of doing it this way:
+  # the projection is always at the SAME power and confidence as the MDE
+  # printed beside it, and there is no second copy of the statistics to drift.
+  | (if $qmde != null and $qmde_stddev != "" and ($qmde_stddev | tonumber) > 0
+     then ($qmde.mde * ($qmde.n | sqrt) / ($qmde_stddev | tonumber)) else null end) as $qk
+  | (if $d.quality_pairing.paired.baseline_mean == null then null
+     else (($d.quality_pairing.paired.baseline_mean * $qtarget_pct / 100) | fabs) end) as $qtarget_pts
+  | (if $qk == null or $qtarget_pts == null or $qtarget_pts == 0 then null
+     else ((($qk * ($qmde_stddev | tonumber) / $qtarget_pts) | pow(.; 2)) | ceil) end) as $qpairs_needed
 
   | (if $coverage != null then
        "\($coverage.coverage_pct)% (\($coverage.observed_seats) of \($coverage.feasible_seats) emit-feasible seats observed)"
@@ -861,6 +1031,59 @@ report_json="$(jq -n \
       arms: {
         baseline: ($d.arms.baseline + {quality: $agg_base.quality, compatibility: $agg_base.compatibility}),
         candidate: ($d.arms.candidate + {quality: $agg_cand.quality, compatibility: $agg_cand.compatibility})
+      },
+
+      quality_comparison: {
+        basis: $d.quality_pairing.basis,
+        unit: "judge points per outcome, candidate minus baseline (POSITIVE = the candidate scored higher). Note the sign convention is the OPPOSITE of the cost axis, where negative is the good direction — the two axes measure different things and are deliberately not forced into a shared polarity",
+        paired: $d.quality_pairing.paired,
+        unpaired: $d.quality_pairing.unpaired,
+        basis_agreement: $d.quality_pairing.basis_agreement,
+        refs: $d.quality_pairing.refs,
+        deltas: $d.quality_pairing.deltas,
+        statistics_source: "workflows/scripts/model-comparison/stats.sh — the SAME library the cost axis above uses, so an interval or an MDE means the same thing on both. Re-run `stats.sh verdict --deltas <the deltas array above>` to reproduce these.",
+        verdict: (if $qverdict != null then $qverdict.verdict else "inconclusive" end),
+        below_min_sample: (if $qverdict != null then $qverdict.below_min_sample else null end),
+        min_sample: (if $qverdict != null then $qverdict.min_sample else null end),
+        confidence_interval: (if $qci == null then null
+                              else {source: "stats.sh bootstrap-ci",
+                                    n: $qci.n,
+                                    ci_width_pct: $qci.ci_width_pct,
+                                    lower: $qci.lower, upper: $qci.upper,
+                                    mean: $qci.mean,
+                                    degenerate: (if ($qci | has("degenerate")) then $qci.degenerate else null end),
+                                    below_min_sample: $qci.below_min_sample,
+                                    bounds_null_reason: (if $qci.below_min_sample == true
+                                                         then "below the sample floor the bootstrap bounds are withheld by stats.sh itself, on the quality axis exactly as on the cost axis"
+                                                         else null end),
+                                    iterations: $qci.iterations, seed: $qci.seed} end),
+        minimum_detectable_effect: {
+          disclosure: $qmde_disclosure,
+          source: "stats.sh mde --n <quality paired_n> --stddev <observed_stddev>",
+          mde: (if $qmde != null then $qmde.mde else null end),
+          power: (if $qmde != null then $qmde.power else null end),
+          ci_width_pct: (if $qmde != null then $qmde.ci_width_pct else null end),
+          observed_stddev: (if $qmde_stddev == "" then null else ($qmde_stddev | tonumber) end),
+          observed_stddev_source: "the sample standard deviation stats.sh verdict reports over the same quality deltas — never computed here"
+        },
+        power_projection: {
+          basis: "how many outcomes judged in BOTH arms would be needed to detect a difference of the target size below, at the same power and confidence as the minimum_detectable_effect above. Inverted from that MDE rather than recomputed, so the two can never disagree",
+          target_effect_pct: $qtarget_pct,
+          target_effect_points: (if $qtarget_pts == null then null else (($qtarget_pts * 10) | round) / 10 end),
+          pairs_needed: $qpairs_needed,
+          pairs_observed: $d.quality_pairing.paired.n,
+          statement:
+            (if $qpairs_needed == null then
+               "not computable on this run: without an observed spread across judged pairs there is no basis for projecting a needed sample size"
+             elif $qpairs_needed <= ($d.quality_pairing.paired.n // 0) then
+               "this run is ALREADY large enough to detect a \($qtarget_pct)% quality difference (\((($qtarget_pts * 10) | round) / 10) judge points): \($qpairs_needed) judged pairs needed, \($d.quality_pairing.paired.n) observed."
+             else
+               "this run is NOT large enough to enforce a \($qtarget_pct)% quality bar. Detecting a \($qtarget_pct)% difference (\((($qtarget_pts * 10) | round) / 10) judge points) at the stated power needs about \($qpairs_needed) outcomes judged in both arms; this run has \($d.quality_pairing.paired.n). A quality delta reported under that bar is therefore consistent with the bar being met AND with it being missed — the run cannot tell those apart, and reading it as a pass is the error this line exists to prevent."
+             end)
+        },
+        statistics_unavailable_reason: $qstats_reason,
+        mints_no_winner: true,
+        mints_no_winner_reason: "THIS AXIS NAMES NO WINNER. temperloop#1609 ships the quality statistics; deciding a comparison on them is temperloop#1606, layered on top and reviewable on its own terms. The `winner` key below is minted from the COST verdict alone. Publishing an interval and deciding a comparison on it are two different acts, and this report currently performs only the first."
       },
 
       comparison: ({

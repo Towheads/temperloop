@@ -1022,6 +1022,35 @@ fi
 # minimum-detectable-effect figure is computed at, so the MDE and the CI it
 # bounds are always stated at the same confidence.
 : "${MODEL_COMPARISON_CI_WIDTH_PCT:=95}"
+# The QUALITY axis's two bases can disagree, and this is how far apart they
+# have to be before the report says so out loud (temperloop#1744, in
+# percentage POINTS of relative delta).
+#
+# Two figures exist because the arms rarely judge the same set of records: an
+# UNPAIRED figure over each arm's own judged rows, and a PAIRED figure over
+# records judged in BOTH arms. On the temperloop#1656 A/A run — where the true
+# arm effect is zero by construction — they came out at -2.89% (unpaired) and
+# -6.31% (paired), 3.42 points apart, on opposite sides of the 5% A/A bar. One
+# said "passes", the other said "breaches"; both were correct arithmetic.
+#
+# 2 points is set BELOW that observed 3.42 so the disagreement that motivated
+# this disclosure would itself have been flagged, and above the sub-point
+# wobble that a single differing record produces on a floor-sized corpus.
+# Raise it to disclose less, lower it to disclose more; it changes only what
+# is SAID, never which basis the statistics are computed on (always paired).
+: "${MODEL_COMPARISON_QUALITY_BASIS_DISAGREEMENT_PCT:=2}"
+# The quality effect size a comparison is SIZED for, as a percentage of the
+# baseline paired mean (temperloop#1609). It sets no gate and withholds no
+# verdict — its only job is the report line that says how many judged pairs
+# would be needed to detect a difference this size, so a permanently
+# unreachable comparison is visible up front rather than after the spend.
+#
+# 5% is the bar both A/A validation runs (#1262, #1656) were read against, so
+# the projection answers the question those runs actually raised: #1262 came in
+# at +2.02% and #1656 at -2.89% unpaired, both "under the 5% bar" — but neither
+# run had the statistical power to ENFORCE that bar, which is the gap this
+# figure makes visible instead of leaving to be worked out by hand.
+: "${MODEL_COMPARISON_QUALITY_TARGET_EFFECT_PCT:=5}"
 # `coverage`'s denominator: the emit-FEASIBLE seat subset the L0
 # usage-capture-feasibility spike (temperloop#1246) measured — "only 3 of the
 # pipeline's 12 spawn seats can emit a token-bearing attribution record
@@ -1312,6 +1341,7 @@ export BUILD_QUOTA_PAUSE_PCT BUILD_QUOTA_CACHE BUILD_QUOTA_WAIT_BUFFER \
        KNOWLEDGE_STORE_ROOT KNOWLEDGE_STORE_AGENT_PLANE \
        MODEL_COMPARISON_MIN_SAMPLE_N MODEL_COMPARISON_BOOTSTRAP_ITERATIONS MODEL_COMPARISON_BOOTSTRAP_SEED \
        MODEL_COMPARISON_CI_WIDTH_PCT MODEL_COMPARISON_EMIT_FEASIBLE_SEATS \
+       MODEL_COMPARISON_QUALITY_BASIS_DISAGREEMENT_PCT MODEL_COMPARISON_QUALITY_TARGET_EFFECT_PCT \
        REPLAY_CORPUS_LIMIT REPLAY_CORPUS_SAMPLE_MULTIPLIER REPLAY_NAMED_PATH_EXTENSIONS \
        REPLAY_PUSH_DISABLE_SENTINEL \
        REPLAY_PREFLIGHT_BATCH_CAP REPLAY_PREFLIGHT_TOKENS_PER_REPLAY \
