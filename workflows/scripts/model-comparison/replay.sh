@@ -1018,7 +1018,7 @@ preflight_observed_cost() {
 
   local empty_out
   empty_out="$(jq -cn --arg dir "$lake_dir" \
-    '{lake_dir:$dir, records_n:0, unparseable_lines_n:0,
+    '{lake_dir:$dir, records_n:0, excluded_stub_records_n:0, unparseable_lines_n:0,
       mean:null, min:null, p50:null, p90:null, max:null, stddev:null, spread_ratio:null}')"
 
   if [ -z "$lake_dir" ] || [ ! -d "$lake_dir" ]; then
@@ -1042,8 +1042,25 @@ preflight_observed_cost() {
   fi
 
   local out
+  # The stub-model denylist, as a JSON array of glob patterns. Built here rather
+  # than inside jq so the setting stays a plain space-separated string an
+  # operator can read and edit (temperloop#1657).
+  # Split on spaces WITHOUT globbing. The setting's values are themselves globs
+  # (`recorded-*`, `*-stub`), so a bare unquoted expansion would let the shell
+  # pathname-expand them against the current directory: a file named e.g.
+  # `foo-stub` in cwd would silently rewrite the pattern list into filenames and
+  # the exclusion would stop working, or start excluding the wrong models.
+  # `read -a` word-splits and never globs, so there is no shell option to save
+  # and restore either.
+  local -a _stub_pats=()
+  IFS=' ' read -r -a _stub_pats <<<"${REPLAY_PREFLIGHT_STUB_MODEL_PATTERNS:-}"
+  local stub_pat_json
+  stub_pat_json="$(printf '%s\n' ${_stub_pats[@]+"${_stub_pats[@]}"} \
+    | jq -R -s 'split("\n") | map(select(length > 0))' 2>/dev/null)"
+  [ -n "$stub_pat_json" ] || stub_pat_json='[]'
+
   out="$(jq -sR --arg dir "$lake_dir" --arg seat "$REPLAY_CANDIDATE_SEAT" \
-    --argjson w "$weights_json" '
+    --argjson w "$weights_json" --argjson stub_pats "$stub_pat_json" '
     # The SPEND_WEIGHT_* multiply-add, byte-for-byte emit-model-usage.sh'"'"'s
     # and report-producers/model-comparison'"'"'s own expression.
     def wu:
@@ -1053,6 +1070,23 @@ preflight_observed_cost() {
            + ((.tokens.cache_creation // 0) * $w.cache_creation)
            + ((.tokens.output // 0) * $w.output)) | floor)
       end;
+    # A record whose `model` matches any stub pattern is FIXTURE OUTPUT, not
+    # observed spend (temperloop#1657). The patterns are shell globs in the
+    # setting, translated to anchored regexes here; a record with no model at
+    # all counts as a stub, since an observed live replay always names one.
+    # The pattern is bound to $p FIRST. Inside test(), `.` is the string being
+    # tested — the MODEL — so building the regex from a bare `.` there compiles
+    # each model into its own pattern and every record matches itself. That bug
+    # excluded all 77 records on the host this was written against.
+    # `.` is escaped before `*` is translated, so a vendor model id carrying a
+    # dot (gpt-4.1-mini) is matched literally rather than as any-character.
+    def is_stub: . as $m
+      | if $m == null then true
+        else (($stub_pats
+               | map(. as $p
+                     | select($m | test("^" + ($p | gsub("\\."; "\\.") | gsub("\\*"; ".*")) + "$")))
+               | length) > 0)
+        end;
     def pctile($p): . as $s | ($s | length) as $n
       | if $n == 0 then null
         else $s[ ([(($p * $n) | ceil) - 1, 0] | max) ] end;
@@ -1062,7 +1096,9 @@ preflight_observed_cost() {
     | ($parsed | map(select(type == "object"
                             and .seat == $seat
                             and .usage_source == "cli-envelope"
-                            and ((.tokens | type) == "object"))))           as $recs
+                            and ((.tokens | type) == "object"))))           as $all
+    | ($all | map(select((.model // null) | is_stub | not)))                as $recs
+    | (($all | length) - ($recs | length))                                  as $excluded_stub
     | ($recs | map(wu) | map(select(. != null and . >= 0)) | sort)          as $u
     | ($u | length)                                                         as $n
     | (if $n == 0 then null else (($u | add) / $n) end)                     as $mean
@@ -1070,6 +1106,7 @@ preflight_observed_cost() {
        else (((($u | map(. - $mean) | map(. * .) | add) / $n) | sqrt)) end)  as $sd
     | {lake_dir: $dir,
        records_n: $n,
+       excluded_stub_records_n: $excluded_stub,
        unparseable_lines_n: $unparseable,
        mean: (if $mean == null then null else ($mean | floor) end),
        min:  (if $n == 0 then null else $u[0] end),
@@ -1238,7 +1275,7 @@ cmd_preflight() {
   local observed_json
   observed_json="$(preflight_observed_cost "$cost_weights_json")"
   jq -e 'type=="object" and has("records_n")' >/dev/null 2>&1 <<<"$observed_json" \
-    || observed_json='{"lake_dir":null,"records_n":0,"unparseable_lines_n":0,"mean":null,"min":null,"p50":null,"p90":null,"max":null,"stddev":null,"spread_ratio":null}'
+    || observed_json='{"lake_dir":null,"records_n":0,"excluded_stub_records_n":0,"unparseable_lines_n":0,"mean":null,"min":null,"p50":null,"p90":null,"max":null,"stddev":null,"spread_ratio":null}'
   local observed_n observed_mean
   observed_n="$(jq -r '.records_n // 0' <<<"$observed_json" 2>/dev/null)"
   case "$observed_n" in ''|*[!0-9]*) observed_n=0 ;; esac
@@ -1400,7 +1437,15 @@ cmd_preflight() {
       + " (" + (($obs.spread_ratio // 0)|tostring) + "x spread, p90 " + ($obs.p90|tostring) + ", stddev "
       + (($obs.stddev // 0)|tostring) + "), so a corpus weighted toward large records can cost well above this "
       + "projection — estimated_total_tokens_range projects the same batch at the observed p90 and maximum for exactly that reason. "
-      + "The configured REPLAY_PREFLIGHT_TOKENS_PER_REPLAY literal (" + ($literal|tostring) + ") was NOT used."' 2>/dev/null)"
+      + "The configured REPLAY_PREFLIGHT_TOKENS_PER_REPLAY literal (" + ($literal|tostring) + ") was NOT used."
+      + (if (($obs.excluded_stub_records_n // 0) > 0) then
+           " " + (($obs.excluded_stub_records_n)|tostring) + " further record(s) matching REPLAY_PREFLIGHT_STUB_MODEL_PATTERNS "
+           + "were EXCLUDED as fixture output and are not in that n (temperloop#1657): a stubbed replay emits a real "
+           + "attribution record into the same lake as live spend, carrying one hardcoded token block, so counting them "
+           + "deflates this estimate and collapses the observed spread toward the stub value."
+         else
+           " No record was excluded as fixture output; every record in that n named a model this host does not recognise as a stub."
+         end)' 2>/dev/null)"
   fi
   if [ -z "${basis_str:-}" ]; then
     basis_str="UNMEASURED ON THIS HOST — $(jq -r '.insufficient_reason // "no observed records"' <<<"$observed_block_json" 2>/dev/null). Falling back to the configured REPLAY_PREFLIGHT_TOKENS_PER_REPLAY literal, an ESTIMATE grounded in a SINGLE observed live replay (n=1, temperloop#1380: raw 2,506,371 / cost-weighted 466,530 under the default weights, rounded up), NOT derived from this corpus, NOT derived from any record on this machine, and NOT a fitted average — one sample carries no variance, so treat it as order-of-magnitude, and note that the one live batch since (14 replays) came in ~1.49x ABOVE it. This field states the mode in force on every run: it is saying the number is UNMEASURED here, never presenting the literal as though it were measured."

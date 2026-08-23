@@ -158,7 +158,9 @@ mk_corpus() {
   done
 }
 
-# mk_lake_record <seat> <usage-source> <input> <output> <cache-read> <cache-creation>
+# mk_lake_record <seat> <usage-source> <input> <output> <cache-read> <cache-creation> [model]
+# [model] defaults to "m" so every pre-existing caller is unchanged; section S
+# passes a real one to exercise the stub-model exclusion (temperloop#1657).
 # One emit-model-usage.sh-shaped attribution record. `unavailable` records
 # carry a null token block by that script's own contract.
 mk_lake_record() {
@@ -171,8 +173,9 @@ mk_lake_record() {
     return 0
   fi
   jq -cn --arg seat "$seat" --argjson i "$3" --argjson o "$4" --argjson cr "$5" --argjson cc "$6" \
+    --arg model "${7:-m}" \
     '{schema_version:"1", ts:"2026-08-01T00:00:00Z", session_id:null, repo:null,
-      seat:$seat, model:"m", provider:"anthropic", usage_source:"cli-envelope",
+      seat:$seat, model:$model, provider:"anthropic", usage_source:"cli-envelope",
       tokens:{input:$i, output:$o, cache_read:$cr, cache_creation:$cc},
       weighted_units:999999999, duration_ms:1000, outcome_ref:"pr:1"}'
 }
@@ -521,6 +524,134 @@ chmod 644 "$UNREADABLE_LAKE/model-usage-2026-08.jsonl" 2>/dev/null || true
 [ "$(jq -r .outcome <<<"$out_unread")" = "PREFLIGHT" ] \
   || fail "6b: an unreadable lake file produced a non-PREFLIGHT outcome: $out_unread"
 ok "6b an unreadable lake file degrades to the literal arm rather than refusing to price the batch"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SECTION S — stub-model records are FIXTURE OUTPUT, not observed spend (#1657)
+# ═══════════════════════════════════════════════════════════════════════════
+# A stubbed replay emits a real attribution record into the same lake as live
+# spend, carrying one hardcoded token block. On the host that surfaced this, 18
+# of 32 basis records were `recorded-stub-model` — deflating the derived
+# estimate 2.27x, to a figure FURTHER from truth than the literal the derive
+# path was built to replace, while publishing a "DERIVED from this host's own
+# observed records" provenance string that reads as a measurement.
+STUB_LAKE="$WORK/stub-lake"; mkdir -p "$STUB_LAKE"
+STUB_LAKE_FILE="$STUB_LAKE/model-usage-2026-08.jsonl"; : >"$STUB_LAKE_FILE"
+# 6 REAL records with genuinely varying cost…
+for cr in 1000 2000 3000 4000 5000 6000; do
+  mk_lake_record replay-candidate cli-envelope 100 1000 "$cr" 0 claude-opus-5 >>"$STUB_LAKE_FILE"
+done
+# …and 12 fixture records, every one carrying the SAME hardcoded block, which
+# is what makes them so corrosive to a mean and to a spread.
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
+  mk_lake_record replay-candidate cli-envelope 1 1 100 0 recorded-stub-model >>"$STUB_LAKE_FILE"
+done
+
+count
+out_stub="$(pf MODEL_USAGE_RAW_DIR="$STUB_LAKE" REPLAY_PREFLIGHT_DERIVE_MIN_N=5 \
+  bash "$SUT" preflight --corpus-file "$CORPUS")"
+s_n="$(jq -r '.observed_replay_cost.records_n' <<<"$out_stub")"
+s_ex="$(jq -r '.observed_replay_cost.excluded_stub_records_n' <<<"$out_stub")"
+[ "$s_n" = "6" ] || fail "S1: expected the 6 REAL records as the basis, got $s_n"
+[ "$s_ex" = "12" ] || fail "S1: expected 12 fixture records excluded, got $s_ex"
+ok "S1 stub-model records are excluded from the derive basis and counted separately (6 real, 12 fixture)"
+
+count
+# THE REGRESSION THIS SECTION EXISTS FOR. The first implementation built the
+# regex from `.` inside test(), where `.` is the string being TESTED — so every
+# model compiled into its own pattern and matched itself, excluding ALL 77
+# records on the host it was written against. A real model must survive.
+[ "$s_n" -gt 0 ] \
+  || fail "S2: every record was excluded — the stub patterns are matching real models (the pattern-binding bug)"
+real_only_mean="$(jq -r '.observed_replay_cost.mean' <<<"$out_stub")"
+stub_wu=$(( 1 * SPEND_WEIGHT_INPUT + 1 * SPEND_WEIGHT_OUTPUT + 100 * 1 / 10 ))
+[ "$real_only_mean" -gt "$stub_wu" ] \
+  || fail "S2: the derived mean ($real_only_mean) sits at the stub token block — fixture records are still in the basis"
+ok "S2 a real model is NOT excluded, and the derived mean reflects real records rather than the stub block"
+
+count
+# The spread is the tell. Mixing one hardcoded cheap block with real records
+# manufactures an enormous spread_ratio that is an artifact of the mix, not
+# observed variance — the figure an operator reads to judge whether the point
+# estimate is trustworthy.
+# A pattern that matches NOTHING, not an empty string: build.config.sh assigns
+# with `:=`, which treats an empty value as unset and restores the default, so
+# "" cannot be used to disable the filter (noted on the setting itself).
+out_unfiltered="$(pf MODEL_USAGE_RAW_DIR="$STUB_LAKE" REPLAY_PREFLIGHT_DERIVE_MIN_N=5 \
+  REPLAY_PREFLIGHT_STUB_MODEL_PATTERNS="__matches_nothing__" bash "$SUT" preflight --corpus-file "$CORPUS")"
+sr_filtered="$(jq -r '.observed_replay_cost.spread_ratio' <<<"$out_stub")"
+sr_unfiltered="$(jq -r '.observed_replay_cost.spread_ratio' <<<"$out_unfiltered")"
+awk -v f="$sr_filtered" -v u="$sr_unfiltered" 'BEGIN{ exit !(u > f) }' \
+  || fail "S3: excluding fixture records must REDUCE the observed spread ($sr_unfiltered unfiltered vs $sr_filtered filtered)"
+[ "$(jq -r '.observed_replay_cost.records_n' <<<"$out_unfiltered")" = "18" ] \
+  || fail "S3: with a pattern list that matches nothing, every record must return to the basis"
+ok "S3 the exclusion is what collapses the manufactured spread ($sr_unfiltered unfiltered -> $sr_filtered filtered), and a non-matching pattern list restores every record"
+
+count
+# The DERIVE floor must count REAL records, not the padded total. A host whose
+# real-record count falls under the floor after filtering has to fall back to
+# the literal — deriving from a thin, skewed sample is the failure mode the
+# floor exists to prevent, and 12 fixture records must not paper over it.
+out_floor="$(pf MODEL_USAGE_RAW_DIR="$STUB_LAKE" REPLAY_PREFLIGHT_DERIVE_MIN_N=7 \
+  bash "$SUT" preflight --corpus-file "$CORPUS")"
+[ "$(jq -r '.tokens_per_replay_mode' <<<"$out_floor")" = "configured-literal" ] \
+  || fail "S4: with 6 real records and a floor of 7 the gate must fall back to the literal, got $(jq -r '.tokens_per_replay_mode' <<<"$out_floor")"
+ok "S4 REPLAY_PREFLIGHT_DERIVE_MIN_N is applied to the REAL record count — 12 fixture records cannot lift a host over the floor"
+
+count
+# The exclusion must be VISIBLE. A silent filter is its own honesty problem:
+# an operator reading "DERIVED from this host's own observed records (n=6)"
+# deserves to know 12 more were seen and dropped, and why.
+basis_stub="$(jq -r '.tokens_per_replay_basis' <<<"$out_stub")"
+printf '%s' "$basis_stub" | grep -F 'EXCLUDED as fixture output' >/dev/null \
+  || fail "S5: the published basis must state the exclusion: $basis_stub"
+printf '%s' "$basis_stub" | grep -F 'REPLAY_PREFLIGHT_STUB_MODEL_PATTERNS' >/dev/null \
+  || fail "S5: the basis must name the setting that governs the exclusion, so it is auditable"
+basis_clean="$(jq -r '.tokens_per_replay_basis' <<<"$out_full")"
+printf '%s' "$basis_clean" | grep -F 'No record was excluded as fixture output' >/dev/null \
+  || fail "S5: a clean host must say so positively, not stay silent: $basis_clean"
+ok "S5 the basis names the exclusion, its count and its governing setting — and says so positively on a clean host too"
+
+count
+# A glob is translated to an anchored regex, so a dot in a pattern must stay
+# LITERAL. Without escaping, `gpt-4.1-*` would also match `gpt-4X1-anything`,
+# and a cross-vendor model id is exactly where dots show up.
+DOT_LAKE="$WORK/dot-lake"; mkdir -p "$DOT_LAKE"
+: >"$DOT_LAKE/model-usage-2026-08.jsonl"
+for cr in 1000 2000 3000 4000 5000; do
+  mk_lake_record replay-candidate cli-envelope 100 1000 "$cr" 0 "gpt-4X1-mini" >>"$DOT_LAKE/model-usage-2026-08.jsonl"
+done
+out_dot="$(pf MODEL_USAGE_RAW_DIR="$DOT_LAKE" REPLAY_PREFLIGHT_DERIVE_MIN_N=5 \
+  REPLAY_PREFLIGHT_STUB_MODEL_PATTERNS="gpt-4.1-*" bash "$SUT" preflight --corpus-file "$CORPUS")"
+[ "$(jq -r '.observed_replay_cost.excluded_stub_records_n' <<<"$out_dot")" = "0" ] \
+  || fail "S6: 'gpt-4.1-*' matched 'gpt-4X1-mini' — the dot is being treated as a regex wildcard"
+ok "S6 a dot in a stub pattern is matched literally, so a pattern cannot over-match a neighbouring vendor model id"
+
+count
+# S7 — THE GLOB HAZARD. The setting's values ARE globs, so an unquoted shell
+# expansion pathname-expands them against the CURRENT DIRECTORY. A file named
+# `recorded-decoy` beside the caller rewrites `recorded-*` into that filename,
+# and the exclusion silently stops matching — no error, no log line, and a
+# plausible-looking estimate.
+#
+# The pattern list here is deliberately a SINGLE pattern. With the default
+# four-pattern list this proof is vacuous: `recorded-*` gets clobbered but
+# `*-stub-model` still matches `recorded-stub-model`, so the count never moves
+# and the test passes against the buggy code. (It did, on the first attempt.)
+GLOB_DIR="$WORK/globtrap"; mkdir -p "$GLOB_DIR"
+: >"$GLOB_DIR/recorded-decoy"
+out_glob="$( cd "$GLOB_DIR" && pf MODEL_USAGE_RAW_DIR="$STUB_LAKE" REPLAY_PREFLIGHT_DERIVE_MIN_N=5 \
+  REPLAY_PREFLIGHT_STUB_MODEL_PATTERNS="recorded-*" bash "$SUT" preflight --corpus-file "$CORPUS" )"
+[ "$(jq -r '.observed_replay_cost.excluded_stub_records_n' <<<"$out_glob")" = "12" ] \
+  || fail "S7: run from a directory holding a file that matches the only pattern, the exclusion dropped to $(jq -r '.observed_replay_cost.excluded_stub_records_n' <<<"$out_glob") — the pattern list is being glob-expanded against the filesystem"
+[ "$(jq -r '.observed_replay_cost.records_n' <<<"$out_glob")" = "6" ] \
+  || fail "S7: the derive basis changed with the caller's cwd, which it must never do"
+# The control: the SAME single-pattern run from a directory with no decoy must
+# already exclude 12, or S7 would pass simply because the pattern never worked.
+out_noglob="$(pf MODEL_USAGE_RAW_DIR="$STUB_LAKE" REPLAY_PREFLIGHT_DERIVE_MIN_N=5 \
+  REPLAY_PREFLIGHT_STUB_MODEL_PATTERNS="recorded-*" bash "$SUT" preflight --corpus-file "$CORPUS")"
+[ "$(jq -r '.observed_replay_cost.excluded_stub_records_n' <<<"$out_noglob")" = "12" ] \
+  || fail "S7: the single-pattern control excludes $(jq -r '.observed_replay_cost.excluded_stub_records_n' <<<"$out_noglob"), not 12 — the decoy comparison would prove nothing"
+ok "S7 the pattern list is immune to the caller's cwd — files matching the globs do not rewrite it"
 
 echo
 echo "test_replay_preflight_derive.sh: $pass/$total checks passed"
