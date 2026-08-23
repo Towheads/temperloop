@@ -581,8 +581,14 @@ _je_one_record() {
     _je_cannot_evaluate "candidate-session.sh reports its containment overlay is unusable (exit $cs_rc — 3=absent, 4=unreadable, 5=malformed): $cs_out"
     return 1
   fi
+  # The execution mode selects whether the RUNNER gate applies (temperloop#1743):
+  # a `--judge-runner` IS a runner and never reaches a vendor, so only the live
+  # path takes the strict gate. Derived from the same $runner the spawn below
+  # dispatches on, so the gate can never disagree with the path actually taken.
+  local pf_exec="live"
+  [ -n "$runner" ] && pf_exec="recorded"
   local pf_out pf_rc=0
-  pf_out="$(bash "$CANDIDATE_SESSION_SH" preflight --provider "$judge_provider" 2>&1)" || pf_rc=$?
+  pf_out="$(bash "$CANDIDATE_SESSION_SH" preflight --provider "$judge_provider" --execution "$pf_exec" 2>&1)" || pf_rc=$?
   if [ "$pf_rc" -ne 0 ]; then
     _je_cannot_evaluate "candidate-session.sh preflight refused judge provider '$judge_provider': $pf_out"
     return 1
