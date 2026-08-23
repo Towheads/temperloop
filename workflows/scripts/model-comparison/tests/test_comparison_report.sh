@@ -165,14 +165,24 @@ record() {
 # records with a deterministic, VARYING cost profile (a constant profile has
 # zero variance, which is a genuinely different statistical case and is
 # covered separately in section E).
+# [qoffset] shifts every judged score by a constant (default 0). Needed since
+# temperloop#1606: the winner is minted from the QUALITY axis, so a fixture
+# whose two arms judge IDENTICALLY can never name one, and the floor/mutation
+# proofs below would pass for the wrong reason.
 fill() {
-  local file="$1" model="$2" n="$3" base="$4" jit="$5" i=0 inp day
+  local file="$1" model="$2" n="$3" base="$4" jit="$5" qoff="${6:-0}" i=0 inp day
   : >"$file"
   while [ "$i" -lt "$n" ]; do
     inp=$(( base + i * 7 + (i % 7) * jit ))
     day="$(printf '2026-08-%02d' $(( (i % 20) + 1 )))"
+    # A NON-ZERO qoff also varies per record. A constant offset makes every
+    # quality delta identical, and stats.sh correctly refuses a zero-variance
+    # array as `degenerate` — so a fixture built that way can never mint a
+    # winner, and every proof that needs one would pass for the wrong reason.
+    local qvar=0
+    [ "$qoff" -ne 0 ] && qvar=$(( i % 3 ))
     record $(( 1000 + i )) "$model" "$inp" $(( 100 + (i % 5) * 3 )) pass true \
-      JUDGED $(( 70 + (i % 11) )) "$day" scored >>"$file"
+      JUDGED $(( 70 + (i % 11) + qoff + qvar )) "$day" scored >>"$file"
     i=$(( i + 1 ))
   done
 }
@@ -248,7 +258,7 @@ jqf() { jq -r "$2" "$1" 2>/dev/null; }
 FLAT="$WORK/flattering"
 mkrepo "$FLAT"
 fill "$FLAT/.temperloop/model-comparison/baseline.jsonl"  claude-opus-4-8  24 5000 0
-fill "$FLAT/.temperloop/model-comparison/candidate.jsonl" claude-sonnet-5  24 4200 90
+fill "$FLAT/.temperloop/model-comparison/candidate.jsonl" claude-sonnet-5  24 4200 90 8
 lake "$FLAT" pipeline-drive-safe retro-judge
 
 run "$FLAT"
@@ -473,7 +483,7 @@ FLOOR=12
 SMALL="$WORK/small"
 mkrepo "$SMALL"
 fill "$SMALL/.temperloop/model-comparison/baseline.jsonl"  claude-opus-4-8  3 5000 0
-fill "$SMALL/.temperloop/model-comparison/candidate.jsonl" claude-sonnet-5  3 4200 90
+fill "$SMALL/.temperloop/model-comparison/candidate.jsonl" claude-sonnet-5  3 4200 90 8
 lake "$SMALL" pipeline-drive-safe
 
 count
@@ -503,17 +513,19 @@ count
 # (the realistic bug: reaching for the unfloored form, exactly the shape the
 # dispersion probe uses). The same 3 records must then yield a winner, which
 # is what makes D1 a refusal the floor is causing rather than a coincidence
-# of this fixture. The 3 deltas are all negative, so an unfloored bootstrap
-# lands wholly below zero and reads as a confident candidate win.
+# of this fixture. The 3 QUALITY deltas are all +8, so an unfloored bootstrap
+# lands wholly above zero and reads as a confident candidate win.
 MIRROR2="$(mkmirror "$WORK/m2")"
-perl -pi -e 's/^(\s*)vj="\$\(bash "\$STATS_SH" verdict --deltas "\$deltas" 2>\/dev\/null\)"$/$1vj="\$(bash "\$STATS_SH" verdict --deltas "\$deltas" --min-sample 1 2>\/dev\/null)"/' "$MIRROR2"
-grep -F 'vj="$(bash "$STATS_SH" verdict --deltas "$deltas" --min-sample 1' "$MIRROR2" >/dev/null \
+# Since temperloop#1606 the winner rides the QUALITY verdict call, so that is
+# the one whose floor has to be removed for this proof to measure anything.
+perl -pi -e 's/^(\s*)qvj="\$\(bash "\$STATS_SH" verdict --deltas "\$qdeltas" 2>\/dev\/null\)"$/$1qvj="\$(bash "\$STATS_SH" verdict --deltas "\$qdeltas" --min-sample 1 2>\/dev\/null)"/' "$MIRROR2"
+grep -F 'qvj="$(bash "$STATS_SH" verdict --deltas "$qdeltas" --min-sample 1' "$MIRROR2" >/dev/null \
   || fail "D3: the floor-removal mutation did not apply — the proof would be vacuous"
 ( export MODEL_COMPARISON_MIN_SAMPLE_N=$FLOOR; run "$SMALL" "$MIRROR2"; cp "$RUN_OUT" "$WORK/small-mut.json" )
 [ "$(jqf "$WORK/small-mut.json" '.comparison | has("winner")')" = "true" ] \
   || fail "D3: with the floor removed from the producer's verdict call a winner should have appeared on 3 records — the floor was not what was suppressing it"
 [ "$(jqf "$WORK/small-mut.json" '.comparison.winner')" = "candidate" ] \
-  || fail "D3: the unfloored mutant should have named the candidate on these 3 all-negative deltas"
+  || fail "D3: the unfloored mutant should have named the candidate on these 3 all-positive quality deltas"
 ok "D3 mutation proof: removing the floor from the producer's verdict call makes a winner appear on 3 records"
 
 count
@@ -1098,9 +1110,18 @@ mk_stamp() {
 }
 
 # mk_ordered_pair <repo> <n> <base-input> <arm-delta> <order-delta> <mode>
+#                 [quality-arm-delta] [quality-order-delta]
 #   mode: counterbalanced | fixed | none
+#
+# The last two are in JUDGE POINTS and inject the same two effects into the
+# QUALITY axis (temperloop#1606). They exist because the winner gate moved:
+# it is now the QUALITY order-effect check that withholds, so a fixture that
+# injects an order effect into COST alone no longer exercises the gate it was
+# written to exercise. A quality jitter is added alongside, because a constant
+# delta array is `degenerate` to stats.sh and can never mint a winner — which
+# would make every proof below pass for the wrong reason.
 mk_ordered_pair() {
-  local repo="$1" n="$2" base="$3" armd="$4" ordd="$5" mode="$6"
+  local repo="$1" n="$2" base="$3" armd="$4" ordd="$5" mode="$6" qarmd="${7:-6}" qordd="${8:-0}"
   local bf="$repo/.temperloop/model-comparison/baseline.jsonl"
   local cf="$repo/.temperloop/model-comparison/candidate.jsonl"
   : >"$bf"; : >"$cf"
@@ -1117,9 +1138,12 @@ mk_ordered_pair() {
     day="$(printf '2026-08-%02d' $(( (i % 20) + 1 )))"
     # Output tokens held CONSTANT across both arms: anything differing between
     # them other than the injected effects would pollute the delta.
-    record $(( 2000 + i )) claude-opus-4-8 "$inp_b" 100 pass true JUDGED 70 "$day" scored \
+    local qjit=$(( (i - 1) % 3 ))
+    local qual_b=$(( 70 + (pos_b == 2 ? qordd : 0) ))
+    local qual_c=$(( 70 + qarmd + qjit + (pos_c == 2 ? qordd : 0) ))
+    record $(( 2000 + i )) claude-opus-4-8 "$inp_b" 100 pass true JUDGED "$qual_b" "$day" scored \
       | mk_stamp "$i" "$pos_b" baseline "$mode" >>"$bf"
-    record $(( 2000 + i )) claude-sonnet-5 "$inp_c" 100 pass true JUDGED 71 "$day" scored \
+    record $(( 2000 + i )) claude-sonnet-5 "$inp_c" 100 pass true JUDGED "$qual_c" "$day" scored \
       | mk_stamp "$i" "$pos_c" candidate "$mode" >>"$cf"
     i=$(( i + 1 ))
   done
@@ -1131,7 +1155,7 @@ mk_ordered_pair() {
 count
 ORD_CLEAN="$WORK/order-clean"
 mkrepo "$ORD_CLEAN"
-mk_ordered_pair "$ORD_CLEAN" 24 5000 -800 -20 counterbalanced
+mk_ordered_pair "$ORD_CLEAN" 24 5000 -800 -20 counterbalanced 8 0
 lake "$ORD_CLEAN" pipeline-drive-safe retro-judge
 run "$ORD_CLEAN"
 ORD_CLEAN_OUT="$WORK/order-clean.json"; cp "$RUN_OUT" "$ORD_CLEAN_OUT"
@@ -1174,7 +1198,7 @@ ok "M2 known-answer: the published arm effect (-790) and order effect (-20) are 
 count
 ORD_DIRTY="$WORK/order-dirty"
 mkrepo "$ORD_DIRTY"
-mk_ordered_pair "$ORD_DIRTY" 24 5000 -200 -150 counterbalanced
+mk_ordered_pair "$ORD_DIRTY" 24 5000 -200 -150 counterbalanced 2 6
 lake "$ORD_DIRTY" pipeline-drive-safe retro-judge
 run "$ORD_DIRTY"
 ORD_DIRTY_OUT="$WORK/order-dirty.json"; cp "$RUN_OUT" "$ORD_DIRTY_OUT"
@@ -1215,7 +1239,7 @@ ok "M3 an order effect comparable to the arm effect: the report says NOT CLEAN a
 count
 ORD_FIXED="$WORK/order-fixed"
 mkrepo "$ORD_FIXED"
-mk_ordered_pair "$ORD_FIXED" 24 5000 -200 -150 fixed
+mk_ordered_pair "$ORD_FIXED" 24 5000 -200 -150 fixed 2 6
 lake "$ORD_FIXED" pipeline-drive-safe retro-judge
 run "$ORD_FIXED"
 ORD_FIXED_OUT="$WORK/order-fixed.json"; cp "$RUN_OUT" "$ORD_FIXED_OUT"
@@ -1243,7 +1267,7 @@ ok "M4 a fixed-order corpus is reported as CONFOUNDED with the order effect with
 count
 ORD_NONE="$WORK/order-none"
 mkrepo "$ORD_NONE"
-mk_ordered_pair "$ORD_NONE" 24 5000 -800 -20 none
+mk_ordered_pair "$ORD_NONE" 24 5000 -800 -20 none 8 0
 lake "$ORD_NONE" pipeline-drive-safe retro-judge
 run "$ORD_NONE"
 ORD_NONE_OUT="$WORK/order-none.json"; cp "$RUN_OUT" "$ORD_NONE_OUT"
@@ -1263,12 +1287,14 @@ esac
 ok "M5 a pre-counterbalancing corpus is disclosed as NOT ESTIMABLE and withholds nothing — unknown is not the same statement as not-clean"
 
 # M6 — MUTATION PROOF. Neuter the order-effect winner gate in a mirrored
+#      producer. Targets the QUALITY gate since temperloop#1606: that is the
+#      axis the winner is minted from, so it is the gate that withholds.
 #      producer and M3's own fixture DOES name a winner — so M3's withholding
 #      is that gate doing work, not the sample floor and not an inconclusive
 #      verdict.
 count
 MIRROR_M="$(mkmirror "$WORK/m-order")"
-MUT_OLD='if [ "${comparison_clean:-}" = "false" ] && [ "$winner_json" != "null" ]; then' \
+MUT_OLD='if [ "${q_comparison_clean:-}" = "false" ] && [ "$winner_json" != "null" ]; then' \
 MUT_NEW='if false; then' \
 perl -0777 -pi -e '
   my $o = $ENV{MUT_OLD}; my $n = $ENV{MUT_NEW};
@@ -1280,7 +1306,7 @@ run "$ORD_DIRTY" "$MIRROR_M"
 [ "$RUN_RC" -eq 0 ] || fail "M6: the mutated producer must still exit 0, got $RUN_RC"
 [ "$(jqf "$RUN_OUT" '.comparison.winner')" = "candidate" ] \
   || fail "M6: the mutation proof did not fire — with the order gate neutered the same fixture should have named a winner, so M3 proves nothing: $(jqf "$RUN_OUT" '.comparison.verdict')"
-[ "$(jqf "$RUN_OUT" '.execution_order.comparison_is_clean')" = "false" ] \
+[ "$(jqf "$RUN_OUT" '.quality_comparison.execution_order.comparison_is_clean')" = "false" ] \
   || fail "M6: the mutation must remove only the WITHHOLDING, leaving the not-clean finding intact"
 ok "M6 MUTATION PROOF: neutering the order-effect gate makes M3's fixture name a winner — the withholding is that gate, not the floor"
 
@@ -1320,13 +1346,25 @@ AA_B="$AA/.temperloop/model-comparison/baseline.jsonl"
 AA_C="$AA/.temperloop/model-comparison/candidate.jsonl"
 : >"$AA_B"; : >"$AA_C"
 
-# pr:baseline_q:candidate_q — the 18 outcomes judged in both arms.
-for t in 1332:55:59 1336:55:53 1340:77:72 1341:64:70 1359:61:67 1489:60:71 \
-         1507:48:50 1519:52:56 1532:80:66 1547:44:56 1548:56:44 1550:80:60 \
-         1569:41:2 1573:60:57 1581:58:54 1583:62:52 1637:60:60 1638:64:60; do
-  pr="${t%%:*}"; rest="${t#*:}"; bq="${rest%%:*}"; cq="${rest#*:}"
-  record "$pr" claude-opus-5 5000 100 pass true JUDGED "$bq" 2026-08-20 scored >>"$AA_B"
-  record "$pr" claude-opus-5 5000 100 pass true JUDGED "$cq" 2026-08-20 scored >>"$AA_C"
+# pr:baseline_q:candidate_q:first_arm — the 18 outcomes judged in both arms,
+# carrying the run's ACTUAL 9/9 counterbalanced order split. The positions
+# matter: since temperloop#1606 the winner gate reads the order-effect check on
+# THIS axis, and without stamps the fixture reports cleanliness as `null` and
+# exercises nothing. With them it reproduces the real run's finding — a quality
+# order effect of +4.4 judge points against an arm effect of -3.8, i.e. NOT
+# clean, on a run whose true arm effect is zero by construction.
+aa_i=0
+for t in 1332:55:59:b 1336:55:53:b 1340:77:72:c 1341:64:70:b 1359:61:67:b 1489:60:71:b \
+         1507:48:50:c 1519:52:56:b 1532:80:66:c 1547:44:56:c 1548:56:44:c 1550:80:60:b \
+         1569:41:2:c 1573:60:57:b 1581:58:54:c 1583:62:52:c 1637:60:60:b 1638:64:60:c; do
+  aa_i=$(( aa_i + 1 ))
+  pr="${t%%:*}"; rest="${t#*:}"; bq="${rest%%:*}"; rest="${rest#*:}"
+  cq="${rest%%:*}"; first="${rest#*:}"
+  if [ "$first" = "b" ]; then bpos=1; cpos=2; else bpos=2; cpos=1; fi
+  record "$pr" claude-opus-5 5000 100 pass true JUDGED "$bq" 2026-08-20 scored \
+    | mk_stamp "$aa_i" "$bpos" baseline counterbalanced >>"$AA_B"
+  record "$pr" claude-opus-5 5000 100 pass true JUDGED "$cq" 2026-08-20 scored \
+    | mk_stamp "$aa_i" "$cpos" candidate counterbalanced >>"$AA_C"
 done
 # Judged in the BASELINE arm only — the candidate leg timed out.
 for t in 1329:56 1508:50 1551:55 1636:55 1653:60; do
@@ -1348,14 +1386,25 @@ count
 ok "Q1 the quality axis pairs on judged-in-BOTH-arms rows only (18 of 23 and 22)"
 
 count
-# THE ONE THAT MATTERS. True effect is zero by construction; a winner here is
-# a false positive. This is the quality-axis counterpart of the cost-axis
-# floor proof in section D.
-[ "$(jqf "$AA_OUT" '.quality_comparison.mints_no_winner')" = "true" ] \
-  || fail "Q2: the quality axis must not mint a winner (temperloop#1609 ships stats only; #1606 moves the mint)"
-[ "$(jqf "$AA_OUT" '.winner // "absent"')" = "absent" ] \
-  || fail "Q2: a winner was minted on a known-zero A/A run: $(jqf "$AA_OUT" '.winner')"
-ok "Q2 no winner is minted from the quality axis on a known-zero A/A run"
+# THE ONE THAT MATTERS, and temperloop#1741's acceptance check. The quality
+# axis IS the minting axis since temperloop#1606 — and on this run the true
+# effect is ZERO BY CONSTRUCTION, so any winner is a false positive.
+#
+# Three independent conditions each withhold here, which is the point: even if
+# one were wrongly satisfied the other two still refuse.
+[ "$(jqf "$AA_OUT" '.quality_comparison.mints_winner')" = "true" ] \
+  || fail "Q2: the quality axis must BE the minting axis (temperloop#1606)"
+[ "$(jqf "$AA_OUT" '.comparison.winner_axis')" = "quality" ] \
+  || fail "Q2: the report must name quality as the deciding axis, got $(jqf "$AA_OUT" '.comparison.winner_axis')"
+[ "$(jqf "$AA_OUT" '.comparison.mints_winner')" = "false" ] \
+  || fail "Q2: the COST axis must mint nothing"
+[ "$(jqf "$AA_OUT" '.comparison | has("winner")')" = "false" ] \
+  || fail "Q2: a winner was minted on a known-zero A/A run: $(jqf "$AA_OUT" '.comparison.winner')"
+[ "$(jqf "$AA_OUT" '.quality_comparison.below_min_sample')" = "true" ] \
+  || fail "Q2: n=18 is below the floor of 20 and must be reported as such"
+[ "$(jqf "$AA_OUT" '.quality_comparison.execution_order.comparison_is_clean')" = "false" ] \
+  || fail "Q2: the quality order effect (+4.4 pts) is comparable to its arm effect (-3.8) — this run is NOT clean on the minting axis"
+ok "Q2 quality is the minting axis, cost mints nothing, and the known-zero A/A run still names NO winner — floor and order-effect gates both refusing"
 
 count
 # #1744: the two bases disagree here, and the report must SAY so rather than
@@ -1462,6 +1511,66 @@ jq -e 'type == "object" and has("schema_version")' "$NOJ_OUT" >/dev/null 2>&1 \
 [ "$(jqf "$NOJ_OUT" '.comparison.paired_outcomes_n')" = "1" ] \
   || fail "Q8: the cost axis must still pair normally when the quality axis cannot: $(jqf "$NOJ_OUT" '.comparison.paired_outcomes_n')"
 ok "Q8 an arm that judged nothing degrades the quality axis alone — named reason, null means, cost axis intact"
+
+# ── Q9-Q11: the mint moved to quality (temperloop#1606) ────────────────────
+# Q9 is the POLARITY proof, and it is the one that caught a real bug before it
+# shipped. stats.sh assumes LOWER IS BETTER — correct for cost, backwards for
+# quality — so reading its verdict straight through names the LOSER:
+#     stats.sh verdict --deltas '[8,9,10]'  ->  "baseline_better"
+# on three deltas meaning the candidate scored 8-10 points BETTER.
+# mkq <repo> <n> <baseline-q> <candidate-q-offset> <cost-arm-delta>
+# A qoff of 0 means NO quality difference at all — the jitter is suppressed
+# too, or the fixture would carry a small quality win and Q11 could not test
+# what it claims to.
+mkq() {
+  local repo="$1" n="$2" bq="$3" qoff="$4" costd="$5" i=1
+  mkrepo "$repo"
+  local bf="$repo/.temperloop/model-comparison/baseline.jsonl"
+  local cf="$repo/.temperloop/model-comparison/candidate.jsonl"
+  : >"$bf"; : >"$cf"
+  while [ "$i" -le "$n" ]; do
+    record $(( 3000 + i )) claude-opus-4-8 5000 100 pass true JUDGED "$bq" 2026-08-20 scored >>"$bf"
+    # Cost carries a jitter for the same reason quality does: a constant delta
+    # array is `degenerate` to stats.sh and yields no_significant_difference,
+    # so a fixture built that way could not produce the COST win Q11 needs.
+    record $(( 3000 + i )) claude-sonnet-5 $(( 5000 + costd + (i % 4) * 40 )) 100 pass true \
+      JUDGED $(( bq + qoff + (qoff == 0 ? 0 : i % 3) )) 2026-08-20 scored >>"$cf"
+    i=$(( i + 1 ))
+  done
+  lake "$repo" pipeline-drive-safe retro-judge
+}
+
+count
+QUP="$WORK/q-candidate-better"; mkq "$QUP" 24 60 8 0
+run "$QUP"; cp "$RUN_OUT" "$WORK/qup.json"
+[ "$(jqf "$WORK/qup.json" '.quality_comparison.library_verdict')" = "baseline_better" ] \
+  || fail "Q9: the fixture no longer reproduces the polarity trap — stats.sh should call these deltas baseline_better"
+[ "$(jqf "$WORK/qup.json" '.quality_comparison.verdict')" = "candidate_better" ] \
+  || fail "Q9: the library verdict must be TRANSLATED into quality polarity, got $(jqf "$WORK/qup.json" '.quality_comparison.verdict')"
+[ "$(jqf "$WORK/qup.json" '.comparison.winner')" = "candidate" ] \
+  || fail "Q9: THE CANDIDATE SCORED HIGHER AND MUST WIN — got $(jqf "$WORK/qup.json" '.comparison.winner'). Reading stats.sh straight through names the loser."
+ok "Q9 POLARITY: the candidate scoring HIGHER wins, though stats.sh (lower-is-better) calls the same deltas baseline_better"
+
+count
+QDN="$WORK/q-baseline-better"; mkq "$QDN" 24 60 -8 0
+run "$QDN"; cp "$RUN_OUT" "$WORK/qdn.json"
+[ "$(jqf "$WORK/qdn.json" '.quality_comparison.verdict')" = "baseline_better" ] \
+  || fail "Q10: a candidate scoring LOWER must read baseline_better, got $(jqf "$WORK/qdn.json" '.quality_comparison.verdict')"
+[ "$(jqf "$WORK/qdn.json" '.comparison.winner')" = "baseline" ] \
+  || fail "Q10: the candidate scored LOWER and the baseline must win, got $(jqf "$WORK/qdn.json" '.comparison.winner')"
+ok "Q10 …and the candidate scoring LOWER loses — the translation is directional, not a blanket flip"
+
+count
+# Q11 — COST CANNOT MINT. A large, consistent cost win with NO quality
+# difference must name NO winner. This is the #1262 failure made impossible:
+# that run minted `candidate` on cost alone while quality said nothing.
+QNC="$WORK/q-cost-only"; mkq "$QNC" 24 60 0 -3000
+run "$QNC"; cp "$RUN_OUT" "$WORK/qnc.json"
+[ "$(jqf "$WORK/qnc.json" '.comparison.verdict')" = "candidate_better" ] \
+  || fail "Q11: the fixture must produce a COST win, or it proves nothing: $(jqf "$WORK/qnc.json" '.comparison.verdict')"
+[ "$(jqf "$WORK/qnc.json" '.comparison | has("winner")')" = "false" ] \
+  || fail "Q11: a cost win with no quality difference must name NO winner, got $(jqf "$WORK/qnc.json" '.comparison.winner')"
+ok "Q11 a decisive COST win with no quality difference names NO winner — the #1262 false positive is now structurally impossible"
 
 echo
 echo "test_comparison_report.sh: $pass/$total checks passed"

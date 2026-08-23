@@ -44,10 +44,30 @@
 #       - inconclusive   → a real JSON report, real per-arm figures, and an
 #                          explicit refusal to name a winner (below the
 #                          sample floor, or no significant difference).
-#       - winner present → the `comparison.winner` key EXISTS. It is emitted
-#                          on exactly one condition: stats.sh returned a
-#                          `candidate_better`/`baseline_better` verdict with
-#                          `below_min_sample:false`. Nothing else can mint it.
+#       - winner present → the `comparison.winner` key EXISTS. Since
+#                          temperloop#1606 it is minted from the QUALITY axis,
+#                          never from the cost verdict it sits beside, and only
+#                          when all THREE hold: stats.sh returned a
+#                          `candidate_better`/`baseline_better` verdict over the
+#                          paired JUDGE deltas, `below_min_sample:false`, and
+#                          quality's own order-effect check is not `false`.
+#                          Nothing else can mint it; any one of the three
+#                          withholds. The key keeps this location so no existing
+#                          reader breaks; `comparison.winner_axis` names the
+#                          axis that decided.
+#
+#     WHY THE COST AXIS NO LONGER DECIDES. The #1262 A/A run put the SAME model
+#     in both arms — so any winner is a false positive by construction — and the
+#     cost verdict minted one (-142,771 paired delta, CI excluding zero), ~80%
+#     of it cache_read volume, i.e. within-model variance in session length that
+#     a record-paired bootstrap reads as signal. temperloop#1741 then ruled out
+#     the obvious repairs: on the #1656 A/A deltas every robust estimator tested
+#     (trimmed mean, bootstrap median, sign test, Wilcoxon) minted a CONFIDENT
+#     FALSE WINNER where the raw mean correctly withheld — the outliers are the
+#     counterweight cancelling a tilt in the rest, not contamination. On the same
+#     known-zero data the QUALITY deltas withhold under every one of those
+#     estimators, and under all five per-dimension sub-scores. Cost keeps its CI,
+#     MDE and verdict as DESCRIPTIVE figures.
 #     Six items in this epic shipped a path where "could not evaluate" was
 #     indistinguishable from "evaluated, and fine" (temperloop#1365). Here that
 #     failure would mean a routing decision made on a fabricated figure.
@@ -65,8 +85,9 @@
 # TWO stats.sh `verdict` calls, and why the second is not a floor bypass:
 #   1. THE VERDICT CALL — plain `stats.sh verdict --deltas <a>`. Its floor is
 #      whatever MODEL_COMPARISON_MIN_SAMPLE_N resolves to. Its verdict, its
-#      bounds and its below_min_sample flag are what this report publishes,
-#      and they are the ONLY source of a winner.
+#      bounds and its below_min_sample flag are what this report publishes.
+#      Run over the COST deltas it is descriptive; run over the QUALITY deltas
+#      it is the only source of a winner (temperloop#1606).
 #   2. THE DISPERSION PROBE — `stats.sh verdict --deltas <a> --min-sample 1`.
 #      ONLY `.stddev` is read off it; its verdict, its bounds and its own
 #      below_min_sample flag are DISCARDED and never reach stdout. It exists
@@ -593,6 +614,32 @@ jq -n \
   | (if $positions_present | not then null
      elif $counterbalanced | not then false
      else ($order_comparable | not) end) as $comparison_is_clean
+  # ── THE SAME DECOMPOSITION, ON THE QUALITY AXIS (temperloop#1606) ─────
+  # The winner is minted from the quality verdict now, so the cleanliness gate
+  # has to be computed on the deltas that mint it. Re-using the COST axis
+  # cleanliness would be a category error: the two axes pair different record
+  # sets (cost pairs token-bearing scored rows, quality pairs judged-in-both
+  # rows), so a run can be counterbalanced-and-clean on one and confounded on
+  # the other. Same estimator, same threshold, different deltas.
+  | ([$qrefs[] | select((($bpos[.]) != null) and (($cpos[.]) != null))]) as $qorefs
+  | ([$qorefs[] | select(($bpos[.]) == 1 and ($cpos[.]) == 2)]) as $qrefs_base_first
+  | ([$qorefs[] | select(($cpos[.]) == 1 and ($bpos[.]) == 2)]) as $qrefs_cand_first
+  | ([$qrefs_base_first[] | ($cq[.] - $bq[.])]) as $qdA
+  | ([$qrefs_cand_first[] | ($cq[.] - $bq[.])]) as $qdB
+  | (if ($qdA | length) > 0 then (($qdA | add) / ($qdA | length)) else null end) as $qmA
+  | (if ($qdB | length) > 0 then (($qdB | add) / ($qdB | length)) else null end) as $qmB
+  | (if $qmA != null and $qmB != null then ((($qmA + $qmB) / 2) | round1) else null end) as $q_arm_effect
+  | (if $qmA != null and $qmB != null then ((($qmA - $qmB) / 2) | round1) else null end) as $q_order_effect
+  | (($qorefs | length) > 0) as $q_positions_present
+  | (($qrefs_base_first | length) > 0 and ($qrefs_cand_first | length) > 0) as $q_counterbalanced
+  | (if $q_order_effect == null then null
+     elif ($q_order_effect | fabs) == 0 then false
+     elif ($q_arm_effect | fabs) == 0 then true
+     else (($q_order_effect | fabs) >= ($order_ratio * ($q_arm_effect | fabs))) end) as $q_order_comparable
+  | (if $q_positions_present | not then null
+     elif $q_counterbalanced | not then false
+     else ($q_order_comparable | not) end) as $q_comparison_is_clean
+
   | (($base + $cand)
      | map(select(.candidate.outcome == "scored" and wu != null))
      | map(.candidate.model // "unknown") | unique) as $scored_models
@@ -657,6 +704,27 @@ jq -n \
           absolute_delta: (if $qb_unpaired == null or $qc_unpaired == null then null
                            else (($qc_unpaired - $qb_unpaired) | round1) end),
           relative_delta_pct: ($qrel_unpaired | round1)
+        },
+        execution_order: {
+          basis: "the SAME order-effect estimator the cost axis uses, computed over the QUALITY deltas — because the winner is minted from those. The two axes pair different record sets, so a run can be clean on one and confounded on the other; re-using the cost axis verdict here would be a category error",
+          records_baseline_first: ($qrefs_base_first | length),
+          records_candidate_first: ($qrefs_cand_first | length),
+          arm_effect: $q_arm_effect,
+          order_effect: $q_order_effect,
+          comparable_ratio: $order_ratio,
+          counterbalanced: $q_counterbalanced,
+          positions_present: $q_positions_present,
+          comparison_is_clean: $q_comparison_is_clean,
+          statement:
+            (if $q_positions_present | not then
+               "no judged-in-both-arms record carries an execution position, so no order effect can be estimated on the quality axis. Not a failure — a pre-counterbalancing corpus simply cannot say, and this states that rather than assuming cleanliness."
+             elif $q_counterbalanced | not then
+               "CONFOUNDED: every judged pair ran in the same arm order, so arm and position are not separable on the quality axis and the order effect is unidentifiable."
+             elif $q_comparison_is_clean == false then
+               "THE QUALITY COMPARISON IS NOT CLEAN: order was counterbalanced (\($qrefs_base_first | length) baseline-first, \($qrefs_cand_first | length) candidate-first) and the estimated ORDER effect (\($q_order_effect) judge points) is comparable in magnitude to the estimated ARM effect (\($q_arm_effect)) — at least \($order_ratio) of it. Position is doing as much work as the model, so no winner is named however the interval falls."
+             else
+               "arm order was counterbalanced across the judged pairs (\($qrefs_base_first | length) baseline-first, \($qrefs_cand_first | length) candidate-first). The estimated ORDER effect is \($q_order_effect) judge points against an estimated ARM effect of \($q_arm_effect) — small enough relative to the arm effect that the quality comparison reads as clean."
+             end)
         },
         basis_agreement: {
           gap_pct_points: ($qbasis_gap | round1),
@@ -859,38 +927,89 @@ case "${observed_seats:-}" in
     ;;
 esac
 
-# ── the winner gate: one condition, nothing else can mint it ──────────────
+# ── THE WINNER GATE — minted from the QUALITY axis (temperloop#1606) ──────
+# It used to be minted from the COST verdict alone. The #1262 A/A run showed
+# why that could not stand: same model in both arms, so any winner is a false
+# positive by construction, and it named one — paired cost delta -142,771 with
+# a bootstrap CI excluding zero. ~80% of that delta was cache_read volume, i.e.
+# ordinary within-model variance in session length that a record-paired
+# bootstrap reads as signal.
+#
+# #1741 then ruled out the obvious repairs. Every robust estimator tested
+# against the #1656 A/A deltas — trimmed mean, bootstrap median, sign test,
+# Wilcoxon — minted a CONFIDENT FALSE WINNER where the raw mean correctly
+# withheld, because the two large outliers are not contamination but the
+# counterweight that cancels a positive tilt in the other 14 of 18. And an
+# A/A-calibrated noise floor derived from that same |delta| distribution is
+# calibrated against the tilt rather than against arm noise.
+#
+# The quality axis does not behave that way. On the same known-zero run, every
+# one of those estimators correctly withholds, and all five per-dimension
+# sub-scores do too: the deltas are near-symmetric with no heavy tail. So the
+# axis a human actually cares about is also the one that survives the test.
+#
+# THREE independent conditions, each able to withhold and none able to mint
+# what another withheld:
+#   1. the quality verdict names a direction (stats.sh, over the paired
+#      judge deltas)
+#   2. the run is at or above the sample floor
+#   3. the QUALITY comparison is clean — arm and position separable ON THE
+#      DELTAS THAT MINT. Computed over quality's own pairs, never inherited
+#      from the cost axis, which pairs a different record set.
+#
+# COST NOW MINTS NOTHING. It keeps its CI, its MDE and its verdict as
+# DESCRIPTIVE figures, and cost_mints_no_winner_reason says so on the face of
+# the report.
 winner_json='null'
-verdict_value="$(jq -r 'if (.verdict | type) == "string" then .verdict else "" end' <<<"$verdict_json" 2>/dev/null)"
+winner_axis='"quality"'
+# ── POLARITY (temperloop#1606) ────────────────────────────────────────────
+# stats.sh assumes LOWER IS BETTER. That is right for cost — a negative
+# `candidate - baseline` means the candidate was cheaper — and it is BACKWARDS
+# for quality, where a positive `candidate - baseline` means the candidate
+# scored HIGHER. Feeding quality deltas to the library and reading its verdict
+# straight through would name the LOSER as the winner on every run.
+#
+# Verified against the library rather than assumed:
+#   stats.sh verdict --deltas '[8,9,10]'  ->  "baseline_better"
+# …on three deltas that mean the candidate scored 8-10 points BETTER.
+#
+# So the library verdict is TRANSLATED here, once, and both forms are
+# published: `library_verdict` (raw, lower-is-better) beside the translated
+# `verdict` a reader should act on. Deliberately not solved by negating the
+# delta array — the published `deltas` stay in the documented quality polarity
+# (positive = candidate better) so a reader, and the fixture suite, can re-run
+# stats.sh over exactly what this report fed it.
+q_library_verdict="$(jq -r 'if (.verdict | type) == "string" then .verdict else "" end' <<<"$quality_verdict_json" 2>/dev/null)"
+case "${q_library_verdict:-}" in
+  baseline_better)  q_verdict_value="candidate_better" ;;
+  candidate_better) q_verdict_value="baseline_better" ;;
+  *)                q_verdict_value="${q_library_verdict:-}" ;;
+esac
 # tostring, never `// empty`: jq treats a genuine `false` as absent, so the
 # `//` form would read "we are ABOVE the floor" as "unknown" and silently
 # suppress every winner the run is entitled to name.
-below_floor="$(jq -r 'if (.below_min_sample | type) == "boolean" then (.below_min_sample | tostring) else "" end' <<<"$verdict_json" 2>/dev/null)"
-if [ "${below_floor:-}" = "false" ]; then
-  case "${verdict_value:-}" in
+q_below_floor="$(jq -r 'if (.below_min_sample | type) == "boolean" then (.below_min_sample | tostring) else "" end' <<<"$quality_verdict_json" 2>/dev/null)"
+if [ "${q_below_floor:-}" = "false" ]; then
+  case "${q_verdict_value:-}" in
     candidate_better) winner_json='"candidate"' ;;
     baseline_better)  winner_json='"baseline"' ;;
   esac
 fi
 
-# ── THE ORDER-EFFECT GATE ON THE WINNER (temperloop#1571) ─────────────────
+# ── THE ORDER-EFFECT GATE, ON THE QUALITY AXIS (temperloop#1571, #1606) ───
 # A SECOND, INDEPENDENT condition on the same key, and deliberately not a
 # change to the first: the sample floor above is untouched, and this cannot
 # mint a winner the floor withheld — it can only withhold one the floor
-# allowed. When the comparison is not clean (every record ran in the same
-# order, so arm and position are still confounded; or the estimated order
-# effect is comparable in magnitude to the estimated arm effect), the report
-# SAYS SO and names no winner, rather than presenting a bare winner a reader
-# would take as a model fact. An UNKNOWN cleanliness (records that carry no
-# position at all — every pre-#1571 corpus) is not a failure and withholds
-# nothing; it is disclosed in execution_order.statement instead.
-comparison_clean="$(jq -r 'if (.execution_order.comparison_is_clean | type) == "boolean"
-                           then (.execution_order.comparison_is_clean | tostring) else "" end' \
-                     "$DERIVED" 2>/dev/null)"
+# allowed. An UNKNOWN cleanliness (records carrying no position at all — every
+# pre-#1571 corpus) is not a failure and withholds nothing; it is disclosed in
+# the statement instead.
+q_comparison_clean="$(jq -r 'if (.quality_pairing.execution_order.comparison_is_clean | type) == "boolean"
+                             then (.quality_pairing.execution_order.comparison_is_clean | tostring) else "" end' \
+                       "$DERIVED" 2>/dev/null)"
 winner_withheld_reason='null'
-if [ "${comparison_clean:-}" = "false" ] && [ "$winner_json" != "null" ]; then
-  winner_withheld_reason="$(jq -c '.execution_order.statement' "$DERIVED" 2>/dev/null)"
-  [ -n "$winner_withheld_reason" ] || winner_withheld_reason='"the comparison is not clean: arm order and arm are not separable in this run"'
+if [ "${q_comparison_clean:-}" = "false" ] && [ "$winner_json" != "null" ]; then
+  winner_withheld_reason="$(jq -c '.quality_pairing.execution_order.statement' "$DERIVED" 2>/dev/null)"
+  [ -n "$winner_withheld_reason" ] || winner_withheld_reason='"the quality comparison is not clean: arm order and arm are not separable across the judged pairs"'
   winner_json='null'
 fi
 
@@ -913,6 +1032,7 @@ report_json="$(jq -n \
   --argjson qci "$quality_ci_json" \
   --argjson qmde "$quality_mde_json" \
   --argjson qstats_reason "$quality_stats_unavailable_reason" \
+  --arg q_verdict_translated "$q_verdict_value" \
   --arg qmde_stddev "$quality_stddev_used" \
   --argjson qtarget_pct "$QUALITY_TARGET_EFFECT_PCT" \
   --argjson coverage "$coverage_json" \
@@ -920,6 +1040,7 @@ report_json="$(jq -n \
   --argjson exclusions "$SEAT_EXCLUSIONS" \
   --argjson roster "$FEASIBLE_SEAT_ROSTER" \
   --argjson winner "$winner_json" \
+  --argjson winner_axis "$winner_axis" \
   --argjson winner_withheld_reason "$winner_withheld_reason" \
   --arg mde_stddev "$stddev_used" \
   --arg price_source "$price_table_source" \
@@ -1045,10 +1166,13 @@ report_json="$(jq -n \
         paired: $d.quality_pairing.paired,
         unpaired: $d.quality_pairing.unpaired,
         basis_agreement: $d.quality_pairing.basis_agreement,
+        execution_order: $d.quality_pairing.execution_order,
         refs: $d.quality_pairing.refs,
         deltas: $d.quality_pairing.deltas,
         statistics_source: "workflows/scripts/model-comparison/stats.sh — the SAME library the cost axis above uses, so an interval or an MDE means the same thing on both. Re-run `stats.sh verdict --deltas <the deltas array above>` to reproduce these.",
-        verdict: (if $qverdict != null then $qverdict.verdict else "inconclusive" end),
+        verdict: $q_verdict_translated,
+        library_verdict: (if $qverdict != null then $qverdict.verdict else "inconclusive" end),
+        polarity_note: "stats.sh assumes LOWER IS BETTER, which is correct for cost and BACKWARDS for quality: a POSITIVE `candidate - baseline` here means the candidate scored HIGHER. `library_verdict` is what the library returned over these deltas verbatim; `verdict` is that translated into quality polarity, and it is the one to act on. Confirmed against the library: `stats.sh verdict --deltas [8,9,10]` returns \"baseline_better\" on three deltas meaning the candidate scored 8-10 points better (temperloop#1606).",
         below_min_sample: (if $qverdict != null then $qverdict.below_min_sample else null end),
         min_sample: (if $qverdict != null then $qverdict.min_sample else null end),
         confidence_interval: (if $qci == null then null
@@ -1088,8 +1212,8 @@ report_json="$(jq -n \
              end)
         },
         statistics_unavailable_reason: $qstats_reason,
-        mints_no_winner: true,
-        mints_no_winner_reason: "THIS AXIS NAMES NO WINNER. temperloop#1609 ships the quality statistics; deciding a comparison on them is temperloop#1606, layered on top and reviewable on its own terms. The `winner` key below is minted from the COST verdict alone. Publishing an interval and deciding a comparison on it are two different acts, and this report currently performs only the first."
+        mints_winner: true,
+        mints_winner_reason: "THIS is the axis the `winner` key is minted from (temperloop#1606). Three independent conditions must all hold: the verdict names a direction, the run is at or above the sample floor, and the order-effect check on THESE deltas reads clean. Any one of them withholds; none can mint what another withheld."
       },
 
       comparison: ({
@@ -1135,6 +1259,8 @@ report_json="$(jq -n \
           margin_of_error_note: "the CI half-width, NOT a detectability threshold — a true effect exactly this size is detected only about half the time, which is why `mde` above (roughly 43% larger at 80% power) is the number to size a comparison against"
         },
         statistics_unavailable_reason: $stats_reason,
+        mints_winner: false,
+        mints_no_winner_reason: "THE COST AXIS IS DESCRIPTIVE AND NAMES NO WINNER (temperloop#1606). Its CI, MDE and verdict are published as figures to READ, never as a decision. The #1262 A/A run — same model in both arms, so any winner is a false positive by construction — minted `candidate_better` here on a paired delta of -142,771 whose ~80% was cache_read volume, i.e. ordinary within-model variance in session length that a record-paired bootstrap reads as signal. temperloop#1741 then ruled out the obvious repairs: every robust estimator tested (trimmed mean, bootstrap median, sign test, Wilcoxon) minted a CONFIDENT FALSE WINNER on the same known-zero data, because the large outliers are the counterweight that cancels a tilt in the rest rather than contamination to discard. Read the `verdict` below as an observation about spend, not as a recommendation.",
         # THE ORDER-EFFECT DISCLOSURE, carried inside `comparison` beside the
         # figures it qualifies rather than only at the top level, so a reader
         # who reads only this block still sees whether arm and execution
@@ -1151,10 +1277,12 @@ report_json="$(jq -n \
         comparison_is_clean: $d.execution_order.comparison_is_clean,
         order_effect_disclosure: $d.execution_order.statement,
         winner_withheld_reason: $winner_withheld_reason,
+        winner_axis: $winner_axis,
+        winner_axis_note: "the `winner` key keeps its documented location HERE, inside `comparison`, so no existing reader breaks — but since temperloop#1606 it is minted from the QUALITY axis, never from the cost verdict beside it. `winner_axis` names which axis decided. See quality_comparison.mints_winner_reason and this block mints_no_winner_reason.",
         transferability: "a verdict from this repo'"'"'s own replay corpus does NOT transfer to another pipeline, another repo'"'"'s issue mix, or another prompt shape — it measures these seats doing this repo'"'"'s work, not either model in general"
       } | if $winner == null then . else . + {winner: $winner} end),
 
-      notice: ("model-comparison report — cost basis: cost-weighted TOKEN COUNTS (not metered dollars, not a subscription-usage share; \($staleness)); emit coverage: \($coverage_phrase); corpus: \($d.corpus_window.records_n) records, \($d.pairing.paired_outcomes_n) paired outcomes, \($d.gate_versions.distinct_n) distinct gate version(s); arm order: \($order_phrase); verdict: \(if $verdict != null then $verdict.verdict else "inconclusive" end)\(if $winner == null then " (no winner named)" else " — winner: \($winner)" end). \($mde_disclosure)\(if $winner_withheld_reason == null then "" else " NO WINNER IS NAMED, and the sample floor is not why: \($winner_withheld_reason)" end)")
+      notice: ("model-comparison report — cost basis: cost-weighted TOKEN COUNTS (not metered dollars, not a subscription-usage share; \($staleness)); emit coverage: \($coverage_phrase); corpus: \($d.corpus_window.records_n) records, \($d.pairing.paired_outcomes_n) paired outcomes, \($d.gate_versions.distinct_n) distinct gate version(s); arm order: \($order_phrase); cost verdict (DESCRIPTIVE, mints nothing): \(if $verdict != null then $verdict.verdict else "inconclusive" end); QUALITY verdict (decides): \($q_verdict_translated)\(if $winner == null then " (no winner named)" else " — winner: \($winner)" end). \($mde_disclosure)\(if $winner_withheld_reason == null then "" else " NO WINNER IS NAMED, and the sample floor is not why: \($winner_withheld_reason)" end)")
     }' 2>/dev/null)" || skip "could not assemble the comparison report object — refusing to emit a partial one"
 
 [ -n "$report_json" ] || skip "the comparison report object came back empty — refusing to emit nothing dressed as a report"
