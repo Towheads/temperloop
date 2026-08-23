@@ -120,6 +120,16 @@ set -uo pipefail
 set +o posix
 
 SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Fixture-residue patterns, resolved from the ONE setting that governs them
+# (temperloop#1747). Sourced rather than restated so this validator, the
+# pre-flight derive filter and lake-sweep.sh cannot drift into three different
+# ideas of what a fixture record is. Fails soft: an adopter without the config
+# file still gets the registry default.
+_VMU_BUILD_CONFIG="$SCRIPT_DIR/build/build.config.sh"
+# shellcheck source=./build/build.config.sh
+[ -f "$_VMU_BUILD_CONFIG" ] && . "$_VMU_BUILD_CONFIG"
+: "${REPLAY_PREFLIGHT_STUB_MODEL_PATTERNS:=recorded-* stub-* *-stub-model *-stub}"
 EMIT_SCRIPT="$SCRIPT_DIR/emit-model-usage.sh"
 ALLOWLIST_LIB="$SCRIPT_DIR/model-comparison/allowlist.sh"
 
@@ -280,6 +290,17 @@ committed_providers="$(pa_committed_list 2>/dev/null || true)"
 read -r -d '' PY_BATCH_SCRIPT <<'PYEOF' || true
 import json, sys
 
+# Fixture-residue detection, from the SAME setting replay.sh preflight's derive
+# filter and lake-sweep.sh read (REPLAY_PREFLIGHT_STUB_MODEL_PATTERNS), passed
+# in on the environment. If these three ever diverge, "excluded from the basis",
+# "swept from the lake" and "reported as residue" would silently mean three
+# different sets of records.
+import fnmatch, os
+_STUB_PATTERNS = [p for p in os.environ.get("STUB_MODEL_PATTERNS", "").split() if p]
+
+def _is_fixture_residue(model):
+    return any(fnmatch.fnmatchcase(model, p) for p in _STUB_PATTERNS)
+
 def reject_nonfinite(x):
     raise ValueError("non-finite JSON constant: " + x)
 
@@ -348,6 +369,19 @@ def validate_line(line):
     KNOWN_FAMILIES = ("opus", "sonnet", "haiku")
     segments = model.split("-")
     if segments[0] != "claude" or not any(seg in KNOWN_FAMILIES for seg in segments[1:]):
+        # FIXTURE RESIDUE gets its own verdict and a remedy (temperloop#1747).
+        # A stubbed replay emits a real attribution record, and before #1747 a
+        # recorded run with no MODEL_USAGE_RAW_DIR wrote it into the production
+        # lake. Reported as a bare MODEL-ENUM failure it reads as "the emitter
+        # produced a bad model id" — sending the reader to audit emit code that
+        # is working correctly — when the actual fix is to sweep the lake.
+        # Same failure verdict, so nothing is waved through; a different
+        # NAME and a next step.
+        if _is_fixture_residue(model):
+            return ("FAIL FIXTURE-RESIDUE: model '" + model + "' is stub/fixture output, not a real "
+                    "model call — a recorded replay wrote it into this lake. The emitter is not at "
+                    "fault. Remove it with: workflows/scripts/model-comparison/lake-sweep.sh --apply "
+                    "(temperloop#1747)")
         return ("FAIL MODEL-ENUM: model '" + model + "' does not name a known Claude "
                  "family (" + "/".join(KNOWN_FAMILIES) + ") — want a claude-<family>-... id")
 
@@ -495,7 +529,7 @@ for f in ${files[@]+"${files[@]}"}; do
     # this command substitution is python3's OWN exit status (a pipe would
     # put that behind PIPESTATUS, and PIPESTATUS from INSIDE a command
     # substitution does not survive the substitution boundary).
-    batch_out="$(python3 -c "$PY_BATCH_SCRIPT" <<<"$batch_input")"
+    batch_out="$(STUB_MODEL_PATTERNS="$REPLAY_PREFLIGHT_STUB_MODEL_PATTERNS" python3 -c "$PY_BATCH_SCRIPT" <<<"$batch_input")"
     py_rc=$?
     if [ "$py_rc" -ne 0 ]; then
       echo "validate-model-usage-emit: CANNOT EVALUATE — the batched python3 validator exited $py_rc while validating $f" >&2

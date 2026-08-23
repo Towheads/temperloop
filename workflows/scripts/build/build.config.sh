@@ -1176,7 +1176,15 @@ fi
 # To DISABLE the exclusion, set a pattern that matches nothing (e.g.
 # `__none__`) — not the empty string. This file assigns with `:=`, which treats
 # an empty value as unset and restores the default above.
-: "${REPLAY_PREFLIGHT_STUB_MODEL_PATTERNS:=recorded-* stub-* *-stub-model *-stub}"
+# `*recorded-*` is here because a fixture stub is often named to look REAL:
+# this repo's own suite emits `claude-recorded-candidate`, carrying the
+# `claude-` prefix precisely so it passes the validator's family enum. A
+# denylist keyed only on obvious sentinels would never see it. That is the
+# standing weakness of a denylist, and it is why the WRITER guard in replay.sh
+# — not this list — is the actual fix (temperloop#1747): with the guard in
+# place no fixture record reaches the lake whatever it calls itself, and this
+# list only has to cope with what is already on disk.
+: "${REPLAY_PREFLIGHT_STUB_MODEL_PATTERNS:=recorded-* stub-* *-stub-model *-stub *recorded-*}"
 # Per-comparison (i.e. per preflight invocation's planned batch) ceiling, in
 # COST-WEIGHTED TOKEN UNITS. A projected batch whose estimated cost exceeds
 # this STOPS at preflight — never partway through a later execution step.

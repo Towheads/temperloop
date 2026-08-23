@@ -1742,6 +1742,32 @@ cmd_execute() {
     return 1
   fi
 
+  # ── THE ATTRIBUTION LAKE IS NOT A FIXTURE SINK (temperloop#1747) ─────
+  # A RECORDED run emits a real attribution record too, and emit-model-usage.sh
+  # defaults its output to <repo>/meta/data/raw. So a stubbed replay with no
+  # explicit MODEL_USAGE_RAW_DIR writes fixture tokens into the same lake as
+  # live spend, where three separate consumers then read them as observed cost:
+  #
+  #   * the pre-flight derive basis prices a batch off them (#1657 — 18 of 32
+  #     basis records on the host that surfaced this, deflating 2.27x)
+  #   * validate-model-usage-emit.sh REJECTS them on MODEL-ENUM, taking
+  #     test_model_usage_emit.sh down with it — 2 of 181 gates red
+  #   * test_replay_preflight.sh's verdict flips with the lake's contents
+  #     (#1642)
+  #
+  # A LIVE run always emits: that spend is real and belongs in the lake. A
+  # RECORDED run emits only where it was explicitly told to. Every fixture
+  # suite in this repo already sets MODEL_USAGE_RAW_DIR, so this refuses
+  # exactly the ad-hoc stub run that has no business in the lake, and nothing
+  # else. Deliberately a REFUSAL rather than a silent redirect to some scratch
+  # path: a record written somewhere the caller did not name is a record
+  # nobody goes looking for.
+  local emit_allowed=1
+  if [ -n "$runner" ] && [ -z "${MODEL_USAGE_RAW_DIR:+x}" ]; then
+    emit_allowed=0
+    printf 'replay.sh execute: RECORDED runner and no MODEL_USAGE_RAW_DIR — writing NO attribution record, rather than fixture tokens into this repo'"'"'s production lake (temperloop#1747). Set MODEL_USAGE_RAW_DIR to a scratch dir to capture them.\n' >&2
+  fi
+
   # ── candidate-session.sh: BOTH halves, on BOTH paths ─────────────────
   # (a) the containment overlay must be present, readable and well-formed —
   #     resolve's own exit codes 3/4/5 are the fail-closed contract, and we
@@ -1937,7 +1963,7 @@ cmd_execute() {
     # unchanged, computed as its own explicit step rather than folded into
     # an inline default-substitution that read the same regardless of WHICH
     # case produced it.
-    if [ -x "$EMIT_MODEL_USAGE_SH" ]; then
+    if [ -x "$EMIT_MODEL_USAGE_SH" ] && [ "$emit_allowed" -eq 1 ]; then
       local ea_model="$model"
       [ -n "$ea_model" ] || ea_model="unknown"
       local -a ea=(--seat "$REPLAY_CANDIDATE_SEAT" --model "$ea_model" \
@@ -2039,7 +2065,7 @@ cmd_execute() {
 
   # The attribution record — emit-model-usage.sh, reused verbatim. This is
   # the SEND half the disclosure log is cross-checked against.
-  if [ -x "$EMIT_MODEL_USAGE_SH" ]; then
+  if [ -x "$EMIT_MODEL_USAGE_SH" ] && [ "$emit_allowed" -eq 1 ]; then
     local -a ea=(--seat "$REPLAY_CANDIDATE_SEAT" --model "$resolved_model" --provider "$provider"
                  --usage-source cli-envelope --outcome-ref "$item_ref" --duration-ms "$duration_ms"
                  --input-tokens "$(jq -r .input <<<"$tokens_json")"

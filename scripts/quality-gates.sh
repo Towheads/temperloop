@@ -313,6 +313,14 @@ KERNEL_GATES=(
   # below (kernel Makefile is generator-owned).
   "bash workflows/scripts/validate-model-usage-emit.sh"
   "bash workflows/scripts/tests/test_model_usage_emit.sh"
+  # model-comparison: the attribution-lake fixture sweep (temperloop#1747).
+  # lake-sweep.sh DELETES lines from an append-only telemetry stream, so the
+  # properties this suite defends are the ones that bound the damage when it is
+  # wrong: a real record is never removed, an unparseable line is never removed
+  # (that is evidence of a different problem), nothing is written without
+  # --apply, and the original survives every rewrite. Registered here because a
+  # suite this file does not name NEVER RUNS IN CI.
+  "bash workflows/scripts/model-comparison/tests/test_lake_sweep.sh"
   "make validate-diagnose-queue-emit"
   # diagnose-queue lake-stream emit (temperloop#1192) — gate.sh's
   # cmd_diagnose_queue computes a merge-queue verdict /build and /fix branch
