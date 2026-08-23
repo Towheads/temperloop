@@ -175,6 +175,16 @@ DEFAULT_REPO_ROOT="$(cd -P "$SCRIPT_DIR/../.." && pwd)"
 : "${MANDATORY_STEP_GIT_REPO_ROOT:=$DEFAULT_REPO_ROOT}"
 : "${MANDATORY_STEP_REGISTRY_FILE:=$SCRIPT_DIR/config/mandatory-step-registry.tsv}"
 : "${MANDATORY_STEP_DISCOVERY_FILE:=$SCRIPT_DIR/config/mandatory-step-discovery.tsv}"
+# OVERLAY EXTENSION FILES (temperloop#1738/#1740). In a COMPOSED OVERLAY both
+# config files above are compat symlinks into the vendored kernel subtree, so a
+# consumer that owns command specs of its own had nowhere to disposition their
+# mandatory declarations: editing the vendored copy is forbidden, and replacing
+# the symlink means owning a stale duplicate of every upstream row. Same
+# `<base>.overlay.<ext>` shape as the kernel's other overlay-extension seams
+# (setting-registry.overlay.tsv, capture-backstop-registry.overlay.md,
+# check-surface-*.overlay.tsv). Absent in a kernel-only checkout.
+: "${MANDATORY_STEP_REGISTRY_OVERLAY_FILE:=$SCRIPT_DIR/config/mandatory-step-registry.overlay.tsv}"
+: "${MANDATORY_STEP_DISCOVERY_OVERLAY_FILE:=$SCRIPT_DIR/config/mandatory-step-discovery.overlay.tsv}"
 : "${MANDATORY_STEP_SPEC_DIR:=$MANDATORY_STEP_REPO_ROOT/claude/commands}"
 : "${MANDATORY_STEP_QUALITY_GATES_FILE:=$MANDATORY_STEP_REPO_ROOT/scripts/quality-gates.sh}"
 # Empty by default — the ratchet auto-resolves at ratchet time. An
@@ -208,6 +218,8 @@ _mss_resolve_path() {
 
 MANDATORY_STEP_REGISTRY_FILE="$(_mss_resolve_path "$MANDATORY_STEP_REGISTRY_FILE")"
 MANDATORY_STEP_DISCOVERY_FILE="$(_mss_resolve_path "$MANDATORY_STEP_DISCOVERY_FILE")"
+MANDATORY_STEP_REGISTRY_OVERLAY_FILE="$(_mss_resolve_path "$MANDATORY_STEP_REGISTRY_OVERLAY_FILE")"
+MANDATORY_STEP_DISCOVERY_OVERLAY_FILE="$(_mss_resolve_path "$MANDATORY_STEP_DISCOVERY_OVERLAY_FILE")"
 MANDATORY_STEP_SPEC_DIR="$(_mss_resolve_path "$MANDATORY_STEP_SPEC_DIR")"
 MANDATORY_STEP_QUALITY_GATES_FILE="$(_mss_resolve_path "$MANDATORY_STEP_QUALITY_GATES_FILE")"
 
@@ -221,6 +233,17 @@ MANDATORY_STEP_QUALITY_GATES_FILE="$(_mss_resolve_path "$MANDATORY_STEP_QUALITY_
 if [[ -e "$MANDATORY_STEP_DISCOVERY_FILE" && ! -r "$MANDATORY_STEP_DISCOVERY_FILE" ]]; then
   _mss_cannot_evaluate "discovery ledger exists but is not readable: $MANDATORY_STEP_DISCOVERY_FILE"
 fi
+
+# The overlay twins follow the same rule: ABSENT is legal (a kernel-only
+# checkout) and contributes zero rows; PRESENT-BUT-UNREADABLE fails closed,
+# because a row this gate cannot read is indistinguishable from one that is
+# not there.
+for _mss_ov in "$MANDATORY_STEP_REGISTRY_OVERLAY_FILE" "$MANDATORY_STEP_DISCOVERY_OVERLAY_FILE"; do
+  if [[ -e "$_mss_ov" && ! -r "$_mss_ov" ]]; then
+    _mss_cannot_evaluate "overlay extension file exists but is not readable: $_mss_ov"
+  fi
+done
+unset _mss_ov
 
 [[ -d "$MANDATORY_STEP_SPEC_DIR" ]] || _mss_cannot_evaluate "spec corpus directory not found: $MANDATORY_STEP_SPEC_DIR"
 [[ -r "$MANDATORY_STEP_SPEC_DIR" && -x "$MANDATORY_STEP_SPEC_DIR" ]] || _mss_cannot_evaluate "spec corpus directory exists but is not readable: $MANDATORY_STEP_SPEC_DIR"
@@ -243,6 +266,16 @@ n_discovered=0
 # ---------------------------------------------------------------------------
 _mss_tsv_file() { # <file> -> \x1f-joined lines on stdout
   awk -F'\t' 'BEGIN{OFS="\x1f"} {$1=$1; print}' "$1"
+}
+# _mss_tsv_files <file...> -> \x1f-joined rows, each PREFIXED with its source
+# file, so a failure names the file the row actually came from rather than
+# hardcoding the kernel path once the overlay extension is unioned in.
+_mss_tsv_files() {
+  local _f
+  for _f in "$@"; do
+    [[ -f "$_f" && -r "$_f" ]] || continue
+    awk -F'\t' -v SRC="$_f" 'BEGIN{OFS="\x1f"} {$1=$1; print SRC OFS $0}' "$_f"
+  done
 }
 _mss_tsv_string() { # <string> -> \x1f-joined lines on stdout
   printf '%s' "$1" | awk -F'\t' 'BEGIN{OFS="\x1f"} {$1=$1; print}'
@@ -299,8 +332,9 @@ ledger_keys=""     # newline-separated "<spec>\x1f<anchor>"
 ledger_pending=""  # newline-separated "<spec>\x1f<anchor>" for DISPOSITION=pending
 n_pending=0
 n_excluded=0
-if [[ -f "$MANDATORY_STEP_DISCOVERY_FILE" ]]; then
-  while IFS=$'\x1f' read -r d_spec d_anchor d_disp d_reason || [[ -n "${d_spec:-}" ]]; do
+# EITHER source is enough: a composed overlay may carry only the overlay twin.
+if [[ -f "$MANDATORY_STEP_DISCOVERY_FILE" || -f "$MANDATORY_STEP_DISCOVERY_OVERLAY_FILE" ]]; then
+  while IFS=$'\x1f' read -r src d_spec d_anchor d_disp d_reason || [[ -n "${src:-}" ]]; do
     [[ -z "${d_spec:-}" ]] && continue
     case "$d_spec" in \#*) continue ;; esac
 
@@ -350,7 +384,7 @@ if [[ -f "$MANDATORY_STEP_DISCOVERY_FILE" ]]; then
     if [[ "$(_mss_count_fixed "$spec_path" "$d_anchor")" -eq 0 ]]; then
       failures+=("LEDGER-STALE  $d_spec :: $d_anchor — the ANCHOR no longer appears in $d_spec; the declaration was reworded or removed, so prune the ledger row in the same change")
     fi
-  done < <(_mss_tsv_file "$MANDATORY_STEP_DISCOVERY_FILE")
+  done < <(_mss_tsv_files "$MANDATORY_STEP_DISCOVERY_FILE" "$MANDATORY_STEP_DISCOVERY_OVERLAY_FILE")
 fi
 
 # ---------------------------------------------------------------------------
@@ -359,7 +393,7 @@ fi
 #               <TAB> ANCHOR <TAB> GATE <TAB> NOTE
 # ---------------------------------------------------------------------------
 registry_keys=""  # newline-separated "<spec>\x1f<declaration>"
-while IFS=$'\x1f' read -r r_spec r_step r_decl r_kind r_signal r_anchor r_gate r_note || [[ -n "${r_spec:-}" ]]; do
+while IFS=$'\x1f' read -r src r_spec r_step r_decl r_kind r_signal r_anchor r_gate r_note || [[ -n "${src:-}" ]]; do
   [[ -z "${r_spec:-}" ]] && continue
   case "$r_spec" in \#*) continue ;; esac
 
@@ -453,7 +487,7 @@ while IFS=$'\x1f' read -r r_spec r_step r_decl r_kind r_signal r_anchor r_gate r
   elif [[ -n "$r_gate" ]]; then
     notes+=("note: $r_spec :: $r_decl carries a GATE token on a KIND=$r_kind row; GATE is only checked for KIND=guard")
   fi
-done < <(_mss_tsv_file "$MANDATORY_STEP_REGISTRY_FILE")
+done < <(_mss_tsv_files "$MANDATORY_STEP_REGISTRY_FILE" "$MANDATORY_STEP_REGISTRY_OVERLAY_FILE")
 
 # ---------------------------------------------------------------------------
 # 2b. EMPTY-REGISTRY — a registry with zero parsed rows is a vacuous pass.
@@ -583,38 +617,69 @@ _mss_relpath() {
   printf '%s\n' "$relpath"
 }
 
-if [[ -z "$_mss_ratchet_skip_reason" ]]; then
-  ledger_relpath="$(_mss_relpath "$MANDATORY_STEP_DISCOVERY_FILE")" || ledger_relpath=""
-  if [[ -z "$ledger_relpath" ]]; then
-    ratchet_lines+=("pending ratchet: SKIPPED ($MANDATORY_STEP_DISCOVERY_FILE is not under $MANDATORY_STEP_GIT_REPO_ROOT)")
-  elif _mss_file_added "$ledger_relpath"; then
-    ratchet_lines+=("pending ratchet: SKIPPED (bootstrap — $ledger_relpath was added in this diff, nothing to compare against)")
-  else
-    prev_content="$(git -C "$MANDATORY_STEP_GIT_REPO_ROOT" show "${_mss_base_ref}:${ledger_relpath}" 2>/dev/null)" || prev_content=""
-    prev_pending=""
-    if [[ -n "$prev_content" ]]; then
-      while IFS=$'\x1f' read -r p_spec p_anchor p_disp _p_rest || [[ -n "${p_spec:-}" ]]; do
-        [[ -z "${p_spec:-}" ]] && continue
-        case "$p_spec" in \#*) continue ;; esac
-        [[ "$(_mss_trim "${p_disp:-}")" == "pending" ]] || continue
-        prev_pending="$prev_pending$p_spec"$'\x1f'"${p_anchor:-}
+# The pending set is a UNION across the kernel ledger and its overlay twin
+# (temperloop#1738), so the ratchet is too. Ratcheting only the kernel half
+# would report every overlay-authored row as PENDING-GREW forever; not
+# ratcheting the overlay half would make it the debt parking lot this ratchet
+# exists to prevent. Each source contributes its own ALLOWED set; a current row
+# is growth only if it is in none of them.
+_mss_allowed_pending=""
+# ALWAYS append through this helper, never by bare `$( )` concatenation.
+# `$( )` strips EVERY trailing newline, and the membership test below closes on
+# one (`*$'\n'"$item"$'\n'*`), so an un-terminated contribution makes its LAST
+# entry unmatchable and falsely PENDING-GREW on every run. This is the same
+# trap §4c of validate-check-surface-degenerate-coverage.sh documents; it bit
+# this refactor too, which is why it is now a helper rather than a convention.
+_mss_allow_add() {
+  local chunk="$1"
+  [[ -n "$chunk" ]] || return 0
+  _mss_allowed_pending="$_mss_allowed_pending$chunk"$'\n'
+}
+_mss_pending_from_content() { # <content> -> "<spec>\x1f<anchor>" lines
+  local content="$1" p_spec p_anchor p_disp _p_rest out=""
+  [[ -n "$content" ]] || return 0
+  while IFS=$'\x1f' read -r p_spec p_anchor p_disp _p_rest || [[ -n "${p_spec:-}" ]]; do
+    [[ -z "${p_spec:-}" ]] && continue
+    case "$p_spec" in \#*) continue ;; esac
+    [[ "$(_mss_trim "${p_disp:-}")" == "pending" ]] || continue
+    out="$out$p_spec"$'\x1f'"${p_anchor:-}
 "
-      done < <(_mss_tsv_string "$prev_content")
+  done < <(_mss_tsv_string "$content")
+  printf '%s' "$out"
+}
+if [[ -z "$_mss_ratchet_skip_reason" ]]; then
+  for _mss_ledger in "$MANDATORY_STEP_DISCOVERY_FILE" "$MANDATORY_STEP_DISCOVERY_OVERLAY_FILE"; do
+    [[ -f "$_mss_ledger" ]] || continue
+    _mss_ledger_relpath="$(_mss_relpath "$_mss_ledger")" || _mss_ledger_relpath=""
+    if [[ -z "$_mss_ledger_relpath" ]]; then
+      # Not under the git root: the base-ref side is unreadable, so this file
+      # cannot be ratcheted. GRANDFATHER its rows and SAY so — contributing
+      # nothing would falsely report them as growth.
+      _mss_allow_add "$(_mss_pending_from_content "$(cat "$_mss_ledger")")"
+      ratchet_lines+=("pending ratchet: SKIPPED for $_mss_ledger (not under $MANDATORY_STEP_GIT_REPO_ROOT — its rows are grandfathered, not checked)")
+      continue
     fi
-    if [[ -n "$ledger_pending" ]]; then
-      while IFS= read -r cur; do
-        [[ -n "$cur" ]] || continue
-        case $'\n'"$prev_pending" in
-          *$'\n'"$cur"$'\n'*) ;;
-          *)
-            failures+=("PENDING-GREW  ${cur%%$'\x1f'*} :: ${cur#*$'\x1f'} — dispositioned 'pending' now but not at $_mss_base_ref. 'pending' is a SHRINK-ONLY ratchet: a NEW mandatory declaration must ship its execution signal in the same change (the birth rule), not be parked as debt. Register it with a signal, or disposition it 'excluded' if it is not a step-execution declaration at all")
-            ;;
-        esac
-      done <<EOF
+    if _mss_file_added "$_mss_ledger_relpath"; then
+      _mss_allow_add "$(_mss_pending_from_content "$(cat "$_mss_ledger")")"
+      ratchet_lines+=("pending ratchet: SKIPPED for $_mss_ledger_relpath (bootstrap — added in this diff, nothing to compare against)")
+      continue
+    fi
+    _mss_prev="$(git -C "$MANDATORY_STEP_GIT_REPO_ROOT" show "${_mss_base_ref}:${_mss_ledger_relpath}" 2>/dev/null)" || _mss_prev=""
+    _mss_allow_add "$(_mss_pending_from_content "$_mss_prev")"
+    ratchet_lines+=("pending ratchet: checked against $_mss_base_ref:$_mss_ledger_relpath")
+  done
+  if [[ -n "$ledger_pending" ]]; then
+    while IFS= read -r cur; do
+      [[ -n "$cur" ]] || continue
+      case $'\n'"$_mss_allowed_pending" in
+        *$'\n'"$cur"$'\n'*) ;;
+        *)
+          failures+=("PENDING-GREW  ${cur%%$'\x1f'*} :: ${cur#*$'\x1f'} — dispositioned 'pending' now but not at $_mss_base_ref in any disposition source. 'pending' is a SHRINK-ONLY ratchet: a NEW mandatory declaration must ship its execution signal in the same change (the birth rule), not be parked as debt. Register it with a signal, or disposition it 'excluded' if it is not a step-execution declaration at all")
+          ;;
+      esac
+    done <<EOF
 $ledger_pending
 EOF
-    fi
-    ratchet_lines+=("pending ratchet: checked against $_mss_base_ref:$ledger_relpath")
   fi
 else
   ratchet_lines+=("pending ratchet: SKIPPED ($_mss_ratchet_skip_reason)")

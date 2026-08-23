@@ -356,6 +356,97 @@ else
   _expect "removing a pending row is a legal shrink" 0 "validate-mandatory-step-signal: OK"
 fi
 
+# ---------------------------------------------------------------------------
+# 24-27. temperloop#1738/#1740 — THE OVERLAY EXTENSION SEAM.
+#
+# In a composed overlay both config files are compat symlinks into the vendored
+# kernel subtree, so a consumer owning command specs of its own had nowhere to
+# disposition their mandatory declarations. These pin the seam and its limit:
+# it works (25), it is what makes the difference (24), it fails closed on an
+# unreadable file (26), and it is NOT a debt parking lot (27).
+# ---------------------------------------------------------------------------
+OV="$(_scaffold overlay-seam)"
+_registry "$OV" tally sig/runner.mjs 'mandatory_ok: !skipped.length' -
+# A consumer-owned spec the kernel does not ship, carrying its own declaration.
+cat >"$OV/claude/commands/consumer.md" <<'SPEC'
+# /consumer
+
+## Step 1 — the consumer's own pass
+
+**Mandatory for every run:** this consumer-owned step is required.
+SPEC
+: >"$OV/ledger.tsv"
+
+# 24 FIRST — the discrimination baseline. With no overlay extension the
+# consumer's declaration is undispositioned and the gate is RED. If this ever
+# goes green, 25 proves nothing.
+_run "$OV"
+_expect "without the overlay extension a consumer-owned declaration is UNDISPOSED" 1 "UNDISPOSED-DECLARATION"
+
+# 25. The overlay extension dispositions it -> GREEN.
+printf 'claude/commands/consumer.md%s**Mandatory for every run:**%sexcluded%sconsumer-owned; not a step-execution declaration\n' \
+  "$TAB" "$TAB" "$TAB" >"$OV/ledger.overlay.tsv"
+_run "$OV" MANDATORY_STEP_DISCOVERY_OVERLAY_FILE="$OV/ledger.overlay.tsv"
+_expect "an overlay discovery extension dispositions a consumer-owned declaration" 0 "validate-mandatory-step-signal: OK"
+
+# 26. An UNREADABLE overlay extension is CANNOT EVALUATE, never a silent pass.
+if [ "$(id -u)" -ne 0 ]; then
+  cp "$OV/ledger.overlay.tsv" "$OV/unreadable.overlay.tsv"
+  chmod 000 "$OV/unreadable.overlay.tsv"
+  _run "$OV" MANDATORY_STEP_DISCOVERY_OVERLAY_FILE="$OV/unreadable.overlay.tsv"
+  chmod 644 "$OV/unreadable.overlay.tsv"
+  # Exit 2 is this gate's CANNOT EVALUATE code (see the absent-registry case
+  # above), distinct from 1 = a real finding. An unreadable disposition file is
+  # not "no violations", it is "cannot tell", and the exit code must say so.
+  _expect "an unreadable overlay extension fails closed (CANNOT EVALUATE)" 2 "overlay extension file exists but is not readable"
+  rm -f "$OV/unreadable.overlay.tsv"
+fi
+
+# 27. THE LIMIT — the overlay pending set is shrink-only too. A seam that let a
+#     consumer park declarations forever would be strictly worse than the hole
+#     it closes: the same debt, now invisible to upstream.
+if command -v git >/dev/null 2>&1; then
+  OVR="$(_scaffold overlay-ratchet)"
+  _registry "$OVR" tally sig/runner.mjs 'mandatory_ok: !skipped.length' -
+  cat >"$OVR/claude/commands/consumer.md" <<'SPEC'
+# /consumer
+
+## Step 1 — the consumer's own pass
+
+**Mandatory for every run:** this consumer-owned step is required.
+
+Some ordinary prose that mentions nothing special.
+SPEC
+  : >"$OVR/ledger.tsv"
+  printf 'claude/commands/consumer.md%s**Mandatory for every run:**%spending%spre-existing consumer debt\n' \
+    "$TAB" "$TAB" "$TAB" >"$OVR/ledger.overlay.tsv"
+  (
+    cd "$OVR" || exit 1
+    git init -q .
+    git config user.email t@example.com
+    git config user.name t
+    git add -A
+    git commit -qm base
+  ) >/dev/null 2>&1
+  OVR_SHA="$(git -C "$OVR" rev-parse HEAD)"
+
+  # 27a. UNCHANGED overlay pending set is GREEN — a committed baseline, and the
+  #      LAST (only) row must still match, which is where a lost trailing
+  #      newline would show up.
+  MSS_GIT_ROOT="$OVR" _run "$OVR" \
+    MANDATORY_STEP_DISCOVERY_OVERLAY_FILE="$OVR/ledger.overlay.tsv" \
+    MANDATORY_STEP_BASE_REF="$OVR_SHA"
+  _expect "an unchanged overlay pending set ratchets green" 0 "validate-mandatory-step-signal: OK"
+
+  # 27b. GROWING it is RED.
+  printf 'claude/commands/demo.md%sSome ordinary prose%spending%snewly parked, which the ratchet forbids\n' \
+    "$TAB" "$TAB" "$TAB" >>"$OVR/ledger.overlay.tsv"
+  MSS_GIT_ROOT="$OVR" _run "$OVR" \
+    MANDATORY_STEP_DISCOVERY_OVERLAY_FILE="$OVR/ledger.overlay.tsv" \
+    MANDATORY_STEP_BASE_REF="$OVR_SHA"
+  _expect "the overlay pending set is shrink-only too — not a debt parking lot" 1 "PENDING-GREW"
+fi
+
 echo "---"
 echo "passed: $pass | failed: $fail"
 [ "$fail" -eq 0 ] || exit 1
