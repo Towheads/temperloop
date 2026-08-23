@@ -106,8 +106,20 @@ arm_flags() {
 }
 
 echo "── coverage: files carrying the temperloop#1342 fix idiom ──"
+# The three files below carry the fix idiom as EXAMPLE TEXT (in prose, usage
+# output, or a fixture) rather than as a live option loop, so the extractor
+# cannot and should not find a loop in them.
+#
+# The boundary is `(^|/)`, not `^` (temperloop#1734). This suite is vendored
+# into consuming repos as a git subtree, where these same three files live at
+# `kernel/scripts/lint-argloop-shift2.sh` and friends — anchoring at `^` matched
+# none of them there, so all three were walked and all three failed extraction,
+# turning a healthy composed tree red. Matching the path SUFFIX at a component
+# boundary excludes the vendored copies too, and is still an exact three-path
+# list: it can only ever exclude a file whose full path ENDS with one of these,
+# never a broad prefix or glob, so a real option loop elsewhere is untouched.
 FILES="$(git -C "$REPO" grep -lF "$FIX_IDIOM" -- '*.sh' 2>/dev/null \
-  | grep -vE '^(scripts/lint-argloop-shift2\.sh|scripts/tests/test_lint_argloop_shift2\.sh|workflows/scripts/tests/test_argloop_trailing_flag\.sh)$' \
+  | grep -vE '(^|/)(scripts/lint-argloop-shift2\.sh|scripts/tests/test_lint_argloop_shift2\.sh|workflows/scripts/tests/test_argloop_trailing_flag\.sh)$' \
   | sort)"
 NFILES="$(printf '%s\n' "$FILES" | grep -c . || true)"
 if [ "$NFILES" -ge 20 ]; then

@@ -270,11 +270,32 @@ assert_has "$out" "exempt nightly.yml — RED (7 consecutive failed schedule run
 assert_not_has "$out" "RED nightly.yml —" "an exempt workflow raises no RED alarm line"
 
 # ═══ Case 13: the REAL tree classifies as expected ═════════════════════════
+# VENDORABLE BY CONSTRUCTION (temperloop#1734). This suite ships to consuming
+# repos through a compat symlink, and the detector resolves its repo root from
+# its own location — so "the real tree" is THAT repo's .github/workflows, not
+# this one's. A repo with zero asynchronous workflows is a HEALTHY state (the
+# detector says so in as many words), so asserting temperloop's own filenames
+# unconditionally failed every adopter on a correct reading: foundation's tree
+# holds only ci.yml, and the two assert_has calls below used to go red there.
+#
+# The split: the INVARIANTS hold in every tree and stay unconditional — exit 0,
+# nothing UNREGISTERED, no STALE-ROW, and no synchronous workflow reported. The
+# per-file checks are gated on the file actually being present, so in this repo
+# they run exactly as before and in a vendored tree they report the absence
+# rather than fabricating a failure. Gating on presence is deliberately NOT a
+# blanket skip: if nightly-macos.yml exists and stops classifying, this still
+# goes red here.
 echo "real repo tree:"
 out="$(PATH="$TMP/bin:$PATH" ASYNC_WORKFLOW_RUNS_DIR="$TMP/no-runs" bash "$SCRIPT" --format report)"; rc=$?
 assert_rc0 "$rc" "exit 0 against the real .github/workflows tree"
-assert_has "$out" "nightly-macos.yml" "nightly-macos.yml classifies as asynchronous"
-assert_has "$out" "install-tier2.yml" "install-tier2.yml classifies as asynchronous"
+REAL_WF_DIR="$REPO/.github/workflows"
+for wf in nightly-macos.yml install-tier2.yml; do
+  if [ -f "$REAL_WF_DIR/$wf" ]; then
+    assert_has "$out" "$wf" "$wf classifies as asynchronous"
+  else
+    ok "$wf is absent from this tree — nothing to classify (vendored-tree case)"
+  fi
+done
 assert_not_has "$out" "ci.yml" "ci.yml is synchronous and out of scope"
 assert_not_has "$out" "docs-pages.yml" "docs-pages.yml is synchronous and out of scope"
 assert_not_has "$out" "UNREGISTERED" "every asynchronous workflow in this repo is registered"
