@@ -1300,6 +1300,72 @@ count
 rm -f "$CANARY"
 ok "L2 the canary is functional — L1 is a measurement, not a tautology"
 
+# ═══════════════════════════════════════════════════════════════════════════
+# SECTION R — is the order-effect decomposition outlier-driven? (#1741)
+# ═══════════════════════════════════════════════════════════════════════════
+# arm_effect and order_effect are two MEANS over a heavy-tailed distribution.
+# The #1656 A/A run reported arm 6,596 against order 330,525 — a reassuring 50x,
+# read as "position is doing the work, not the model". Drop the largest-|delta|
+# record from each order group and it INVERTS to arm 131,144 / order 47,696. The
+# tidy near-zero arm effect was coincidental cancellation, and the report said
+# nothing about it.
+count
+# Built from the REAL #1656 cost deltas and their real 9/9 order split, so this
+# reproduces the actual inversion rather than a constructed one.
+ROB="$WORK/robustness-aa"; mkrepo "$ROB"
+ROB_B="$ROB/.temperloop/model-comparison/baseline.jsonl"
+ROB_C="$ROB/.temperloop/model-comparison/candidate.jsonl"
+: >"$ROB_B"; : >"$ROB_C"
+rob_i=0
+# pr:baseline_input:candidate_input:first_arm — inputs chosen so the weighted
+# delta reproduces the run's own shape (two extremes, one per order group).
+for t in 1547:4099298:516347:c 1548:1789537:1095888:c 1340:1109796:1069486:c \
+         1569:548630:515558:c 1583:587397:1189537:c 1581:571703:919720:c \
+         1638:1346052:1637986:c 1507:665606:780916:c 1532:1023386:1100604:c \
+         1550:230436:488166:b 1341:522660:730684:b 1332:1083035:1123187:b \
+         1573:1277715:1323200:b 1336:1654904:1891444:b 1489:742268:934316:b \
+         1637:332171:1935550:b 1519:610160:971472:b 1359:1257386:1346811:b; do
+  rob_i=$(( rob_i + 1 ))
+  pr="${t%%:*}"; rest="${t#*:}"; bi="${rest%%:*}"; rest="${rest#*:}"
+  ci="${rest%%:*}"; first="${rest#*:}"
+  if [ "$first" = "b" ]; then bpos=1; cpos=2; else bpos=2; cpos=1; fi
+  record "$pr" claude-opus-5 "$bi" 0 pass true JUDGED 60 2026-08-20 scored \
+    | jq -c '.candidate.tokens = {input:.candidate.tokens.input, output:0, cache_read:0, cache_creation:0}' \
+    | mk_stamp "$rob_i" "$bpos" baseline counterbalanced >>"$ROB_B"
+  record "$pr" claude-opus-5 "$ci" 0 pass true JUDGED 60 2026-08-20 scored \
+    | jq -c '.candidate.tokens = {input:.candidate.tokens.input, output:0, cache_read:0, cache_creation:0}' \
+    | mk_stamp "$rob_i" "$cpos" candidate counterbalanced >>"$ROB_C"
+done
+lake "$ROB" pipeline-drive-safe retro-judge
+run "$ROB"; cp "$RUN_OUT" "$WORK/rob.json"
+[ "$(jqf "$WORK/rob.json" '.execution_order | has("robustness")')" = "true" ] \
+  || fail "R1: the execution_order block publishes no robustness disclosure"
+r_flips="$(jqf "$WORK/rob.json" '.execution_order.robustness.verdict_flips')"
+[ "$r_flips" = "true" ] \
+  || fail "R1: this fixture reproduces the #1656 inversion and must report verdict_flips true, got $r_flips (headline arm $(jqf "$WORK/rob.json" '.execution_order.arm_effect') / order $(jqf "$WORK/rob.json" '.execution_order.order_effect'); trimmed arm $(jqf "$WORK/rob.json" '.execution_order.robustness.arm_effect_trimmed'))"
+jq -e '.execution_order.robustness.statement | test("DOES NOT SURVIVE ITS OWN OUTLIERS")' "$WORK/rob.json" >/dev/null 2>&1 \
+  || fail "R1: a flipped verdict must SAY the finding does not survive its outliers"
+ok "R1 a decomposition carried by two records reports verdict_flips and says the headline ratio is a corpus artifact"
+
+count
+# The disclosure must WITHHOLD NOTHING — it is not a second gate. The run's
+# clean/not-clean verdict, and any winner, are decided exactly as before.
+r_clean_before="$(jqf "$WORK/rob.json" '.comparison.comparison_is_clean')"
+[ -n "$r_clean_before" ] \
+  || fail "R2: the cleanliness verdict disappeared"
+[ "$(jqf "$WORK/rob.json" '.execution_order.robustness.dropped_per_group')" = "1" ] \
+  || fail "R2: the disclosure must state how many records it dropped per group"
+ok "R2 the robustness block is a disclosure, not a gate — it drops 1 per group, states it, and changes no verdict"
+
+count
+# And a decomposition that SURVIVES its outliers says so, or the field would be
+# a permanent alarm nobody reads.
+[ "$(jqf "$ORD_CLEAN_OUT" '.execution_order.robustness.verdict_flips')" = "false" ] \
+  || fail "R3: the clean counterbalanced fixture must NOT report a flip, got $(jqf "$ORD_CLEAN_OUT" '.execution_order.robustness.verdict_flips')"
+jq -e '.execution_order.robustness.statement | test("SURVIVES its own outliers")' "$ORD_CLEAN_OUT" >/dev/null 2>&1 \
+  || fail "R3: a surviving decomposition must say so positively"
+ok "R3 a decomposition that survives its own outliers says so — the field is a finding, not a permanent alarm"
+
 echo
 echo "test_comparison_report.sh: $pass/$total checks passed"
 [ "$pass" -eq "$total" ] || exit 1
