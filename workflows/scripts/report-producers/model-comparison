@@ -530,9 +530,14 @@ jq -n \
   # Relative deltas are expressed against the BASELINE mean of the SAME
   # basis — never a delta from one basis over a denominator from the other,
   # which is the subtler version of the mistake this block exists to catch.
-  | (if $qb_paired != null and $qb_paired != 0
+  # BOTH means must be non-null, not just the denominator. An arm can judge
+  # nothing at all — a batch whose candidate legs are every one an
+  # integration-error record produces exactly that — and guarding only the
+  # baseline mean leaves `null - 70` to abort the whole derivation, taking the
+  # report down with it rather than reporting one axis as unavailable.
+  | (if $qb_paired != null and $qc_paired != null and $qb_paired != 0
      then ((($qc_paired - $qb_paired) / $qb_paired) * 100) else null end) as $qrel_paired
-  | (if $qb_unpaired != null and $qb_unpaired != 0
+  | (if $qb_unpaired != null and $qc_unpaired != null and $qb_unpaired != 0
      then ((($qc_unpaired - $qb_unpaired) / $qb_unpaired) * 100) else null end) as $qrel_unpaired
   | (if $qrel_paired != null and $qrel_unpaired != null
      then (($qrel_paired - $qrel_unpaired) | fabs) else null end) as $qbasis_gap
@@ -639,7 +644,8 @@ jq -n \
           n: ($qrefs | length),
           baseline_mean: ($qb_paired | round1),
           candidate_mean: ($qc_paired | round1),
-          absolute_delta: (if $qb_paired == null then null else (($qc_paired - $qb_paired) | round1) end),
+          absolute_delta: (if $qb_paired == null or $qc_paired == null then null
+                           else (($qc_paired - $qb_paired) | round1) end),
           relative_delta_pct: ($qrel_paired | round1)
         },
         unpaired: {
