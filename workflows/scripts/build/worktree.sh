@@ -40,6 +40,15 @@
 # CREATED line as `guard`/`guard_detail`; anything but ARMED also prints a loud
 # stderr banner. The probe never blocks a create.
 #
+# Concurrency (temperloop#1171): `git worktree add` WRITES `.git/config`, and
+# git takes that lock without waiting or retrying — so two concurrent creates on
+# one repo (a /build level, a /sweep chunk at width > 1) collided outright, and
+# the loser was left with an orphan `build/<slug>` branch. Every config/ref-
+# mutating region of create/remove/prune now runs under one per-repo directory
+# lock, and a failed `worktree add` is rolled back, so an ERROR outcome leaves
+# no durable state and a naive retry is a clean create. See § Repo-wide mutation
+# lock and § Atomic create failure below.
+#
 # Output contract — CLOSED outcome set, one structured JSON line per outcome,
 # no prose (the orchestrator branches on `.outcome`, never parses prose):
 #   create →  {"outcome":"CREATED","path":…,"branch":…,"base":…,
@@ -158,6 +167,115 @@ exclude_marker() {
       || echo "$f" >> "$common/info/exclude"
   done
 }
+
+# --- Repo-wide mutation lock (temperloop#1171) -------------------------------
+#
+# THE RACE, observed live. `git worktree add -b <branch>` WRITES `.git/config`
+# (it records the new branch's upstream), and git takes that write lock the
+# same way it takes every config lock: `.git/config.lock` created O_EXCL, with
+# NO retry and NO wait. Two concurrent `create`s on one repo — the ordinary
+# shape of a /build level or a /sweep chunk at SWEEP_FANOUT_WIDTH>1 — therefore
+# collide outright:
+#
+#   Preparing worktree (new branch 'build/<slug>')
+#   error: could not lock config file .git/config: File exists
+#   error: unable to write upstream branch configuration
+#
+# and the loser's `worktree add` exits non-zero having ALREADY created the
+# branch (see § Atomic create failure below). git will not serialize this for
+# us, so worktree.sh does: every config/ref-mutating region of create, remove
+# and prune runs under one per-repo lock, so the losers WAIT instead of failing.
+#
+# WHY A DIRECTORY LOCK, not flock. `mkdir` is atomic on every POSIX filesystem
+# and needs no binary; stock macOS ships NO `flock` (the same reason
+# board/deploy-mini.sh and pipeline-tick.sh's degradation path exist), so an
+# flock-based lock would silently no-op on the exact host this defect fires on.
+# A directory also carries the owner's pid as a file inside it, which is what
+# makes stale-lock stealing safe.
+#
+# SCOPE. The lock is keyed on the repo's shared git common dir, so concurrent
+# creates in DIFFERENT repos never block each other, and a worktree's own
+# `git commit` (which touches no shared config) is never serialized. It is held
+# only across the mutating git calls — never across the guard probe, never
+# across a `gh` call.
+#
+# NEVER DEADLOCKS. Re-entrant (a depth counter, so a locked region nested in a
+# locked region is a no-op rather than a self-deadlock); released by an EXIT
+# trap so a `die` mid-region cannot strand it; bounded by a wait budget after
+# which `create` reports a structured ERROR rather than hanging a build; and it
+# steals a lock whose owner pid is provably gone (or which has no pid and has
+# aged out), so a killed worker cannot wedge every later run.
+WT_LOCK_DIR=""
+WT_LOCK_DEPTH=0
+# Wait budget in 0.1s ticks. Sized for the worst in-lock region (a `git fetch`
+# over the network, several deep in a fanout), not for the common case.
+WT_LOCK_WAIT_TICKS="${WORKTREE_LOCK_WAIT_TICKS:-1200}"
+# A lock with no pid file yet (the mkdir/pid-write window) is respected until
+# this age, then treated as debris.
+WT_LOCK_STALE_SECS="${WORKTREE_LOCK_STALE_SECS:-900}"
+
+wt_lock_age() {
+  local now; now="$(date +%s)"
+  echo "$(( now - $(stat -f %m "$WT_LOCK_DIR" 2>/dev/null || stat -c %Y "$WT_LOCK_DIR" 2>/dev/null || echo "$now") ))"
+}
+
+# wt_lock_acquire <repo> — block until this process owns the repo's mutation
+# lock. Returns non-zero only when the wait budget is exhausted.
+wt_lock_acquire() {
+  local repo="$1" common ticks=0 owner
+  if [ "$WT_LOCK_DEPTH" -gt 0 ]; then
+    WT_LOCK_DEPTH=$((WT_LOCK_DEPTH + 1))
+    return 0
+  fi
+  common="$(git -C "$repo" rev-parse --git-common-dir 2>/dev/null)" || return 1
+  case "$common" in /*) ;; *) common="$repo/$common" ;; esac
+  WT_LOCK_DIR="$common/build-worktree.lock.d"
+  while :; do
+    if mkdir "$WT_LOCK_DIR" 2>/dev/null; then
+      echo "$$" > "$WT_LOCK_DIR/pid" 2>/dev/null || true
+      WT_LOCK_DEPTH=1
+      return 0
+    fi
+    owner="$(cat "$WT_LOCK_DIR/pid" 2>/dev/null || true)"
+    if [ -n "$owner" ] && ! kill -0 "$owner" 2>/dev/null; then
+      rm -rf "$WT_LOCK_DIR" 2>/dev/null || true   # owner is gone — debris
+      continue
+    fi
+    if [ -z "$owner" ] && [ "$(wt_lock_age)" -ge "$WT_LOCK_STALE_SECS" ]; then
+      rm -rf "$WT_LOCK_DIR" 2>/dev/null || true   # never claimed — debris
+      continue
+    fi
+    ticks=$((ticks + 1))
+    # Budget exhausted. WT_LOCK_DIR is deliberately left SET (the caller's die
+    # message names it) — safe because release is depth-gated, so a failed
+    # acquire can never remove the lock the winner still holds.
+    if [ "$ticks" -ge "$WT_LOCK_WAIT_TICKS" ]; then
+      return 1
+    fi
+    sleep 0.1
+  done
+}
+
+# Release only what WE own — a finishing process must never free another's lock.
+wt_lock_release() {
+  [ "$WT_LOCK_DEPTH" -gt 0 ] || return 0
+  WT_LOCK_DEPTH=$((WT_LOCK_DEPTH - 1))
+  [ "$WT_LOCK_DEPTH" -eq 0 ] || return 0
+  if [ -n "$WT_LOCK_DIR" ] && [ "$(cat "$WT_LOCK_DIR/pid" 2>/dev/null)" = "$$" ]; then
+    rm -rf "$WT_LOCK_DIR" 2>/dev/null || true
+  fi
+  WT_LOCK_DIR=""
+}
+
+# The strandproofing half: a `die` (or any exit) inside a locked region unwinds
+# the lock, so one failed create can never wedge the next one.
+wt_lock_release_all() {
+  if [ "$WT_LOCK_DEPTH" -gt 0 ]; then
+    WT_LOCK_DEPTH=1
+    wt_lock_release
+  fi
+}
+trap wt_lock_release_all EXIT
 
 # --- Review-agent propagation into the worktree (#1005) ----------------------
 #
@@ -996,6 +1114,35 @@ guard_report() {
   } >&2
 }
 
+# create_rollback <repo> <wt-path> <branch> <base> — undo a FAILED
+# `git worktree add` (#1171), so the ERROR outcome leaves no durable state.
+#
+# `worktree add` is not atomic: on the observed config-lock loss it has already
+# created `build/<slug>` when it fails, leaving an orphan branch that a later
+# run (or an operator) has to `git branch -D` by hand.
+#
+# Conservative by construction, in the same posture as § Never destroy what
+# preservation missed: the branch is deleted ONLY when its tip is still exactly
+# the base we asked for — i.e. it provably carries no commits. Anything else is
+# left standing and reported, because this helper runs microseconds after the
+# branch was minted and a diverged tip would mean something we do not
+# understand happened. Returns non-zero when it could not fully roll back.
+create_rollback() {
+  local repo="$1" wt_path="$2" branch="$3" base="$4" tip base_tip
+  if [ -e "$wt_path" ]; then
+    git -C "$repo" worktree remove --force "$wt_path" 2>/dev/null || rm -rf "$wt_path"
+  fi
+  git -C "$repo" worktree prune 2>/dev/null || true
+  git -C "$repo" show-ref --verify --quiet "refs/heads/$branch" || return 0
+  tip="$(git -C "$repo" rev-parse --verify --quiet "refs/heads/$branch" 2>/dev/null)" || tip=""
+  base_tip="$(git -C "$repo" rev-parse --verify --quiet "$base" 2>/dev/null)" || base_tip=""
+  if [ -z "$tip" ] || [ -z "$base_tip" ] || [ "$tip" != "$base_tip" ]; then
+    return 1
+  fi
+  git -C "$repo" branch -D "$branch" >/dev/null 2>&1 || return 1
+  return 0
+}
+
 # create_core <repo-root> <slug> — everything `create` does EXCEPT emit its
 # outcome line, so `restore` can stand a fresh worktree up on the same
 # deterministic path/branch/base without a second CREATED line on stdout
@@ -1016,6 +1163,15 @@ create_core() {
   CREATE_BRANCH="$branch"
   CREATE_BASE="origin/$default"
 
+  # Everything from here to the CREATED-side bookkeeping below mutates SHARED
+  # repo state — `.git/config` (the branch-delete in clear_path, the upstream
+  # write inside `worktree add`), the ref store, and info/exclude — so it runs
+  # under the repo's mutation lock (§ Repo-wide mutation lock). Concurrent
+  # creates in one /build level now QUEUE here instead of colliding on
+  # `.git/config.lock` (#1171).
+  wt_lock_acquire "$repo" \
+    || die "timed out waiting for the repo mutation lock (another worktree.sh is holding '$WT_LOCK_DIR'); see WORKTREE_LOCK_WAIT_TICKS"
+
   # The path is a pure function of the slug — anything already there is debris
   # from an aborted run; force-remove and re-add.
   clear_path "$repo" "$wt_path" "$branch"
@@ -1028,15 +1184,46 @@ create_core() {
   git -C "$repo" fetch --quiet origin "$default" 2>/dev/null || true
 
   mkdir -p "${repo}.wt"
-  if ! out="$(git -C "$repo" worktree add -b "$branch" "$wt_path" "origin/$default" 2>&1)"; then
-    die "git worktree add failed: $out"
-  fi
+  # § Atomic create failure (#1171). A failed `worktree add` is NOT a no-op: the
+  # observed config-lock loss creates `build/<slug>` and THEN fails, so a bare
+  # `die` here leaves an orphan branch behind — durable state from an ERROR
+  # outcome, which the closed-outcome contract above does not admit. Roll the
+  # branch (and any half-registered path) back before reporting, so ERROR means
+  # "nothing happened" and a naive retry is a clean create rather than a
+  # `branch already exists`. The lock makes the retry-worthy case rare; a
+  # FOREIGN config writer (an operator's `git config`, another tool) is outside
+  # our lock, so a bounded in-process retry rides along for that case.
+  local attempt=1 rollback_note=""
+  while :; do
+    if out="$(git -C "$repo" worktree add -b "$branch" "$wt_path" "origin/$default" 2>&1)"; then
+      break
+    fi
+    rollback_note=""
+    create_rollback "$repo" "$wt_path" "$branch" "origin/$default" \
+      || rollback_note=" (rollback incomplete: branch '$branch' left in place — it carries commits)"
+    case "$out" in
+      *"could not lock config file"*)
+        if [ "$attempt" -lt "${WORKTREE_ADD_ATTEMPTS:-3}" ]; then
+          attempt=$((attempt + 1))
+          sleep 0.2
+          continue
+        fi
+        ;;
+    esac
+    wt_lock_release
+    die "git worktree add failed: $out$rollback_note"
+  done
 
   # Drop the guard marker — this is what arms the PreToolUse write-jail for
   # any worker running in this worktree (per-worktree, concurrency-safe).
   jq -cn --arg slug "$slug" --arg branch "$branch" --arg created "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
     '{slug:$slug, branch:$branch, created:$created}' > "$wt_path/.build-guard"
   exclude_marker "$repo"
+
+  # End of the shared-state region. Everything below touches only THIS
+  # worktree, so it must not hold the lock — the guard probe alone can burn the
+  # better part of a second, and serializing it across a fanout buys nothing.
+  wt_lock_release
 
   # Make the review lenses resolvable to the worker that will run here (#1005).
   # `|| true` for the same reason guard_probe carries one: a future edit that
@@ -1213,6 +1400,11 @@ cmd_remove() {
     exit 1
   fi
 
+  # Same shared-state region as create's (#1171): `git branch -D` rewrites
+  # `.git/config`, so a remove concurrent with a create would hit the identical
+  # `could not lock config file` loss. A lock only one side takes is not a lock.
+  wt_lock_acquire "$repo" \
+    || die "timed out waiting for the repo mutation lock (another worktree.sh is holding '$WT_LOCK_DIR'); see WORKTREE_LOCK_WAIT_TICKS"
   if [ -e "$wt_path" ]; then
     existed=1
     rm -f "$wt_path/.build-guard"
@@ -1226,6 +1418,7 @@ cmd_remove() {
       die "git branch -D $branch failed: $out"
     fi
   fi
+  wt_lock_release
 
   local oc="NOT_FOUND"
   if [ "$existed" -eq 1 ]; then oc="REMOVED"; fi
@@ -1489,6 +1682,11 @@ prune_one() {
     return 0
   fi
 
+  # The destroying block only — never the gh-backed merged-detection above it
+  # (#1171: hold the repo mutation lock across the config-writing branch delete,
+  # not across a network call).
+  wt_lock_acquire "$repo" \
+    || die "timed out waiting for the repo mutation lock (another worktree.sh is holding '$WT_LOCK_DIR'); see WORKTREE_LOCK_WAIT_TICKS"
   rm -f "$wt_path/.build-guard"
   git -C "$repo" worktree remove --force "$wt_path" 2>/dev/null || rm -rf "$wt_path"
   git -C "$repo" worktree prune 2>/dev/null || true
@@ -1497,6 +1695,7 @@ prune_one() {
       git -C "$repo" branch -D "$branch" >/dev/null 2>&1 || true
       ;;
   esac
+  wt_lock_release
   jq -cn --arg path "$wt_path" --arg branch "$branch" '{outcome:"PRUNED", path:$path, branch:$branch}'
 }
 
