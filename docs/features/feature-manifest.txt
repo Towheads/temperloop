@@ -399,6 +399,10 @@ quality-gates .github/workflows/ci.yml
 # on macos-latest against main. Same feature, second cadence — not its own
 # slug.
 quality-gates .github/workflows/nightly-macos.yml
+quality-gates workflows/scripts/dev/runner-characterization.sh
+quality-gates workflows/scripts/dev/macos-gate-timing-report.sh
+quality-gates docs/validation/macos-ci-gate-timing.md
+quality-gates docs/validation/data/macos-ci-gate-timing/*
 quality-gates scripts/quality-gates.sh
 quality-gates workflows/scripts/lib/checkout-freshness.sh
 quality-gates scripts/tests/test_quality_gates_freshness.sh

@@ -452,8 +452,16 @@ default recipients. The same workflow also runs a second, non-gating
 already uses, with `QUALITY_GATES_STEP_SUMMARY=1` set on both jobs
 (temperloop#968) — purely so a night's macOS and ubuntu per-gate breakdowns
 land in the same run's summary page for direct comparison; it produces no
-`checks (...)`-shaped context and is not required by branch protection. A
-contributor's local pre-merge check runs the identical invocation. The
+`checks (...)`-shaped context and is not required by branch protection. Both
+jobs additionally run a `Runner characterization` step
+(`workflows/scripts/dev/runner-characterization.sh`) recording what hardware
+each leg actually got — raw core count beside the clamped pool width, plus
+process-spawn and filesystem throughput — which, like the timing table,
+asserts nothing and can never fail the run. What five nights of those two legs
+showed is written up, with the recorded per-gate datasets and a
+`make macos-gate-timing-report` command that recomputes every table in it,
+at [`docs/validation/macos-ci-gate-timing.md`](../validation/macos-ci-gate-timing.md).
+A contributor's local pre-merge check runs the identical invocation. The
 automated build pipeline's own parent-side
 acceptance step, before it will consider a plan item's changes ready to
 merge, also shells out to this same script rather than re-implementing any

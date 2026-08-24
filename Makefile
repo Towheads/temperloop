@@ -24,7 +24,7 @@ TESTBED_SRC := $(FOUNDATION)/workflows/scripts/testbed
 	test-kernel-manifest test-kernel-denylist test-kernel-gitleaks test-kernel-prerename test-kernel-terminology test-pr-leak-guard test-producer-egress docs \
 	test-docs-generator test-conventions-probe test-demo test-proposal-pr guard-install-worktree test-cli-subcommands test-testbed-source \
 	test-testbed-command test-promote-push test-testbed-equivalence test-candidate-session \
-	validate-clean-host-ks-search
+	validate-clean-host-ks-search macos-gate-timing-report
 
 help:
 	@echo "Targets:"
@@ -71,6 +71,9 @@ help:
 	@echo ""
 	@echo "Opt-in, NEVER run by a gate or by CI (needs Docker + network):"
 	@echo "  validate-clean-host-ks-search  Stranger first-run ks_search validation in a clean Linux container"
+	@echo ""
+	@echo "Opt-in reports, NEVER run by a gate or by CI (read committed data only):"
+	@echo "  macos-gate-timing-report  Recompute docs/validation/macos-ci-gate-timing.md's tables"
 
 # Canonical-checkout guard (foundation #509): refuses to run from a linked git
 # worktree unless FORCE_REHOME=1. Not wired into any target below today (no
@@ -385,3 +388,12 @@ test-stranger-config:
 validate-clean-host-ks-search:
 	@echo "==> Running the clean-host ks_search validation (Docker + network required)..."
 	@bash workflows/scripts/dev/validate-clean-host-ks-search.sh
+
+# OPT-IN REPORT, deliberately NOT a gate (temperloop#968). It recomputes every
+# table in docs/validation/macos-ci-gate-timing.md from the per-gate datasets
+# committed beside it, so that document's numbers are reproducible rather than
+# taken on trust. Zero network, zero `gh`, deterministic — it is not in
+# KERNEL_GATES because it re-derives a POINT-IN-TIME measurement, and a frozen
+# measurement re-checked on every PR is gate cost with no signal.
+macos-gate-timing-report:
+	@bash workflows/scripts/dev/macos-gate-timing-report.sh

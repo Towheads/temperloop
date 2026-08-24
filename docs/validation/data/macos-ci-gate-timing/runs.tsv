@@ -1,0 +1,27 @@
+# runs.tsv — run-level facts for the five nightly-macos.yml runs recorded in
+# docs/validation/macos-ci-gate-timing.md (temperloop#968, measurement phase).
+#
+# One row per (night, runner). Every column is a MEASURED value, not derived:
+#   queue_secs      GitHub REST: job.started_at - run.run_started_at (runner
+#                   allocation wait; NOT counted in the job's reported duration)
+#   checkout_secs   the actions/checkout@v6 step's own wall clock
+#   gate_wall_secs  the `Run the full quality-gate suite ...` step's wall clock
+#   workers         gate-pool width the run auto-resolved to (= usable cores),
+#                   read off quality-gates.sh's own TIMING line
+#   gate_cpu_secs   summed per-gate seconds = a serial run of the same set,
+#                   also off the TIMING line (equals the sum of the per-gate
+#                   .tsv beside this file, exactly)
+#   gate_count      gates in the run set that night (the suite grew 153 -> 180
+#                   between 2026-08-13 and 2026-08-22)
+#
+# date	runner	run_id	job_id	queue_secs	checkout_secs	gate_wall_secs	workers	gate_cpu_secs	gate_count
+2026-08-12	ubuntu	31587535173	94084744764	3	1	248	4	957	153
+2026-08-12	macos	31587535173	94084744776	3	3	475	3	1409	153
+2026-08-13	ubuntu	31691297417	94419001060	3	2	240	4	931	153
+2026-08-13	macos	31691297417	94419001138	304	3	474	3	1391	153
+2026-08-22	ubuntu	32565746329	97014009335	4	1	383	4	1514	179
+2026-08-22	macos	32565746329	97014009231	2	3	692	3	2059	179
+2026-08-23	ubuntu	32631868143	97175772172	3	2	377	4	1458	180
+2026-08-23	macos	32631868143	97175772147	3	3	751	3	2224	180
+2026-08-24	ubuntu	32715036135	97394348073	3	2	376	4	1461	180
+2026-08-24	macos	32715036135	97394348295	3	3	837	3	2497	180

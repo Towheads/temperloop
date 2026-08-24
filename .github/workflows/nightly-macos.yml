@@ -115,6 +115,24 @@ jobs:
       # per-gate wall-clock table to $GITHUB_STEP_SUMMARY, in addition to the
       # pass/fail verdict below — see scripts/quality-gates.sh's own ENV VAR
       # interface note. Off everywhere else, including ci.yml.
+
+      # RUNNER CHARACTERIZATION (temperloop#968). The per-gate table localises
+      # the delta to named gates but cannot answer two things the
+      # reintroduction decision depends on: the runner's RAW core count (the
+      # gate pool's `auto` width is CLAMPED at 4, so "4 workers vs 3" is
+      # consistent with 4-vs-3 cores AND with 8-clamped-to-4 vs 3 — different
+      # problems, different fixes), and WHICH primitive is slow (compiled-
+      # binary gates measured at parity or FASTER on macOS while bash
+      # harnesses ran 1.5x-4x slower — a hypothesis until it is probed). This
+      # step prints both, on BOTH legs, from the SAME script, so the two are
+      # comparable by construction. It asserts nothing and always exits 0, so
+      # it can never redden the nightly; `continue-on-error` is belt as well
+      # as braces. Bounded cost: a fixed measurement WINDOW (~10s), not a
+      # fixed amount of work, so it cannot grow on the slower host.
+      - name: Runner characterization
+        continue-on-error: true
+        run: bash workflows/scripts/dev/runner-characterization.sh
+
       - name: Run the full quality-gate suite on macOS
         id: gates
         env:
@@ -167,6 +185,16 @@ jobs:
       # provisions the pinned shellcheck (temperloop#567) exactly as ci.yml
       # does, so this leg's gate times are not skewed by a different
       # shellcheck provisioning path than the merge gate pays.
+
+      # Runner characterization — the SAME script the macOS job runs, for the
+      # same reason and with the same never-fail contract. Running one script
+      # on both legs is the point: a hand-inlined copy per job would be free
+      # to drift, and two probes that drifted would not be comparable, which
+      # is the only property this step has.
+      - name: Runner characterization
+        continue-on-error: true
+        run: bash workflows/scripts/dev/runner-characterization.sh
+
       - name: Run the full quality-gate suite on ubuntu (timing comparison only)
         id: gates
         env:
