@@ -5297,6 +5297,135 @@ console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
 "
 
 # ============================================================================
+# TEST (K1705): a Makefile-only diff routes to a reviewer through THIS SAME
+#   resolution path — determineReviewers() reading the LIVE tracked
+#   reviewer-routing.tsv, not a fixture restatement of it. Makefile has no
+#   extension and no directory prefix, so before the tsv gained its
+#   `**/Makefile` basename row it matched nothing at all and every one of its
+#   41 changes in 90 days was pushed with no routed reviewer.
+#   Deliberately reads the real tsv: this case is the guard that the ROW is
+#   present, not merely that the matcher could handle one.
+# ============================================================================
+run_node_case "K1705 routing: a Makefile-only diff routes to shell-reviewer via the LIVE tsv basename row" "
+$PREAMBLE
+const tsv = readFileSync('$REPO_ROOT/workflows/scripts/config/reviewer-routing.tsv', 'utf8');
+
+setMachinery('makefile-item',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/makefile-item' },
+  { outcome: 'REVIEW_DIFF', files: ['Makefile'], tsv },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-mk' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'sha-mk', branch: 'build/makefile-item' },
+  { outcome: 'PR_OPENED', pr_number: 1705 },
+  { outcome: 'CI_GREEN' },
+);
+happyWorker('makefile-item');
+setReview('makefile-item', '## Summary\\nclean\\n\\n## Findings\\n(none)\\n');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'makefile-item', branch: 'build/makefile-item', title: 'Touch the Makefile', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+let reason = null;
+if ((result.parked ?? []).length !== 1) reason = 'expected 1 parked: ' + JSON.stringify(result);
+const reviewCalls = callLog.filter(c => isReviewCall(c.opts));
+if (!reason && reviewCalls.length !== 1)
+  reason = 'a Makefile-only diff must route to exactly one reviewer, got: ' + JSON.stringify(reviewCalls.map(c => c.opts.agentType));
+if (!reason && reviewCalls[0].opts.agentType !== 'shell-reviewer')
+  reason = 'expected shell-reviewer, got: ' + JSON.stringify(reviewCalls[0].opts.agentType);
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+# DISCRIMINATION for the case above: strip the one basename row from the very
+# same tsv text and the very same diff must route to NOBODY — proving the ROW
+# is what routes it (and that this suite would go red if the row were dropped),
+# not some incidental suffix match elsewhere in the table.
+run_node_case "K1705 discrimination: with the basename row removed, the identical Makefile diff routes to no reviewer at all" "
+$PREAMBLE
+const live = readFileSync('$REPO_ROOT/workflows/scripts/config/reviewer-routing.tsv', 'utf8');
+const stripped = live.split('\\n').filter(l => l.indexOf('**/Makefile') !== 0).join('\\n');
+if (stripped === live) { console.log(JSON.stringify({ ok: false, reason: 'setup: no **/Makefile row found to strip — this case would be vacuous' })); }
+else {
+setMachinery('makefile-item',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/makefile-item' },
+  { outcome: 'REVIEW_DIFF', files: ['Makefile'], tsv: stripped },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-mk' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'sha-mk', branch: 'build/makefile-item' },
+  { outcome: 'PR_OPENED', pr_number: 1705 },
+  { outcome: 'CI_GREEN' },
+);
+happyWorker('makefile-item');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'makefile-item', branch: 'build/makefile-item', title: 'Touch the Makefile', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+await mod.default();
+const reviewCalls = callLog.filter(c => isReviewCall(c.opts));
+const reason = reviewCalls.length === 0 ? null
+  : 'without the basename row nothing should route, got: ' + JSON.stringify(reviewCalls.map(c => c.opts.agentType));
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+}
+"
+
+# The basename key must match a BASENAME, never a bare suffix: an
+# endsWith('Makefile') shortcut would also claim NotAMakefile and route an
+# unrelated file to a reviewer chosen for this one. A nested Makefile at any
+# depth DOES route.
+run_node_case "K1705 precision: the basename key claims sub/dir/Makefile but never tools/NotAMakefile" "
+$PREAMBLE
+const tsv = readFileSync('$REPO_ROOT/workflows/scripts/config/reviewer-routing.tsv', 'utf8');
+
+setMachinery('nested-item',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/nested-item' },
+  { outcome: 'REVIEW_DIFF', files: ['sub/dir/Makefile'], tsv },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-n' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'sha-n', branch: 'build/nested-item' },
+  { outcome: 'PR_OPENED', pr_number: 1706 },
+  { outcome: 'CI_GREEN' },
+);
+happyWorker('nested-item');
+setReview('nested-item', 'clean');
+
+setMachinery('suffix-item',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/suffix-item' },
+  { outcome: 'REVIEW_DIFF', files: ['tools/NotAMakefile'], tsv },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-s' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'sha-s', branch: 'build/suffix-item' },
+  { outcome: 'PR_OPENED', pr_number: 1707 },
+  { outcome: 'CI_GREEN' },
+);
+happyWorker('suffix-item');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'nested-item', branch: 'build/nested-item', title: 'Nested Makefile', kind: 'impl', acceptance: ['c'] },
+  { slug: 'suffix-item', branch: 'build/suffix-item', title: 'Suffix lookalike', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+await mod.default();
+const forSlug = (s) => callLog.filter(c => isReviewCall(c.opts) && String(c.opts.label).indexOf('review:' + s) === 0);
+let reason = null;
+const nested = forSlug('nested-item').map(c => c.opts.agentType);
+const suffix = forSlug('suffix-item').map(c => c.opts.agentType);
+if (nested.length !== 1 || nested[0] !== 'shell-reviewer')
+  reason = 'sub/dir/Makefile must route to shell-reviewer, got: ' + JSON.stringify(nested);
+else if (suffix.length !== 0)
+  reason = 'tools/NotAMakefile must route to NOBODY (basename match, not suffix), got: ' + JSON.stringify(suffix);
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+# ============================================================================
 # TEST (K1450): the CI-fix re-spawn does NOT bypass §3e. A CI-fix commit can
 #   touch anything — including the very command doc whose edit tripped the
 #   original lint failure — and ciPollLoop's CI_FAILED arm plain-pushes it

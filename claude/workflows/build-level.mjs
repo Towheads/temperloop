@@ -2378,6 +2378,17 @@ function parseTsvRows(tsvText) {
     .map(([key, reviewer]) => ({ key: key.trim(), reviewer: reviewer.trim() }));
 }
 function reviewGlobMatch(key, file) {
+  // BASENAME form, e.g. '**/Makefile' (temperloop#1705) — the tsv key shape
+  // for an extensionless, path-independent file neither other form can key
+  // on. Match the basename EXACTLY, never as a bare suffix: leaning on the
+  // extension arm's `file.endsWith('Makefile')` would also claim
+  // `NotAMakefile`, routing an unrelated file to a reviewer chosen for this
+  // one. Checked FIRST — a '**/x' key never ends in '/**', so the two glob
+  // shapes stay disjoint.
+  if (key.startsWith('**/')) {
+    const base = key.slice(3);
+    return file === base || file.endsWith(`/${base}`);
+  }
   if (key.endsWith('/**')) return file.startsWith(key.slice(0, -2));
   return file.endsWith(key); // extension form, e.g. '.py'
 }

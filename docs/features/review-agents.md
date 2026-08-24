@@ -177,7 +177,21 @@ single source of truth for the extension/path-glob → reviewer axis (ADR
 0008, `docs/adr/0008-reviewer-routing-tsv-extension-axis-scope.md`): `.py` →
 python-reviewer, `.sh` → shell-reviewer, `.ts`/`.js`/`.mjs` → typescript-reviewer,
 `.go` → go-reviewer, `.rs` → rust-reviewer, `.java` → java-reviewer, `.swift`
-→ swift-reviewer, and `docs/**` → docs-reviewer. `/build`'s 3e pre-push
+→ swift-reviewer, `docs/**` → docs-reviewer, and `**/Makefile` →
+shell-reviewer. That last row uses the **basename** key shape
+(temperloop#1705): a key may be an extension (suffix match), a `dir/**` glob
+(prefix match), or a `**/<basename>` key matching that exact basename at any
+depth — the shape for an extensionless, path-independent file the other two
+structurally cannot key on. `Makefile` is the worked case: the entry point
+for every gate target, 41 changes in 90 days, and matched by no rule at all
+until that row landed. It is not a licence to route every extensionless
+file — add one on the same evidence-backed footing (churn plus blast radius),
+one file at a time, with the `unrouted_paths` figure
+`workflows/scripts/workflow-reviewer-coverage.sh` reports as the evidence:
+it counts the changed paths in a window that no rule matches at all, so the
+next unrouted high-churn file surfaces as a number rather than by someone
+reading this table by hand.
+`/build`'s 3e pre-push
 review step (`claude/commands/build.md`) consults this tsv for the
 extension/glob axis, and the coverage scan below reads the same file —
 never a parallel hardcoded list — so the two can't drift on that axis.

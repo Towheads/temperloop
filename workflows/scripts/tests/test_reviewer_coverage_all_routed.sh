@@ -58,6 +58,9 @@ TSV
 #  4 | claude/commands/build.md           | `## Review notes` / `### workflow-reviewer` block       | workflow-reviewer PASS (override, no tsv row)
 #  5 | svc/other.py, workflows/x2.sh      | emitted tally: python-reviewer, shell-reviewer          | both PASS
 #  6 | lib/mod.rs                         | nothing                                                 | rust-reviewer NO RECORD (routed, zero signal)
+#  7 | Makefile, sub/dir/Makefile,        | nothing                                                 | temperloop#1705 UNROUTED-PATH fixture: unrouted
+#    | tools/NotAMakefile,                |                                                         | under the base tsv; Makefile + sub/dir/Makefile
+#    | infra/deploy.cfg, README.md        |                                                         | route to shell-reviewer under the **/Makefile tsv
 # go-reviewer never appears in any tsv row here and no path routes to it —
 # it is not part of THIS fixture's roster; rust-reviewer instead plays the
 # "routed but zero execution signal" role case 6 exists for.
@@ -70,11 +73,23 @@ def pr($n; $body; $paths): {number:$n, body:$body, files:[$paths[] | {path:.}]};
   pr(3; "Docs + a ts touch.\n\n§3e review — ran: docs-reviewer · skipped — typescript-reviewer available as source; run workflows/scripts/install/project-agents.sh to enable\n"; ["docs/readme.md", "web/app.ts"]),
   pr(4; "Rework build.md wording.\n\n## Review notes\n\n### workflow-reviewer\n\n### [LOW] wording\nConsider naming the axis.\n"; ["claude/commands/build.md"]),
   pr(5; "Two-language change.\n\n§3e review — ran: python-reviewer, shell-reviewer\n"; ["svc/other.py", "workflows/x2.sh"]),
-  pr(6; "Rust helper, no review record.\n"; ["lib/mod.rs"])
+  pr(6; "Rust helper, no review record.\n"; ["lib/mod.rs"]),
+  pr(7; "Build-entrypoint and config churn, no review record.\n";
+     ["Makefile", "sub/dir/Makefile", "tools/NotAMakefile", "infra/deploy.cfg", "README.md"])
 ]' > "$TMP/fix/pr-list.json"
+
+# --- second fixture tsv: the SAME table plus the basename row -----------------
+# The temperloop#1705 before/after pair. Everything else is byte-identical, so
+# any difference between a `run` and a `run_routed` verdict is attributable to
+# this one row and nothing else.
+cp "$TMP/routing.tsv" "$TMP/routing-with-makefile.tsv"
+printf '**/Makefile\tshell-reviewer\tclaude/agents/reviewers/shell-reviewer.md\n' \
+  >> "$TMP/routing-with-makefile.tsv"
 
 run() { env PATH="$TMP/bin:$PATH" WFR_COVERAGE_GH_BIN="$TMP/bin/gh" GH_FIXTURE_DIR="$TMP/fix" \
             WFR_COVERAGE_ROUTING_TSV="$TMP/routing.tsv" bash "$SCRIPT" "$@"; }
+run_routed() { env PATH="$TMP/bin:$PATH" WFR_COVERAGE_GH_BIN="$TMP/bin/gh" GH_FIXTURE_DIR="$TMP/fix" \
+            WFR_COVERAGE_ROUTING_TSV="$TMP/routing-with-makefile.tsv" bash "$SCRIPT" "$@"; }
 jqf() { printf '%s' "$1" | jq -r "$2"; }
 by_reviewer() { jqf "$1" ".by_reviewer[] | select(.reviewer==\"$2\")"; }
 
@@ -183,6 +198,61 @@ pr_green="$(by_reviewer "$j" python-reviewer)"
 [ "$(jqf "$pr_green" '.routed')" = "true" ] && [ "$(jqf "$pr_green" '.documented_pass')" = "2" ] \
   || bad "GREEN case: the real (unmutated) script must still report python-reviewer routed with 2 passes; got $pr_green"
 ok "discrimination: by_reviewer is RED when routed_set is neutered and GREEN with the real derivation restored"
+
+at
+# --- 9. temperloop#1705: the UNROUTED-PATH figure exists and partitions -------
+# A path no rule matches used to contribute to no reviewer row at all, so it
+# was absent from the denominator — neither covered nor uncovered. It is now
+# its own figure. Under the BASE tsv (no basename row) PR7 contributes four
+# unrouted paths (Makefile, sub/dir/Makefile, tools/NotAMakefile,
+# infra/deploy.cfg); README.md is the prose-*.md fallback, counted separately
+# because build.md 3e does route it, and every path in PRs 1-6 is routed.
+[ "$(jqf "$j" '.changed_paths')" = "13" ]           || bad "expected changed_paths=13; got $(jqf "$j" '.changed_paths')"
+[ "$(jqf "$j" '.routed_paths')" = "8" ]             || bad "expected routed_paths=8; got $(jqf "$j" '.routed_paths')"
+[ "$(jqf "$j" '.prose_md_fallback_paths')" = "1" ]  || bad "expected prose_md_fallback_paths=1 (README.md); got $(jqf "$j" '.prose_md_fallback_paths')"
+[ "$(jqf "$j" '.unrouted_paths')" = "4" ]           || bad "expected unrouted_paths=4; got $(jqf "$j" '.unrouted_paths')"
+[ "$(jqf "$j" '(.routed_paths + .prose_md_fallback_paths + .unrouted_paths) == .changed_paths')" = "true" ] \
+  || bad "the three path buckets must partition changed_paths; got $(jqf "$j" '{changed_paths,routed_paths,prose_md_fallback_paths,unrouted_paths}')"
+[ "$(jqf "$j" '[.unrouted_path_examples[] | select(. == "Makefile")] | length')" = "1" ] \
+  || bad "Makefile must be NAMED in unrouted_path_examples, not merely counted; got $(jqf "$j" '.unrouted_path_examples')"
+ok "unrouted changed paths are reported as their own figure, named, and partition changed_paths"
+
+at
+# --- 10. DISCRIMINATION: the figure is non-vacuous (RED before, GREEN after) --
+# The whole point of the figure is that it MOVES when a routing row lands. Run
+# the identical fixture against the identical table plus ONE row
+# (`**/Makefile` -> shell-reviewer) and the two Makefile paths must leave the
+# unrouted bucket for shell-reviewer's — with nothing else shifting.
+jr="$(run_routed --days 28 --json)"
+[ "$(jqf "$jr" '.unrouted_paths')" = "2" ] \
+  || bad "AFTER the **/Makefile row, unrouted_paths must drop 4 -> 2; got $(jqf "$jr" '.unrouted_paths')"
+[ "$(jqf "$jr" '[.unrouted_path_examples[] | select(. == "Makefile" or . == "sub/dir/Makefile")] | length')" = "0" ] \
+  || bad "AFTER the row, no Makefile path may remain unrouted; got $(jqf "$jr" '.unrouted_path_examples')"
+[ "$(jqf "$jr" '.routed_paths')" = "10" ] \
+  || bad "AFTER the row, routed_paths must rise 8 -> 10; got $(jqf "$jr" '.routed_paths')"
+sr_after="$(jqf "$jr" '.by_reviewer[] | select(.reviewer=="shell-reviewer")')"
+[ "$(jqf "$sr_after" '.routed_prs')" = "3" ] \
+  || bad "AFTER the row, the Makefile PR must enter shell-reviewer's denominator (2 -> 3); got $sr_after"
+ok "discrimination: unrouted_paths counts Makefile BEFORE the routing row and excludes it AFTER — the figure is non-vacuous"
+
+at
+# --- 11. the basename key matches a BASENAME, never a bare suffix ------------
+# `**/Makefile` must claim `Makefile` and `sub/dir/Makefile` and NOT
+# `tools/NotAMakefile`. A `endswith("Makefile")` shortcut would route the
+# latter to a reviewer chosen for the former — a wrong route is worse than the
+# missing one this item set out to fix.
+[ "$(jqf "$jr" '[.unrouted_path_examples[] | select(. == "tools/NotAMakefile")] | length')" = "1" ] \
+  || bad "tools/NotAMakefile must STAY unrouted — the basename key must not match a bare suffix; got $(jqf "$jr" '.unrouted_path_examples')"
+ok "the **/Makefile basename key matches by basename at any depth, never as a suffix"
+
+at
+# --- 12. text mode renders the unrouted figure --------------------------------
+out2="$(run --days 28)"
+grep -F "UNROUTED (no rule matches): 4" <<<"$out2" >/dev/null \
+  || bad "text mode: the unrouted-path figure is not rendered; got:\n$out2"
+grep -F "unrouted paths: " <<<"$out2" >/dev/null \
+  || bad "text mode: the unrouted paths are not named; got:\n$out2"
+ok "text-mode report renders the unrouted-path count and names the paths"
 
 if [ "$fails" -eq 0 ]; then
   echo "reviewer-coverage-all-routed tests: ALL PASS"

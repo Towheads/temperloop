@@ -22,6 +22,9 @@
 #      proof's shape).
 #   7. reviewer_coverage_gaps is directly callable after `source`, with no
 #      side effects at source time, and agrees with --list-only output.
+#   8. The `**/<basename>` tsv key shape (temperloop#1705) is counted, by
+#      exact basename at any depth — and a suffix lookalike (NotAMakefile)
+#      is not.
 #
 # No network, no HOME mutation — every case uses a throwaway tmpdir fixture.
 #
@@ -149,6 +152,49 @@ sourced_out="$(bash -c "source '$RAC_SH'; reviewer_coverage_gaps '$FIXTURE1'")"
   || fail "7: sourced reviewer_coverage_gaps disagreed with --list-only output"
 
 pass "7: reviewer_coverage_gaps is directly callable after sourcing, with no side effects at source time"
+
+# ---------------------------------------------------------------------------
+# Test 8 (temperloop#1705): the `**/<basename>` tsv key shape is COUNTED, and
+# counted by exact basename.
+#
+# Before this arm the key fell through to the path-glob branch, which read the
+# whole key as a directory name, found no such directory, and reported 0 — a
+# repo full of Makefiles measured as "no usage", the silent false negative the
+# activation scan exists to avoid. The second half is the precision half:
+# counting with a `*Makefile` suffix match instead would inflate the number
+# with unrelated lookalikes.
+# ---------------------------------------------------------------------------
+BN_TSV="${TMP}/basename-routing.tsv"
+printf '**/Makefile\tshell-reviewer\tclaude/agents/reviewers/shell-reviewer.md\n' >"$BN_TSV"
+
+FIXTURE_BN="${TMP}/fixture-basename"
+mkdir -p "${FIXTURE_BN}/tools"
+echo 'all:' >"${FIXTURE_BN}/Makefile"
+i=1
+while [ "$i" -lt "$min_files" ]; do
+  mkdir -p "${FIXTURE_BN}/nest${i}/deep"
+  echo 'all:' >"${FIXTURE_BN}/nest${i}/deep/Makefile"
+  i=$((i + 1))
+done
+echo 'not one' >"${FIXTURE_BN}/tools/NotAMakefile"
+
+out5="$(REVIEWER_ROUTING_TSV="$BN_TSV" bash "$RAC_SH" --list-only --project-dir "$FIXTURE_BN")"
+grep -qx "shell-reviewer" <<<"$out5" \
+  || fail "8: a **/Makefile key must COUNT the repo's Makefiles at any depth (got: '$out5')"
+
+FIXTURE_BN_NEG="${TMP}/fixture-basename-neg"
+mkdir -p "${FIXTURE_BN_NEG}/tools"
+i=0
+while [ "$i" -le "$min_files" ]; do
+  echo 'not one' >"${FIXTURE_BN_NEG}/tools/NotAMakefile${i}"
+  i=$((i + 1))
+done
+out6="$(REVIEWER_ROUTING_TSV="$BN_TSV" bash "$RAC_SH" --list-only --project-dir "$FIXTURE_BN_NEG")"
+if grep -qx "shell-reviewer" <<<"$out6"; then
+  fail "8: a **/Makefile key must match a BASENAME, not a suffix — NotAMakefile* files must not count (got: '$out6')"
+fi
+
+pass "8: the **/<basename> tsv key shape is counted by exact basename at any depth, never as a suffix"
 
 echo
 echo "All reviewer-activation-coverage tests passed."
