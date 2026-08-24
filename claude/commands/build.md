@@ -297,6 +297,25 @@ Skip when board integration is OFF. Goal: the plan is tracked as one unit by a p
 
 For level *k* in the level list, process every item through 3a–3h, then run Step 4 (batch merge gate) before moving to level *k+1*.
 
+### 3-launch. Print the level's composition BEFORE the level is driven (both paths; temperloop#1310)
+
+`/workflows` is an **opt-in** surface the operator has to go look at, and temperloop#1294's two remaining asks (a collapsed row drawing from the active `phase()` title; running agent labels) are harness-side and unfixable from this repo — so `/build`'s own transcript is the only surface the kernel controls that **pushes** run context. Printing all three level rosters — this one, 4a's disposition roster and 4d's close-out — on every level and both paths is **mandatory**; each is the only record that a given item was ever accounted for at that boundary.
+
+**Do not narrate a roster by hand.** Render it with `plan.sh` and print its stdout verbatim — that script owns totality (one row per level member, terminal and filtered-out items included), the closed stage vocabulary derived from `claude/plan-schema.md`'s seven sentinels, the never-infer arms (`no issue`, the report-only `[?]`), and the header counts, which it **derives from the rows** rather than restating beside them (its own header is the contract). Here, before the `build-level.mjs` invocation on the default path and before the first item's 3a on `--no-workflow`, run:
+
+`"$machineryBinDir/plan.sh" roster "<planFile>" --level <k> --stage launch --owner-repo "$ownerRepo" --plan-link "<planLink>" [--only-slugs "<csv>"] --driver "<Workflow path (build-level.mjs) | conversational (--no-workflow)> · merge gate fires at level end"`
+
+It is **free** and that is load-bearing: it re-reads the plan note this run already parsed, makes no `gh` call, and so has no unavailable arm to degrade into — so **re-print on every invocation of the level, a 3d-esc continuation included** (a continuation narrows `--only-slugs`, which changes what is being driven: re-driven items render `continuation`, still-open siblings `parked`). A non-zero exit (`ROSTER_INCOMPLETE`) means the level could not be fully accounted for — investigate before driving it, never proceed on a short roster. Worked example, a **continuation re-drive** of level 1 (`--only-slugs flaky-ci-detector`), which is why one row reads `continuation` and its siblings do not:
+
+```
+=== Level 1 launch: 4 items (1 active) · Towheads/temperloop · Plans/2026-08-24 temperloop - level report ===
+[ ] level-composition-report  #1310     code   parked → not driven this pass
+[~] flaky-ci-detector         #1201     code   continuation → 3c re-spawn (escalation continuation)
+[v] keystone-changelog-spike  #1311     spike  terminal → not driven this pass
+[m] pr-recap-round-trippable  no issue  code   terminal → not driven this pass
+# driver: Workflow path (build-level.mjs) · merge gate fires at level end
+```
+
 ### Step 3 is dual-path: the Workflow path (default) vs `--no-workflow` (conversational opt-out)
 
 **Branch on the `--no-workflow` flag once, per level, here** — the two paths run the *same* 3a–3h mechanics over the *same* machinery scripts; they differ only in *who drives the loop*. **The default is the Workflow path** (temperloop#998); `--workflow` is still accepted and selects that same default, i.e. it is a no-op:
@@ -714,6 +733,16 @@ Print a single block to the user before the question, e.g.:
 # MANAGED+strict ⇒ the 5 CLEAN PRs (incl. #206's no-CI skip) merge serially via gate.sh managed-merge --strict (update-branch + re-CI each after the first); #205 → 4c
 ```
 
+**Then print the level's disposition roster — TOTAL over the level, not just the merge set (temperloop#1310).** The gate's *selected set* is unchanged (the `[m]` items); what changes is what the operator **reads**. An item that merged as-you-go at 3h.5, captured a `[v]` verdict, was skipped, or is still escalated otherwise leaves the gate block entirely, so the one surface a reader who never opens `/workflows` sees at the level boundary answers for only *some* of the level's items. Right after the `[m]` rows above, run `"$machineryBinDir/plan.sh" roster "<planFile>" --level <k> --stage gate --owner-repo "$ownerRepo"` and print its stdout verbatim — the example below is the same level § 3-launch's example announced, at its next boundary. Each row's marker is the item's own plan sentinel (`claude/plan-schema.md` § Status sentinels) — the roster coins none of its own; `[?]` is the single exception and is **not** a sentinel, report-only for an item whose state could not be read, deliberately outside the schema's seven so nobody mistakes it for a state `plan.sh writeback` can produce.
+
+```
+--- Level 1 disposition: 4 items · 2 in the merge set · 2 outside it ---
+[x] level-composition-report  #1310     merged in PR #1801 — as-you-go merge at 3h.5
+[m] flaky-ci-detector         #1201     in the merge set — mergeability detailed above (PR #1802)
+[v] keystone-changelog-spike  #1311     verdict captured — routed #1330
+[m] pr-recap-round-trippable  no issue  in the merge set — mergeability detailed above (PR #1798)
+```
+
 Mergeability comes from `gh pr view <pr> --json mergeable,mergeStateStatus` per PR — surface **both** fields: `mergeable` (MERGEABLE / CONFLICTING / UNKNOWN) and `mergeStateStatus` (CLEAN / BEHIND / BLOCKED / DIRTY / …). If `mergeable: UNKNOWN`, wait ~3s and re-poll once before classifying it as non-mergeable. Note `mergeStateStatus` can **lag** right after a CI pass — a PR whose parent already *is* `main` HEAD may briefly read `BEHIND`; don't act on a single stale read. **Revalidate liveness too:** include `state,statusCheckRollup` in that read — a `[m]` parked in a prior session whose PR was since closed/merged out-of-band or went red must be surfaced (re-open / skip / re-run), never presented as a stale green tick (cf. Step 1.4).
 
 **An `acceptance_unverified: true` item (stamped by 3h per temperloop#939) likewise renders distinctly — `acceptance ⚠ RECOVERED, unverified`, never a bare acceptance ✓** — since its worker's self-check never ran; the same reasoning below applies to it verbatim. **A `NO_CI` item (the item's `  - no_ci: true` sentinel, stamped by 3h per temperloop#605) renders distinctly in this summary — `CI —  (no CI configured)`, never `CI ✓`** — so a genuinely-untested-by-CI PR is never visually indistinguishable from a confirmed-green one at the one point a human (or a log reviewer) sees the set before it merges. This distinction matters most on the `PIPELINE_OPERATOR_ABSENT=1` headless immediate-merge path (3g, 4b) — nobody reads the transcript live before that merge fires, so the rendered summary line is the *only* record of "this PR's mergeability was never actually vetted by CI" surviving into the level's audit trail.
@@ -895,6 +924,17 @@ After the gate completes, **for each item whose PR is confirmed `state == MERGED
 - Merged: `[m]` (or `[>]`, for an item consented at 3h.5) → `[x] **<title>** ... — merged in #N (YYYY-MM-DD)`
 - Left open: `[m]` stays `[m]`; append `- open PR #N awaiting manual merge`
 - Skipped at gate: `[m]` → `[-]` + append `- skipped at level-k merge gate <date>: <reason>`
+
+**Re-print the roster once the writebacks above are done — the level's close-out (temperloop#1310).** 4a's roster answers *what is going into* the gate; this one answers *what came out*, which is the half "a reader who never opens `/workflows` can tell what happened to each item" actually turns on. Same call with `--stage close`, plus `--driver "<what happens next>"` — the next level and its item count, or that the plan is complete — so the operator can stop reading here and still know where the run stands: `"$machineryBinDir/plan.sh" roster "<planFile>" --level <k> --stage close --owner-repo "$ownerRepo" --driver "level 2 (3 items)"`. It renders from the sentinels this step just wrote, so it runs **after** them and before the board Done-write, issue-touch and worktree-convergence steps below.
+
+```
+--- Level 1 closed: 4 items · 2 merged · 1 left open · 0 skipped · 1 unchanged ---
+[x] level-composition-report  #1310     merged in PR #1801
+[x] flaky-ci-detector         #1201     merged in PR #1802
+[v] keystone-changelog-spike  #1311     verdict captured — routed #1330
+[m] pr-recap-round-trippable  no issue  left open — awaiting manual merge (PR #1798)
+# next: level 2 (3 items)
+```
 
 **This section is item-scoped and is the SOLE post-merge treatment on both paths.** It runs at the level gate for a `[m]` item — the only arm a default Workflow-path run ever reaches — and, on the conversational path, at 3h.5 the moment an as-you-go `[>]` item confirms `MERGED` — same steps, same confirmed-`MERGED` guard, no duplicate. (An as-you-go merge therefore reaches 4d-epic / 4d-pipeline / 4d-archive / 4d-retro at its own merge; those checks are already idempotent and data-driven, so firing them mid-level rather than at the boundary changes nothing about their verdicts.)
 

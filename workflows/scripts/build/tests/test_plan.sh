@@ -832,3 +832,148 @@ rc=0; out="$(bash "$SCRIPT" writeback "$TMP/wb.md" --slug ghost --sentinel '[x]'
 [ "$rc" -ne 0 ] && [ "$(jq -r .outcome <<<"$out")" = "ERROR" ] \
   || fail "writeback on unknown slug not structured ERROR (got: $out)"
 echo "PASS: bad args (missing file, no --sentinel, unknown slug) → structured ERROR + non-zero"
+
+# =============================================================================
+# roster — the /build level-composition report (temperloop#1310)
+#
+# THIS BLOCK IS THE EXECUTION SIGNAL for build.md's mandatory roster print
+# (claude/CLAUDE.kernel.md § Mandatory-step birth rule; registered in
+# workflows/scripts/config/mandatory-step-registry.tsv, run by `make test-build`).
+# It closes BOTH halves of the "declared mandatory, silently never runs" shape:
+#   (a) INVOCATION — the spec must still invoke `plan.sh roster` at all three
+#       sites; delete one and this file goes RED. Prose alone can be dropped by
+#       the executing model with nothing to notice, so the roster is rendered by
+#       code and the spec's call to it is what is asserted.
+#   (b) TOTALITY — the renderer must emit one row per level member and header
+#       counts that EQUAL the rows shown. A change that drops terminal rows, or
+#       restates a count beside the rows instead of deriving it, goes RED here.
+# =============================================================================
+
+cat > "$TMP/roster.md" <<'EOF'
+---
+tags: [plan, project/temperloop]
+date: 2026-08-24
+status: approved
+---
+
+# temperloop - roster fixture
+
+## Items
+
+- [ ] **Fresh item** `slug: alpha` — a fresh one
+  - branch: `feat/alpha`
+  - gh_issue: 1310
+  - acceptance:
+    - it works
+- [~] **Resuming item** `slug: bravo` — carries a PR
+  - branch: `feat/bravo`
+  - gh_issue: 1267
+  - pr: 1798
+  - acceptance:
+    - it works
+- [v] **Spike** `slug: charlie` — verdict captured
+  - branch: `feat/charlie`
+  - kind: spike
+  - gh_issue: 1311
+  - Run-status: routed #1330
+  - acceptance:
+    - it works
+- [-] **Cross-repo** `slug: delta` — skipped
+  - branch: `feat/delta`
+  - repo: Towheads/ssmobile
+  - gh_issue: 77
+  - acceptance:
+    - it works
+- [m] **Merge set** `slug: echo` — parked for the gate
+  - branch: `feat/echo`
+  - pr: 205
+  - acceptance:
+    - it works
+- [?] **Unreadable sentinel** `slug: foxtrot` — outside the seven
+  - branch: `feat/foxtrot`
+  - acceptance:
+    - it works
+EOF
+
+# --- roster totality: one row per level member, on every stage ----------------
+for st in launch gate close; do
+  out="$(bash "$SCRIPT" roster "$TMP/roster.md" --level 0 --stage "$st" \
+      --owner-repo Towheads/temperloop)" \
+    || fail "roster --stage $st exited non-zero (got: $out)"
+  n_rows="$(printf '%s\n' "$out" | grep -c '^\[')"
+  [ "$n_rows" -eq 6 ] || fail "roster --stage $st rendered $n_rows rows for a 6-item level"
+  for sl in alpha bravo charlie delta echo foxtrot; do
+    grep -q " $sl " <<<"$out" || fail "roster --stage $st dropped the '$sl' row (totality)"
+  done
+done
+echo "PASS: roster renders one row per level member on every stage (totality over the level)"
+
+# --- roster arithmetic: the header counts EQUAL the rows shown ----------------
+# The failure this pins is the one a hand-written worked example made in review:
+# a header stating a partition that does not sum to the rows beneath it.
+out="$(bash "$SCRIPT" roster "$TMP/roster.md" --level 0 --stage launch --owner-repo Towheads/temperloop)"
+hdr="$(printf '%s\n' "$out" | head -1)"
+[ "$(sed -E 's/.*launch: ([0-9]+) items.*/\1/' <<<"$hdr")" -eq 6 ] \
+  || fail "launch header item count != 6 rows (got: $hdr)"
+[ "$(sed -E 's/.*\(([0-9]+) active\).*/\1/' <<<"$hdr")" -eq 2 ] \
+  || fail "launch header active count wrong — alpha+bravo are the only drivable rows (got: $hdr)"
+out="$(bash "$SCRIPT" roster "$TMP/roster.md" --level 0 --stage gate --owner-repo Towheads/temperloop)"
+hdr="$(printf '%s\n' "$out" | head -1)"
+tot="$(sed -E 's/.*disposition: ([0-9]+) items.*/\1/' <<<"$hdr")"
+inm="$(sed -E 's/.*· ([0-9]+) in the merge set.*/\1/' <<<"$hdr")"
+outm="$(sed -E 's/.*· ([0-9]+) outside it.*/\1/' <<<"$hdr")"
+[ "$((inm + outm))" -eq "$tot" ] || fail "gate header partition does not sum to the total (got: $hdr)"
+[ "$tot" -eq "$(printf '%s\n' "$out" | grep -c '^\[')" ] \
+  || fail "gate header total != rows shown (got: $hdr)"
+out="$(bash "$SCRIPT" roster "$TMP/roster.md" --level 0 --stage close --owner-repo Towheads/temperloop)"
+hdr="$(printf '%s\n' "$out" | head -1)"
+tot="$(sed -E 's/.*closed: ([0-9]+) items.*/\1/' <<<"$hdr")"
+sum=0
+for f in 'merged' 'left open' 'skipped' 'unchanged'; do
+  sum=$((sum + $(sed -E "s/.*· ([0-9]+) $f.*/\1/" <<<"$hdr")))
+done
+[ "$sum" -eq "$tot" ] || fail "close header partition does not sum to the total (got: $hdr)"
+echo "PASS: roster header counts are DERIVED from the rows and sum to the level total (arithmetic self-consistency)"
+
+# --- roster never infers an unresolvable value -------------------------------
+out="$(bash "$SCRIPT" roster "$TMP/roster.md" --level 0 --stage launch --owner-repo Towheads/temperloop)"
+grep -q '^\[?\] foxtrot .*sentinel is not one of' <<<"$out" \
+  || fail "an out-of-schema sentinel did not render the report-only [?] marker + reason (got: $out)"
+grep -q '^\[m\] echo  *no issue' <<<"$out" \
+  || fail "an item with no gh_issue: did not render the literal 'no issue' (got: $out)"
+grep -q '^\[-\] delta  *Towheads/ssmobile#77' <<<"$out" \
+  || fail "a cross-repo item did not render a fully-qualified issue ref (got: $out)"
+grep -q '^\[~\] bravo .*resume → 3g re-attach PR #1798' <<<"$out" \
+  || fail "a [~] item carrying pr: did not render the resume stage (got: $out)"
+out="$(bash "$SCRIPT" roster "$TMP/roster.md" --level 0 --stage launch --only-slugs bravo)"
+grep -q '^\[~\] bravo .*continuation' <<<"$out" \
+  || fail "--only-slugs did not render its member at the continuation stage (got: $out)"
+grep -q '^\[ \] alpha .*parked' <<<"$out" \
+  || fail "a still-open sibling outside --only-slugs was not reported as parked (got: $out)"
+echo "PASS: roster names every unestablishable value ([?], 'no issue') and never infers one"
+
+# --- roster bad args → structured ERROR + non-zero ----------------------------
+for badargs in "--level 0 --stage bogus" "--level nine --stage launch" "--level 9 --stage launch"; do
+  rc=0
+  # shellcheck disable=SC2086
+  out="$(bash "$SCRIPT" roster "$TMP/roster.md" $badargs 2>/dev/null)" || rc=$?
+  [ "$rc" -ne 0 ] && [ "$(jq -r .outcome <<<"$out")" = "ERROR" ] \
+    || fail "roster $badargs not structured ERROR + non-zero (got: $out)"
+done
+echo "PASS: roster bad args (unknown stage, non-numeric level, empty level) → structured ERROR + non-zero"
+
+# --- THE INVOCATION GUARD: build.md must still CALL the renderer -------------
+# claude/commands/build.md § 3-launch / § 4a / § 4d each invoke plan.sh roster.
+# Deleting an invocation from the spec turns this red — that is the whole point:
+# an AI-executed spec has no runtime tally, so the invocation's PRESENCE is what
+# an execution signal can hold onto.
+BUILD_MD="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)/claude/commands/build.md"
+if [ -f "$BUILD_MD" ]; then
+  for st in launch gate close; do
+    grep -qE "plan\\.sh[\"\`']? roster .*--stage $st" "$BUILD_MD" \
+      || fail "claude/commands/build.md no longer invokes plan.sh roster --stage $st"
+  done
+  echo "PASS: claude/commands/build.md invokes plan.sh roster at all three sites (launch/gate/close)"
+else
+  echo "SKIP: build.md invocation guard (spec not present in this checkout)"
+fi
