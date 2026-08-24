@@ -32,6 +32,7 @@ Every step in this command has a real-time counterpart that runs during the live
 | Disconfirm a root-cause diagnosis before institutionalizing it | `claude/CLAUDE.md` § `Disconfirm a root-cause diagnosis before institutionalizing it` | `Un-disconfirmed diagnoses` |
 | Coverage-walk collaborative engagement | `claude/commands/workshop.md` § `Step 2 — Coverage walk` | `All-accepted-untouched briefs` |
 | Plan-critical artifact availability | `claude/commands/assess.md` § `Artifact-availability audit` | `Undurable plan artifacts` |
+| Response-level grounding citations | `claude/CLAUDE.md` § `Response-level grounding citations` | `Missing grounding citations` |
 
 ## Step 0 — Verify environment and acquire the drain lock
 
@@ -705,26 +706,57 @@ read — skip rather than guess.
 
 ### Missing grounding citations
 
-Backstop for the response-level grounding-citation rule (foundation#1478) — the capture half is a
-knowledge-store-backed authoring rule and so registers in the **overlay extension** table
-(`claude/capture-backstop-registry.overlay.md`), not the kernel table above; this heading is the
-backstop anchor that row points at. A standalone kernel checkout ships the heading and no row,
-which is the normal shape for a Step 3 section with no kernel-side capture rule.
+Backstop half of the **kernel** pair registered in the table at the top of this file — its capture
+half is `claude/CLAUDE.md` § Response-level grounding citations, and this heading is the backstop
+anchor that row points at. Both halves are kernel-resident (a stranger's kernel-only checkout has a
+knowledge store and therefore the same bypass to detect), so the row belongs in that kernel table
+and **not** in `claude/capture-backstop-registry.overlay.md`;
+`workflows/scripts/validate-capture-backstop.sh` fails the build if either half goes missing.
+(Original motivating write-up: foundation#1478; routing settled kernel-side by temperloop#1190.)
 
 **What the rule requires.** When knowledge-store content materially informed an answer, the
-response cites it (`[source: <note path>]`); when a domain query found nothing, the response says
-so explicitly ("no relevant vault content found"). Without response-level citations, **memory
-bypass is undetectable per-response** — a context-dependent answer with no citation is
-indistinguishable from one grounded in retrieved content, which is the "placebo trap": the
-retrieval machinery can silently stop contributing and every answer still *looks* informed.
+response cites it (`[source: <note path>]`); when a store query behind a context-dependent claim
+found nothing, the response says so explicitly ("no relevant knowledge-store content found").
+Without response-level citations, **memory bypass is undetectable per-response** — a
+context-dependent answer with no citation is indistinguishable from one grounded in retrieved
+content, which is the "placebo trap": the retrieval machinery can silently stop contributing and
+every answer still *looks* informed. The capture-half section owns the full statement of the rule;
+this step only detects breaches of it.
 
-**The spot check.** For each stub, find responses that are plainly **context-dependent** — they
-assert a project-specific decision, rationale, path, or convention that could only have come from
-the knowledge store (not from the code in front of the session, and not from general knowledge).
-For each, check whether the response carries a citation, or the explicit negative form. Read the
-stub's own evidence of retrieval where present (an `op=search` / `op=read` in the read log, a
-`ks_search` call — via `vault-search.sh` or a direct `Bash` invocation — in the transcript) — a
-response that demonstrably *followed* a retrieval and cited nothing is the strongest signal.
+**No new capture surface — read only what the drain already reads.** This scan introduces no
+instrumentation of live sessions, no new ledger, no new lexicon tell, and no additional file to
+write: its only output is a row on the friction ledger § Tooling friction already maintains, and
+its whole input is the **one `Sessions/_inbox/` stub the drain has already opened** — that stub's
+Step 1 scan report, its `## Transcript` section (the same file `scan_stub.py` read in Step 1), and
+where the turn-level detail is needed, that stub's own raw `.jsonl` at the frontmatter
+`transcript:` path: the identical Step 1.4 reach § Knowledge-search parity misses above already
+takes. The restriction is on the *source*, not on the depth of the read: never a second stub,
+never the knowledge store, never the knowledge-store read log or any other out-of-band record,
+never the session's repo — nothing outside that stub's own drained material. If the stub cannot
+settle the question, skip (see § Default to silence, and never guess at the end of this section).
+
+**Where the candidates come from — the stub body, not the scan report.** Unlike the tell-driven
+extractors above, this check has **no scan-report candidate list to adjudicate**: per
+`workflows/scripts/drain/scan-report-schema.md`, `report.user_turns[]` is user-turn-only,
+`report.lexicon_matches[]` surfaces assistant turns only for the narrow `worked-around-defect`
+category, and neither lexicon carries a citation/grounding tell — so a missing citation can never
+appear there. Candidate discovery is therefore a **routine** assistant-turn skim of the stub's own
+`## Transcript` section, not the ambiguity-only exception Step 1.4 states for lexicon candidates —
+the same sanctioned shape § Spec-authoring damping above already uses when it directs a direct
+assistant-turn skim for classes the scan report structurally cannot recover. The scan report is
+still read — it supplies the stub's identity and provenance metadata — it simply cannot supply a
+candidate, so never wait for a scan-report entry that will not come.
+
+**The spot check.** Skimming those assistant turns, find responses that are plainly
+**context-dependent** — they assert a project-specific decision, rationale, path, or convention
+that could only have come from the knowledge store (not from the code in front of the session, and
+not from general knowledge). For each, check whether the response carries a citation, or the
+explicit negative form. Weigh the retrieval evidence **the stub itself carries** — a `ks_search`
+call (via `vault-search.sh` or a direct `Bash` invocation) or a knowledge-store MCP read earlier
+in the same transcript; a response that demonstrably *followed* an in-transcript retrieval and
+cited nothing is the strongest signal, and is the case this step exists to flag. Do not go looking
+in the knowledge-store read log for corroboration — that is an out-of-band source this step is
+scoped out of, and its absence is never itself a finding.
 
 **Sample, don't sweep.** Cap this at the **5** most clearly context-dependent responses per stub.
 This is a judgment call with no mechanical oracle, and an exhaustive pass over every response

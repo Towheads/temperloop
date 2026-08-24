@@ -771,7 +771,16 @@ fi
 # PR and typically grow under review) = 2 lines, ceiling. 335 + 10 + 2 =
 # 347. See the sibling TIER-2 comment below for why this item bundles both
 # caps in one config PR instead of four items each fighting their own gate.
-: "${PROSE_BUDGET_TIER1_CAP:=347}"
+#
+# RAISED 2026-08-23 (item grounding-citation-pair, temperloop#1190) from
+# 347 → 351. That item adds the kernel capture half of the response-level
+# grounding-citation pair (§ Response-level grounding citations), whose
+# backstop half already sat in claude/commands/tidy.md with no kernel rule
+# to pair with — a half-present pair the capture/backstop gate would fail
+# once registered. Measured against the live file, not estimated: 4 net-new
+# lines (heading + blank + one paragraph + section separator), 345 → 349.
+# +2 lines of review contingency = 351.
+: "${PROSE_BUDGET_TIER1_CAP:=351}"
 # TIER-2: ONE uniform per-file cap over every tracked claude/**/*.md file
 # (agent charters included) — deliberately a single setting, not a per-file
 # table (a per-file value would just be a relocated exemption mechanism,
