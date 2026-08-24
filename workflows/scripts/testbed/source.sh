@@ -302,7 +302,7 @@ _testbed_provider_mirror_from_repo_preflight_checks() {
 # All-reads check: the source dir is a real git working tree (mirroring
 # needs real history to push). `skipped —` on failure, naming the fix,
 # consistent with this repo's established degradation wording (e.g.
-# bin/subcommands/try.sh, baseline-snapshot.sh).
+# bin/subcommands/init.sh, baseline-snapshot.sh).
 _testbed_provider_mirror_from_repo_check_git_repo() {
   local dir="${_TESTBED_MIRROR_SOURCE_DIR:-.}"
   if ! git -C "$dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then

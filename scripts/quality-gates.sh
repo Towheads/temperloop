@@ -711,8 +711,8 @@ KERNEL_GATES=(
   # background+kill fallback), the 124->137 exit-code normalization across
   # backends, argument/output passthrough, and the foundation #861
   # pipe-leak-fix regression. The ONE guard baseline-snapshot.sh, report.sh,
-  # try.sh, configure.sh, and conventions-probe.sh now source instead of
-  # each re-deriving their own copy. Same direct-`bash` form as the
+  # configure.sh, and conventions-probe.sh now source instead of each
+  # re-deriving their own copy. Same direct-`bash` form as the
   # knowledge_search gates above (kernel Makefile is generator-owned).
   "bash workflows/scripts/lib/tests/test_portable_timeout.sh"
   # Shared CHANGELOG-range parsing lib (temperloop#429, ADR 0002 follow-on):

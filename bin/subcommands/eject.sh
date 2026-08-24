@@ -180,7 +180,7 @@ set -uo pipefail
 
 # ---------------------------------------------------------------------------
 # Locate sibling kernel content — same pinned-physical-path idiom as
-# init.sh / try.sh's own header comments.
+# init.sh / testbed.sh's own header comments.
 # ---------------------------------------------------------------------------
 SUBCOMMAND_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN_DIR="$(cd "$SUBCOMMAND_DIR/.." && pwd)"
@@ -192,8 +192,8 @@ source "$LIB_DIR/common.sh"
 command -v jq >/dev/null 2>&1 || { echo "eject.sh: jq not found on PATH" >&2; exit 1; }
 command -v git >/dev/null 2>&1 || { echo "eject.sh: git not found on PATH" >&2; exit 1; }
 
-# Test-double seam (mirrors init.sh's INIT_GH_BIN / try.sh's TRY_GH_BIN
-# convention) — never overridden in production use.
+# Test-double seam (mirrors init.sh's INIT_GH_BIN / baseline-snapshot.sh's
+# BASELINE_SNAPSHOT_GH_BIN convention) — never overridden in production use.
 : "${EJECT_GH_BIN:=gh}"
 
 usage() {

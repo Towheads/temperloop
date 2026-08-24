@@ -201,7 +201,7 @@ set -uo pipefail
 
 # ---------------------------------------------------------------------------
 # Locate sibling kernel content — same pinned-physical-path idiom as
-# try.sh/init.sh (see try.sh's header for why the paths are pinned).
+# init.sh (see init.sh's header for why the paths are pinned).
 # ---------------------------------------------------------------------------
 SUBCOMMAND_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN_DIR="$(cd "$SUBCOMMAND_DIR/.." && pwd)"
@@ -717,8 +717,9 @@ echo
 # ---------------------------------------------------------------------------
 echo "-- 4. Create the testbed repository --"
 # gh's own credential helper backs the plain-HTTPS mirror push in step 5,
-# regardless of the caller's git_protocol setting — same reasoning (and same
-# best-effort posture) as try.sh's --demo clone.
+# regardless of the caller's git_protocol setting — best-effort: a caller
+# whose git is already credentialed needs no setup, and a failure here
+# surfaces on the push itself.
 gh auth setup-git >/dev/null 2>&1 || true
 if ! create_out="$(gh repo create "$testbed_slug" --private 2>&1)"; then
   echo "testbed.sh: could not create $testbed_slug: $create_out" >&2

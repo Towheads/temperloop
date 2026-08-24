@@ -147,7 +147,7 @@ command -v jq >/dev/null 2>&1 || { echo "report.sh: jq not found on PATH" >&2; e
 
 # ---------------------------------------------------------------------------
 # Locate sibling kernel content -- same pinned-physical-path idiom as
-# baseline-snapshot.sh / try.sh / eject.sh's own header comments.
+# baseline-snapshot.sh / eject.sh's own header comments.
 # ---------------------------------------------------------------------------
 SUBCOMMAND_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN_DIR="$(cd "$SUBCOMMAND_DIR/.." && pwd)"

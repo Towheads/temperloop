@@ -91,9 +91,9 @@ REPO_ROOT="$(cd "$SUBCOMMAND_DIR/../.." && pwd)"
 
 : "${TEMPERLOOP_FEEDBACK_DENYLIST_FILE:=$REPO_ROOT/workflows/scripts/kernel/personal-token-denylist.tsv}"
 # The kernel repo's own upstream feedback target -- its identity, the same
-# category-1 "this repo's own real value" rationale as try.sh's demo-repo
-# default and bootstrap.sh's clone URL (see those files' own markers).
-FEEDBACK_TARGET_REPO="${TEMPERLOOP_FEEDBACK_REPO:-Towheads/temperloop}"  # denylist:allow — the kernel repo's own upstream feedback target (its identity, same category-1 rationale as try.sh's demo-repo default)
+# category-1 "this repo's own real value" rationale as bootstrap.sh's clone
+# URL (see that file's own markers).
+FEEDBACK_TARGET_REPO="${TEMPERLOOP_FEEDBACK_REPO:-Towheads/temperloop}"  # denylist:allow — the kernel repo's own upstream feedback target (its identity, same category-1 rationale as bootstrap.sh's clone URL)
 # TEMPERLOOP_VERSION is the version setting (renamed from FOUNDATION_VERSION
 # in v0.15.0, temperloop#165; the legacy-name fallback was removed in
 # v0.19.0 — the dispatcher now REFUSES on a set legacy name rather than
