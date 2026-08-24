@@ -31,9 +31,23 @@
 #                            fallback was removed in v0.19.0 — an existing
 #                            legacy store is NAMED on stderr, never used;
 #                            see _ks_default_root below.)
-#                            This is the ONLY place the root is configured —
-#                            no second path setting exists anywhere in this file
-#                            or its callers.
+#                            ONE setting NAME, but THREE sources — ks_root
+#                            resolves them in this order, highest wins:
+#                              1. an explicitly set, non-empty
+#                                 KNOWLEDGE_STORE_ROOT, honored verbatim;
+#                              2. else the rung-3 machine conf named by
+#                                 KNOWLEDGE_STORE_MACHINE_CONF, read by
+#                                 _ks_machine_conf_root below (absolute paths
+#                                 only — a missing file, or an empty/relative
+#                                 value, falls through to 3);
+#                              3. else the XDG default above, via
+#                                 _ks_default_root.
+#                            So with KNOWLEDGE_STORE_ROOT unset, a machine
+#                            conf that sets it WINS over the default — rung 2
+#                            was added in temperloop#1328 for exactly the
+#                            hooks/launchd callers that never source
+#                            build.config.sh. See knowledge_store.contract.md
+#                            § Configuration, which states the same order.
 #   KNOWLEDGE_STORE_BACKEND  backend name, kebab-case. Default: plain-files
 #                            (the only backend this file implements). A
 #                            backend is a set of `_ks_backend_<name>_<op>`
