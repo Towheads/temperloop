@@ -31,6 +31,9 @@
 #     retained full-log path, which SURVIVES the worktree teardown
 #   - GATE_FAILED fallback: a suite with no recognizable roll-up degrades to the
 #     old tail behaviour rather than an empty reason
+#   - PHYSICAL ROOT (temperloop#773): with $TMPDIR pointed at a symlink, the
+#     suite still runs with a physically-resolved cwd — the class fix that stops
+#     a path-comparing test inside the tree from false-failing the whole union
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -44,6 +47,12 @@ SUITE_CMD='bash -c '"'"'if [ -f GATE ] && [ -f SCANNED ]; then echo "COLLISION: 
 
 # Per-run override of the suite seam (empty = use SUITE_CMD above).
 SUITE_CMD_OVERRIDE=""
+
+# Per-run override of the temp root the script builds its throwaway worktree
+# under (empty = inherit this process's $TMPDIR). The symlink case below sets
+# it to a directory that IS a symlink, so the trap is reproduced on ANY host
+# rather than only on a macOS one whose $TMPDIR happens to sit under /var.
+TMPDIR_OVERRIDE=""
 
 # --- scratch repo with fixture branches --------------------------------------
 REPO="$(mktemp -d "${TMPDIR:-/tmp}/ctp-repo.XXXXXX")"
@@ -107,7 +116,9 @@ git -C "$REPO" checkout --quiet main
 run() {
   local rc lg
   set +e
-  OUT="$(COMBINED_TREE_SUITE_CMD="${SUITE_CMD_OVERRIDE:-$SUITE_CMD}" bash "$SCRIPT" "$REPO" "$@" --base main 2>&1)"
+  OUT="$(COMBINED_TREE_SUITE_CMD="${SUITE_CMD_OVERRIDE:-$SUITE_CMD}" \
+         TMPDIR="${TMPDIR_OVERRIDE:-${TMPDIR:-/tmp}}" \
+         bash "$SCRIPT" "$REPO" "$@" --base main 2>&1)"
   rc=$?
   set -e
   RC=$rc
@@ -228,6 +239,38 @@ run add-foo no-such-branch
 jq -e '.error | test("not found")' <<<"$OUT" >/dev/null \
   || fail "ERROR names the missing ref (got: $OUT)"
 echo "PASS: a non-existent branch ref → ERROR (exit 1), no half-built worktree"
+
+# --- the suite runs under a PHYSICALLY resolved root (temperloop#773) --------
+# The throwaway worktree is built under $TMPDIR, and on macOS $TMPDIR sits below
+# the /var -> /private/var symlink. If the script hands the suite that LOGICAL
+# spelling, any script inside the tree that resolves a path with `pwd -P`/`cd -P`
+# reports the PHYSICAL one, and a test comparing the two spellings of the same
+# file fails on string inequality alone → a false GATE_FAILED for every multi-PR
+# level (which /build's risk trigger (d) treats as unappealable), so batch merge
+# is blocked and levels merge one PR at a time — the transiently-red `main` of
+# temperloop#1678. The symlink is FABRICATED here rather than assumed of the
+# host's $TMPDIR, so the case reproduces on a Linux runner too.
+LINKROOT="$(mktemp -d "${TMPDIR:-/tmp}/ctp-link.XXXXXX")"
+LINKROOT="$(cd "$LINKROOT" && pwd -P)"   # start from a spelling with no symlink of its own
+mkdir -p "$LINKROOT/real"
+ln -s "$LINKROOT/real" "$LINKROOT/link"
+# Fixture self-check: the two spellings MUST differ, or the case proves nothing.
+[ "$LINKROOT/link" != "$(cd "$LINKROOT/link" && pwd -P)" ] \
+  || fail "fixture is not exercising the defect — \$TMPDIR override is not a symlink"
+
+# A synthetic gate that is red iff its cwd is a logical (symlink-bearing)
+# spelling — i.e. iff the script handed the suite an unresolved root.
+SUITE_CMD_OVERRIDE='bash -c '"'"'l="$(pwd)"; p="$(pwd -P)"; if [ "$l" != "$p" ]; then echo "LOGICAL_ROOT: suite cwd $l != physical $p"; exit 1; fi; exit 0'"'"''
+TMPDIR_OVERRIDE="$LINKROOT/link"
+run add-foo add-bar
+SUITE_CMD_OVERRIDE=""
+TMPDIR_OVERRIDE=""
+rm -rf "$LINKROOT"
+
+[ "$RC" -eq 0 ] || fail "symlinked \$TMPDIR must still yield CLEAN (rc=$RC, out=$OUT)"
+[ "$(jq -r .outcome <<<"$OUT")" = "CLEAN" ] \
+  || fail "the gate suite must run under a physically-resolved root (got: $OUT)"
+echo "PASS: a symlinked \$TMPDIR still runs the suite under a physically-resolved root → CLEAN, not a false GATE_FAILED"
 
 # --- no leaked worktrees: the throwaway tree is always torn down -------------
 leaked="$(git -C "$REPO" worktree list --porcelain | grep -c 'combined-tree' || true)"

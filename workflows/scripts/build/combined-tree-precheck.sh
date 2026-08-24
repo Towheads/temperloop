@@ -201,6 +201,19 @@ cmd_precheck() {
   # (a linked worktree), so every branch ref above is reachable from it.
   local wt
   wt="$(mktemp -d "${TMPDIR:-/tmp}/combined-tree.XXXXXX")" || die "mktemp failed"
+  # Resolve the throwaway root PHYSICALLY, before anything records or uses it
+  # (temperloop#773). On macOS `$TMPDIR` is `/var/folders/…`, and `/var` is a
+  # symlink to `/private/var` — so the mktemp name is a LOGICAL spelling of a
+  # path whose physical spelling differs. The gate suite then runs with that
+  # logical cwd while any script inside it that resolves a path with `pwd -P` /
+  # `cd -P` reports the physical one, and a test comparing the two spellings of
+  # the same file fails on string inequality alone. That is a false GATE_FAILED
+  # for EVERY multi-PR level — which /build's risk trigger (d) treats as
+  # unappealable, so batch merge is blocked and levels merge one PR at a time
+  # (the transiently-red `main` of temperloop#1678). Canonicalizing HERE is the
+  # class fix: the whole suite sees one spelling, so no individual test has to
+  # normalize defensively to survive this worktree.
+  wt="$(abs_dir "$wt")" || die "could not resolve throwaway worktree path"
   # rmdir the empty mktemp dir so `git worktree add` (which wants to create it)
   # does not error on an existing path; keep the name for the add.
   rmdir "$wt" 2>/dev/null || true
