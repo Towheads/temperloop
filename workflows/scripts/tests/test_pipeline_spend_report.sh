@@ -1232,6 +1232,80 @@ check_eq "BAT DISJOINT: ...the ext seat keeps its units" \
 check_eq "BAT DISJOINT: ...and the wf_ seat keeps its own" \
   "62" "$(printf '%s' "$J10N" | jq -r '.by_agent_type.seats["docs-reviewer"].units')"
 
+# ===========================================================================
+# 11. --run IS CWD-INDEPENDENT (temperloop#1393).
+# ===========================================================================
+# The --run value is word-split UNQUOTED (that is how `--run a,b` becomes two
+# ids), which also exposed it to PATHNAME expansion: `--run 'new-*'` used to
+# expand against whatever directory the caller happened to be standing in, so
+# the SAME command answered 20 from a cwd that held a file named `new-007`
+# and 0 from one that did not. The fixture pins the property the fix buys --
+# the same --run value yields the same answer from BOTH cwds -- rather than a
+# one-off before/after run a reviewer has to take on faith.
+R11="$TMP/runglob"
+usage_line req_G1 2026-07-31T10:00:00.000Z claude-opus-5 100 0 0 0 text | mkagent "$R11" wf_old-006 g0000000
+usage_line req_G2 2026-07-31T10:00:00.000Z claude-opus-5 200 0 0 0 text | mkagent "$R11" wf_new-007 g1000000
+
+# The decoy cwd: its CONTENTS satisfy the glob `new-*`, so a pathname-expanded
+# --run value silently becomes the real run id `new-007` when invoked here.
+GLOBPROBE="$TMP/globprobe"; mkdir -p "$GLOBPROBE"; : >"$GLOBPROBE/new-007"
+# The control cwd: nothing here matches, so the value stays literal.
+NOPROBE="$TMP/noglobprobe"; mkdir -p "$NOPROBE"
+
+run_from() { # run_from <cwd> <root> [extra args...] -- same `run`, chosen cwd
+  local cwd="$1"; shift
+  ( cd "$cwd" && run "$@" )
+}
+
+G_PROBE="$(run_from "$GLOBPROBE" "$R11" --run 'new-*' | jq -r '.units_total')"
+G_PLAIN="$(run_from "$NOPROBE"   "$R11" --run 'new-*' | jq -r '.units_total')"
+check_eq "RUN GLOB: a --run value with a metacharacter answers the SAME from a cwd holding a matching file as from one that does not (was 20 vs 0)" \
+  "$G_PLAIN" "$G_PROBE"
+check_eq "RUN GLOB: ...and that shared answer is the literal reading -- no run id is spelled with a '*', so nothing matches" \
+  "0" "$G_PROBE"
+# Non-vacuity: the corpus IS reachable from the decoy cwd, so the 0 above is
+# the filter answering literally, not the fixture failing to see any agent.
+check_eq "RUN GLOB: positive control -- an EXACT --run from that same decoy cwd still selects its run" \
+  "20" "$(run_from "$GLOBPROBE" "$R11" --run new-007 | jq -r '.units_total')"
+
+# The split the unquoted expansion exists for must survive noglob, in BOTH
+# accepted spellings, and from the decoy cwd (where globbing would have bitten).
+check_eq "RUN GLOB: comma-splitting still works in the wf_-prefixed form" \
+  "30" "$(run_from "$GLOBPROBE" "$R11" --run wf_old-006,wf_new-007 | jq -r '.units_total')"
+check_eq "RUN GLOB: ...and in the bare form" \
+  "30" "$(run_from "$GLOBPROBE" "$R11" --run old-006,new-007 | jq -r '.units_total')"
+check_eq "RUN GLOB: ...and a single bare id still selects just its run" \
+  "20" "$(run_from "$GLOBPROBE" "$R11" --run new-007 | jq -r '.units_total')"
+
+# --by-agent-type routes through the SAME run_norm, so it inherits the fix --
+# asserted on its own corpus shape (an ext journal is required for the flag's
+# --root probe to pass at all), not assumed from the default walk above.
+R11B="$TMP/runglob-bat"
+{ usage_line reqGB1 2026-07-31T10:00:00.000Z claude-opus-5 100 0 10 2 text; } \
+  | bat_mkext "$R11B" sess1 gb0001
+bat_sidecar "$R11B/sess1/subagents/agent-gb0001.jsonl" <<'EOF'
+{"agentType":"docs-reviewer"}
+EOF
+{ usage_line reqGB2 2026-07-31T10:01:00.000Z claude-opus-5 200 0 20 4 text; } \
+  | bat_mkwf "$R11B" sess1 wf_bnew-007 gb0002
+bat_sidecar "$R11B/sess1/subagents/workflows/wf_bnew-007/agent-gb0002.jsonl" <<'EOF'
+{"agentType":"docs-reviewer"}
+EOF
+: >"$GLOBPROBE/bnew-007"
+
+bat_run_from() { # bat_run_from <cwd> <root> [extra args...]
+  local cwd="$1"; shift
+  ( cd "$cwd" && bat_run "$@" )
+}
+B_PROBE="$(bat_run_from "$GLOBPROBE" "$R11B" --run 'bnew-*' | jq -r '.by_agent_type.agents')"
+B_PLAIN="$(bat_run_from "$NOPROBE"   "$R11B" --run 'bnew-*' | jq -r '.by_agent_type.agents')"
+check_eq "RUN GLOB: --by-agent-type routes through the same run_norm and inherits the fix (same agent count from both cwds)" \
+  "$B_PLAIN" "$B_PROBE"
+check_eq "RUN GLOB: ...and that shared count is 0, the literal reading" \
+  "0" "$B_PROBE"
+check_eq "RUN GLOB: --by-agent-type non-vacuity -- an EXACT --run from the decoy cwd still attributes its wf_ agent" \
+  "1" "$(bat_run_from "$GLOBPROBE" "$R11B" --run wf_bnew-007 | jq -r '.by_agent_type.agents')"
+
 echo
 if [ "$fail" -gt 0 ]; then
   printf 'FAILED %d/%d\n' "$fail" "$((pass + fail))"; exit 1
