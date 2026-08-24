@@ -24,6 +24,10 @@
 #      `class=unreadable` (never CULL) and still exits 0.
 #   6) Partition the pool exactly: cullable + skipped == candidates, in input
 #      order, with every skipped issue named by number.
+#   7) Distinguish ABSENT-from-the-pool from PRESENT-and-unstamped (case 10),
+#      survive an UNPARSEABLE pool without aborting mid-partition (case 11), and
+#      answer an EMPTY candidate set with a SUMMARY (case 12) — the three ways
+#      the guard could stop being safe without any verdict looking wrong.
 #
 # The board_resolve override sets BOARD_* globals that board.sh accessors read in
 # OTHER functions — shellcheck can't see that cross-function use, so silence
@@ -46,8 +50,20 @@ SCRIPTS_DIR="$(cd "$HERE/.." && pwd)"
 export SUBSET_HOST_LABEL="testhost"
 export CLAUDE_CODE_SESSION_ID="deadbeef-1111-2222-3333-444444444444"
 OWN_STAMP="testhost:deadbeef"
+
+# ONE scratch root for every temp artifact this file creates (the cache dir plus
+# the per-case gh-call logs), reaped by a `trap … EXIT` like every sibling suite
+# (test_claim_marker.sh:38, test_capture.sh, test_boards_conf.sh). The trap — not
+# a tidy-up at the bottom of the file — is the point: `fail()` exits from
+# mid-file, and that early-exit path is exactly the one that leaks. `make
+# test-board` runs on every `checks` invocation, and bare BSD `mktemp` on macOS
+# ignores $TMPDIR (it uses the Darwin per-user temp dir), so a TMPDIR-scoped CI
+# sandbox would not sweep these for us either.
+SCRATCH="$(mktemp -d)"
+cleanup() { rm -rf "$SCRATCH"; }
+trap cleanup EXIT
 # Keep cache busts off the real cache dir.
-BOARD_CACHE_DIR="$(mktemp -d)"; export BOARD_CACHE_DIR
+BOARD_CACHE_DIR="$SCRATCH/board-cache"; mkdir -p "$BOARD_CACHE_DIR"; export BOARD_CACHE_DIR
 
 # shellcheck source=scripts/claim-guard.sh
 # shellcheck disable=SC1091
@@ -56,17 +72,26 @@ source "$SCRIPTS_DIR/claim-guard.sh"
 fail() { printf 'FAIL: %b\n' "$1" >&2; exit 1; }
 
 POOL=""            # per-case: the synthetic pool's items JSON array body
+RAW_ITEMS=""       # per-case: when set, used VERBATIM as BOARD_ITEMS_JSON
 RESOLVE_RC=0       # per-case: 1 makes board_resolve fail (offline/auth case)
 GH_CALLS=""        # per-case: temp file recording every _board_gh call
 
 # Inject the synthetic pool — claim_guard_main calls this instead of the real
 # whole-board read. Sets the same globals the real board_resolve does, including
 # the vestigial-but-still-set BOARD_PROJECT_ID / BOARD_FIELDS_JSON.
+#
+# $RAW_ITEMS is the escape hatch for the malformed-pool case: a resolve that
+# SUCCEEDS while handing back a body jq cannot parse is a different failure from
+# a resolve that fails, and only the raw form can express it.
 board_resolve() {
   [ "$RESOLVE_RC" = 0 ] || return 1
   BOARD_PROJECT_ID=""
   BOARD_FIELDS_JSON='{"fields":[]}'
-  BOARD_ITEMS_JSON="{\"items\":[${POOL}]}"
+  if [ -n "$RAW_ITEMS" ]; then
+    BOARD_ITEMS_JSON="$RAW_ITEMS"
+  else
+    BOARD_ITEMS_JSON="{\"items\":[${POOL}]}"
+  fi
   BOARD_CURRENT="$1"
 }
 
@@ -88,11 +113,19 @@ item() {
 # Drive the guard over the current pool. Captures stdout; never lets a failure
 # abort the test file.
 run_guard() {
-  GH_CALLS="$(mktemp)"
+  GH_CALLS="$(mktemp "$SCRATCH/gh-calls.XXXXXX")"
   CLAIM_GUARD_ISSUES=("$@")
   PROJECT_NUMBER=7
   set +e
-  OUT="$(claim_guard_main 2>/dev/null)"
+  # Drive the guard inside a subshell with `set -euo pipefail` RESTORED — the
+  # shell state it actually runs under in production (its own file sets it at
+  # line 1). The surrounding `set +e` exists only so a failing case reports
+  # through fail() instead of aborting this file; leaving it in force for the
+  # CALL would mask precisely the defect class case 11 tests for — a bare command
+  # substitution whose non-zero status `set -e` propagates, killing the partition
+  # mid-loop with no verdict lines and no SUMMARY. A test that relaxes the
+  # production shell options cannot see that at all.
+  OUT="$(set -euo pipefail; claim_guard_main 2>/dev/null)"
   RC=$?
   set -e
 }
@@ -175,6 +208,57 @@ for st in 'Backlog' 'Ready' 'In Progress' 'Done'; do
 done
 
 
+# ── Case 10 — ABSENT from the pool is NOT `claim=none` ───────────────────────
+# The fail-open hole: `select(.content.number==$n)` yields empty output for two
+# states — "in the pool, unstamped" (cullable) and "not in the pool at all"
+# (claim state NEVER READ, not cullable). The pool is
+# `gh issue list --state open --limit "${BOARD_ITEM_LIMIT:-500}"`, so a candidate
+# is absent on the most ordinary board condition there is: more than
+# BOARD_ITEM_LIMIT open issues. Conflating the two culls blind.
+POOL="$(item 1 'Backlog' '')"
+run_guard 999
+[ "$RC" = 0 ] || fail "case 10: a candidate missing from the pool must not abort the caller; got rc=$RC"
+assert_line "SKIP 999 claim=unknown class=unreadable" "case 10: an issue ABSENT from the resolved pool must report unreadable, never claim=none"
+printf '%s\n' "$OUT" | grep '^CULL 999 ' >/dev/null &&
+  fail "case 10: the guard failed OPEN — it emitted a CULL verdict for an issue that was never in the pool:\n$OUT"
+assert_line "SUMMARY cullable=0 skipped=1" "case 10: an unreadable candidate counts as skipped, not cullable"
+assert_no_writes "case 10"
+
+# The discriminating half: the SAME empty stamp on an issue that IS in the pool
+# stays cullable. Without this pair, "skip everything" would also pass case 10.
+POOL="$(item 999 'Backlog' '')"
+run_guard 999
+assert_line "CULL 999 claim=none" "case 10: a MATCHED item with an empty stamp is still cullable — absence and no-stamp are distinct"
+
+# ── Case 11 — an UNPARSEABLE pool degrades, it does not abort mid-partition ──
+# `existing="$(claim_guard_read_of "$n")"` is a printf|jq pipeline under
+# `set -euo pipefail`; a bare assignment propagates its status and `set -e` kills
+# the function mid-loop, emitting NO verdict lines and NO SUMMARY and exiting 5
+# (or 127 with no jq). The § Exit status contract defines only 0 and 2, and
+# /triage Step 4.8a has no branch for a third outcome — it would see an empty
+# cull set with no diagnosis at all.
+RAW_ITEMS='not json'
+run_guard 1199 55 42
+RAW_ITEMS=""
+[ "$RC" = 0 ] || fail "case 11: an unparseable pool must still exit 0 (the contract defines only 0 and 2); got rc=$RC"
+assert_line "SKIP 1199 claim=unknown class=unreadable" "case 11: every candidate must get a verdict line even when the pool will not parse"
+assert_line "SKIP 55 claim=unknown class=unreadable" "case 11: the partition must not abort after the FIRST failed read"
+assert_line "SKIP 42 claim=unknown class=unreadable" "case 11: the partition must reach the last candidate"
+assert_line "SUMMARY cullable=0 skipped=3" "case 11: the SUMMARY must still be emitted — its absence is what leaves the caller undiagnosed"
+printf '%s\n' "$OUT" | grep '^CULL ' >/dev/null &&
+  fail "case 11: the guard failed OPEN — it emitted a CULL verdict from an unparseable pool"
+assert_no_writes "case 11"
+
+# ── Case 12 — an EMPTY candidate set returns a SUMMARY, not an abort ─────────
+# The sourced entry point (which this file itself uses) has no usage check in
+# front of it, and on bash 3.2 — macOS /bin/bash, which this suite is run under —
+# `"${empty[@]}"` under `set -u` is an unbound-variable abort, not an empty
+# expansion.
+POOL="$(item 42 'Backlog' '')"
+run_guard
+[ "$RC" = 0 ] || fail "case 12: an empty candidate set must return cleanly, not abort under set -u; got rc=$RC"
+assert_line "SUMMARY cullable=0 skipped=0" "case 12: an empty candidate set must still emit its SUMMARY"
+assert_no_writes "case 12"
 
 # ── Case 8 — CLI arg validation, driven as a REAL subprocess ─────────────────
 # The cases above drive claim_guard_main directly (sourced). This one exercises
@@ -227,6 +311,15 @@ if [ -f "$SPEC" ]; then
     fail "case 9: the claim guard is invoked at line $guard_ln, AFTER the cull write at line $write_ln — it must filter the set BEFORE any close"
   grep -F 'Skipped (claimed by another session)' "$SPEC" >/dev/null ||
     fail "case 9: the run report no longer names skipped-because-claimed candidates — a refusal nobody can see is the silence temperloop#1220 exists to end"
+  # The absent-guard degradation the same step promises in prose must be the
+  # MECHANICAL one. An unguarded invocation surfaces as an opaque 127 in a
+  # vendoring checkout carrying neither copy of the script — the shape an
+  # AI-executed spec reads past on its way to culling unfiltered.
+  # shellcheck disable=SC2016
+  if ! grep -F 'if [ -x "$CULL_GUARD" ]; then' "$SPEC" >/dev/null ||
+     ! grep -F 'cull skipped — claim-guard.sh unavailable' "$SPEC" >/dev/null; then
+    fail "case 9: Step 4.8a invokes the guard without branch-guarding on its presence — the documented 'cull skipped — claim-guard.sh unavailable' degradation has no mechanical form"
+  fi
   echo "PASS: test_claim_guard.sh (spec conformance)"
 else
   echo "SKIP: case 9 spec conformance — claude/commands/triage.md not present in this checkout"

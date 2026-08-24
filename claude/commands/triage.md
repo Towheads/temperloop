@@ -187,13 +187,20 @@ All board bash blocks below `source "$BOARD_LIB"` first (Step 0.3); let `repo="$
    **8a — Claim-filter the cull set FIRST. This step is not optional** (temperloop#1220): run it over **every** board-sourced cull candidate before the first `gh issue comment`, so no claimed issue is ever commented on, closed, or Done'd.
    ```bash
    CULL_GUARD="$(dirname "$BOARD_LIB")/../claim-guard.sh"
-   [ -x "$CULL_GUARD" ] || CULL_GUARD="$(git rev-parse --show-toplevel)/workflows/scripts/board/claim-guard.sh"
-   "$CULL_GUARD" --board "$BOARD" <n1> <n2> …          # one call, the whole cull set
+   [ -x "$CULL_GUARD" ] ||
+     CULL_GUARD="$(git rev-parse --show-toplevel 2>/dev/null)/workflows/scripts/board/claim-guard.sh"
+   if [ -x "$CULL_GUARD" ]; then
+     "$CULL_GUARD" --board "$BOARD" <n1> <n2> …        # one call, the whole cull set
+   else
+     echo "cull skipped — claim-guard.sh unavailable"  # cull NOTHING this run; see below
+   fi
    ```
+   **Both** candidate paths are `-x`-tested before the invocation, and the `else` arm is the mechanical form of the degradation the prose promises below. Without it, a vendoring checkout carrying neither copy gets an opaque `command not found` (127) — and `git rev-parse --show-toplevel` outside a repo yields a bare `/workflows/scripts/board/claim-guard.sh` — which is exactly the shape an AI-executed spec reads past on its way to culling unfiltered.
+
    It prints one line per candidate and never blocks, waits, or writes: `CULL <n> claim=none|self` (proceed to 8b), or `SKIP <n> claim=<stamp> class=live|parked|unreadable` (**do not touch this issue at all**). Only the `CULL` lines feed 8b. Three consequences to hold onto:
    - **A `SKIP` issue keeps everything it has** — it stays **open**, in `Backlog`, and **its `fnd:host/session:*` stamp is left exactly as found**. Never "tidy" a foreign stamp on the way past: the stamp *is* the other session's lock, and stripping it is half of what made the 2026-08-08 incident unrecoverable.
    - **`class=parked` is a stale claim, and it still skips.** Report it and move on — a stale claim must never deadlock the cull, and disposal of the stranded stamp belongs to `/tidy`'s stale-claim sweep and `reconcile.sh --labels --apply`, not here. Once they clear it the next run culls the issue normally.
-   - **`class=unreadable` means the guard could not read claim state at all** (offline, auth, an unregistered board) — it fails **safe**, not open, and so do you: cull nothing on that run and say so. A deferred cull costs one run; a blind one cost K#1199.
+   - **`class=unreadable` means the guard could not read claim state at all** — the board would not resolve (offline, auth, an unregistered board), the item pool would not parse, **or the candidate was not in the resolved pool** (`board_item_list` reads `--state open --limit "${BOARD_ITEM_LIMIT:-500}"`, so a board past that truncation, an issue on another board, or an already-closed one is simply absent). It fails **safe**, not open, and so do you: never read an unreadable candidate as unclaimed, cull nothing on that run, and say so. A deferred cull costs one run; a blind one cost K#1199.
 
    Every `SKIP` line is carried into the Step 3.5 preview line and the Step-5 **"Skipped (claimed by another session)"** count, named by issue number and stamp — a refusal nobody can see is the same silence this item exists to end. If the guard script is absent from this checkout (a consuming repo that vendors an older toolkit), **do not fall back to culling unfiltered**: report `cull skipped — claim-guard.sh unavailable` and leave the whole board-sourced cull set for the next run.
 

@@ -12,4 +12,9 @@
   another session)" line. The guard issues no writes on any path, never
   blocks — a **stale** foreign claim reports and skips exactly like a live
   one, leaving disposal to `/tidy`'s stale-claim sweep — and fails **safe**
-  rather than open: an unreadable board culls nothing.
+  rather than open, per candidate as well as per run: an unresolvable board, a
+  pool that will not parse, and a candidate **missing from the resolved pool**
+  (`board_item_list` reads only `--state open --limit "${BOARD_ITEM_LIMIT:-500}"`,
+  so any board past that truncation drops issues out of it) all report
+  `class=unreadable` and cull nothing. `claim=none` means a *matched* item
+  carrying no stamp, never an empty lookup result.

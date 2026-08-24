@@ -42,6 +42,11 @@
 #   SKIP <n> claim=unknown class=unreadable   claim state could not be read
 #   SUMMARY cullable=<k> skipped=<m>
 #
+# `claim=none` means a MATCHED pool item carrying no stamp — never "the lookup
+# came back empty". An issue ABSENT from the resolved pool (past the
+# `BOARD_ITEM_LIMIT` truncation, on another board, already closed) reports
+# `class=unreadable`, because its claim state was never read at all.
+#
 # `class=` is REPORTING DETAIL ONLY — both live and parked are skipped, and a
 # caller must key on the CULL/SKIP verb, never on the class. The class exists so
 # the run report can point the operator at the right disposal path (a live claim:
@@ -55,6 +60,11 @@
 # deferred cull costs nothing but one more run: the issues simply stay open. A
 # guard that fails open would reproduce the bug precisely when the board is
 # least readable.
+#
+# The same rule holds PER CANDIDATE, not just for a whole-board resolve failure:
+# an issue missing from the resolved pool, and a pool that will not parse, both
+# report `class=unreadable` rather than `claim=none`. Every path out of this
+# script that is not a positively-read claim state resolves toward SKIP.
 #
 # ── Exit status ──────────────────────────────────────────────────────────────
 #   0  a partition was emitted (WHETHER OR NOT anything was skipped — the SKIP
@@ -89,21 +99,39 @@ source "$SCRIPT_DIR/lib/board.sh"
 PROJECT_NUMBER=3
 CLAIM_GUARD_ISSUES=()
 
-# claim_guard_stamp_of <issue#> -> the issue's claim stamp, or empty
+# claim_guard_read_of <issue#> -> ONE tab-separated record for the issue:
+#
+#   present<TAB><stamp><TAB><status>   the issue IS in the resolved pool
+#   absent<TAB><TAB>                   the issue is NOT in the pool at all
+#
+# and a NON-ZERO status with no usable output when the pool cannot be parsed.
 #
 # A pure jq read against the warm BOARD_ITEMS_JSON the caller already resolved —
 # no extra gh call, mirroring board_claim_contended. Reads the `host/Session`
 # key the issues-only reshape derives from the `fnd:host/session:*` label
 # (lib/board.sh's issue_item jq def).
-claim_guard_stamp_of() {
+#
+# PRESENCE IS RESOLVED BEFORE THE STAMP, in the SAME pass, because the two states
+# are indistinguishable at the string level and mean OPPOSITE things: a `select`
+# that matched nothing and a matched item whose stamp is empty both used to come
+# back as "". Only the second is safe to cull. A candidate is absent from the pool
+# for entirely ordinary reasons — `board_item_list` -> `_board_issues_item_list`
+# (lib/board.sh) is `gh issue list --state open --limit "${BOARD_ITEM_LIMIT:-500}"`,
+# so any board with more than BOARD_ITEM_LIMIT open issues truncates, and an issue
+# on another board or already closed is absent too. Reading absence as "no claim
+# stamp" would CULL an issue whose claim state was never read: fail-OPEN, which is
+# what § Fail SAFE above forbids, on the most ordinary board condition there is.
+#
+# `--arg` (string compare via tostring), not `--argjson`: a non-numeric candidate
+# reaching the SOURCED entry point then reads as absent rather than crashing jq.
+claim_guard_read_of() {
   printf '%s' "$BOARD_ITEMS_JSON" |
-    jq -r --argjson n "$1" '.items[] | select(.content.number==$n) | .["host/Session"] // ""'
-}
-
-# claim_guard_status_of <issue#> -> the issue's board status, or empty
-claim_guard_status_of() {
-  printf '%s' "$BOARD_ITEMS_JSON" |
-    jq -r --argjson n "$1" '.items[] | select(.content.number==$n) | .status // ""'
+    jq -r --arg n "$1" '
+      ([ .items[]? | select((.content.number | tostring) == $n) ] | first) as $it
+      | if $it == null then "absent\t\t"
+        else "present\t" + (($it["host/Session"] // "") | tostring)
+                   + "\t" + (($it.status // "") | tostring)
+        end'
 }
 
 # The whole partition, wrapped so a test can source this file (the execute-guard
@@ -111,7 +139,18 @@ claim_guard_status_of() {
 # $CLAIM_GUARD_ISSUES, override the board_resolve / _board_gh seams with canned
 # data, and drive it with zero network.
 claim_guard_main() {
-  local n cullable=0 skipped=0 mine existing status
+  local n cullable=0 skipped=0 mine rec rest existing status
+
+  # An EMPTY candidate set is a normal outcome, not an error — and it must be
+  # answered BEFORE the first `"${CLAIM_GUARD_ISSUES[@]}"` expansion below,
+  # because under `set -u` bash 3.2 (macOS /bin/bash) treats an empty array
+  # expansion as an unbound variable and aborts. The CLI path cannot reach this
+  # (its usage check at the bottom precedes the call), but the documented SOURCED
+  # entry point can, and an abort there is not the SUMMARY the contract promises.
+  if [ "${#CLAIM_GUARD_ISSUES[@]}" -eq 0 ]; then
+    printf 'SUMMARY cullable=0 skipped=0\n'
+    return 0
+  fi
 
   # ONE whole-board read for the whole candidate set. A resolve failure is NOT
   # fatal and NOT fail-open: report every candidate unreadable and let the cull
@@ -130,10 +169,30 @@ claim_guard_main() {
   # format (board_own_stamp) so this guard and claim.sh can never disagree about
   # what "mine" looks like — a disagreement here would either cull a peer's
   # claimed issue or refuse to cull our own.
-  mine="$(board_own_stamp)"
+  # `|| mine=""` for the same set -e reason as the per-issue read below; an empty
+  # $mine can only ever mismatch a non-empty foreign stamp, so it degrades toward
+  # SKIP (safe), never toward CULL.
+  mine="$(board_own_stamp)" || mine=""
 
   for n in "${CLAIM_GUARD_ISSUES[@]}"; do
-    existing="$(claim_guard_stamp_of "$n")"
+    # A failed read is NON-fatal and NON-open. A bare `rec="$(...)"` assignment
+    # under `set -euo pipefail` propagates the printf|jq pipeline's status, so
+    # `set -e` would kill this function MID-PARTITION — emitting no verdict lines
+    # and no SUMMARY, and exiting 5 (or 127 with no jq). The § Exit status
+    # contract defines only 0 and 2, and /triage Step 4.8a has no branch for a
+    # third outcome, so it would see an empty cull set with no diagnosis. The
+    # `|| rec=""` form is what exempts the substitution from `set -e`.
+    rec="$(claim_guard_read_of "$n")" || rec=""
+    # rec="" (pool unparseable) and rec="absent…" (issue not in the pool) are both
+    # "claim state was never read" — never cullable. See claim_guard_read_of.
+    if [ "${rec%%$'\t'*}" != "present" ]; then
+      printf 'SKIP %s claim=unknown class=unreadable\n' "$n"
+      skipped=$((skipped + 1))
+      continue
+    fi
+    rest="${rec#*$'\t'}"
+    existing="${rest%%$'\t'*}"
+    status="${rest#*$'\t'}"
     if [ -z "$existing" ]; then
       printf 'CULL %s claim=none\n' "$n"
       cullable=$((cullable + 1))
@@ -144,7 +203,6 @@ claim_guard_main() {
       cullable=$((cullable + 1))
       continue
     fi
-    status="$(claim_guard_status_of "$n")"
     if [ "$status" = "$BOARD_OPT_INPROGRESS" ]; then
       printf 'SKIP %s claim=%s class=live\n' "$n" "$existing"
     else
