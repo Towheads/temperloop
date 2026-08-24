@@ -11,6 +11,8 @@
 #   plan.sh toposort  <planFile>                 # dependency levels from depends-on ∪ after
 #   plan.sh writeback <planFile> --slug <slug> --sentinel <state> \
 #         [--pr N] [--pushed-sha SHA] [--speculative] [--run-status <text>]
+#   plan.sh roster    <planFile> --level <k> --stage <launch|gate|close> \
+#         [--owner-repo <o/r>] [--only-slugs <csv>] [--driver <text>] [--plan-link <text>]
 #
 # `validate` enforces the 15 plan-schema rules (status==approved, slug+acceptance
 # present, unique kebab slugs ≤40, branch <type>/<slug>, depends-on/after refs
@@ -58,6 +60,8 @@
 #   writeback → {"outcome":"WRITTEN","slug":…,"sentinel":…} |
 #               {"outcome":"WRITE_SKIPPED","slug":…,"reason":…} (soft; zero exit) |
 #               {"outcome":"WRITE_FAILED","slug":…,"error":…} + non-zero exit
+#   roster    → a plain-text operator report on stdout (see cmd_roster) |
+#               {"outcome":"ROSTER_INCOMPLETE",…} + non-zero exit
 #   error     → {"outcome":"ERROR","error":…} + non-zero exit
 set -euo pipefail
 
@@ -84,7 +88,7 @@ die() {
 }
 
 usage() {
-  die "usage: plan.sh validate <planFile> | toposort <planFile> | writeback <planFile> --slug <slug> --sentinel <[ ]|[~]|[m]|[>]|[x]|[v]|[-]> [--pr N] [--pushed-sha SHA] [--speculative] [--run-status <text>]"
+  die "usage: plan.sh validate <planFile> | toposort <planFile> | writeback <planFile> --slug <slug> --sentinel <[ ]|[~]|[m]|[>]|[x]|[v]|[-]> [--pr N] [--pushed-sha SHA] [--speculative] [--run-status <text>] | roster <planFile> --level <k> --stage <launch|gate|close> [--owner-repo <owner/repo>] [--only-slugs <csv>] [--driver <text>] [--plan-link <text>]"
 }
 
 # --- the ONE test-injection seam ---------------------------------------------
@@ -264,6 +268,10 @@ parse_items() {
         rec = rec SEP "files=" files
         rec = rec SEP "cost=" (cost ? "1" : "0")
         rec = rec SEP "cost_because=" cost_because
+        rec = rec SEP "pr=" pr
+        rec = rec SEP "speculative=" speculative
+        rec = rec SEP "run_status=" run_status
+        rec = rec SEP "repo=" repo
         print rec
       }
       have_item=0; slug=""; sentinel=""; title=""; branch=""; dependson="";
@@ -272,6 +280,7 @@ parse_items() {
       activation=0; act_class=""; act_proof=""; in_activation=0
       kind=""; keystone=""; files=""
       cost=0; cost_because=""; in_cost=0
+      pr=""; speculative=""; run_status=""; repo=""
     }
     BEGIN { SEP=sprintf("%c",31); in_items=0 }
     /^##[[:space:]]+Items[[:space:]]*$/ { in_items=1; next }
@@ -386,6 +395,20 @@ parse_items() {
       }
       if (match(l, /^[[:space:]]*-[[:space:]]*files:[[:space:]]*/)) {
         v=l; sub(/^[[:space:]]*-[[:space:]]*files:[[:space:]]*/,"",v); gsub(/[[:space:]]*#.*/,"",v); files=v; next
+      }
+      # Run-state stamps writeback lays down. Parsed (not just written) because
+      # `roster` renders each item stage/disposition from them (temperloop#1310).
+      if (match(l, /^[[:space:]]*-[[:space:]]*pr:[[:space:]]*/)) {
+        v=l; sub(/^[[:space:]]*-[[:space:]]*pr:[[:space:]]*/,"",v); gsub(/#/,"",v); gsub(/`/,"",v); gsub(/^[[:space:]]+|[[:space:]]+$/,"",v); pr=v; next
+      }
+      if (match(l, /^[[:space:]]*-[[:space:]]*speculative:[[:space:]]*/)) {
+        v=l; sub(/^[[:space:]]*-[[:space:]]*speculative:[[:space:]]*/,"",v); gsub(/`/,"",v); gsub(/[[:space:]]*#.*/,"",v); gsub(/^[[:space:]]+|[[:space:]]+$/,"",v); speculative=v; next
+      }
+      if (match(l, /^[[:space:]]*-[[:space:]]*[Rr]un-status:[[:space:]]*/)) {
+        v=l; sub(/^[[:space:]]*-[[:space:]]*[Rr]un-status:[[:space:]]*/,"",v); gsub(/^[[:space:]]+|[[:space:]]+$/,"",v); run_status=v; next
+      }
+      if (match(l, /^[[:space:]]*-[[:space:]]*repo:[[:space:]]*/)) {
+        v=l; sub(/^[[:space:]]*-[[:space:]]*repo:[[:space:]]*/,"",v); gsub(/`/,"",v); gsub(/[[:space:]]*#.*/,"",v); gsub(/^[[:space:]]+|[[:space:]]+$/,"",v); repo=v; next
       }
     }
     END { flush() }
@@ -817,11 +840,235 @@ cmd_writeback() {
   esac
 }
 
+# --- roster ------------------------------------------------------------------
+# Render ONE dependency level's operator-facing roster (temperloop#1310).
+#
+#   plan.sh roster <planFile> --level <k> --stage <launch|gate|close> \
+#         [--owner-repo <owner/repo>] [--only-slugs <csv>] [--driver <text>] \
+#         [--plan-link <text>]
+#
+# WHY THIS IS CODE AND NOT PROSE. /workflows is an OPT-IN progress surface, so
+# the orchestrator's own transcript is the only surface the kernel controls that
+# PUSHES a level's composition to the operator. A roster narrated by the
+# executing model is exactly the thing that silently degrades under context
+# pressure — a dropped row is indistinguishable from "that item was not in this
+# level". Rendering it here makes TOTALITY structural: the row set is generated
+# by iterating the level's own membership, and the header counts are DERIVED
+# from the rows rather than restated beside them, so a worked example (or a real
+# render) that does not add up cannot be produced at all.
+#
+# FAIL-CLOSED. After rendering, the emitted row count is checked against the
+# level's membership and the header partition is checked to sum to the total; a
+# mismatch is ROSTER_INCOMPLETE + non-zero exit, never a short roster printed as
+# if it were whole.
+#
+# NEVER INFER. An unresolvable value is NAMED, never guessed: an item with no
+# `gh_issue:` renders `no issue`, a slug with no parsed item record or a sentinel
+# outside plan-schema.md's seven renders the report-only `[?]` marker plus the
+# reason. `[?]` is deliberately NOT a plan sentinel and is never written back.
+#
+# STAGE VOCABULARY (`--stage launch`) — a closed set of seven, derived from the
+# seven sentinels plan-schema.md § Status sentinels defines rather than adding an
+# eighth, so the report cannot drift from the note it renders. Tested in this
+# precedence, which is what keeps a narrowed 3d-esc re-drive honest:
+#   terminal     [x] [>] [v] [-] [m] — nothing this pass drives
+#   parked       still-open, but outside a non-empty --only-slugs
+#   continuation named in --only-slugs (the escalation re-drive)
+#   fresh        [ ]
+#   resume       [~] carrying pr:
+#   speculative  [~] + speculative: true
+#   respawn      any other [~]
+# Only the last five count toward the header's "active" (to-be-driven) count.
+#
+# Output is a plain-text block on stdout (an operator report, not a machine
+# record); argument/parse errors still take the file-wide structured ERROR path.
+cmd_roster() {
+  local file="" level="" stage="" owner_repo="" only_slugs="" driver="" plan_link=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --level)      [ $# -ge 2 ] || usage; level="$2"; shift ;;
+      --stage)      [ $# -ge 2 ] || usage; stage="$2"; shift ;;
+      --owner-repo) [ $# -ge 2 ] || usage; owner_repo="$2"; shift ;;
+      --only-slugs) [ $# -ge 2 ] || usage; only_slugs="$2"; shift ;;
+      --driver)     [ $# -ge 2 ] || usage; driver="$2"; shift ;;
+      --plan-link)  [ $# -ge 2 ] || usage; plan_link="$2"; shift ;;
+      --*)          usage ;;
+      *)            if [ -z "$file" ]; then file="$1"; else usage; fi ;;
+    esac
+    shift
+  done
+  [ -n "$file" ] || die "roster requires <planFile>"
+  [ -f "$file" ] || die "plan file '$file' does not exist"
+  case "$stage" in
+    launch|gate|close) : ;;
+    *) die "roster requires --stage launch|gate|close" ;;
+  esac
+  case "$level" in
+    ''|*[!0-9]*) die "roster requires --level <non-negative integer>" ;;
+  esac
+
+  local records levels_json slugs
+  records="$(parse_items "$file")"
+  [ -n "$records" ] || die "no items found under '## Items' in '$file'"
+  levels_json="$(compute_levels "$records")" \
+    || die "dependency cycle in '$file' — run 'plan.sh toposort' for the cycle"
+  slugs="$(printf '%s\n' "$levels_json" | jq -r --argjson k "$level" '.levels[$k] // [] | .[]')"
+  [ -n "$slugs" ] || die "level $level has no items in '$file'"
+
+  local members=0 rows_n=0 active=0 n_merge=0 n_merged=0 n_open=0 n_skipped=0 n_other=0
+  local w_slug=4 w_ref=3 row US
+  US="$(printf '\037')"
+  local rows=() slug rec sentinel mark gh irepo ref kind pr spec rs in_only tok
+  local stage_s next_s disp rest
+
+  while IFS= read -r slug; do
+    [ -n "$slug" ] || continue
+    members=$((members + 1))
+    rec="$(grep -m1 -- "^${slug}$(printf '\037')" <<<"$records" || true)"
+    if [ -z "$rec" ]; then
+      # Totality over inference: the level says this slug is a member, so it gets
+      # a row naming what could not be established — it is never dropped.
+      rows+=("[?]${US}${slug}${US}no issue${US}no item record parsed for this slug — investigate before advancing")
+      [ "${#slug}" -le "$w_slug" ] || w_slug="${#slug}"
+      rows_n=$((rows_n + 1)); n_other=$((n_other + 1))
+      continue
+    fi
+    sentinel="$(rec_field "$rec" sentinel)"
+    case "$sentinel" in
+      ' ') mark='[ ]' ;;
+      '~'|'m'|'x'|'v'|'-'|'>') mark="[$sentinel]" ;;
+      *) mark='[?]' ;;
+    esac
+    gh="$(rec_field "$rec" gh_issue)"
+    irepo="$(rec_field "$rec" repo)"
+    if [ -z "$gh" ]; then
+      ref="no issue"
+    elif [ -n "$irepo" ] && [ -n "$owner_repo" ] && [ "$irepo" != "$owner_repo" ]; then
+      ref="${irepo}#${gh}"
+    else
+      ref="#${gh}"
+    fi
+    kind="$(rec_field "$rec" kind)"
+    [ -n "$kind" ] || kind="code"
+    pr="$(rec_field "$rec" pr)"
+    spec="$(rec_field "$rec" speculative)"
+    rs="$(rec_field "$rec" run_status)"
+
+    in_only=0
+    for tok in $(split_list "$only_slugs"); do
+      if [ "$tok" = "$slug" ]; then in_only=1; fi
+    done
+
+    if [ "$stage" = launch ]; then
+      case "$mark" in
+        '[x]'|'[>]'|'[v]'|'[-]'|'[m]') stage_s="terminal"; next_s="not driven this pass" ;;
+        '[ ]'|'[~]')
+          if [ -n "$only_slugs" ] && [ "$in_only" -eq 0 ]; then
+            # A narrowed re-drive (3d-esc continuation) drives ONLY --only-slugs;
+            # every other still-open sibling is parked, not silently dropped.
+            stage_s="parked"; next_s="not driven this pass"
+          elif [ "$in_only" -eq 1 ]; then
+            stage_s="continuation"; next_s="3c re-spawn (escalation continuation)"
+          elif [ "$mark" = '[ ]' ]; then
+            stage_s="fresh"; next_s="3a claim"
+          elif [ -n "$pr" ]; then
+            stage_s="resume"; next_s="3g re-attach PR #${pr}"
+          elif [ "$spec" = "true" ]; then
+            stage_s="speculative"; next_s="3f step 0.5 base-currency check"
+          else
+            stage_s="respawn"; next_s="3c re-spawn"
+          fi ;;
+        *) stage_s="stage unknown — sentinel is not one of plan-schema's seven"
+           next_s="investigate before advancing" ;;
+      esac
+      rest="$(printf '%-5s  %s → %s' "$kind" "$stage_s" "$next_s")"
+      # "active" = the items THIS pass will actually drive. A terminal, parked,
+      # or unreadable-sentinel row is reported but not counted, so an all-terminal
+      # level reads as the no-op it is instead of looking like work.
+      case "$stage_s" in
+        fresh|continuation|resume|speculative|respawn) active=$((active + 1)) ;;
+      esac
+    else
+      case "$mark" in
+        '[x]') disp="merged${pr:+ in PR #$pr}"; n_merged=$((n_merged + 1)) ;;
+        '[>]') disp="as-you-go merge in flight — awaiting confirmed MERGED${pr:+ (PR #$pr)}"
+               n_other=$((n_other + 1)) ;;
+        '[m]')
+          if [ "$stage" = gate ]; then
+            disp="in the merge set — mergeability detailed above${pr:+ (PR #$pr)}"
+          else
+            disp="left open — awaiting manual merge${pr:+ (PR #$pr)}"
+          fi
+          n_merge=$((n_merge + 1)); n_open=$((n_open + 1)) ;;
+        '[v]') disp="verdict captured"; n_other=$((n_other + 1)) ;;
+        '[-]') disp="skipped"; n_skipped=$((n_skipped + 1)) ;;
+        '[~]') disp="still in flight — not in the merge set"; n_other=$((n_other + 1)) ;;
+        '[ ]') disp="never driven this level — itself a finding"; n_other=$((n_other + 1)) ;;
+        *) disp="disposition unknown — plan sentinel unreadable; investigate before advancing"
+           n_other=$((n_other + 1)) ;;
+      esac
+      [ -z "$rs" ] || disp="${disp} — ${rs}"
+      rest="$disp"
+    fi
+    rows+=("${mark}${US}${slug}${US}${ref}${US}${rest}")
+    [ "${#slug}" -le "$w_slug" ] || w_slug="${#slug}"
+    [ "${#ref}" -le "$w_ref" ] || w_ref="${#ref}"
+    rows_n=$((rows_n + 1))
+  done <<<"$slugs"
+
+  # FAIL-CLOSED totality check. The header partition is derived from the rows,
+  # so this is what makes "the counts equal the rows shown" a property of the
+  # renderer rather than a convention a future editor has to remember.
+  if [ "$rows_n" -ne "$members" ]; then
+    jq -cn --argjson rows "$rows_n" --argjson members "$members" --argjson level "$level" \
+      '{outcome:"ROSTER_INCOMPLETE", level:$level, members:$members, rows:$rows,
+        error:"roster rendered fewer rows than the level has items"}' >&3
+    exit 1
+  fi
+  case "$stage" in
+    gate)
+      if [ $((n_merge + n_merged + n_skipped + n_other)) -ne "$members" ]; then
+        jq -cn --argjson level "$level" '{outcome:"ROSTER_INCOMPLETE", level:$level,
+          error:"disposition partition does not sum to the level item count"}' >&3
+        exit 1
+      fi ;;
+    close)
+      if [ $((n_merged + n_open + n_skipped + n_other)) -ne "$members" ]; then
+        jq -cn --argjson level "$level" '{outcome:"ROSTER_INCOMPLETE", level:$level,
+          error:"close-out partition does not sum to the level item count"}' >&3
+        exit 1
+      fi ;;
+  esac
+
+  case "$stage" in
+    launch)
+      printf '=== Level %s launch: %s items (%s active)%s%s ===\n' \
+        "$level" "$members" "$active" \
+        "${owner_repo:+ · $owner_repo}" "${plan_link:+ · $plan_link}" ;;
+    gate)
+      printf -- '--- Level %s disposition: %s items · %s in the merge set · %s outside it ---\n' \
+        "$level" "$members" "$n_merge" "$((members - n_merge))" ;;
+    close)
+      printf -- '--- Level %s closed: %s items · %s merged · %s left open · %s skipped · %s unchanged ---\n' \
+        "$level" "$members" "$n_merged" "$n_open" "$n_skipped" "$n_other" ;;
+  esac
+  local r_mark r_slug r_ref r_rest
+  for row in "${rows[@]}"; do
+    IFS="$US" read -r r_mark r_slug r_ref r_rest <<<"$row"
+    printf '%s %-*s  %-*s  %s\n' "$r_mark" "$w_slug" "$r_slug" "$w_ref" "$r_ref" "$r_rest"
+  done
+  case "$stage" in
+    launch) [ -z "$driver" ] || printf '# driver: %s\n' "$driver" ;;
+    close)  [ -z "$driver" ] || printf '# next: %s\n' "$driver" ;;
+  esac
+}
+
 [ $# -ge 1 ] || usage
 cmd="$1"; shift
 case "$cmd" in
   validate)  [ $# -eq 1 ] || usage; cmd_validate "$1" ;;
   toposort)  [ $# -eq 1 ] || usage; cmd_toposort "$1" ;;
   writeback) cmd_writeback "$@" ;;
+  roster)    cmd_roster "$@" ;;
   *) usage ;;
 esac

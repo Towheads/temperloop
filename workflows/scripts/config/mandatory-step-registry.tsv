@@ -75,3 +75,13 @@ claude/commands/promote.md	record/report — the three-part migrated/re-applied/
 # the invocation quietly disappearing from the prose, which no runtime tally in
 # an AI-executed spec would catch.
 claude/commands/triage.md	Step 4.8a — claim-filter the cull set before any close write	This step is not optional	guard	workflows/scripts/board/tests/test_claim_guard.sh	claude/commands/triage.md Step 4.8a must invoke claim-guard.sh before the cull write	make test-board	Case 9 asserts the spec still invokes claim-guard.sh AND that the invocation precedes the cull's reason-comment write; deleting the step from the spec, or reordering it after the close, turns test_claim_guard.sh red under make test-board.
+
+# ── /build 3-launch + 4a + 4d — the level-composition rosters (temperloop#1310) ─
+# /workflows is opt-in, so the orchestrator transcript is the only kernel-owned
+# surface that PUSHES a level's composition to the operator — and a roster
+# NARRATED by the executing model is exactly the thing that silently truncates
+# under context pressure, with a dropped row indistinguishable from "that item
+# was not in this level". So the rosters are RENDERED BY CODE (plan.sh roster)
+# and the signal holds both halves: the spec still CALLS the renderer, and the
+# renderer is TOTAL over the level with header counts derived from the rows.
+claude/commands/build.md	3-launch / 4a / 4d — the level-composition rosters (launch, gate disposition, close-out)	on every level and both paths is **mandatory**	guard	workflows/scripts/build/tests/test_plan.sh	claude/commands/build.md invokes plan.sh roster at all three sites	make test-build	The fixture asserts build.md still invokes `plan.sh roster --stage launch|gate|close` (delete a site from the spec and it goes red) AND that the renderer emits one row per level member with header counts that equal the rows shown — so neither a dropped invocation nor a short roster can pass under make test-build.

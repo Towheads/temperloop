@@ -912,7 +912,18 @@ fi
 # that into a neighbouring bullet would bury a safety property inside prose about
 # pipefail. Same call, same reason, as the #1319/#1430 raise above: taken past the
 # immediate need (+1) so the next build.md edit does not spend a PR on a ratchet.
-: "${PROSE_BUDGET_TIER2_FILE_CAP:=1140}"
+# Raised again 1140 -> 1177 (2026-08-24, temperloop#1310). /build's own transcript
+# became a reported surface: three level-composition rosters (§ 3-launch at level
+# launch, § 4a at the merge gate, § 4d at the level close-out), because /workflows
+# is opt-in and temperloop#1294's two remaining asks are harness-side and
+# unfixable from this repo. The RENDERING moved into code (`plan.sh roster`), so
+# the prose that landed here is only what a spec must carry: three invocation
+# sites, why each one is where it is, and one worked example apiece — the examples
+# are the bulk, and they are load-bearing (an operator report nobody has seen the
+# shape of is not reviewable). A trim pass ran on the new prose first (1180 -> 1177
+# measured, not drafted) before the ratchet moved. Reseeded to build.md's measured
+# size under the zero-headroom convention this row has used since temperloop#956.
+: "${PROSE_BUDGET_TIER2_FILE_CAP:=1177}"
 
 # ── Pipeline spend profiler (temperloop#958) ───────────────────────────────
 # Settings for `workflows/scripts/pipeline-spend-report.sh` and its
