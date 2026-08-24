@@ -28,11 +28,16 @@
 #      (temperloop#1154), rather than a second verbatim copy of it. It runs
 #      with a CONTINUOUS third-party writer active against the real cache
 #      store root, so the leg cannot pass merely because nothing was writing.
+#      The controlled proof for a STILL-SAMPLED root — `.local/state/
+#      foundation`, temperloop#1241 — lives in test_sandbox.sh 6b, against a
+#      synthetic root that suite owns; see sandbox_subtree_interferer_start.
 #
 # No network. The ONLY real-machine writes are test 5's interferer markers
 # under the real cache store root — pid-namespaced, and removed (along with
 # the root itself if this run created it) by sandbox_cache_interferer_stop,
-# which is wired onto an EXIT trap. No real HOME/XDG mutations otherwise.
+# which is wired onto an EXIT trap. No real HOME/XDG mutations otherwise; in
+# particular this suite never writes the real `.local/state/foundation`,
+# which it still SAMPLES.
 #
 set -uo pipefail
 
@@ -90,6 +95,13 @@ sandbox_real_candidates "$REAL_HOME_BEFORE"
 # the whole of assertion 5 — the concurrent board-adapter traffic that made
 # count-sampling that root un-attributable in the first place. Without it
 # this leg passes vacuously.
+#
+# The still-sampled `.local/state/foundation` root deliberately gets NO
+# interferer, and is deliberately not written to by this suite at all: its
+# controlled concurrency proof lives in test_sandbox.sh 6b, against a
+# synthetic root that suite owns. See sandbox_subtree_interferer_start's
+# comment — a writer aimed at the REAL root makes these two suites fail each
+# other the moment quality-gates.sh runs them in parallel (temperloop#1241).
 trap 'sandbox_cache_interferer_stop' EXIT
 sandbox_cache_interferer_start || fail "5: could not start the cache-root interferer"
 
