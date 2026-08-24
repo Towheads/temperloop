@@ -35,6 +35,18 @@
 #  11. an item with a `retro-pending`-ish label that is not an exact match
 #      (`retro-pending-followup`) is NOT excluded — substring, not equality,
 #      would over-exclude.
+#  12. STATIC GUARD — the spec still invokes the classifier, still ahead of the
+#      milestone filter, and still carries the mandatory Step-5 line.
+#  13. the guarded invocation itself: an ABSENT classifier takes the degraded
+#      arm (XCL_OUT empty) rather than a 127 the spec reads past — exercised by
+#      running the spec's own resolve-and-guard snippet against a path that
+#      does not exist.
+#  14. a PRESENT-but-FAILING classifier takes the SAME degraded arm (the guard
+#      covers "absent OR fails", not just "absent").
+#  15. STATIC GUARD — the spec's degraded arm exists and is spelled out: the
+#      dual-path -x test, the named SKIPPED report line, and the refusal to
+#      cull-or-promote a label-carrying candidate. A degrade that silently
+#      intakes unfiltered is the failure this whole guard exists to prevent.
 
 set -euo pipefail
 
@@ -219,7 +231,11 @@ if [ ! -f "$SPEC" ]; then
   bad "static guard: triage.md is readable" "no spec at $SPEC"
 else
   spec_txt="$(cat "$SPEC")"
-  inv_line="$(grep -n 'triage-intake-exclusion\.sh -' "$SPEC" | head -1 | cut -d: -f1 || true)"
+  # Match the resolved-path form the guard introduced (`XCL=…/triage-intake-exclusion.sh`),
+  # not a literal `… .sh -` invocation string — the spec now resolves the path
+  # into $XCL and invokes "$XCL" -, so pinning the old inline spelling would
+  # green-light deleting the guard and restoring the bare call.
+  inv_line="$(grep -n 'triage-intake-exclusion\.sh' "$SPEC" | head -1 | cut -d: -f1 || true)"
   ms_line="$(grep -n 'Then apply the active-milestone intake filter' "$SPEC" | head -1 | cut -d: -f1 || true)"
 
   if [ -n "$inv_line" ]; then
@@ -253,6 +269,93 @@ else
     *)
       bad "static guard: the spec names the setting symbolically" \
           "no \$TRIAGE_INTAKE_EXCLUDE_LABELS reference in $SPEC" ;;
+  esac
+fi
+
+# --- 13/14: the GUARDED INVOCATION — an absent OR failing classifier takes the
+#            degraded arm, never an unguarded 127 -----------------------------
+# The spec's Step 1 Adapter A guard, transcribed verbatim in shape: dual-path
+# -x resolution, with the command substitution INSIDE the `if` so a non-zero
+# exit lands on the same arm as a missing file. Run here against a controlled
+# path so the degraded arm is actually executed rather than merely asserted in
+# prose (temperloop#1614 attempt-1 review: the invocation had no named failure
+# path, and the un-named failure direction was intaking UNFILTERED).
+guarded_run() {   # $1 = classifier path to resolve to; echoes XCL_OUT
+  local XCL="$1" XCL_OUT
+  if [ -x "$XCL" ] && XCL_OUT="$(printf '%s' "$FIXTURE_JSON" | "$XCL" -)"; then
+    printf '%s' "$XCL_OUT"
+  else
+    printf ''    # DEGRADED
+  fi
+}
+
+FIXTURE_JSON="$(cat "$BOARD")"
+
+# 13 — absent classifier
+if OUT13="$(guarded_run "$TMP/definitely-not-here.sh")" && [ -z "$OUT13" ]; then
+  ok "guarded invocation: an ABSENT classifier degrades (XCL_OUT empty), never a bare 127"
+else
+  bad "guarded invocation: an ABSENT classifier degrades" "out=[$OUT13] rc=$?"
+fi
+
+# 14 — present but failing (exits non-zero) classifier
+cat > "$TMP/failing.sh" <<'FAILEOF'
+#!/usr/bin/env bash
+echo "simulated classifier failure" >&2
+exit 3
+FAILEOF
+chmod +x "$TMP/failing.sh"
+if OUT14="$(guarded_run "$TMP/failing.sh" 2>/dev/null)" && [ -z "$OUT14" ]; then
+  ok "guarded invocation: a PRESENT-but-FAILING classifier takes the SAME degraded arm"
+else
+  bad "guarded invocation: a failing classifier takes the degraded arm" "out=[$OUT14]"
+fi
+
+# sanity: the same guard around the REAL classifier takes the normal arm, so
+# cases 13/14 are proving the guard's failure branch, not a broken harness.
+if OUT14B="$(guarded_run "$CLI")" && [ -n "$OUT14B" ] &&
+   [ "$(printf '%s' "$OUT14B" | jq -r '.summary_line' | head -c 8)" = "Excluded" ]; then
+  ok "guarded invocation: the real classifier takes the NORMAL arm (guard is not always-degrading)"
+else
+  bad "guarded invocation: the real classifier takes the normal arm" "out=[$OUT14B]"
+fi
+
+# --- 15: STATIC GUARD — the spec spells out the degraded arm ------------------
+# The prose half of the same fix. An -x test with no documented disposition is
+# the gap attempt 1 shipped; these assertions pin the disposition, not just the
+# test. ANCHOR (mandatory-step-registry.tsv): the Step 1 Adapter A invocation
+# must be guarded and its degraded arm named.
+if [ -f "$SPEC" ]; then
+  case "$spec_txt" in
+    *'[ -x "$XCL" ]'*)
+      ok "static guard: the spec -x-tests the classifier path before invoking it" ;;
+    *)
+      bad "static guard: the spec -x-tests the classifier path" \
+          "no [ -x \"\$XCL\" ] test in $SPEC — a bare invocation degrades to a 127" ;;
+  esac
+
+  case "$spec_txt" in
+    *"SKIPPED — triage-intake-exclusion.sh unavailable or failed"*)
+      ok "static guard: the degraded arm has a NAMED Step-5 report line" ;;
+    *)
+      bad "static guard: the degraded arm has a NAMED Step-5 report line" \
+          "no SKIPPED wording in $SPEC — a degrade nobody can see is a silent one" ;;
+  esac
+
+  case "$spec_txt" in
+    *"intaken UNFILTERED"*)
+      ok "static guard: the degraded arm SAYS the slice was intaken unfiltered" ;;
+    *)
+      bad "static guard: the degraded arm says the slice was intaken unfiltered" \
+          "the degraded line does not distinguish itself from a genuine zero" ;;
+  esac
+
+  case "$spec_txt" in
+    *"No write may dispose a candidate carrying one of"*)
+      ok "static guard: the degraded arm REFUSES the cull/promote dispositions" ;;
+    *)
+      bad "static guard: the degraded arm refuses the dispositions" \
+          "no disposition refusal in $SPEC — degrading to unfiltered intake with live writes" ;;
   esac
 fi
 

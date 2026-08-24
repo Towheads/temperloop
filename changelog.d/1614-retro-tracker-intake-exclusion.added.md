@@ -14,3 +14,10 @@
   which is why it runs before its two per-candidate-REST siblings), covered by
   offline fixtures in
   `workflows/scripts/build/tests/test_triage_intake_exclusion.sh`.
+  The invocation carries a **named failure path**: the classifier path is
+  resolved dual-path and `-x`-tested (the shape Step 4.8a's `claim-guard.sh`
+  already uses) with the run itself inside the guard, so a classifier that is
+  absent **or** exits non-zero takes one explicit degraded arm — a `SKIPPED
+  … intaken UNFILTERED` Step-5 line, `excluded[] = []`, and a refusal to cull
+  or promote any candidate carrying an exclusion label. A missing script can
+  never quietly degrade to unfiltered intake.

@@ -120,6 +120,13 @@ while [ $# -gt 0 ]; do
       LABELS_OVERRIDE="$2"; HAVE_OVERRIDE=1; shift 2 ;;
     --labels=*)
       LABELS_OVERRIDE="${1#--labels=}"; HAVE_OVERRIDE=1; shift ;;
+    -)
+      # The documented stdin form (`… | triage-intake-exclusion.sh -`) — and the
+      # one /triage Step 1 Adapter A actually uses. It MUST be matched before
+      # the `-*` unknown-flag glob below, which would otherwise swallow it and
+      # exit 1 on the spec's own invocation.
+      [ -z "$INPUT" ] || { echo "triage-intake-exclusion.sh: one input path only (got extra: $1)" >&2; exit 1; }
+      INPUT="-"; shift ;;
     -*)
       echo "triage-intake-exclusion.sh: unknown flag: $1" >&2; exit 1 ;;
     *)
