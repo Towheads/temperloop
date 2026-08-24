@@ -15,9 +15,32 @@
 #
 # Format: TAB-separated, 3 columns, no header line consumed by tooling
 # (this comment block documents them):
-#   1. extension-or-path-glob   e.g. `.py` or `docs/**`
+#   1. extension-or-path-glob   one of THREE key shapes (below)
 #   2. reviewer-name            the review subagent's declared name
 #   3. catalog-agent-path       repo-relative path to its agent definition
+#
+# The three key shapes column 1 may take — every consumer of this file
+# (claude/workflows/build-level.mjs reviewGlobMatch(),
+# workflows/scripts/workflow-reviewer-coverage.sh match_rule(),
+# workflows/scripts/install/reviewer-activation-coverage.sh) implements
+# exactly these, and nothing else:
+#   EXTENSION  leading dot      SUFFIX match on the path   e.g. `.py`
+#   DIR GLOB   trailing /**     PREFIX match on the path   e.g. `docs/**`
+#   BASENAME   leading **/      BASENAME match             e.g. `**/Makefile`
+#                               (matches the bare path itself, or any
+#                               `<dir>/<basename>` at any depth — never a
+#                               mere suffix, so `**/Makefile` routes
+#                               `Makefile` and `sub/Makefile` but NOT
+#                               `NotAMakefile`)
+#
+# The BASENAME shape exists for an extensionless, path-independent file the
+# other two shapes structurally cannot key on — `Makefile` has no extension
+# and lives at no fixed directory prefix (temperloop#1705). It is a concrete
+# path route with no kind/override/cardinality branching, so it belongs on
+# this axis exactly like `docs/**` (ADR 0008's boundary: the tsv owns every
+# CONCRETE extension/path-glob route). It is deliberately NOT a licence to
+# route every extensionless file — add a basename row on the same
+# evidence-backed footing (churn + blast radius), one file at a time.
 #
 # Invariant: no extension/glob is claimed by two rows (checked by
 # check-reviewer-routing.sh, wired into scripts/quality-gates.sh).
@@ -39,3 +62,4 @@
 .java	java-reviewer	claude/agents/reviewers/java-reviewer.md
 .swift	swift-reviewer	claude/agents/reviewers/swift-reviewer.md
 docs/**	docs-reviewer	claude/agents/docs-reviewer.md
+**/Makefile	shell-reviewer	claude/agents/reviewers/shell-reviewer.md

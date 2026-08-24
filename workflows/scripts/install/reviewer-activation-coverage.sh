@@ -38,7 +38,9 @@
 #
 # The language -> extension/glob mapping is READ FROM reviewer-routing.tsv
 # (the single source of truth for that axis, ADR 0008) — never hardcoded
-# here as a parallel list.
+# here as a parallel list. All THREE tsv key shapes are counted (that file's
+# header owns the grammar): an extension by suffix, a `dir/**` glob by tree,
+# and a `**/<basename>` key (temperloop#1705) by exact basename.
 #
 # Usage:
 #   reviewer-activation-coverage.sh [--project-dir DIR] [--list-only]
@@ -145,6 +147,24 @@ _rac_count_pathglob() {
 }
 
 # ---------------------------------------------------------------------------
+# _rac_count_basename <project-dir> <basename>  — count files whose BASENAME
+# is exactly <basename> (the tsv `**/Makefile` key shape, temperloop#1705),
+# pruning the same vendored/build-output dirs. Without this arm the key falls
+# through to _rac_count_pathglob, which reads the whole key as a directory
+# name, finds no such directory, and silently reports 0 — real usage read as
+# "this language is not present here", the exact false negative the
+# activation scan exists to avoid.
+# ---------------------------------------------------------------------------
+_rac_count_basename() {
+  local project_dir="$1" base="$2"
+  find "$project_dir" \
+    \( -name .git -o -name node_modules -o -name .venv -o -name venv \
+       -o -name vendor -o -name dist -o -name build -o -name target \
+       -o -name .claude -o -name __pycache__ -o -name .tox -o -name .next \) \
+    -prune -o -type f -name "$base" -print 2>/dev/null | wc -l | tr -d ' '
+}
+
+# ---------------------------------------------------------------------------
 # _rac_is_covered <project-dir> <reviewer-name>  — true iff a reviewer of
 # this name is already deployed (catalog-activated or user-defined; this
 # check only cares that the file exists, never its provenance).
@@ -210,7 +230,11 @@ reviewer_coverage_gaps() {
   for i in "${!keys[@]}"; do
     key="${keys[$i]}"
     reviewer="${reviewers[$i]}"
+    # The three tsv key shapes (reviewer-routing.tsv header): a leading `**/`
+    # is the basename form and MUST be tested before the catch-all, or it is
+    # misread as a directory glob and counts 0.
     case "$key" in
+      '**/'*) count="$(_rac_count_basename "$project_dir" "${key#'**/'}")" ;;
       .*) count="$(_rac_count_extension "$project_dir" "$key")" ;;
       *) count="$(_rac_count_pathglob "$project_dir" "$key")" ;;
     esac

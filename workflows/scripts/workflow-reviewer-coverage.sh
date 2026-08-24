@@ -113,6 +113,36 @@
 #                           two states are always distinguishable, and every
 #                           roster reviewer is always present in the array.
 #
+# ── temperloop#1705 — the UNROUTED-PATH figure ─────────────────────────────
+# `by_reviewer` above measures reviewers. It cannot see a changed path that
+# NO routing rule matches: such a path produces no routed-reviewer entry, so
+# it is absent from the denominator entirely — neither covered nor uncovered.
+# That is the mirror image of the very gap #1446's acceptance criterion
+# eliminated for reviewers ("an absent reviewer must be distinguishable from
+# a reviewer with nothing to review"), and it is how `Makefile` — the 7th
+# highest-churn reviewable file in this repo, 41 changes in 90 days — stayed
+# unrouted and invisible until a human read the tsv by hand (temperloop#1705).
+#
+# So the window's changed paths are ALSO partitioned and reported, as their
+# own figure independent of any reviewer:
+#   changed_paths            distinct paths across every merged PR in window.
+#   routed_paths             matched by a tsv row, or by the
+#                            claude/commands/*.md -> workflow-reviewer override.
+#   prose_md_fallback_paths  matched by no tsv row but ending in `.md`, i.e.
+#                            claimed by build.md 3e's in-prose "any other
+#                            stranger-facing prose *.md -> docs-reviewer"
+#                            fallback. Counted separately, NOT as unrouted:
+#                            build.md does route them, this script just can't
+#                            tell WHICH are stranger-facing (ADR 0008's
+#                            reason for keeping that route in prose).
+#   unrouted_paths           NEITHER. No rule of any kind reaches these — the
+#                            actionable number, and the one a new high-churn
+#                            unrouted file shows up in.
+#   unrouted_path_examples   up to 20 of them, so the figure names names
+#                            rather than only counting.
+#   The three buckets partition changed_paths:
+#   routed_paths + prose_md_fallback_paths + unrouted_paths == changed_paths.
+#
 # Test seam: WFR_COVERAGE_GH_BIN overrides the gh binary (hermetic; see
 # test_workflow_reviewer_coverage.sh and test_reviewer_coverage_all_routed.sh).
 # WFR_COVERAGE_ROUTING_TSV overrides the routing tsv path (hermetic fixtures).
@@ -130,7 +160,7 @@ while [ $# -gt 0 ]; do
     --days) DAYS="$2"; shift 2 ;;
     --repo) REPO="$2"; shift 2 ;;
     --json) JSON=1; shift ;;
-    -h|--help) sed -n '2,116p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,146p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "workflow-reviewer-coverage: unknown arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -289,14 +319,22 @@ report="$(printf '%s' "$prs_json" | jq -c --arg since "$since" --argjson rules "
     or ($body | test("(^|\n)###[ \t]+" + re_escape($r) + "[ \t\r]*(\n|$)"));
   def reviewer_skipped($r; $body): $body | test("skipped[ \t]*[—–-][ \t]*`?" + re_escape($r) + "\\b");
 
-  # Extension rows match by suffix (`.py`); glob rows (`docs/**`) match by
-  # prefix on the glob stripped of its trailing `**`. A `claude/commands/*.md`
+  # Extension rows match by suffix (`.py`); dir-glob rows (`docs/**`) match by
+  # prefix on the glob stripped of its trailing `**`; basename rows
+  # (`**/Makefile`, temperloop#1705) match the bare path or any `<dir>/<base>`
+  # at any depth — an EXACT basename, never a suffix, so `**/Makefile` cannot
+  # claim `NotAMakefile`. These three shapes are the tsv key grammar
+  # (reviewer-routing.tsv header) and must stay in lockstep with
+  # build-level.mjs reviewGlobMatch(), the copy §3e actually routes through.
+  # A `claude/commands/*.md`
   # path always routes to workflow-reviewer, overriding any tsv match for that
   # SAME path (foundation#1007) — no tsv row currently claims `.md`, so this is
   # additive today, but the override wins by construction if one ever did.
   def is_workflow_md($p): $p | test("^claude/commands/.*\\.md$");
   def match_rule($p; $rule):
-    if ($rule.pattern | startswith(".")) then ($p | endswith($rule.pattern))
+    if ($rule.pattern | startswith("**/")) then
+      ($rule.pattern[3:]) as $base | ($p == $base or ($p | endswith("/" + $base)))
+    elif ($rule.pattern | startswith(".")) then ($p | endswith($rule.pattern))
     elif ($rule.pattern | endswith("/**")) then ($p | startswith($rule.pattern[0:-2]))
     else false end;
   def routed_for_path($p; $rules):
@@ -340,7 +378,28 @@ report="$(printf '%s' "$prs_json" | jq -c --arg since "$since" --argjson rules "
                           else null end)
          })
      | sort_by(.reviewer)) as $by_reviewer
-  | $legacy + {by_reviewer: $by_reviewer}
+
+  # ── temperloop#1705: the UNROUTED-PATH partition ──────────────────────────
+  # Reviewer-keyed rollups structurally cannot see a path NO rule matches --
+  # it contributes to no reviewer row, so it is absent from the denominator
+  # rather than counted as uncovered. Partition the distinct changed paths in
+  # the window instead, so an unrouted file is a FIGURE with a name attached.
+  # `prose_md_fallback` is split out rather than folded into unrouted: those
+  # paths ARE routed, by the in-prose stranger-facing `*.md` -> docs-reviewer
+  # fallback in build.md 3e that ADR 0008 deliberately keeps out of the tsv.
+  # Folding them in would bury the actionable number under every README.
+  | ([ .[] | .paths[]? ] | unique) as $all_paths
+  | ($all_paths | map(select((routed_for_path(.; $rules) | length) == 0))) as $unmatched
+  | ($unmatched | map(select(test("\\.md$")))) as $prose_md
+  | ($unmatched | map(select(test("\\.md$") | not))) as $unrouted
+  | $legacy + {
+      by_reviewer: $by_reviewer,
+      changed_paths: ($all_paths | length),
+      routed_paths: (($all_paths | length) - ($unmatched | length)),
+      prose_md_fallback_paths: ($prose_md | length),
+      unrouted_paths: ($unrouted | length),
+      unrouted_path_examples: ($unrouted[0:20])
+    }
 ' 2>"$jq_err" || true)"
 # NARROW THE FAIL-OPEN (temperloop#1446 review, HIGH aggravator). This was
 # `2>/dev/null || echo ""`, which rendered ANY jq error -- a thrown regex, a
@@ -352,7 +411,11 @@ if [ -s "$jq_err" ]; then
   sed "s/^/  /" "$jq_err" >&2
 fi
 rm -f "$jq_err"
-[ -n "$report" ] || report='{"since":"'"$since"'","command_doc_prs":0,"with_workflow_reviewer":0,"any_reviewer_ran":0,"skip_notice_only":0,"no_review_record":0,"skipped_prs":[],"unrecorded_prs":[],"coverage_pct":0,"by_reviewer":[]}'
+# The zero fallback carries EVERY reported field, the temperloop#1705 path
+# figures included — a fallback missing a key renders it as a literal `null`
+# in the text summary, which reads like a measured value rather than the
+# crashed-query sentinel the WARNING above just named.
+[ -n "$report" ] || report='{"since":"'"$since"'","command_doc_prs":0,"with_workflow_reviewer":0,"any_reviewer_ran":0,"skip_notice_only":0,"no_review_record":0,"skipped_prs":[],"unrecorded_prs":[],"coverage_pct":0,"by_reviewer":[],"changed_paths":0,"routed_paths":0,"prose_md_fallback_paths":0,"unrouted_paths":0,"unrouted_path_examples":[]}'
 
 if [ "$JSON" = 1 ]; then
   printf '%s' "$report" | jq -c 'del(.skipped_prs, .unrecorded_prs)'
@@ -371,7 +434,13 @@ else
         "  \(.reviewer): routed \(.routed_prs)  ·  documented pass \(.documented_pass) (\(.coverage_pct)%)  ·  skip notice \(.skip_notice)  ·  no record \(.no_record)"
       else
         "  \(.reviewer): not routed this window (nothing to review)"
-      end)
+      end),
+    "",
+    "changed-path routing (temperloop#1705 — every distinct path in the window, so an unrouted file is visible):",
+    "  changed paths: \(.changed_paths)  ·  routed: \(.routed_paths)  ·  prose *.md fallback: \(.prose_md_fallback_paths)  ·  UNROUTED (no rule matches): \(.unrouted_paths)",
+    (if (.unrouted_path_examples | length) > 0
+       then "  unrouted paths: \(.unrouted_path_examples | join(" "))"
+       else empty end)
   '
 fi
 
