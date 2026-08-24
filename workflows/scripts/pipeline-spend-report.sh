@@ -392,16 +392,24 @@ fi
 run_norm=""
 if [ -n "$run_filter" ]; then
   _old_ifs="$IFS"; IFS=','
-  # NOTE: $run_filter is deliberately unquoted here to word-split on the IFS
-  # comma, but that also subjects it to pathname expansion, so a --run value
-  # containing a glob metacharacter can expand against the cwd. Pre-existing;
-  # tracked separately as temperloop#1393 — do not "fix" it in passing, the
-  # split behavior above depends on the unquoted form.
+  # $run_filter stays UNQUOTED below so it word-splits on the IFS comma —
+  # that is the whole mechanism by which `--run a,b` becomes two ids. But an
+  # unquoted expansion is also subject to PATHNAME expansion, which made a
+  # --run value carrying a glob metacharacter expand against whatever
+  # directory the caller happened to be standing in: `--run 'new-*'` answered
+  # differently from a cwd holding a file named `new-007` than from one that
+  # did not (temperloop#1393). Disabling globbing for the split — and
+  # restoring the caller's own -f state afterwards rather than assuming it
+  # was off — keeps the word-splitting and drops the cwd dependence: a run id
+  # is now always taken literally, so a metacharacter simply matches no run.
+  case $- in *f*) _old_noglob=1 ;; *) _old_noglob="" ;; esac
+  set -f
   for _r in $run_filter; do
     _r="${_r#wf_}"
     [ -n "$_r" ] || continue
     run_norm="$run_norm,$_r"
   done
+  [ -n "$_old_noglob" ] || set +f
   IFS="$_old_ifs"
   run_norm="$run_norm,"
 fi
