@@ -9,3 +9,6 @@
   failed `git worktree add` is also rolled back now, so the `ERROR` outcome
   leaves no orphan `build/<slug>` branch to delete by hand and a naive retry is
   a clean create.
+  A crashed `worktree.sh` no longer wedges the repo either: a lock whose owner
+  process is provably gone is reclaimed at once, and one that never recorded an
+  owner is reclaimed once it ages past `WORKTREE_LOCK_STALE_SECS`.

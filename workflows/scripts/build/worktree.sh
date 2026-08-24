@@ -196,8 +196,16 @@ exclude_marker() {
 # SCOPE. The lock is keyed on the repo's shared git common dir, so concurrent
 # creates in DIFFERENT repos never block each other, and a worktree's own
 # `git commit` (which touches no shared config) is never serialized. It is held
-# only across the mutating git calls — never across the guard probe, never
-# across a `gh` call.
+# only across the LOCAL mutating git calls — never across the guard probe,
+# never across a `gh` call, and never across a network round-trip. That is a
+# hard rule, not a style preference: the budget below is shared by every waiter
+# on the repo, so one hanging `gh` under the lock converts the REST of a
+# /build level's or /sweep chunk's CREATEDs into ERRORs. Both destroyers obey
+# it structurally — `prune_one` acquires BELOW its gh-backed merged detection,
+# and `create_core` acquires below `clear_path_probe` (which shells out to
+# `pr.sh recover-probe` and `merged_detect_is_merged`) and below its
+# `git fetch origin`. Adding a network call inside a locked region is a
+# regression; move the acquire instead.
 #
 # NEVER DEADLOCKS. Re-entrant (a depth counter, so a locked region nested in a
 # locked region is a no-op rather than a self-deadlock); released by an EXIT
@@ -207,44 +215,102 @@ exclude_marker() {
 # aged out), so a killed worker cannot wedge every later run.
 WT_LOCK_DIR=""
 WT_LOCK_DEPTH=0
-# Wait budget in 0.1s ticks. Sized for the worst in-lock region (a `git fetch`
-# over the network, several deep in a fanout), not for the common case.
+# Wait budget in 0.1s ticks. Sized for the worst in-lock region (a fanout-deep
+# queue of local `worktree add`/`branch -D` calls), not for the common case.
 WT_LOCK_WAIT_TICKS="${WORKTREE_LOCK_WAIT_TICKS:-1200}"
 # A lock with no pid file yet (the mkdir/pid-write window) is respected until
 # this age, then treated as debris.
 WT_LOCK_STALE_SECS="${WORKTREE_LOCK_STALE_SECS:-900}"
 
+# Epoch mtime of a path, with the stat DIALECT feature-detected ONCE, up front.
+# A `stat -f %m || stat -c %Y` fallback chain is NOT portable and must never be
+# reintroduced here: on GNU coreutils `-f` means --file-system and `%m` is read
+# as a FILE OPERAND, so `stat -f %m DIR` prints a multi-line filesystem block to
+# STDOUT and then exits non-zero — the `||` fires and the caller captures the
+# garbage block PLUS the real mtime. Under `set -u` the arithmetic then dies on
+# `File:` as an unbound variable, wt_lock_age prints nothing, and its `[ … -ge
+# … ]` caller errors "integer expected" and evaluates FALSE — silently killing
+# the pid-less stale-lock steal on every Linux runner while staying green on
+# macOS. Same idiom, same reason, as workflows/scripts/install/doctor.sh and
+# workflows/scripts/drain/vault_hygiene_report.sh (temperloop#250).
+# Detection probe: only GNU stat accepts `-c`; BSD stat exits non-zero on it.
+if stat -c %Y . >/dev/null 2>&1; then
+  _wt_stat_mtime() { stat -c %Y "$1" 2>/dev/null; }   # GNU coreutils
+else
+  _wt_stat_mtime() { stat -f %m "$1" 2>/dev/null; }   # BSD/macOS
+fi
+
+# Age of the lock dir in whole seconds. Belt-and-suspenders over the dialect
+# detection above: a value that is not a plain integer NEVER reaches the
+# caller's `[ … -ge … ]` — it is reported as 0 ("brand new"), which is the
+# conservative direction, since the only thing age unlocks is STEALING someone
+# else's lock. An unreadable age therefore waits rather than reclaims.
 wt_lock_age() {
-  local now; now="$(date +%s)"
-  echo "$(( now - $(stat -f %m "$WT_LOCK_DIR" 2>/dev/null || stat -c %Y "$WT_LOCK_DIR" 2>/dev/null || echo "$now") ))"
+  local now mt
+  now="$(date +%s)"
+  mt="$(_wt_stat_mtime "$WT_LOCK_DIR")" || mt=""
+  case "$mt" in
+    ''|*[!0-9]*) echo 0; return 0 ;;
+  esac
+  echo "$(( now - mt ))"
 }
 
 # wt_lock_acquire <repo> — block until this process owns the repo's mutation
-# lock. Returns non-zero only when the wait budget is exhausted.
+# lock. Distinct non-zero returns, because the three causes want three
+# different operator messages (see wt_lock_die):
+#   1 — the wait budget was exhausted (someone else really is holding it)
+#   2 — <repo> has no resolvable git common dir (not a git repository)
+#   3 — the lock dir was created but ownership could not be recorded
 wt_lock_acquire() {
-  local repo="$1" common ticks=0 owner
+  local repo="$1" common ticks=0 steals=0 owner steal
   if [ "$WT_LOCK_DEPTH" -gt 0 ]; then
     WT_LOCK_DEPTH=$((WT_LOCK_DEPTH + 1))
     return 0
   fi
-  common="$(git -C "$repo" rev-parse --git-common-dir 2>/dev/null)" || return 1
+  # NOT `return 1`: a non-repo is not a busy lock, and reporting it as one sends
+  # the operator to WORKTREE_LOCK_WAIT_TICKS for a problem the budget cannot fix
+  # (and names an empty WT_LOCK_DIR while doing it).
+  common="$(git -C "$repo" rev-parse --git-common-dir 2>/dev/null)" || return 2
   case "$common" in /*) ;; *) common="$repo/$common" ;; esac
   WT_LOCK_DIR="$common/build-worktree.lock.d"
   while :; do
     if mkdir "$WT_LOCK_DIR" 2>/dev/null; then
-      echo "$$" > "$WT_LOCK_DIR/pid" 2>/dev/null || true
+      # FATAL, not best-effort. Release removes the dir only when its pid file
+      # reads back as ours, so a lock that never recorded an owner is
+      # unreleasable BY DESIGN — it would wedge every later create/remove/prune
+      # on this repo for the full WT_LOCK_STALE_SECS. Hand the lock straight
+      # back and fail this one call loudly instead.
+      if ! echo "$$" > "$WT_LOCK_DIR/pid" 2>/dev/null; then
+        rm -rf "$WT_LOCK_DIR" 2>/dev/null || true
+        return 3
+      fi
       WT_LOCK_DEPTH=1
       return 0
     fi
     owner="$(cat "$WT_LOCK_DIR/pid" 2>/dev/null || true)"
+    steal=0
     if [ -n "$owner" ] && ! kill -0 "$owner" 2>/dev/null; then
-      rm -rf "$WT_LOCK_DIR" 2>/dev/null || true   # owner is gone — debris
-      continue
+      steal=1                                   # owner is provably gone
+    elif [ -z "$owner" ] && [ "$(wt_lock_age)" -ge "$WT_LOCK_STALE_SECS" ]; then
+      steal=1                                   # never claimed, and aged out
     fi
-    if [ -z "$owner" ] && [ "$(wt_lock_age)" -ge "$WT_LOCK_STALE_SECS" ]; then
-      rm -rf "$WT_LOCK_DIR" 2>/dev/null || true   # never claimed — debris
-      continue
+    if [ "$steal" -eq 1 ]; then
+      # Claim the debris by RENAME, never by read-then-`rm -rf`. Read-then-
+      # delete is a TOCTOU: two waiters can both read the same dead pid, both
+      # conclude the owner is gone, and both delete — so waiter A removes the
+      # lock dir waiter B has already re-created and OWNS, and both walk into
+      # the mutating region. That reintroduces the exact `could not lock config
+      # file` collision this lock exists to prevent, in the recovery path,
+      # where it is hardest to reproduce. Only one `mv` can win; the loser's
+      # `mv` fails because the source is already gone, and it simply re-loops
+      # to find the winner's fresh, live-owned lock.
+      steals=$((steals + 1))
+      if mv "$WT_LOCK_DIR" "$WT_LOCK_DIR.dead.$$.$steals" 2>/dev/null; then
+        rm -rf "$WT_LOCK_DIR.dead.$$.$steals" 2>/dev/null || true
+      fi
     fi
+    # A reclaim consumes a tick like any other pass, so even a pathological
+    # steal/re-mkdir livelock drains the budget instead of spinning forever.
     ticks=$((ticks + 1))
     # Budget exhausted. WT_LOCK_DIR is deliberately left SET (the caller's die
     # message names it) — safe because release is depth-gated, so a failed
@@ -252,8 +318,20 @@ wt_lock_acquire() {
     if [ "$ticks" -ge "$WT_LOCK_WAIT_TICKS" ]; then
       return 1
     fi
-    sleep 0.1
+    # Retry a reclaimed lock immediately; only a genuinely-held one is slept on.
+    [ "$steal" -eq 1 ] || sleep 0.1
   done
+}
+
+# wt_lock_die <rc> <repo> — the shared failed-acquire exit for all three call
+# sites. Reporting every cause as "timed out … holding ''" is what made a
+# non-repo look like a busy lock.
+wt_lock_die() {
+  case "$1" in
+    2) die "cannot resolve the git common dir in '$2' — not a git repository?" ;;
+    3) die "acquired the repo mutation lock at '$WT_LOCK_DIR' but could not record ownership in it (unwritable git dir?)" ;;
+    *) die "timed out waiting for the repo mutation lock (another worktree.sh is holding '$WT_LOCK_DIR'); see WORKTREE_LOCK_WAIT_TICKS" ;;
+  esac
 }
 
 # Release only what WE own — a finishing process must never free another's lock.
@@ -369,7 +447,8 @@ materialize_agents() {
 
 # --- Unlanded-work preservation (temperloop#1699) ----------------------------
 #
-# THE LOSS. `clear_path` below force-removes the worktree AND `git branch -D`s
+# THE LOSS. `clear_path_destroy` below force-removes the worktree AND
+# `git branch -D`s
 # `build/<slug>`, so COMMITTING IS NOT PROTECTION: an escalated attempt that
 # committed clean work is destroyed just as completely as an uncommitted one.
 # Every caller that re-drives an item (`/fix` Step 4a's inline-answer branch,
@@ -381,8 +460,8 @@ materialize_agents() {
 # THE SEAM. The guard lives INSIDE the destroying primitive, not at the two
 # spec call sites, so every caller inherits it — including callers nobody has
 # written yet. `prune_one` already refuses to reap unlanded work through three
-# gates (SKIPPED_UNMERGED / SKIPPED_FRESH / SKIPPED_DIRTY); `clear_path` had
-# none.
+# gates (SKIPPED_UNMERGED / SKIPPED_FRESH / SKIPPED_DIRTY); the clear_path
+# pair had none.
 #
 # TRANSPORT: a LOCAL-ONLY ref outside `refs/heads/`, never pushed.
 #   * outside `refs/heads/` because `<type>/<slug>` and `build/<slug>` COLLIDE
@@ -772,12 +851,33 @@ sideline_unpreserved() {
 # return is precisely what let the destruction below run on a failed capture.
 # `if !` is the shape that keeps the caller safe under `set -e` (the test of an
 # `if` is exempt) WITHOUT discarding the verdict.
-clear_path() {
+# clear_path is deliberately SPLIT in two around the mutation lock (#1171), and
+# the halves must stay on their own sides of it:
+#
+#   clear_path_probe   — OUTSIDE the lock. Classifies the occupant, which means
+#                        shelling out to `pr.sh recover-probe` and
+#                        `merged_detect_is_merged`, both gh-backed. Reads only.
+#   clear_path_destroy — INSIDE the lock. Every call that rewrites shared repo
+#                        state (`worktree remove`, `worktree prune`, the
+#                        `branch -D` and the `branch -m` inside sideline, all of
+#                        which touch `.git/config` and the ref store).
+#
+# Splitting them is what lets `create_core` mirror `prune_one` and keep the
+# network out of the locked region (§ Repo-wide mutation lock § SCOPE). They
+# are a pair with one call site each and are only ever run in this order.
+CLEAR_NEEDS_SIDELINE=0
+clear_path_probe() {
   local repo="$1" wt_path="$2" branch="$3"
   SIDELINED="false"
   SIDELINED_PATH=""
   SIDELINED_BRANCH=""
-  if ! preserve_unlanded "$repo" "$wt_path" "$branch"; then
+  CLEAR_NEEDS_SIDELINE=0
+  preserve_unlanded "$repo" "$wt_path" "$branch" || CLEAR_NEEDS_SIDELINE=1
+}
+
+clear_path_destroy() {
+  local repo="$1" wt_path="$2" branch="$3"
+  if [ "$CLEAR_NEEDS_SIDELINE" -eq 1 ]; then
     sideline_unpreserved "$repo" "$wt_path" "$branch" \
       || die "preservation failed ($PRESERVED_DETAIL) and '$wt_path' could not be sidelined — refusing to destroy uncaptured work"
     # The occupant is gone from the deterministic path/branch by MOVE, so the
@@ -1163,25 +1263,37 @@ create_core() {
   CREATE_BRANCH="$branch"
   CREATE_BASE="origin/$default"
 
-  # Everything from here to the CREATED-side bookkeeping below mutates SHARED
-  # repo state — `.git/config` (the branch-delete in clear_path, the upstream
-  # write inside `worktree add`), the ref store, and info/exclude — so it runs
-  # under the repo's mutation lock (§ Repo-wide mutation lock). Concurrent
-  # creates in one /build level now QUEUE here instead of colliding on
-  # `.git/config.lock` (#1171).
-  wt_lock_acquire "$repo" \
-    || die "timed out waiting for the repo mutation lock (another worktree.sh is holding '$WT_LOCK_DIR'); see WORKTREE_LOCK_WAIT_TICKS"
-
-  # The path is a pure function of the slug — anything already there is debris
-  # from an aborted run; force-remove and re-add.
-  clear_path "$repo" "$wt_path" "$branch"
+  # BEFORE the lock, deliberately. Classifying the occupant shells out to
+  # `pr.sh recover-probe` and `merged_detect_is_merged`, both gh-backed, and the
+  # lock's SCOPE rule (§ Repo-wide mutation lock) forbids holding it across a
+  # network round-trip: the wait budget is shared by every waiter on this repo,
+  # so one hanging `gh` in here would time the REST of a /build level out into
+  # ERRORs. `prune_one` acquires below its own gh-backed detection for exactly
+  # this reason; create now matches it.
+  clear_path_probe "$repo" "$wt_path" "$branch"
 
   # Freshen the base before branching off it. `worktree add` bases the new branch
   # on the LOCAL origin/<default> ref, which goes stale between runs — branching
   # off a stale base silently builds the item on an old main (two stale-base
   # incidents in the workflow-evals run, #337). Best-effort, mirroring cmd_prune:
   # offline (tests/planes) is fine — the local ref is then the conservative basis.
+  # Also OUTSIDE the lock, for the same reason as the probe above: it is the one
+  # remaining network call on this path. It needs no serialization — git locks
+  # the remote-tracking ref itself, and the `|| true` already treats a lost race
+  # exactly as it treats being offline (fall back to the local ref).
   git -C "$repo" fetch --quiet origin "$default" 2>/dev/null || true
+
+  # Everything from here to the CREATED-side bookkeeping below mutates SHARED
+  # repo state — `.git/config` (the branch-delete in clear_path_destroy, the
+  # upstream write inside `worktree add`), the ref store, and info/exclude — so
+  # it runs under the repo's mutation lock (§ Repo-wide mutation lock).
+  # Concurrent creates in one /build level now QUEUE here instead of colliding
+  # on `.git/config.lock` (#1171).
+  wt_lock_acquire "$repo" || wt_lock_die "$?" "$repo"
+
+  # The path is a pure function of the slug — anything already there is debris
+  # from an aborted run; force-remove and re-add.
+  clear_path_destroy "$repo" "$wt_path" "$branch"
 
   mkdir -p "${repo}.wt"
   # § Atomic create failure (#1171). A failed `worktree add` is NOT a no-op: the
@@ -1378,7 +1490,7 @@ cmd_remove() {
 
   # `remove` is the OTHER destroying path — the one `/sweep`'s unattended
   # PARK-AND-CONTINUE finale reaches (temperloop#1725, absorbed into #1699). It
-  # does not route through clear_path, so it takes the same guard directly;
+  # does not route through clear_path_probe, so it takes the same guard directly;
   # a /sweep-originated preservation ref is minted HERE.
   #
   # AND, unlike `create`, it REFUSES when that guard came back empty-handed
@@ -1403,8 +1515,7 @@ cmd_remove() {
   # Same shared-state region as create's (#1171): `git branch -D` rewrites
   # `.git/config`, so a remove concurrent with a create would hit the identical
   # `could not lock config file` loss. A lock only one side takes is not a lock.
-  wt_lock_acquire "$repo" \
-    || die "timed out waiting for the repo mutation lock (another worktree.sh is holding '$WT_LOCK_DIR'); see WORKTREE_LOCK_WAIT_TICKS"
+  wt_lock_acquire "$repo" || wt_lock_die "$?" "$repo"
   if [ -e "$wt_path" ]; then
     existed=1
     rm -f "$wt_path/.build-guard"
@@ -1685,8 +1796,7 @@ prune_one() {
   # The destroying block only — never the gh-backed merged-detection above it
   # (#1171: hold the repo mutation lock across the config-writing branch delete,
   # not across a network call).
-  wt_lock_acquire "$repo" \
-    || die "timed out waiting for the repo mutation lock (another worktree.sh is holding '$WT_LOCK_DIR'); see WORKTREE_LOCK_WAIT_TICKS"
+  wt_lock_acquire "$repo" || wt_lock_die "$?" "$repo"
   rm -f "$wt_path/.build-guard"
   git -C "$repo" worktree remove --force "$wt_path" 2>/dev/null || rm -rf "$wt_path"
   git -C "$repo" worktree prune 2>/dev/null || true
