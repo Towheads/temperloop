@@ -76,6 +76,17 @@ claude/commands/promote.md	record/report — the three-part migrated/re-applied/
 # an AI-executed spec would catch.
 claude/commands/triage.md	Step 4.8a — claim-filter the cull set before any close write	This step is not optional	guard	workflows/scripts/board/tests/test_claim_guard.sh	claude/commands/triage.md Step 4.8a must invoke claim-guard.sh before the cull write	make test-board	Case 9 asserts the spec still invokes claim-guard.sh AND that the invocation precedes the cull's reason-comment write; deleting the step from the spec, or reordering it after the close, turns test_claim_guard.sh red under make test-board.
 
+# ── /triage Step 1 Adapter A — the process-record label exclusion (temperloop#1614) ─
+# The third naturally-excluded intake bucket. Its Step-5 report line is
+# mandatory every run (the #164 silent-skip mitigation the sibling
+# inactive-milestone line already carries), and the failure mode in an
+# AI-executed spec is the invocation quietly disappearing from the prose —
+# which no runtime tally inside that spec could catch. So the signal is a
+# STATIC guard over the spec text, the same shape /triage 4.8a's claim filter
+# uses: assert the invocation is still there, still ahead of the two
+# per-candidate-REST filters, and that the mandatory line is still present.
+claude/commands/triage.md	Step 1 Adapter A — process-record label exclusion + its mandatory Step-5 report line	process-record exclusion line is mandatory on the same terms	guard	workflows/scripts/build/tests/test_triage_intake_exclusion.sh	claude/commands/triage.md Step 1 Adapter A must invoke triage-intake-exclusion.sh before the milestone filter	make test-build	Case 12 asserts the spec still invokes triage-intake-exclusion.sh, that the invocation precedes the active-milestone filter (the ordering the report line's accuracy depends on), and that the mandatory Step-5 line and the symbolic setting reference survive; deleting the step, reordering it, or dropping the line turns test_triage_intake_exclusion.sh red under make test-build.
+
 # ── /build 3-launch + 4a + 4d — the level-composition rosters (temperloop#1310) ─
 # /workflows is opt-in, so the orchestrator transcript is the only kernel-owned
 # surface that PUSHES a level's composition to the operator — and a roster
@@ -85,3 +96,12 @@ claude/commands/triage.md	Step 4.8a — claim-filter the cull set before any clo
 # and the signal holds both halves: the spec still CALLS the renderer, and the
 # renderer is TOTAL over the level with header counts derived from the rows.
 claude/commands/build.md	3-launch / 4a / 4d — the level-composition rosters (launch, gate disposition, close-out)	on every level and both paths is **mandatory**	guard	workflows/scripts/build/tests/test_plan.sh	claude/commands/build.md invokes plan.sh roster at all three sites	make test-build	The fixture asserts build.md still invokes `plan.sh roster --stage launch|gate|close` (delete a site from the spec and it goes red) AND that the renderer emits one row per level member with header counts that equal the rows shown — so neither a dropped invocation nor a short roster can pass under make test-build.
+# ── /triage Step 1 Adapter A — the DEGRADED arm of the same exclusion (temperloop#1614) ─
+# The bucket's report line is registered above; this row registers its
+# failure path. Reviewed-and-rejected alternative: hard-STOP the run, the way
+# Step 4.8a refuses to cull unfiltered. Rejected because the failure directions
+# differ — 4.8a's unguarded failure is an irreversible write, this one is a
+# wider candidate set under an existing write gate — so this arm degrades
+# loudly and refuses the two DISPOSITIONS instead. That refusal is the part
+# worth a signal.
+claude/commands/triage.md	Step 1 Adapter A — the degraded arm when triage-intake-exclusion.sh is unavailable or fails	Three obligations, all mandatory:	guard	workflows/scripts/build/tests/test_triage_intake_exclusion.sh	static guard: the degraded arm REFUSES the cull/promote dispositions	make test-build	The degraded arm is the one path no runtime tally inside an AI-executed spec can ever observe: it fires precisely when the classifier that would have emitted the tally is absent. So the signal is a STATIC guard over the spec text, paired with a RUNTIME exercise of the guard's own branch. Cases 13/14 run the spec's resolve-and-guard snippet against an absent and a failing classifier and assert both land on the degraded arm (and against the real one, that it does NOT) — so the guard is proven to discriminate, not merely to exist. Case 15's four assertions then pin each of the three obligations in the prose: the -x test, the NAMED 'SKIPPED … intaken UNFILTERED' report line that keeps a degraded run from reading like a genuine zero, and the refusal to cull or promote a candidate carrying an exclusion label. Deleting the guard, dropping the named line, or softening the disposition refusal to a silent unfiltered intake turns test_triage_intake_exclusion.sh red under make test-build.

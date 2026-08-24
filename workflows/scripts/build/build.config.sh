@@ -318,6 +318,32 @@ fi
 : "${ASSESS_POLL_CADENCE:=1200}"      # every wake thereafter (s)
 : "${ASSESS_POLL_BUDGET:=7200}"       # give up this long (s) after arming
 
+# triage.md Step 1 Adapter A — the PROCESS-RECORD label exclusion: the third
+# naturally-excluded intake bucket, alongside the inactive-milestone filter
+# (foundation #208) and the open-`blocked_by` skip (foundation #137).
+# Space-separated GitHub label names; a Backlog item carrying any of them is
+# skipped from intake and reported on its own Step-5 summary line. Applied by
+# workflows/scripts/build/triage-intake-exclusion.sh (which carries a
+# byte-identical non-vendoring-checkout fallback of this same literal).
+#
+# WHY THESE TWO ARE THE DEFAULT — and why it is a setting, not a hardcode.
+# Both labels are minted by the KERNEL: build.md 4d-retro files a process-retro
+# tracker at epic close labelled `retro-pending` (an overlay /retro judge
+# exists to consume it) or `retro-info` (terminal — no judge installed). A bare
+# kernel checkout with no overlay mints `retro-info` trackers itself, so it
+# needs this exclusion exactly as much as an overlay-carrying one — the default
+# imports no overlay vocabulary and passes the stranger test on its own. The
+# generic label predicate is what lets an operator whose checkout carries other
+# non-work record labels extend the bucket without patching the spec.
+#
+# `retro-judged` is DELIBERATELY NOT in the default. The judge relabels
+# `retro-pending`->`retro-judged` and closes the tracker in one motion, so a
+# `retro-judged` tracker still OPEN in Backlog is a MISSED CLOSE that tidy.md's
+# own drain sweep reports. Excluding it here would hide that tracker from
+# /triage too, leaving nothing but the tidy line to notice it; letting it stay
+# visible costs one re-consideration and keeps the signal.
+: "${TRIAGE_INTAKE_EXCLUDE_LABELS:=retro-pending retro-info}"
+
 # next.md Step 0.5 — orphan Sequencing/*.md record staleness prune.
 : "${NEXT_SEQ_STALE_AFTER:=64800}"    # prune a record older than this (s)
 
@@ -1314,6 +1340,7 @@ export BUILD_QUOTA_PAUSE_PCT BUILD_QUOTA_CACHE BUILD_QUOTA_WAIT_BUFFER \
        BUILD_MERGE_BACKEND BUILD_COMBINED_TREE_PRECHECK BUILD_MERGE_AS_YOU_GO \
        PIPELINE_DRIVE_CONCURRENCY EPIC_MIN_SUBUNITS DISPLAY_TZ \
        ASSESS_POLL_FIRST_WAKE ASSESS_POLL_CADENCE ASSESS_POLL_BUDGET \
+       TRIAGE_INTAKE_EXCLUDE_LABELS \
        NEXT_SEQ_STALE_AFTER TIDY_SYNC_WAIT TIDY_LOCK_STALE_AFTER CHECKIN_PRUNE_DAYS \
        SWEEP_FANOUT_WIDTH SWEEP_DETECT_MODEL SWEEP_WORKER_MODEL SWEEP_BG_POLL_ATTEMPTS SWEEP_BG_POLL_INTERVAL \
        FIX_WORKER_MODEL BUILD_MACHINERY_SOLO_MODEL BUILD_MACHINERY_BATCH_MODEL BUILD_GATE_SLICE_SECS \
