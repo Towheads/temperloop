@@ -20,6 +20,11 @@
 #      parse-miss → re-assign-operator path (closed-enum-or-escalate, no guess).
 #   6. contention pre-check: a re-assigned decision issue is skipped this tick.
 #   7. default-Operational: an unlabeled Ready item classifies Operational.
+#
+# Plus, beyond #569's own bullets:
+#   8. work-class precedence (temperloop#1191): a Ready item carrying BOTH
+#      Operational and Foundational resolves Foundational and GATES to the
+#      operator decision queue, never to autonomous drive (test 3b).
 
 set -euo pipefail
 
@@ -99,6 +104,38 @@ JSON
 PLAN="$(bash "$TICK" --dry-run --fixture "$FX" --board 3)"
 D="$(action_for <<<"$PLAN" '.action=="drive-ready"')"
 [ "$(jq -r '.class' <<<"$D")" = "Operational" ] && ok "unlabeled → Operational (default rule)" || bad "t3.class" "got $(jq -r '.class' <<<"$D")"
+
+# ── 3b: work-class PRECEDENCE — a both-labeled item gates, never drives (#1191) ─
+# work-class-policy.md § Precedence when both labels are present: an issue
+# carrying BOTH Operational and Foundational resolves Foundational, so it must
+# route to the operator's decision queue rather than to autonomous drive. The
+# both-present state is unreachable for today's writers (capture.sh and /triage
+# both substitute), but pre-existing dual-labeled issues still reach the router.
+# Asserted BOTH label orders, so the rule is precedence, not array position.
+echo "--- test 3b: both work-class labels → Foundational wins, gates to the operator queue (#1191) ---"
+for t3b_case in "Operational-first:311:[\"Operational\",\"Foundational\"]" \
+                "Foundational-first:312:[\"Foundational\",\"Operational\"]"; do
+  t3b_name="${t3b_case%%:*}"; t3b_rest="${t3b_case#*:}"
+  t3b_num="${t3b_rest%%:*}"; t3b_labels="${t3b_rest#*:}"
+  FX="$TMP/t3b-$t3b_num"; seed_board "$FX" 3
+  printf '[{"number":%s,"title":"dual-labeled legacy item","labels":%s}]\n' "$t3b_num" "$t3b_labels" \
+    > "$FX/board-3/ready.json"
+  PLAN="$(bash "$TICK" --dry-run --fixture "$FX" --board 3)"
+  T3B_DRIVE="$(action_for <<<"$PLAN" '.action=="drive-ready"')"
+  [ -z "$T3B_DRIVE" ] \
+    && ok "$t3b_name: NO drive-ready — the both-labeled item never routes to autonomous drive" \
+    || bad "t3b.$t3b_name.drive" "emitted an autonomous drive: $T3B_DRIVE"
+  T3B_ROUTE="$(action_for <<<"$PLAN" '.action=="route-foundational"')"
+  [ "$(jq -r '.issue' <<<"$T3B_ROUTE")" = "$t3b_num" ] \
+    && ok "$t3b_name: routed #$t3b_num to the operator decision queue" \
+    || bad "t3b.$t3b_name.issue" "got $(jq -r '.issue // "none"' <<<"$T3B_ROUTE")"
+  [ "$(jq -r '.class' <<<"$T3B_ROUTE")" = "Foundational" ] \
+    && ok "$t3b_name: class=Foundational (precedence over the co-present Operational)" \
+    || bad "t3b.$t3b_name.class" "got $(jq -r '.class // "none"' <<<"$T3B_ROUTE")"
+  jq -e '.emit | test("decision queue")' <<<"$T3B_ROUTE" >/dev/null \
+    && ok "$t3b_name: emit names the decision queue (the operator gate, not a merge path)" \
+    || bad "t3b.$t3b_name.emit" "$(jq -r '.emit // "none"' <<<"$T3B_ROUTE")"
+done
 
 # ── 4: typed-reply grammar variants ──────────────────────────────────────────
 echo "--- test 4: /choose and /approve shorthands parse ---"
