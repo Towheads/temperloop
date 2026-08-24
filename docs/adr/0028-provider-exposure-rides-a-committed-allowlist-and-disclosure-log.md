@@ -50,6 +50,31 @@ logs) live under the repo's untracked runtime dir, never the tracked tree and
 never a personal knowledge store, and records carry seat role names rather
 than any cross-repo operator identifier.
 
+### Amendment (temperloop#1316): the disclosure log's ANCHOR is committed
+
+One named, deliberately narrow exception to "never the tracked tree" above.
+The disclosure log is hash-chained and anchored by a sibling watermark file
+holding two values — how many entries the log is meant to have, and its tail
+hash. That anchor originally sat in the same untracked runtime dir as the log,
+so whoever could rewrite the log could rewrite its anchor in the same motion:
+a full re-forge verified clean, and the audit artifact decision 2 promises
+could be silently rebuilt.
+
+The **anchor** — and only the anchor — therefore moves into version control at
+`workflows/scripts/model-comparison/disclosure-log.watermark`, beside the
+committed allowlist. The **log itself stays untracked**, so no provider
+history and no content enters the repo; the anchor carries neither. The
+validator now additionally checks the live log against the anchor *as
+committed in git*, so a re-forge must also rewrite git history to stay
+hidden — which leaves its own trace.
+
+The threat this closes is a careless or self-serving **local process** (an
+agent or script regenerating state, an operator tidying a log before review),
+not an external attacker: local write access makes everything local theirs
+anyway. Signing entries and shipping to an external append-only sink were both
+considered and rejected as overbuilt for that threat — key management this
+repo has no story for, and a second home for provider history.
+
 ## Consequences
 
 - Consent has the right grain: the committed file carries shared-content
@@ -63,3 +88,7 @@ than any cross-repo operator identifier.
   trust boundary.
 - Untracked, role-named records mean removal is a local cleanup, and records
   from two repos cannot be correlated into a client-relationship inference.
+- The committed anchor (amendment above) costs one reviewed line whenever the
+  log grows, and buys the property the log's own hash chain structurally
+  cannot have: a re-forge that leaves no trace now requires rewriting git
+  history, which does.

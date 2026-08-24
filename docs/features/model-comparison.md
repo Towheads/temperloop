@@ -551,6 +551,22 @@ The disclosure log and the provider allowlist are both local, append-only
 files with no network cost of their own; only the model calls they gate
 carry real spend.
 
+**The log's anchor is committed; the log is not.** The disclosure log is
+hash-chained, and a two-value watermark anchor (`<max_seq> <last_hash>`)
+records how long the chain is meant to be and what its tail hash is. That
+anchor is a **tracked** file at
+`workflows/scripts/model-comparison/disclosure-log.watermark`, beside the
+committed provider allowlist; the **log itself stays gitignored** under
+`.temperloop/`, so no provider history and no content ever enters the repo,
+and the anchor carries neither. Committing the anchor is what makes a full
+re-forge of the log detectable at all: rewriting the log and its on-disk
+anchor together used to verify clean, whereas now the validator also checks
+the live log against the anchor *as committed in git*, so hiding a re-forge
+means rewriting git history too — which leaves its own trace. Commit the
+anchor when a run changes it; `pa_disclose` says so on stderr each time
+([ADR 0028](../adr/0028-provider-exposure-rides-a-committed-allowlist-and-disclosure-log.md),
+amendment).
+
 ## Telemetry
 
 **Emit coverage is structurally partial — by design, not by omission.**

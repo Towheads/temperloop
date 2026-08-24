@@ -31,13 +31,27 @@
 #      truncation of the log's TAIL, deletion of the WHOLE log, or a full
 #      RE-FORGE — an unanchored chain records nothing about its own length,
 #      and an unkeyed one can be rebuilt end to end by anyone who can write
-#      the file. The sibling watermark anchor
-#      (`disclosure-log.watermark`, written by pa_disclose) closes the first
-#      two and makes the third loud, but the watermark is ITSELF an untracked
-#      local file beside the log: it raises the cost of casual tampering and
-#      does not defeat an attacker who can write both files. Anchoring it
-#      beyond local write reach (committing or signing it) is a separate,
-#      open question. See allowlist.sh's own header for the full statement.
+#      the file. The watermark anchor (`disclosure-log.watermark`, written by
+#      pa_disclose) closes the first two and makes the third loud.
+#   3b. COMMITTED-ANCHOR checks (temperloop#1316). The checks in 3 compare the
+#      log against the anchor ON DISK, and both files are locally writable, so
+#      a process that rewrites the log AND its anchor together used to verify
+#      clean — a full re-forge with no trace. The anchor is now a TRACKED file
+#      (workflows/scripts/model-comparison/disclosure-log.watermark, beside the
+#      committed allowlist; the LOG stays gitignored under .temperloop/ so no
+#      provider history or content enters the repo), and this gate additionally
+#      checks the live log against the anchor AS COMMITTED IN GIT, via
+#      allowlist.sh's pa_verify_watermark_git_anchor:
+#        WATERMARK-LOCATION      the anchor was moved back under .temperloop/
+#        WATERMARK-NOT-TRACKED   the anchor is in the work tree but untracked
+#        WATERMARK-GIT-MALFORMED HEAD's blob carries no '<seq> <hash>' line
+#        WATERMARK-GIT-DIVERGED  the log has no entry at the committed seq
+#        REFORGED-VS-GIT         the log's entry at that seq hashes differently
+#      A re-forge must therefore ALSO rewrite git history to stay hidden, which
+#      leaves its own trace. The threat closed is a careless or self-serving
+#      LOCAL PROCESS (an agent regenerating state, an operator tidying a log
+#      before review), not an external attacker — signing and an external
+#      append-only sink were considered and rejected as overbuilt for it.
 #   4. DISCLOSURE-LOG MEMBERSHIP checks — every logged entry's provider is
 #      in the CURRENT effective allowlist (committed narrowed by any
 #      personal override). A logged provider that the allowlist no longer
@@ -88,16 +102,19 @@
 #   (a direct-`bash` KERNEL_GATES entry in scripts/quality-gates.sh)
 #
 # Env overrides (FIXTURE-TEST SEAM — same names allowlist.sh itself reads, so
-# a fixture repo just points all three at a scratch dir). They are honoured
+# a fixture repo just points all four at a scratch dir). They are honoured
 # ONLY alongside PROVIDER_ALLOWLIST_TEST_SEAM=1, and this script hard-fails
-# if a non-default committed-file override is present without it: otherwise
-# `PROVIDER_ALLOWLIST_COMMITTED_FILE=/tmp/widened.txt` repoints the ceiling
-# from the environment AND satisfies this gate by construction (a file
+# if a non-default committed-file or watermark override is present without it:
+# otherwise `PROVIDER_ALLOWLIST_COMMITTED_FILE=/tmp/widened.txt` repoints the
+# ceiling from the environment AND satisfies this gate by construction (a file
 # outside the repo skips the git-tracked check, and a widened file names
 # `anthropic` by construction), which is exactly the "never an env var"
-# property ADR 0028 decision 1 requires.
+# property ADR 0028 decision 1 requires — and the identical argument holds for
+# PROVIDER_DISCLOSURE_WATERMARK_FILE, where a path outside the repo skips the
+# committed-anchor check the same way (temperloop#1316).
 #   PROVIDER_ALLOWLIST_TEST_SEAM
 #   PROVIDER_ALLOWLIST_COMMITTED_FILE
+#   PROVIDER_DISCLOSURE_WATERMARK_FILE
 #   PROVIDER_ALLOWLIST_LOCAL_FILE
 #   PROVIDER_DISCLOSURE_LOG_FILE
 #
@@ -137,6 +154,22 @@ _PA_DEFAULT_COMMITTED="$SCRIPT_DIR/model-comparison/provider-allowlist.txt"
 if [[ -n "$_PA_ENV_COMMITTED" && "$_PA_ENV_COMMITTED" != "$_PA_DEFAULT_COMMITTED" \
       && "${PROVIDER_ALLOWLIST_TEST_SEAM:-0}" != "1" ]]; then
   echo "validate-provider-disclosure: CANNOT EVALUATE — PROVIDER_ALLOWLIST_COMMITTED_FILE is set to a non-default path ($_PA_ENV_COMMITTED) without PROVIDER_ALLOWLIST_TEST_SEAM=1. The committed ceiling is never repointed from the environment (ADR 0028 decision 1); refusing to validate a ceiling this gate did not choose." >&2
+  exit 1
+fi
+
+# Same guard, same reasoning, for the COMMITTED ANCHOR (temperloop#1316): a
+# `PROVIDER_DISCLOSURE_WATERMARK_FILE=/tmp/anywhere` repoints the anchor at a
+# path outside any git work tree, where the committed-anchor check below is
+# NOT APPLICABLE by construction — i.e. it satisfies this gate by disabling
+# it. Read before sourcing, for the same reason as above.
+_PA_ENV_WATERMARK=""
+if [[ -n "${PROVIDER_DISCLOSURE_WATERMARK_FILE+x}" ]]; then
+  _PA_ENV_WATERMARK="$PROVIDER_DISCLOSURE_WATERMARK_FILE"
+fi
+_PA_DEFAULT_WATERMARK="$SCRIPT_DIR/model-comparison/disclosure-log.watermark"
+if [[ -n "$_PA_ENV_WATERMARK" && "$_PA_ENV_WATERMARK" != "$_PA_DEFAULT_WATERMARK" \
+      && "${PROVIDER_ALLOWLIST_TEST_SEAM:-0}" != "1" ]]; then
+  echo "validate-provider-disclosure: CANNOT EVALUATE — PROVIDER_DISCLOSURE_WATERMARK_FILE is set to a non-default path ($_PA_ENV_WATERMARK) without PROVIDER_ALLOWLIST_TEST_SEAM=1. The committed disclosure-log anchor is never repointed from the environment (temperloop#1316); refusing to validate against an anchor this gate did not choose." >&2
   exit 1
 fi
 
@@ -298,10 +331,10 @@ if [[ -e "$log_file" && ! -r "$log_file" ]]; then
 fi
 
 # ALWAYS run the chain check, including on an absent/empty log: the watermark
-# anchor lives beside the log, so "log deleted, anchor still records three
-# entries" is exactly the case a `[[ -f ]]` guard around this block used to
-# skip. pa_verify_log_chain itself owns the "absent log with no anchor is
-# legal" rule.
+# anchor is maintained independently of the log, so "log deleted, anchor still
+# records three entries" is exactly the case a `[[ -f ]]` guard around this
+# block used to skip. pa_verify_log_chain itself owns the "absent log with no
+# anchor is legal" rule.
 chain_out=""
 chain_rc=0
 chain_out="$(pa_verify_log_chain "$log_file")" || chain_rc=$?
@@ -322,6 +355,44 @@ elif [[ "$chain_rc" -ne 0 ]]; then
     [[ -z "$v" ]] && continue
     failures+=("$v")
   done <<<"$chain_out"
+fi
+
+# ---------------------------------------------------------------------------
+# 3b. COMMITTED ANCHOR (temperloop#1316). Check 3 above compares the log
+#     against the anchor ON DISK — both locally writable, so a re-forge that
+#     rewrites the pair together verifies clean there. This block checks the
+#     log against the anchor as COMMITTED IN GIT, which a local rewrite cannot
+#     touch without also rewriting git history.
+# ---------------------------------------------------------------------------
+wm_file="$(pa_watermark_file)"
+
+# The location ban, mirroring check 1's COMMITTED-LOCATION: an anchor moved
+# back beside the log under the gitignored runtime dir cannot be committed at
+# all, which silently reverts this whole check to the pre-#1316 hole.
+case "$wm_file" in
+  */.temperloop/*)
+    failures+=("WATERMARK-LOCATION  $wm_file — the disclosure-log anchor must never live under the gitignored .temperloop/ runtime dir; it is the COMMITTED artifact a full re-forge would also have to rewrite git history to hide (temperloop#1316)")
+    ;;
+esac
+
+anchor_out=""
+anchor_rc=0
+anchor_out="$(pa_verify_watermark_git_anchor "$log_file")" || anchor_rc=$?
+if [[ "$anchor_rc" -eq "$PA_RC_CANNOT_EVALUATE" ]]; then
+  echo "validate-provider-disclosure: CANNOT EVALUATE the committed disclosure-log anchor ($wm_file) — aborting rather than reporting a false pass/fail" >&2
+  echo "$anchor_out" >&2
+  exit 1
+elif [[ "$anchor_rc" -ne 0 ]]; then
+  # Same fail-closed rule as the chain block above: non-zero with no printed
+  # violation is a verdict we could not compute, never "clean".
+  if [[ -z "${anchor_out//[$'\n\t ']/}" ]]; then
+    echo "validate-provider-disclosure: CANNOT EVALUATE the committed disclosure-log anchor ($wm_file) — the anchor verifier returned rc=$anchor_rc but reported no violations, which is not a verdict; aborting rather than treating it as clean" >&2
+    exit 1
+  fi
+  while IFS= read -r v; do
+    [[ -z "$v" ]] && continue
+    failures+=("$v")
+  done <<<"$anchor_out"
 fi
 
 if [[ -f "$log_file" && -s "$log_file" ]]; then
@@ -411,7 +482,7 @@ fi
 # ---------------------------------------------------------------------------
 # Verdict.
 # ---------------------------------------------------------------------------
-echo "Checked committed allowlist ($committed_file)$( [[ -f "$local_file" ]] && printf ', personal override (%s)' "$local_file" ), disclosure log ($log_file, $n_entries entr$( [[ "$n_entries" -eq 1 ]] && echo y || echo ies )), attribution sends ($send_lake_dir, $n_sends record$( [[ "$n_sends" -eq 1 ]] || echo s ), $n_nondefault_sends non-default-provider)"
+echo "Checked committed allowlist ($committed_file)$( [[ -f "$local_file" ]] && printf ', personal override (%s)' "$local_file" ), disclosure log ($log_file, $n_entries entr$( [[ "$n_entries" -eq 1 ]] && echo y || echo ies )), committed anchor ($wm_file), attribution sends ($send_lake_dir, $n_sends record$( [[ "$n_sends" -eq 1 ]] || echo s ), $n_nondefault_sends non-default-provider)"
 if (( ${#failures[@]} > 0 )); then
   printf '%s\n' "${failures[@]}"
   echo "---"

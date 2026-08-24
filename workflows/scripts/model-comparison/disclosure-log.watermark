@@ -1,0 +1,16 @@
+# disclosure-log.watermark — the COMMITTED anchor for the provider
+# disclosure log (ADR 0028, temperloop#1250/#1316). Maintained by
+# allowlist.sh's pa_disclose; the single value line below is
+# `<max_seq> <last_hash>`.
+#
+# The LOG itself is gitignored at .temperloop/model-comparison/disclosure-log.jsonl
+# so no provider history and no content enters this repo. Only this anchor is
+# tracked, and it carries neither: just how many entries the log is meant to
+# have and what its tail hash is.
+#
+# COMMIT IT WHEN IT CHANGES. That is the whole mechanism: a log re-forged in
+# place no longer matches the anchor recorded in git history, so hiding the
+# re-forge means rewriting git history too — which leaves its own trace.
+# validate-provider-disclosure.sh reports REFORGED-VS-GIT / WATERMARK-GIT-*
+# when the live log stops descending from this file's committed value.
+0 0000000000000000000000000000000000000000000000000000000000000000
