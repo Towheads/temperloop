@@ -63,8 +63,18 @@
 #                 from a content conflict, which REBASE_CONFLICT now means and
 #                 only means; rebase_needed=false says base == tip, i.e. no
 #                 rebase was required at all — temperloop#735)
-#   push       → {"outcome":"PUSHED","sha":…,"branch":…,"forced":bool} |
+#   push       → {"outcome":"PUSHED","sha":…,"branch":…,"forced":bool,
+#                 "pr_lookup":"ok"|"unavailable","pr_number":N|null} |
+#                {"outcome":"PUSHED_UNWATCHED","sha":…,"branch":…,"forced":bool,
+#                 "pr_lookup":"ok","pr_number":N,"pr_head_ref":…,"pr_url":…,
+#                 "stale_head_cause":"branch-mismatch","error":…} + non-zero exit |
 #                {"outcome":"PUSH_REJECTED","sha":…,"branch":…,"error":…} + non-zero exit
+#                (PUSHED_UNWATCHED is temperloop#1688: the push LANDED, but the
+#                 ref it landed on is watched by NO open PR while another open PR
+#                 for the same slug sits on a DIFFERENT head ref — the
+#                 `build/<slug>` vs `fix/<slug>` two-ref split. `stale_head_cause`
+#                 is what tells that apart from GitHub's post-force-push head lag;
+#                 see pr_survey() and cmd_push() below.)
 #                (forced=true only when a genuine rewrite needed --force; a
 #                 requested --force that is a pure fast-forward downgrades to a
 #                 plain push, forced=false — #335)
@@ -298,6 +308,61 @@ cmd_rebase() {
   fi
 }
 
+# --- pr_survey: which open PR, if any, watches the ref we just pushed? ---------
+# (temperloop#1688 — the observation cmd_push branches on; see its header.)
+#
+# Answers BOTH halves of the question in ONE `gh pr list` call, because the two
+# are the same listing read two ways:
+#   .match   — an open PR whose head ref IS <branch>. Its presence is the whole
+#              benign case: whatever else is true, this push reached the PR.
+#   .sibling — an open PR on a DIFFERENT head ref whose last path segment equals
+#              <branch>'s. That is the `build/<slug>` vs `fix/<slug>` split
+#              exactly: same slug, different type prefix, so it is the same work.
+# A sibling with NO match is the only reportable state. "No match and no sibling"
+# is the ORDINARY first push (build-level.mjs pushes at 3f-1 and opens the PR at
+# 3f-2, so there is legitimately no PR yet) and must stay a plain PUSHED — which
+# is also why this check needs no flag to stay off the normal path.
+#
+# READ-ONLY and FAIL-SOFT, same posture as recover-probe: a missing, erroring, or
+# unparseable `gh` degrades to lookup:"unavailable" and the push still reports
+# PUSHED. A push that already succeeded must never be turned into a failure by an
+# inability to OBSERVE, only by a positive observation of the split.
+pr_survey() {
+  local wt="$1" branch="$2" out
+  command -v gh >/dev/null 2>&1 || { printf '%s\n' '{"lookup":"unavailable"}'; return 0; }
+  out="$(cd "$wt" && gh pr list --state open --json number,url,headRefName --limit 100 2>/dev/null || true)"
+  if [ -z "$out" ] || ! jq -e 'type == "array"' >/dev/null 2>&1 <<<"$out"; then
+    printf '%s\n' '{"lookup":"unavailable"}'
+    return 0
+  fi
+  jq -c --arg branch "$branch" '
+    ($branch | split("/") | last) as $slug
+    | { lookup: "ok",
+        match: ((map(select(.headRefName == $branch)))[0] // null),
+        sibling: ((map(select(.headRefName != $branch
+                              and ((.headRefName | split("/") | last) == $slug))))[0] // null) }
+  ' <<<"$out" 2>/dev/null || printf '%s\n' '{"lookup":"unavailable"}'
+}
+
+# Authoritative re-check of the exact-head miss, run ONLY when the survey above
+# already found a sibling. `--limit 100` bounds the listing, so on a very busy
+# repo a real match could fall outside the window and read as the split; `gh pr
+# list --head` is server-side filtered and unbounded by that window. Two calls in
+# the suspicious case, one in every ordinary one. Fail-soft the same way: if this
+# confirm cannot run, we cannot positively observe the split, so we do not report
+# it (prints the PR number when a match DOES exist, empty when confirmed absent,
+# and `?` when indeterminate).
+pr_head_confirm() {
+  local wt="$1" branch="$2" out
+  command -v gh >/dev/null 2>&1 || { printf '%s\n' '?'; return 0; }
+  out="$(cd "$wt" && gh pr list --head "$branch" --state open --json number --limit 1 2>/dev/null || true)"
+  if [ -z "$out" ] || ! jq -e 'type == "array"' >/dev/null 2>&1 <<<"$out"; then
+    printf '%s\n' '?'
+    return 0
+  fi
+  jq -r '(.[0].number // "") | tostring' <<<"$out" 2>/dev/null || printf '%s\n' '?'
+}
+
 # --- push: 3f step 1 — push-by-SHA ---------------------------------------------
 # Push the worktree's HEAD to the plan branch by SHA, honoring the plan's
 # `branch:` name regardless of the worktree's throwaway build/<slug> local
@@ -319,8 +384,35 @@ cmd_rebase() {
 # real --force for a genuine rewrite (local head does NOT descend the tip) or an
 # indeterminate remote state (fetch failed) — never weakening main's safety.
 # `forced` in the PUSHED payload records what was actually used.
+#
+# temperloop#1688 — WHICH REF DID THE PUSH LAND ON, AND IS ANY PR WATCHING IT?
+# A push reports the ref it was HANDED, which is always truthful and can still be
+# useless: `worktree.sh create` names the worktree's local branch `build/<slug>`
+# while the PR is opened on the plan's `branch:` (`<type>/<slug>`, in practice
+# `fix/<slug>`), so an operator or driver re-pushing a rebased worktree with the
+# obvious-looking `pr.sh push <wt> build/<slug>` creates a SECOND remote ref that
+# no PR references. `PUSHED` then says nothing false and nothing useful: the PR
+# keeps serving its pre-rebase content, and the only downstream symptom is a PR
+# head that looks "stale" — indistinguishable by eye from GitHub's well-known
+# post-force-push head lag (the lag ci-poll.sh's own header documents). That
+# collapse is what made the live 2026-08-21 sighting get MISdiagnosed as the lag.
+# It came within one `--sha` pin of temperloop#254's false green: unpinned,
+# ci-poll.sh would have resolved to the stale PR head, found ITS green checks, and
+# reported CI_GREEN for content that was not what would merge.
+#
+# So the push asks the question it is uniquely placed to answer — it KNOWS the ref
+# it just wrote — and reports the two-ref split as its OWN outcome rather than
+# leaving it to be inferred from a symptom two steps downstream. The distinction
+# that defeats the misdiagnosis is structural, not a wording choice:
+#   * BRANCH-MISMATCH (this outcome): the open PR's head REF is a DIFFERENT ref
+#     from the one pushed. The PR will never see this push, at any latency.
+#   * GITHUB HEAD LAG (benign, never reported here): the open PR's head ref is the
+#     SAME ref that was pushed; only its cached head SHA trails, and it converges.
+# `stale_head_cause:"branch-mismatch"` plus both ref names is what lets a reader
+# tell them apart, so the fix does not depend on the `--sha` pin also being right.
 cmd_push() {
   local wt branch force="$1" sha out effective_force
+  local survey lookup match_pr sibling_pr sibling_ref sibling_url confirm forced_json msg
   wt="$(resolve_worktree "$2")"
   branch="$3"
   validate_branch "$branch"
@@ -337,8 +429,40 @@ cmd_push() {
     fi
   fi
   if out="$(git -C "$wt" push ${effective_force:+--force} origin "$sha:refs/heads/$branch" 2>&1)"; then
-    jq -cn --arg sha "$sha" --arg branch "$branch" --argjson forced "$([ -n "$effective_force" ] && echo true || echo false)" \
-      '{outcome:"PUSHED", sha:$sha, branch:$branch, forced:$forced}'
+    forced_json="$([ -n "$effective_force" ] && echo true || echo false)"
+    # temperloop#1688 — the push landed; now ask which PR, if any, watches the ref.
+    survey="$(pr_survey "$wt" "$branch")"
+    lookup="$(jq -r '.lookup // "unavailable"' <<<"$survey" 2>/dev/null || echo unavailable)"
+    match_pr="$(jq -r '(.match.number // "") | tostring' <<<"$survey" 2>/dev/null || echo '')"
+    sibling_pr="$(jq -r '(.sibling.number // "") | tostring' <<<"$survey" 2>/dev/null || echo '')"
+    sibling_ref="$(jq -r '.sibling.headRefName // ""' <<<"$survey" 2>/dev/null || echo '')"
+    sibling_url="$(jq -r '.sibling.url // ""' <<<"$survey" 2>/dev/null || echo '')"
+    if [ "$lookup" = "ok" ] && [ -z "$match_pr" ] && [ -n "$sibling_pr" ]; then
+      confirm="$(pr_head_confirm "$wt" "$branch")"
+      if [ -z "$confirm" ]; then
+        # Positively observed: nothing open watches refs/heads/<branch>, and the
+        # sibling PR on a different ref is the work this push belongs to.
+        msg="pushed refs/heads/${branch}, but NO open PR references that ref."
+        msg="${msg} Open PR #${sibling_pr} tracks refs/heads/${sibling_ref} instead, so it will not see this push"
+        msg="${msg} — its head stays at its pre-push content."
+        msg="${msg} This is a BRANCH-NAME mismatch (two different refs), NOT GitHub's post-force-push head lag:"
+        msg="${msg} that lag shows the SAME ref with a trailing head sha and converges on its own, this never will."
+        msg="${msg} Re-push onto the PR's own ref: pr.sh push <worktree> ${sibling_ref} --force"
+        jq -cn --arg sha "$sha" --arg branch "$branch" --argjson forced "$forced_json" \
+           --arg pr "$sibling_pr" --arg ref "$sibling_ref" --arg url "$sibling_url" --arg msg "$msg" \
+          '{outcome:"PUSHED_UNWATCHED", sha:$sha, branch:$branch, forced:$forced,
+            pr_lookup:"ok", pr_number:($pr|tonumber), pr_head_ref:$ref, pr_url:$url,
+            stale_head_cause:"branch-mismatch", error:$msg}'
+        exit 1
+      fi
+      # `?` (indeterminate) or a late-found match: no positive observation of the
+      # split, so fall through to PUSHED rather than manufacture a failure.
+      case "$confirm" in ''|*[!0-9]*) match_pr="" ;; *) match_pr="$confirm" ;; esac
+    fi
+    jq -cn --arg sha "$sha" --arg branch "$branch" --argjson forced "$forced_json" \
+       --arg lookup "$lookup" --arg pr "$match_pr" \
+      '{outcome:"PUSHED", sha:$sha, branch:$branch, forced:$forced,
+        pr_lookup:$lookup, pr_number:(if $pr == "" then null else ($pr|tonumber) end)}'
   else
     jq -cn --arg sha "$sha" --arg branch "$branch" --arg error "$out" \
       '{outcome:"PUSH_REJECTED", sha:$sha, branch:$branch, error:$error}'

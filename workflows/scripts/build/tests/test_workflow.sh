@@ -24,6 +24,9 @@
 #   - ci-poll TIMEOUT loop: TIMEOUT slices then CI_GREEN → parked
 #   - claim-conflict: CLAIM_CONFLICT → claim-conflict escalation
 #   - push-rejected: PUSH_REJECTED → push-rejected escalation
+#   - push-unwatched (temperloop#1688): PUSHED_UNWATCHED → its own
+#     push-unwatched-branch escalation carrying the PR's real head ref, and NO
+#     pr-open/CI-poll past it
 #   - scan-blocked: SCAN_BLOCKED → closing-keyword escalation
 #   - 2-level e2e smoke: two buildLevel() calls (stateless), each produces parked/escalations
 #   - deploy-discovery: ~/.claude/workflows/build-level.mjs resolves (install-claude)
@@ -764,6 +767,49 @@ if (result.escalations[0].kind !== 'push-rejected')
   { console.log(JSON.stringify({ ok: false, reason: 'escalation kind wrong: ' + result.escalations[0].kind })); process.exit(0); }
 if ((result.parked ?? []).length !== 0)
   { console.log(JSON.stringify({ ok: false, reason: 'expected 0 parked: ' + JSON.stringify(result) })); process.exit(0); }
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+# ============================================================================
+# TEST 8b (temperloop#1688): PUSHED_UNWATCHED → its OWN escalation kind
+# ============================================================================
+# The push LANDED — on a ref no open PR watches, while the item's PR sits on a
+# different head ref. It must NOT ride 'push-error' (which reads as "the push
+# failed / its result was lost") and must NOT proceed to pr-open + CI-poll: that
+# is the route by which a stale PR head's green checks become a false CI_GREEN
+# for content that is not what would merge (#254 by a new path). The escalation
+# payload has to carry the PR's real head ref, since that is the whole fix.
+run_node_case "push-unwatched (#1688): PUSHED_UNWATCHED → push-unwatched-branch escalation, no PR opened" "
+$PREAMBLE
+
+setMachinery('item-unwatched',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/item-unwatched' },
+  { outcome: 'REVIEW_DIFF' },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-r' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED_UNWATCHED', sha: 'sha-r', branch: 'build/item-unwatched', forced: true,
+    pr_lookup: 'ok', pr_number: 1404, pr_head_ref: 'fix/item-unwatched',
+    stale_head_cause: 'branch-mismatch', error: 'no open PR references build/item-unwatched' },
+);
+happyWorker('item-unwatched');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'item-unwatched', branch: 'build/item-unwatched', title: 'Unwatched Item', kind: 'impl' },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+
+if ((result.escalations ?? []).length !== 1)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected 1 escalation: ' + JSON.stringify(result) })); process.exit(0); }
+if (result.escalations[0].kind !== 'push-unwatched-branch')
+  { console.log(JSON.stringify({ ok: false, reason: 'escalation kind wrong: ' + result.escalations[0].kind })); process.exit(0); }
+if (result.escalations[0].payload?.pushOut?.pr_head_ref !== 'fix/item-unwatched')
+  { console.log(JSON.stringify({ ok: false, reason: 'payload lost the PR head ref: ' + JSON.stringify(result.escalations[0].payload) })); process.exit(0); }
+if ((result.parked ?? []).length !== 0)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected 0 parked (no PR must be opened): ' + JSON.stringify(result) })); process.exit(0); }
 
 console.log(JSON.stringify({ ok: true }));
 "
