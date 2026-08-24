@@ -382,12 +382,15 @@ the skipped capability is a subagent that **ships as source under
 mode-2 line MAY carry a **single short remedy clause** naming the one-command
 fix — `skipped — <agent> available as source; run
 workflows/scripts/install/project-agents.sh to enable`. This is the **only**
-remedy pointer permitted on a live mode-2 line; it exists because this
+remedy pointer permitted on a live mode-2 *skip* line; it exists because this
 specific degradation has a known, in-the-moment fix the operator needs
 *while the panel is running*, not merely in a later durable record.
 Conciseness stays structurally enforced — one clause, this case only; every
 other mode-2 skip (a genuinely not-shipped agent, or a non-agent capability
-with no `project-agents.sh` install path) stays bare. **This clause fixes the
+with no `project-agents.sh` install path) stays bare. The two-shapes rule
+governs a **skip** — a step that did not run — and is untouched by the
+**denied-capability variant** below, which reports a *refusal* the operator
+can lift right now and is therefore not a one-line skip notice at all. **This clause fixes the
 SHAPE of such a line; it never licenses a kernel surface to keep routing to a
 capability that does not exist.** The example that used to sit here —
 `/verify`, which never shipped — was that failure: `build.md` §3e.6 routed
@@ -401,6 +404,49 @@ slots because a cold or stranger reader of a durable artifact lacks the live
 session's surrounding context; this live-vs-recorded distinction is an
 authoring judgment call, not itself a research-grounded finding — flag it as
 such rather than dressing it up as locked.
+
+**Denied-capability variant.** A permission control *refusing* an action — <!-- cite: MS.12 incident:K#1478 -->
+the auto-mode safety classifier, a PreToolUse hook, a missing scope — is a
+degradation like any other, so it reuses **this** template rather than a
+parallel one: the denied action fills *what was degraded*, the refusing
+control fills *why*, and the calibrated-trust slot says plainly that the work
+is **paused, not finished**. What the variant changes is one slot. The
+**remedy pointer stops being optional or single-valued**: it becomes the
+**full set of all three unblock paths, ordered so the one that restores
+autonomous progress leads** —
+
+1. **Grant the capability** — the specific permission and how to give it (a
+   Bash permission rule; an interactive approval), scoped as narrowly as the
+   action requires.
+2. **Run it yourself** — the exact command(s), copy-pasteable.
+3. **Drop or reroute it** — what is lost if the action is simply skipped.
+
+The kernel rule this presents is `CLAUDE.kernel.md` § Communication
+conventions' "A denied action reports EVERY unblock path, and leads with the
+grant"; this template owns only its *shape*, and does not restate its
+rationale. Two constraints the shape carries. First, the three paths must be
+in the **operator-facing message itself** — the temperloop#1478 failure named
+all three in an issue comment and led the operator-facing summary with path 2
+alone, so the analysis was right and the message still misreported the state
+of the work (§ Communication conventions' "Load-bearing context goes inside
+the question or final message"). Second, this is *reporting* a denial, never
+a licence to re-attempt it in another shape: bypassing the denial's intent
+stays prohibited, and a report that names the grant path is what makes the
+scoped grant the operator's to issue (`CLAUDE.kernel.md` § Merge autonomy &
+consent) rather than a decision quietly taken for them.
+
+**No `/tidy` backstop — a recorded call, not an omission.**
+`CLAUDE.kernel.md` § Capture/Backstop pairing requires a paired drain-time
+backstop for a **real-time extraction** rule, and requires the pair be
+registered. This variant is not one: it extracts nothing into a store, and
+leaves **no artifact a later drain could inspect** — after the fact, a denial
+reported with one path is byte-for-byte indistinguishable from one that was
+never denied, so a `/tidy` sweep would have nothing to key on and would
+report a clean pass every night regardless. It ships deliberately as a
+**prose-only rule**, `claude/commands/tidy.md`'s registry table carries no row
+for it, and `workflows/scripts/validate-capture-backstop.sh` is green because
+there is no half-present pair to find. Revisit only if a denial ever starts
+leaving a durable trace a sweep could read.
 
 ## Provisional slots — do not lock
 
