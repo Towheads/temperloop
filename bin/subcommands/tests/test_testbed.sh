@@ -465,4 +465,77 @@ help_out2="$(bash "$DISPATCHER" help 2>&1)"
   || fail "T10: --teardown must add NO new dispatcher-discovered subcommand; \`temperloop help\` changed:\n$help_out2"
 echo "PASS: --teardown is a mode on testbed.sh, not a second subcommand — no new subcommand file, 'temperloop help' unchanged"
 
+# =============================================================================
+# T11 -- the DRIVER's seed-dir PASS-THROUGH, through the MUTATING steps
+# (temperloop#1288). `--source-kind materialize-from-seed` must complete
+# produce_git AND produce_issues against the IN-TREE default seed
+# (workflows/scripts/demo/seed), from a `--dir` that is some other checkout
+# entirely.
+#
+# WHY THIS TEST EXISTS AND WHY IT LIVES HERE. #1288's defect was a DRIVER
+# argument bug: the driver handed materialize-from-seed's produce_git /
+# produce_issues its own `--dir` value (always `.` after the cd to the
+# source toplevel), and `_testbed_seed_dir` takes any non-empty argument
+# LITERALLY — so the provider's in-tree default was never reached and every
+# real run died at step 5 with "seed project tree not found at ./project".
+# Nothing caught it: test_testbed_source.sh calls the provider's functions
+# DIRECTLY with no argument (the default resolves correctly, the driver is
+# never involved); test_provider_equivalence.sh drives the real driver but
+# substitutes DOUBLE providers for produce_git/produce_issues; and
+# test_seed_source_dir_seam.sh drives the real driver with the real provider
+# but only through `--dry-run`, which stops before the mutating steps this
+# bug lived in. This leg closes exactly that hole — the real driver, the
+# real provider, past the consent gate, through both mutating seam calls.
+#
+# It DISCRIMINATES: `--dir` is the fixture repo, which has no `project/`
+# tree, so a driver that re-passed `.` (or any `--dir`-derived value) here
+# would fail step 5 outright rather than pass by coincidence.
+# =============================================================================
+SEED_DIR="$REPO_ROOT/workflows/scripts/demo/seed"
+[ -d "$SEED_DIR/project" ] || fail "T11 setup: the in-tree seed is missing at $SEED_DIR"
+seed_name="$(jq -r '.name' "$SEED_DIR/seed.json")"
+seed_issue_count="$(find "$SEED_DIR/issues" -name '*.md' -type f | wc -l | tr -d ' ')"
+[ "$seed_issue_count" -gt 0 ] || fail "T11 setup: the in-tree seed defines no issues"
+first_seed_title="$(head -n 1 "$(find "$SEED_DIR/issues" -name '*.md' -type f | sort | head -n1)" | sed -E 's/^#[[:space:]]*//')"
+
+run 0 --source-kind materialize-from-seed --dir "$REPO" --yes
+
+# The two mutating seam calls both completed against the in-tree seed.
+assert_contains "-- 5. Mirror the git history (provider seam: produce_git) --"
+assert_contains "-- 6. Copy the open issues (provider seam: produce_issues) --"
+assert_contains "created $seed_issue_count issue(s) on"
+assert_contains "from the in-tree seed"
+assert_contains "YOUR EVALUATION TESTBED IS READY"
+# The pre-fix failure mode, named explicitly so a regression reads as itself.
+assert_not_contains "seed project tree not found"
+assert_not_contains "./project"
+
+# produce_git actually pushed, and produce_issues actually filed one issue
+# per seed definition — with the SEED's titles, not the fixture repo's.
+grep -q "push --mirror" "$GIT_CALL_LOG" \
+  || fail "T11: produce_git must reach a mirror push; git log: $(cat "$GIT_CALL_LOG")"
+created="$(grep -c "^issue create" "$GH_CALL_LOG" || true)"
+[ "$created" = "$seed_issue_count" ] \
+  || fail "T11: expected $seed_issue_count 'gh issue create' calls (one per seed issue), got $created; log: $(cat "$GH_CALL_LOG")"
+grep -qF -- "$first_seed_title" "$GH_CALL_LOG" \
+  || fail "T11: the created issues must carry the SEED's own titles (expected '$first_seed_title'); log: $(cat "$GH_CALL_LOG")"
+# provenance_capable:false means this provider never stamps a "copied from"
+# line — there is no upstream issue to cite.
+grep -q "copied from" "$GH_CALL_LOG" \
+  && fail "T11: materialize-from-seed must stamp NO provenance line; log: $(cat "$GH_CALL_LOG")"
+
+# The record is keyed by the SEED's own name (not the --dir checkout's), and
+# carries a null source_repo — there is no upstream repository to name.
+seed_key="test-owner/${seed_name}-testbed"
+seed_entry="$(jq -c --arg k "$seed_key" '.testbeds[$k][0]' "$RECORD_FILE")"
+[ "$seed_entry" != "null" ] \
+  || fail "T11: record must carry an entry keyed by the SEED-derived name ($seed_key), got: $(cat "$RECORD_FILE")"
+[ "$(jq -r '.source_kind' <<<"$seed_entry")" = "materialize-from-seed" ] \
+  || fail "T11: source_kind must be materialize-from-seed, got: $seed_entry"
+[ "$(jq -r '.source_repo' <<<"$seed_entry")" = "null" ] \
+  || fail "T11: source_repo must be null for materialize-from-seed, got: $seed_entry"
+[ "$(jq -r '.artifacts | .repo_created and .mirror_pushed and .issues_copied' <<<"$seed_entry")" = "true" ] \
+  || fail "T11: every artifact must be flushed true by the end of a seed run, got: $seed_entry"
+echo "PASS: driver pass-through — materialize-from-seed completes produce_git AND produce_issues against the in-tree default seed from an unrelated --dir"
+
 echo "OK: test_testbed.sh"
