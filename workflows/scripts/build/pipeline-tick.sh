@@ -602,12 +602,25 @@ latest_comment_body() {
 }
 
 # ── Work-class classifier ────────────────────────────────────────────────────
-# Reads an item's labels → "Operational" | "Foundational". Default-Operational
-# (work-class-policy.md): an item with NEITHER label defaults to Operational.
+# Reads an item's labels → "Operational" | "Foundational". One lookup, two rules
+# from work-class-policy.md — the match ORDER below is what implements both:
+#
+#   • PRECEDENCE — Foundational wins (temperloop#1191; work-class-policy.md
+#     § Precedence when both labels are present: Foundational wins). An item
+#     carrying BOTH work-class labels resolves Foundational, so it GATES to the
+#     operator's decision queue (Phase C, route-foundational) instead of routing
+#     to autonomous drive (Phase B, drive-ready). Matching `Foundational` FIRST
+#     IS that rule — an ambiguous work class gets human judgment, never an
+#     autonomous merge. No writer creates the both-present state any more
+#     (capture.sh and /triage both substitute rather than append), but
+#     pre-existing dual-labeled issues that no stamp-time guard could reach
+#     still arrive here, and this is the defined answer for them. Deliberately a
+#     router rule only: no backfill, no mutual-exclusivity enforcement.
+#   • DEFAULT-OPERATIONAL — an item with NEITHER label defaults to Operational.
 classify_item() {
   local labels_json="$1"
   if jq -e 'any(.[]; . == "Foundational")' <<<"$labels_json" >/dev/null 2>&1; then
-    echo "Foundational"
+    echo "Foundational"  # precedence: wins even when Operational is present too
   else
     echo "Operational"   # default-Operational covers the explicit Operational label too
   fi

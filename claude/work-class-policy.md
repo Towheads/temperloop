@@ -17,6 +17,41 @@ Every issue/epic processed by the autonomous pipeline driver carries one of two 
 
 ---
 
+## Precedence when both labels are present: `Foundational` wins
+
+Carrying **both** work-class labels is outside the "one of two" authoring intent
+stated above, and no current writer can produce it — `capture.sh` picks exactly
+one `work_class` and substitutes rather than appends, and `/triage`'s work-class
+stamp skips the add when either label is already present. But issues that reached
+the both-present state before those writers settled still exist, so the **router
+needs a defined answer** for them.
+
+**The rule: when an item carries both labels, it resolves to `Foundational`.**
+The driver therefore **gates it to the operator's decision queue**
+(`route-foundational`) instead of routing it to autonomous drive — it gets the
+`Foundational` row's prep-then-gate policy, not the `Operational` row's
+auto-merge-once-green policy.
+
+The direction is the fail-safe one: an item whose work class is ambiguous gets
+human judgment, never an autonomous merge.
+
+This is deliberately a **router precedence rule, not a new invariant**:
+
+- **No backfill.** Precedence is already correct for the pre-existing
+  dual-labeled issues that any stamp-time guard would never reach — picking a
+  work class for old issues by rule rather than judgment was rejected.
+- **No new enforcement machinery.** Mechanical mutual exclusivity at the stamp
+  sites (a `--remove-label` plus a validator gate) would build prevention for a
+  case the writers already prevent, while leaving this actual gap undefined.
+
+"Exactly one work-class label" stays the **authoring intent** (unchanged); this
+section states only the router's behaviour when reality diverges from it. It
+composes with the § Default-Operational rule below as two halves of one lookup,
+which is exactly how `pipeline-tick.sh`'s `classify_item` implements it: match
+`Foundational` first, fall through to `Operational` otherwise.
+
+---
+
 ## The axis: specifiability / blast-radius, NOT origin or recency
 
 The deciding question is: **does this work follow an established pattern, or does it
