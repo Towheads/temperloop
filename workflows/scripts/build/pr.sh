@@ -17,6 +17,7 @@
 #   pr.sh open --verdict <file|-> [--gh-issue N] [--also-closes N,N,...]
 #         [--plan-link <target>] [--source <ref>] [--verification-surface-file <path>] \
 #         ( --body-only | --repo <repo-root> --branch <b> --title <t> )
+#   pr.sh acceptance-extract <bodyFile|->     # inverse of the ## Acceptance recap
 #
 # `open` assembles the PR body from the worker's verdict JSON (summary,
 # acceptance_results — the 3d return contract) plus the plan fields, then runs
@@ -39,8 +40,17 @@
 # body carries exactly one linkage block. `--body-only` prints the assembled
 # body verbatim and exits — the dry mode tests assert on.
 #
+# `acceptance-extract` is the INVERSE of `open`'s `## Acceptance` recap: it
+# reads an assembled PR body back into the worker's `acceptance_results`
+# entries. The recap's evidence rides its own nested line (temperloop#1267), so
+# the criterion/evidence split is POSITIONAL and both survive an embedded
+# ` — ` byte-exactly — the round-trip property `open`'s tests assert, and the
+# reason a downstream reader (replay, a retro judge, an auditing human) has one
+# owned extractor to call rather than a per-consumer parse-by-eye.
+#
 # Output contract — CLOSED outcome set, one structured JSON line per outcome
-# (exception: `open --body-only` prints the raw body, no JSON wrapper):
+# (exceptions: `open --body-only` prints the raw body and `acceptance-extract`
+# prints a JSON array, neither in an outcome wrapper):
 #   scan       → {"outcome":"SCAN_CLEAN"} |
 #                {"outcome":"SCAN_BLOCKED","matches":[…]} + non-zero exit
 #   base-check → {"outcome":"BASE_CURRENT"|"BASE_STALE","merge_base":…,"tip":…}
@@ -70,6 +80,9 @@
 #                    "commits_ahead":N,"pushed":bool,"remote_sha":…,
 #                    "dirty":bool,"dirty_files":N,
 #                    "verification_surface_present":bool[,"pr_number":N,"url":…]}
+#   acceptance-extract → [{"passed":bool,"criterion":…,"evidence":…|null,
+#                          "deferred_host_config":…|null,
+#                          "discrimination_evidence":…|null}, …]
 #   error      → {"outcome":"ERROR","error":…} + non-zero exit
 set -euo pipefail
 
@@ -90,7 +103,7 @@ die() {
 }
 
 usage() {
-  die "usage: pr.sh scan <worktreePath> | base-check <worktreePath> | rebase <worktreePath> | push <worktreePath> <branch> [--force] | recover-probe <worktreePath> <branch> | open --verdict <file|-> [--gh-issue N] [--also-closes N,N,...] [--plan-link <target>] [--source <ref>] [--verification-surface-file <path>] (--body-only | --repo <repo-root> --branch <branch> --title <title>)"
+  die "usage: pr.sh scan <worktreePath> | base-check <worktreePath> | rebase <worktreePath> | push <worktreePath> <branch> [--force] | recover-probe <worktreePath> <branch> | open --verdict <file|-> [--gh-issue N] [--also-closes N,N,...] [--plan-link <target>] [--source <ref>] [--verification-surface-file <path>] (--body-only | --repo <repo-root> --branch <branch> --title <title>) | acceptance-extract <bodyFile|->"
 }
 
 # Physical-path resolve for an EXISTING dir (portable — no GNU readlink -f).
@@ -558,10 +571,19 @@ assemble_body() {
   # meaning "the worker failed this" from one meaning "nobody could check this
   # from a worktree — the orchestrator verified it in the real checkout". The
   # two render identically otherwise, which is the whole failure.
+  # temperloop#1267: `.evidence` rides its OWN nested line (`\n      — …`),
+  # never appended inline after a bare ` — ` delimiter. ` — ` occurs inside
+  # real criteria AND inside real evidence, so an inline delimiter made the
+  # recap unparseable: a first-occurrence split truncates the criterion, a
+  # last-occurrence split breaks whenever the evidence carries its own
+  # em-dash, and no rule decides between them. On its own line the split is
+  # POSITIONAL — `acceptance-extract` below recovers both fields byte-exactly
+  # with no heuristic. GitHub renders the indented continuation as part of the
+  # same list paragraph, so the human reading looks unchanged.
   recap="$(jq -r '(.acceptance_results // [])[]
             | "- [" + (if .passed then "x" else " " end) + "] "
               + .criterion
-              + ((.evidence // "") | if . == "" then "" else " — " + . end)
+              + ((.evidence // "") | if . == "" then "" else "\n      — " + . end)
               + ((.deferred_host_config // "") | if . == "" then "" else "\n      DEFERRED — host-config `" + . + "` is invisible from a worktree; verified parent-side (temperloop#1182)" end)
               + ((.discrimination_evidence // "") | if . == "" then "" else "\n      discrimination: " + . end)' \
           <<<"$verdict")" || die "verdict JSON has malformed .acceptance_results"
@@ -595,6 +617,86 @@ assemble_body() {
   fi
   body="$body"$'\n''🤖 Generated with [Claude Code](https://claude.com/claude-code)'
   printf '%s\n' "$body"
+}
+
+# --- acceptance-extract: the INVERSE of assemble_body's ## Acceptance recap ----
+#
+# temperloop#1267. The PR body is the only durable verbatim record of the
+# acceptance bullets a worker was handed (the item object is never persisted;
+# the worktree and its .build-verification.md are deleted at terminal
+# disposition; /sweep and /fix singletons produce no plan note). Every consumer
+# that reads that record back — replay, a retro judge, a human auditing a merge
+# — needs ONE owned extractor rather than a parse-by-eye per consumer, or the
+# ambiguity this item closed re-enters through the reader instead of the writer.
+#
+# The grammar it inverts, one entry per `- [x] ` / `- [ ] ` bullet inside the
+# FIRST `## Acceptance` section (a later `## ` heading ends it; a `## Acceptance`
+# heading appearing inside a worker's own verification surface is therefore never
+# re-entered):
+#
+#   - [x] <criterion, possibly spanning further un-prefixed lines>
+#         — <evidence>
+#         DEFERRED — host-config `<path>` is invisible from a worktree; …
+#         discrimination: <discrimination_evidence>
+#
+# Each field ends at the next marker line, the next bullet, or a BLANK line, so
+# an un-prefixed continuation line belongs to whichever field is open — that is
+# what makes an embedded newline, and an embedded ` — `, survive intact. The
+# split is POSITIONAL: no first-vs-last-delimiter guess anywhere. Two structural
+# constraints the format asks of its inputs, both of which a bullet that renders
+# as one Markdown list item already satisfies: no field's text contains a line
+# beginning with one of the three marker prefixes above (six spaces + `— `,
+# `DEFERRED — host-config \``, or `discrimination: `), and none contains a blank
+# line (which would end the list item's paragraph in GitHub's renderer anyway —
+# the recap's own trailing blank line before the next `## ` heading is exactly
+# that terminator).
+# shellcheck disable=SC2016  # $l / $ph are jq bindings — shell must NOT expand them
+ACCEPTANCE_EXTRACT_JQ='
+def flush: if .cur == null then . else .out += [.cur | del(.phase)] | .cur = null end;
+split("\n")
+| reduce .[] as $l (
+    {sec: false, done: false, cur: null, out: []};
+    if .done then .
+    elif ($l == "## Acceptance") and (.sec | not) then .sec = true
+    elif .sec and ($l | startswith("## ")) then flush | .sec = false | .done = true
+    elif (.sec | not) then .
+    elif ($l | test("^- \\[[x ]\\] ")) then
+        flush
+      | .cur = {passed: ($l[3:4] == "x"), criterion: $l[6:], evidence: null,
+                deferred_host_config: null, discrimination_evidence: null,
+                phase: "criterion"}
+    elif .cur == null then .
+    elif ($l == "") then .cur.phase = "closed"
+    elif (.cur.phase == "closed") then .
+    elif ($l | startswith("      — ")) and (.cur.phase == "criterion") then
+        .cur.evidence = $l[8:] | .cur.phase = "evidence"
+    elif ($l | startswith("      DEFERRED — host-config `")) then
+        .cur.deferred_host_config =
+          ($l | capture("^      DEFERRED — host-config `(?<p>.*)` is invisible from a worktree;") | .p)
+      | .cur.phase = "deferred_host_config"
+    elif ($l | startswith("      discrimination: ")) then
+        .cur.discrimination_evidence = $l[22:] | .cur.phase = "discrimination_evidence"
+    else
+        (.cur.phase) as $ph | .cur[$ph] = (.cur[$ph] + "\n" + $l)
+    end)
+| flush
+| .out
+'
+
+# acceptance-extract <bodyFile|-> — read an assembled PR body, print the
+# recovered acceptance entries as one compact JSON array. Like `open
+# --body-only`, this is an exception to the one-outcome-JSON-line contract: the
+# array IS the payload, and an unreadable path is the usual structured ERROR.
+cmd_acceptance_extract() {
+  local src="$1" body
+  if [ "$src" = "-" ]; then
+    body="$(cat)"
+  else
+    [ -f "$src" ] || die "acceptance-extract: body file '$src' does not exist"
+    body="$(cat "$src")"
+  fi
+  jq -Rsc "$ACCEPTANCE_EXTRACT_JQ" <<<"$body" \
+    || die "acceptance-extract: could not parse the ## Acceptance recap"
 }
 
 cmd_open() {
@@ -720,6 +822,10 @@ case "$cmd" in
     ;;
   open)
     cmd_open "$@"
+    ;;
+  acceptance-extract)
+    [ $# -eq 1 ] || usage
+    cmd_acceptance_extract "$1"
     ;;
   *) usage ;;
 esac
