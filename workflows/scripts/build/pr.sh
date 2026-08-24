@@ -551,10 +551,18 @@ assemble_body() {
   # exactly the failure this item exists to close (see presentation-plane.md's
   # WORKER_VERDICT_SCHEMA row). Rendered on its own line under the bullet so a
   # long discrimination narrative doesn't crowd the pointer-shaped `evidence`.
+  # temperloop#1182: `.deferred_host_config` is a FIFTH field — the deferral
+  # marker for a criterion that turns on a gitignored host-local file a
+  # worktree structurally never contains. Read here for exactly the reason
+  # above: without it, a human reviewing this PR cannot tell an unchecked box
+  # meaning "the worker failed this" from one meaning "nobody could check this
+  # from a worktree — the orchestrator verified it in the real checkout". The
+  # two render identically otherwise, which is the whole failure.
   recap="$(jq -r '(.acceptance_results // [])[]
             | "- [" + (if .passed then "x" else " " end) + "] "
               + .criterion
               + ((.evidence // "") | if . == "" then "" else " — " + . end)
+              + ((.deferred_host_config // "") | if . == "" then "" else "\n      DEFERRED — host-config `" + . + "` is invisible from a worktree; verified parent-side (temperloop#1182)" end)
               + ((.discrimination_evidence // "") | if . == "" then "" else "\n      discrimination: " + . end)' \
           <<<"$verdict")" || die "verdict JSON has malformed .acceptance_results"
   # surface is resolved by the caller (cmd_open → resolve_surface) so a missing

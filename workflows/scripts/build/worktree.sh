@@ -202,6 +202,21 @@ exclude_marker() {
 #   - FAIL-OPEN. Any failure degrades to a stderr note; `create` still emits
 #     its CREATED line. Review coverage is advisory and must never block a
 #     build.
+#
+# STANDING PROHIBITION — DO NOT GENERALIZE THIS INTO A HOST-CONFIG CARRY
+# (temperloop#1182). This function is the ONE sanctioned "materialize something
+# the index does not carry" seam, and it is scoped to agent charters, which are
+# public, in-tree, and non-secret. A worktree deliberately never receives a
+# gitignored HOST-CONFIG or SECRET file — a credential file, an operator-placed
+# token, an env file. That absence is not a gap to close here: carrying such a
+# file in would land a live secret in a non-gitignored path inside a throwaway
+# tree the worker may commit from, which is precisely the exposure the /assess
+# A.8 host-config seam exists to prevent. The rejected proposal was explicit
+# ("have `worktree.sh create` optionally carry an allowlisted set of host-config
+# files") and the operator rejected it by name; the accepted answer is that the
+# WORKER DEFERS such an acceptance criterion (/build §3c) and the ORCHESTRATOR
+# verifies it parent-side in the real checkout (/build §4a). If a future item
+# proposes a secret-carrying option here, it is re-opening a closed decision.
 materialize_agents() {
   local wt="$1" src_dir dest common src name target linked=0 failed=0
 

@@ -191,6 +191,36 @@
 //   orchestrator rolls the list into the Step 6 summary tally (build.md §3f
 //   step 2's sibling verification_surface degraded-case pattern).
 //
+//   A parked record MAY additionally carry `host_config_deferrals:
+//   [{ criterion, host_config }, ...]` (temperloop#1182) — one entry per
+//   acceptance criterion the worker reported DEFERRED because it turns on a
+//   gitignored, host-local file (a credential file, an operator-placed
+//   secret, an env var sourced from one). A worktree is populated from the
+//   git INDEX, so such a file is NEVER carried into it: the worker's reading
+//   is uninformative on every host, always — which is why a deferral is
+//   neither a pass nor a failure here (it does not stall the level, and it
+//   never reads as confirmed). These criteria are UNVERIFIED, exactly like
+//   `acceptance_unverified` above: the orchestrator MUST verify each one
+//   ITSELF, in the real checkout where the file actually exists, before that
+//   item's merge gate — and MUST NOT resolve one by copying the named file
+//   into the worktree, which is the secret-in-worktree exposure the
+//   host-config seam (/assess A.8) exists to prevent.
+//
+//   Because this driver is SHARED, that obligation has THREE consumer seats,
+//   one per invoking spec — keep all three in lockstep with the (deliberately
+//   ungated) prompt section `hostConfigDeferralSection()` below:
+//     /build -> claude/commands/build.md §4a, the level merge gate. §3h.5's
+//               as-you-go fast path is explicitly INELIGIBLE for an item
+//               carrying this field, precisely because it never reaches §4a.
+//     /sweep -> claude/commands/sweep.md, the per-chunk merge pass: verify
+//               before `gh pr merge --auto`; not-confirmed / cannot-establish
+//               parks the issue instead of merging it.
+//     /fix   -> claude/commands/fix.md Step 5, the ONE modal merge gate: the
+//               deferral rides that same single ask as a named state caveat.
+//   An ungated prompt section on a path with NO seat would let a deferral
+//   auto-merge with nobody having verified it — the exact silent loss this
+//   field exists to make impossible.
+//
 //   A parked record also carries `review: { ran, skipped, mandatory_ok }`
 //   (temperloop#1450) — the §3e reviewer tally across every round this item's
 //   build ran (the original 3e pass plus any CI-fix re-review), the source
@@ -420,6 +450,11 @@ const WORKER_VERDICT_SCHEMA = {
             type: 'string',
             description:
               'Proof this criterion\'s own check can actually FAIL, not just that it currently passes: which mechanism you removed or broke, that the suite went RED without it, and that restoring it went GREEN. Required whenever the run\'s prompt carries the "Discrimination evidence" section (temperloop#1319; today: /build only — see REQUIRE_DISCRIMINATION_EVIDENCE); omit only when this criterion genuinely has no test to discriminate. Word-bounded; see the prompt\'s "Output shape" section.',
+          },
+          deferred_host_config: {
+            type: 'string',
+            description:
+              'DEFERRAL MARKER (temperloop#1182): set this ONLY when the criterion turns on a gitignored, host-local file a worktree structurally never contains (a credential file, an operator-placed secret, an env var sourced from one), and name that file/env var here. Pair it with `passed: false` — you did not confirm it. The driver then treats the criterion as DEFERRED: neither a pass nor a failure, so it does not stall the level, and the orchestrating session verifies it parent-side in the real checkout. Never set it to route around a criterion you simply could not meet, and never copy the named file into the worktree.',
           },
         },
       },
@@ -1399,6 +1434,63 @@ function discriminationEvidenceSection() {
   ];
 }
 
+// hostConfigDeferralSection — the §3c host-config/secret deferral contract
+// (temperloop#1182), a SELF-CONTAINED section appended once into
+// workerPrompt()'s array, mirroring discriminationEvidenceSection()'s shape.
+//
+// WHY IT IS UNGATED. Unlike discrimination evidence, this is not a discipline
+// a caller opts into — it is a STRUCTURAL fact about every worktree on every
+// path (/build, /sweep, /fix all route through this same prompt): `git
+// worktree add` populates from the git INDEX, so a gitignored host-local file
+// is never present, on any host, ever. foundation#1556 is the measured
+// instance: an item whose acceptance was "`pipeline-retro-judge-spawn.sh
+// --dry-run` reports credential_present" read `false` in the worktree and
+// `true` in BOTH real checkouts moments later. The worker did the right thing
+// (reported rather than went looking), but nothing structural stopped it from
+// "helpfully" copying the token into a non-gitignored path — which is the
+// exposure /assess A.8 exists to prevent, and a strictly worse failure than
+// the unverified criterion.
+//
+// The bar is NOT relaxed (A.8 still demands confirmed-set, not location-named):
+// what this changes is WHO confirms, not WHETHER. The worker defers; the
+// orchestrating session, which runs in the real checkout, verifies parent-side
+// after hand-back, fed by park()'s host_config_deferrals field.
+//
+// UNGATED IS ONLY SOUND BECAUSE ALL THREE PATHS HAVE A SEAT. Each invoking
+// spec owns a parent-side verification step for the deferral this section
+// produces — build.md §4a, sweep.md's per-chunk merge pass, fix.md Step 5's
+// modal gate (and build.md §3h.5's as-you-go tier explicitly EXCLUDES an item
+// carrying the field, since that path bypasses §4a). See the seat list in the
+// I/O CONTRACT above. If a future path starts invoking this driver, it either
+// grows its own seat or this section stops being ungated — shipping the
+// instruction to a path with no seat is how a deferral auto-merges unverified.
+function hostConfigDeferralSection() {
+  return [
+    '',
+    '## Host-config / gitignored-file criteria — DEFER, never confirm (temperloop#1182)',
+    'Your worktree is populated from the git INDEX, so a gitignored host-local file — a',
+    'credential file such as `workflows/scripts/build/build.config.local.sh`, an',
+    'operator-placed secret, an env var sourced from one — is NEVER present here. Any',
+    'acceptance criterion that turns on such a file is structurally unverifiable from this',
+    'worktree: an absent/`false` reading is UNINFORMATIVE, not a failure, and it reads',
+    'identically on a host where the file IS correctly configured.',
+    '- **Do NOT carry, copy, recreate, or hunt elsewhere for the named file.** Landing a',
+    '  credential anywhere inside this worktree is the secret-in-worktree exposure the',
+    '  host-config seam exists to prevent — a worse failure than the unverified criterion.',
+    '- **Report the criterion as DEFERRED, never as passed.** Set `passed: false` (you did',
+    '  not confirm it) AND set `deferred_host_config` to the file or env var it turns on',
+    '  (e.g. `workflows/scripts/build/build.config.local.sh (SENTRY_AUTH_TOKEN)`). That',
+    '  PAIR is the deferral marker: the driver reads it as neither a pass nor a failure, so',
+    '  it does not stall the level, and the orchestrating session — which runs in the real',
+    '  checkout and CAN see the file — verifies it parent-side after you hand back.',
+    '- **`passed: false` WITHOUT `deferred_host_config` still means blocked.** Never claim a',
+    '  pass you structurally cannot make, and never set the marker to route around a',
+    '  criterion you merely failed to meet — it defers WHO verifies, never WHETHER.',
+    '- If this run also asks for `discrimination_evidence`, a deferred criterion\'s reads',
+    '  exactly `deferred to parent-side host-config verification` — never fabricated.',
+  ];
+}
+
 // changelogFragmentSection — the §3c "add your own changelog.d/ fragment"
 // instruction (temperloop#1530), a SELF-CONTAINED section appended once into
 // workerPrompt()'s array, mirroring principlesSection()'s /
@@ -1548,6 +1640,13 @@ function workerPrompt(item, worktreePath, extraSection) {
     '- If a single command would exceed the ~10-min Bash foreground cap — or the tighter',
     '  ~5-min cache-TTL budget above — NARROW or split it, or return `blocked` / `failed`',
     '  and let the orchestrator run it parent-side — never background-and-wait.',
+    // temperloop#1182 — the OTHER thing a worker structurally cannot verify.
+    // Deliberately its own section, not a bullet inside the block above: that
+    // block is about the COST of a check (minutes-scale, cache-TTL); this one
+    // is about a check that cannot produce a meaningful reading here at all,
+    // and whose "helpful" resolution leaks a secret. Ungated — see the
+    // function's own comment. build.md §3c carries the prose half in lockstep.
+    ...hostConfigDeferralSection(),
     '',
     ...changelogFragmentSection(item),
     ...principlesSection(item),
@@ -2121,6 +2220,36 @@ function discriminationGaps(verdict) {
     .map((r) => (r.criterion ? String(r.criterion) : '(unlabeled criterion)'));
 }
 
+// isHostConfigDeferral / hostConfigDeferrals — the temperloop#1182 DEFERRAL,
+// the THIRD disposition an acceptance criterion can carry. `passed` is a
+// boolean and a worktree can never observe a gitignored host-local file, so
+// without a third state a host-config criterion has only two bad answers: a
+// claimed pass the worker structurally could not make, or a `passed: false`
+// §3d reads as blocked and stalls the whole level on a check that was never
+// runnable here (foundation#1556 — the worker escalated
+// `acceptance-incomplete` over a `credential_present: false` that read `true`
+// in both real checkouts moments later).
+//
+// The marker is the PAIR (`passed: false` + a non-empty `deferred_host_config`)
+// so neither half alone changes anything: a bare `passed: false` still blocks
+// exactly as before, and the marker on its own never manufactures a pass. It
+// is deliberately NOT gated on a run-level flag — the worktree-vs-index fact
+// it encodes is true on every path that spawns a worker.
+function isHostConfigDeferral(r) {
+  return !!(r && typeof r.deferred_host_config === 'string' && r.deferred_host_config.trim());
+}
+
+// The parked-record tally: [{ criterion, host_config }]. `host_config` carries
+// the file/env var the worker named, because that is precisely what the
+// orchestrator needs to run the parent-side check (build.md §4a) — a bare
+// criterion list would make the parent re-derive it from prose.
+function hostConfigDeferrals(acceptanceResults) {
+  return (acceptanceResults ?? []).filter(isHostConfigDeferral).map((r) => ({
+    criterion: r.criterion ? String(r.criterion) : '(unlabeled criterion)',
+    host_config: String(r.deferred_host_config).trim(),
+  }));
+}
+
 // park()'s trailing two arguments are two INDEPENDENT degraded-case tallies
 // (temperloop#1319's discriminationGapList, temperloop#1450's review) that
 // happened to land on the same function in the same window — neither
@@ -2160,6 +2289,20 @@ function park(slug, pr, pushedSha, acceptanceResults, noCi, recovery, discrimina
   // is false iff a mandatory (foundation#1007) route was ever genuinely
   // skipped, not merely "an optional reviewer wasn't available".
   if (review) parked.review = review;
+  // temperloop#1182: derived from `acceptanceResults` rather than threaded in
+  // as a 9th positional argument, so BOTH park() call sites (the 3h main path
+  // and the spike path at 3b, which passes only four arguments) surface the
+  // deferrals without a signature change. Same durable-marker shape as
+  // `no_ci`/`discrimination_gaps` — omitted entirely when empty, so a run with
+  // no host-config criterion produces byte-identical parked records to before.
+  // NOT advisory, unlike discrimination_gaps: these criteria are UNVERIFIED
+  // (the `acceptance_unverified` family), and the invoking spec's parent-side
+  // seat must verify each one before the item is eligible to merge — build.md
+  // §4a, sweep.md's per-chunk merge pass, or fix.md Step 5 (the seat list in
+  // the I/O CONTRACT header). build.md §3h.5's as-you-go tier is INELIGIBLE
+  // for an item carrying this field: that path never reaches §4a.
+  const hostDeferrals = hostConfigDeferrals(acceptanceResults);
+  if (hostDeferrals.length > 0) parked.host_config_deferrals = hostDeferrals;
   return {
     _kind: 'parked',
     slug,
@@ -2717,7 +2860,17 @@ async function driveItem(item) {
   if (verdict.status !== 'done') {
     return escalate(item.slug, verdict.status, { verdict });
   }
-  const anyFailed = (verdict.acceptance_results ?? []).some((r) => r.passed === false);
+  // temperloop#1182: a host-config DEFERRAL (`passed: false` + a non-empty
+  // `deferred_host_config`) is excluded here — it is not a failure, it is a
+  // criterion this worker structurally could not observe, re-homed to the
+  // orchestrator's parent-side check at build.md §4a. Escalating it would
+  // stall the level on a reading that is `false` in every worktree on every
+  // host regardless of the truth (foundation#1556). A bare `passed: false`
+  // with no marker escalates exactly as before — the exclusion is the pair,
+  // never the boolean alone, so this cannot silently swallow a real failure.
+  const anyFailed = (verdict.acceptance_results ?? []).some(
+    (r) => r.passed === false && !isHostConfigDeferral(r),
+  );
   if (anyFailed) {
     return escalate(item.slug, 'acceptance-incomplete', { verdict });
   }
@@ -3257,6 +3410,19 @@ async function driveItem(item) {
     log(
       `[${item.slug}] PR #${pr}: ${discGaps.length} acceptance criterion(s) passed with no discrimination evidence — ` +
       `the worker never proved these checks can fail (temperloop#1319): ${discGaps.map((c) => `"${c}"`).join(', ')}`,
+    );
+  }
+  // temperloop#1182: the deferral warning — named and visible in the run log,
+  // and (via the parked.host_config_deferrals field) carried to the merge gate
+  // where the orchestrator MUST verify each one in the real checkout. Louder
+  // wording than the #1319 line above on purpose: that one is advisory, this
+  // one names work the orchestrator still owes before the item can merge.
+  const hostDeferrals = hostConfigDeferrals(verdict.acceptance_results);
+  if (hostDeferrals.length > 0) {
+    log(
+      `[${item.slug}] PR #${pr}: ${hostDeferrals.length} acceptance criterion(s) DEFERRED — host-config not visible ` +
+      `from a worktree (temperloop#1182); VERIFY PARENT-SIDE before merge: ` +
+      `${hostDeferrals.map((d) => `"${d.criterion}" (${d.host_config})`).join(', ')}`,
     );
   }
   // temperloop#1450 — merge the ORIGINAL 3e pass with any CI-fix re-review

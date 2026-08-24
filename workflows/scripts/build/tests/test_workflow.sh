@@ -4853,6 +4853,208 @@ grep -q 'deferred to §3e.5; discrimination not established worker-side' "$MJS" 
 echo "PASS: #1319 discrimination-evidence guard — workerPrompt gates the requirement on requireDiscriminationEvidence (no /sweep, /fix leak); build.md §3c/Step-3 args and pr.sh's recap consumer in lockstep; the degraded-case warning+tally, the corrected /sweep,/fix rationale, and the deferred-bare-gate reconciliation are all in lockstep too (§3e spec-review follow-up)"
 
 # ============================================================================
+# TEST (K1182): host-config / secret acceptance criteria are DEFERRED by the
+#   worker and verified PARENT-SIDE by the orchestrator. A worktree is
+#   populated from the git INDEX, so a gitignored host-local file is never
+#   carried in: the worker's reading is absent/false in every worktree on
+#   every host regardless of the truth (foundation#1556 — `credential_present:
+#   false` in the worktree, `true` in BOTH real checkouts moments later). The
+#   deferral is the PAIR `passed: false` + a non-empty `deferred_host_config`:
+#   neither half alone changes anything, so this can never swallow a real
+#   failure, and it never manufactures a pass.
+# ============================================================================
+run_node_case "K1182: a host-config deferral parks with a host_config_deferrals tally; a bare passed:false still escalates" "
+$PREAMBLE
+
+// Pass 1: the instruction reaches the worker prompt, UNGATED (no
+// requireDiscriminationEvidence-style arming — the worktree-vs-index fact
+// holds on /build, /sweep and /fix alike), and carries both load-bearing
+// halves: the no-carry prohibition and the passed:false + marker pair.
+happyMachinery('hostcfg-prompt', 940, 'shaHostPrompt');
+happyWorker('hostcfg-prompt');
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'hostcfg-prompt', branch: 'build/hostcfg-prompt', title: 'Host cfg prompt', kind: 'impl', acceptance: ['c'] },
+]};
+let mod = await loadLevel();
+await mod.default();
+let w = callLog.find(c => (c.opts.label||'') === 'worker:hostcfg-prompt');
+let reason = null;
+if (!w) reason = 'no worker call logged (prompt pass)';
+else if (!w.promptFull.includes('## Host-config / gitignored-file criteria')) reason = 'worker prompt missing the host-config deferral section (must be UNGATED — every worker gets it)';
+else if (!w.promptFull.includes('deferred_host_config')) reason = 'worker prompt does not name the deferred_host_config marker field';
+else if (!/Do NOT carry, copy, recreate/.test(w.promptFull)) reason = 'worker prompt missing the no-carry prohibition (the secret-in-worktree exposure A.8 prevents)';
+else if (!/DEFERRED, never as passed/.test(w.promptFull)) reason = 'worker prompt must say the criterion is reported DEFERRED, never as passed';
+if (reason) { console.log(JSON.stringify({ ok: false, reason })); process.exit(0); }
+
+// Pass 2 (the load-bearing case): a done verdict whose host-config criterion
+// is DEFERRED. It must NOT escalate acceptance-incomplete (that is the
+// foundation#1556 stall over a reading nobody could take), must park, and the
+// parked record must carry the criterion AND the file the parent needs to run
+// the check — never a silent pass.
+callLog.length = 0;
+happyMachinery('hostcfg-defer', 941, 'shaHostDefer');
+setWorker('hostcfg-defer', { status: 'done', summary: 'deferred item done', commits: [], acceptance_results: [
+  { criterion: 'spawn --dry-run reports credential_present', passed: false, evidence: 'not observable from a worktree', deferred_host_config: 'workflows/scripts/build/build.config.local.sh (SENTRY_AUTH_TOKEN)' },
+  { criterion: 'the spawn reads the credential from config', passed: true, evidence: 'unit test green' },
+]});
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'hostcfg-defer', branch: 'build/hostcfg-defer', title: 'Host cfg defer', kind: 'impl', acceptance: ['spawn --dry-run reports credential_present', 'the spawn reads the credential from config'] },
+]};
+mod = await loadLevel();
+let result = await mod.default();
+let p = (result.parked ?? []).find(x => x.slug === 'hostcfg-defer');
+if ((result.escalations ?? []).length !== 0) reason = 'a marked host-config deferral must NOT escalate acceptance-incomplete — got ' + JSON.stringify(result.escalations);
+else if (!p) reason = 'deferred item did not park';
+else if (!Array.isArray(p.host_config_deferrals)) reason = 'parked record missing the host_config_deferrals array';
+else if (p.host_config_deferrals.length !== 1) reason = 'expected exactly 1 deferral (the passed:true sibling must not be tallied), got ' + JSON.stringify(p.host_config_deferrals);
+else if (p.host_config_deferrals[0].criterion !== 'spawn --dry-run reports credential_present') reason = 'deferral entry lost its criterion';
+else if (!/build\\.config\\.local\\.sh/.test(p.host_config_deferrals[0].host_config)) reason = 'deferral entry must carry the host_config file/env the orchestrator needs to run the parent-side check';
+if (reason) { console.log(JSON.stringify({ ok: false, reason })); process.exit(0); }
+
+// Pass 3: a BARE passed:false with no marker escalates exactly as before. The
+// exclusion is the PAIR, never the boolean — otherwise this item would have
+// quietly turned every failed criterion into a park.
+callLog.length = 0;
+happyMachinery('hostcfg-bare', 942, 'shaHostBare');
+setWorker('hostcfg-bare', { status: 'done', summary: 'bare fail', commits: [], acceptance_results: [
+  { criterion: 'a genuinely failed criterion', passed: false, evidence: 'test RED' },
+]});
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'hostcfg-bare', branch: 'build/hostcfg-bare', title: 'Host cfg bare', kind: 'impl', acceptance: ['a genuinely failed criterion'] },
+]};
+mod = await loadLevel();
+result = await mod.default();
+let esc = (result.escalations ?? []).find(x => x.slug === 'hostcfg-bare');
+if (!esc) reason = 'a bare passed:false (no deferred_host_config) must STILL escalate — the deferral exclusion must not swallow real failures';
+else if (esc.kind !== 'acceptance-incomplete') reason = 'expected acceptance-incomplete for a bare passed:false, got ' + esc.kind;
+if (reason) { console.log(JSON.stringify({ ok: false, reason })); process.exit(0); }
+
+// Pass 4: a whitespace-only marker is NOT a marker (same trim rule as
+// discrimination_evidence) — it escalates like any bare failure.
+callLog.length = 0;
+happyMachinery('hostcfg-blank', 943, 'shaHostBlank');
+setWorker('hostcfg-blank', { status: 'done', summary: 'blank marker', commits: [], acceptance_results: [
+  { criterion: 'blank-marker criterion', passed: false, evidence: 'e', deferred_host_config: '   ' },
+]});
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'hostcfg-blank', branch: 'build/hostcfg-blank', title: 'Host cfg blank', kind: 'impl', acceptance: ['blank-marker criterion'] },
+]};
+mod = await loadLevel();
+result = await mod.default();
+esc = (result.escalations ?? []).find(x => x.slug === 'hostcfg-blank');
+if (!esc || esc.kind !== 'acceptance-incomplete') reason = 'a whitespace-only deferred_host_config must not count as a marker — expected acceptance-incomplete, got ' + JSON.stringify(result.escalations);
+if (reason) { console.log(JSON.stringify({ ok: false, reason })); process.exit(0); }
+
+// Pass 5: an item with no host-config criterion carries no field at all —
+// byte-identical parked records to before this item.
+callLog.length = 0;
+happyMachinery('hostcfg-clean', 944, 'shaHostClean');
+happyWorker('hostcfg-clean');
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'hostcfg-clean', branch: 'build/hostcfg-clean', title: 'Host cfg clean', kind: 'impl', acceptance: ['c'] },
+]};
+mod = await loadLevel();
+result = await mod.default();
+p = (result.parked ?? []).find(x => x.slug === 'hostcfg-clean');
+if (!p) reason = 'clean item did not park';
+else if ('host_config_deferrals' in p) reason = 'an item with no deferral must not carry a host_config_deferrals field at all — got ' + JSON.stringify(p.host_config_deferrals);
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+# --- K1182 static lockstep guards: host-config deferral ----------------------
+# Five surfaces move together: the .mjs (schema field + prompt section +
+# detector + park tally + anyFailed exclusion), build.md's §3c/§3d/§4a/Step-6
+# prose, assess.md's A.8 (the bar this must NOT relax), pr.sh's PR-body
+# consumer, and worktree.sh's standing no-carry prohibition. Every check HARD
+# FAILS on an absent file — no skip-and-PASS.
+grep -q 'function hostConfigDeferralSection' "$MJS" \
+  || fail "#1182: hostConfigDeferralSection() missing — workerPrompt must embed the deferral contract as its own self-contained section"
+grep -q '## Host-config / gitignored-file criteria — DEFER, never confirm' "$MJS" \
+  || fail "#1182: workerPrompt() must embed the '## Host-config / gitignored-file criteria' section"
+grep -q 'function isHostConfigDeferral' "$MJS" \
+  || fail "#1182: isHostConfigDeferral() missing — the pair detector §3d's anyFailed exclusion and the park tally both read"
+grep -q 'r.passed === false && !isHostConfigDeferral(r)' "$MJS" \
+  || fail "#1182: §3d's anyFailed must exclude a MARKED deferral only — the pair, never the boolean alone (a bare passed:false must still escalate)"
+grep -q 'host_config_deferrals' "$MJS" \
+  || fail "#1182: park()'s returned record must carry host_config_deferrals — the durable marker the orchestrator verifies parent-side"
+grep -q 'deferred_host_config' "$MJS" \
+  || fail "#1182: WORKER_VERDICT_SCHEMA's acceptance_results items must declare a deferred_host_config property"
+K1182_BUILD_MD="$REPO_ROOT/claude/commands/build.md"
+[ -f "$K1182_BUILD_MD" ] \
+  || fail "#1182: claude/commands/build.md is missing — the prose half of this contract pair cannot be verified"
+grep -q 'deferred_host_config' "$K1182_BUILD_MD" \
+  || fail "#1182: build.md §3c must name the deferred_host_config marker (lockstep with build-level.mjs)"
+grep -q 'host_config_deferrals' "$K1182_BUILD_MD" \
+  || fail "#1182: build.md §4a must name host_config_deferrals — the parked field the parent-side verification reads"
+grep -q 'verified PARENT-SIDE by the orchestrator' "$K1182_BUILD_MD" \
+  || fail "#1182: build.md §3c must state that the orchestrator verifies a host-config criterion parent-side, after the worker hands back"
+grep -q 'Verify every host-config deferral HERE, parent-side' "$K1182_BUILD_MD" \
+  || fail "#1182: build.md §4a must carry the parent-side verification step itself — naming the field is not the same as disposing it before merge"
+grep -q 'Host-config deferrals (temperloop#1182' "$K1182_BUILD_MD" \
+  || fail "#1182: build.md Step 6 summary template must carry a host-config-deferral tally line (V + U + E == D)"
+# §3h.5's as-you-go fast path BYPASSES §4a by construction ("its own green" is
+# long past by the level boundary), so an item carrying host_config_deferrals
+# must be INELIGIBLE for it. Gate 3 is the eligibility slot that already
+# excludes the sibling `acceptance_unverified: true` field; this asserts the
+# SAME LINE also names host_config_deferrals — a different, non-overlapping
+# field, so excluding one does not exclude the other. Scoped to gate 3's own
+# line so a stray mention elsewhere in the file cannot satisfy it.
+K1182_GATE3_LN="$(grep -n '^3\. \*\*No unverified acceptance' "$K1182_BUILD_MD" | head -1 | cut -d: -f1)"
+[ -n "$K1182_GATE3_LN" ] \
+  || fail "#1182: build.md §3h.5 eligibility gate 3 ('No unverified acceptance') not found — the as-you-go exclusion cannot be verified"
+sed -n "${K1182_GATE3_LN}p" "$K1182_BUILD_MD" | grep 'host_config_deferrals' >/dev/null \
+  || fail "#1182: build.md §3h.5 eligibility gate 3 must exclude an item carrying host_config_deferrals — the as-you-go path never reaches §4a, so a deferral riding it merges with NOBODY having verified it"
+sed -n "${K1182_GATE3_LN}p" "$K1182_BUILD_MD" | grep 'acceptance_unverified' >/dev/null \
+  || fail "#1182: build.md §3h.5 eligibility gate 3 must still exclude acceptance_unverified — the #939 exclusion is not replaced by the #1182 one"
+# The worker-prompt section is UNGATED across /build, /sweep and /fix, so each
+# of those specs owes its own parent-side verification seat. build.md's is §4a
+# (checked above); these are the other two. Without them an ungated deferral
+# instruction auto-merges unverified on those paths.
+K1182_SWEEP_MD="$REPO_ROOT/claude/commands/sweep.md"
+[ -f "$K1182_SWEEP_MD" ] \
+  || fail "#1182: claude/commands/sweep.md is missing — /sweep's parent-side verification seat cannot be verified"
+grep -q 'settle every host-config deferral parent-side' "$K1182_SWEEP_MD" \
+  || fail "#1182: sweep.md's per-chunk merge pass must settle host-config deferrals parent-side BEFORE 'gh pr merge --auto' — /sweep has no §4a, so this is its only seat"
+grep -q 'host_config_deferrals' "$K1182_SWEEP_MD" \
+  || fail "#1182: sweep.md must name host_config_deferrals — the parked field its merge pass reads to find the deferrals it owes verification"
+K1182_FIX_MD="$REPO_ROOT/claude/commands/fix.md"
+[ -f "$K1182_FIX_MD" ] \
+  || fail "#1182: claude/commands/fix.md is missing — /fix's parent-side verification seat cannot be verified"
+grep -q 'Settle every host-config deferral parent-side BEFORE this ask' "$K1182_FIX_MD" \
+  || fail "#1182: fix.md Step 5's modal merge gate must settle host-config deferrals parent-side before the ask — /fix has no §4a, so its one human-gated moment is the seat"
+grep -q 'host_config_deferrals' "$K1182_FIX_MD" \
+  || fail "#1182: fix.md must name host_config_deferrals — Step 4a carries it forward to the Step 5 gate"
+# The .mjs's own ungated rationale must name the seats it depends on, so a
+# future path added to the driver cannot inherit the instruction with no seat.
+grep -q 'UNGATED IS ONLY SOUND BECAUSE ALL THREE PATHS HAVE A SEAT' "$MJS" \
+  || fail "#1182: build-level.mjs's hostConfigDeferralSection() rationale must name the three consumer seats — an ungated instruction on a seatless path is how a deferral auto-merges unverified"
+K1182_ASSESS_MD="$REPO_ROOT/claude/commands/assess.md"
+[ -f "$K1182_ASSESS_MD" ] \
+  || fail "#1182: claude/commands/assess.md is missing — the A.8 half of this contract cannot be verified"
+grep -q 'confirmed set,\" not merely \"location named' "$K1182_ASSESS_MD" \
+  || fail "#1182: assess.md A.8's confirmed-set bar must stay INTACT — this item moves WHO confirms, never WHETHER"
+grep -q 'Who verifies such a criterion — the orchestrator, parent-side' "$K1182_ASSESS_MD" \
+  || fail "#1182: assess.md A.8 must route host-config verification to the orchestrator parent-side (so an author stops writing worker-unverifiable criteria)"
+K1182_PR_SH="$REPO_ROOT/workflows/scripts/build/pr.sh"
+[ -f "$K1182_PR_SH" ] \
+  || fail "#1182: workflows/scripts/build/pr.sh is missing — the PR-body consumer half of this contract cannot be verified"
+grep -q 'deferred_host_config' "$K1182_PR_SH" \
+  || fail "#1182: pr.sh's assemble_body recap must read .deferred_host_config — otherwise a deferral renders as a bare unchecked box, indistinguishable from a worker FAILURE"
+K1182_WORKTREE_SH="$REPO_ROOT/workflows/scripts/build/worktree.sh"
+[ -f "$K1182_WORKTREE_SH" ] \
+  || fail "#1182: workflows/scripts/build/worktree.sh is missing — the no-carry half of this contract cannot be verified"
+grep -q 'DO NOT GENERALIZE THIS INTO A HOST-CONFIG CARRY' "$K1182_WORKTREE_SH" \
+  || fail "#1182: worktree.sh must carry the standing no-carry prohibition beside materialize_agents — the rejected 'allowlisted host-config carry' proposal must not be silently re-opened"
+# The load-bearing half of the prohibition: no ACTIVE (non-comment) line in
+# worktree.sh may copy a host-local config/secret file into the worktree.
+# Comments naming build.config.local.sh are the documentation above; a real
+# `cp`/`install` of one would be the exposure itself.
+if grep -nE '^[[:space:]]*[^#[:space:]].*(\.env|\.local\.sh)' "$K1182_WORKTREE_SH" | grep -E '\b(cp|install|rsync|cat)\b' >/dev/null; then
+  fail "#1182: worktree.sh has an ACTIVE line copying a host-local config/secret file into the worktree — that is the secret-in-worktree exposure /assess A.8 exists to prevent"
+fi
+echo "PASS: #1182 host-config deferral guard — the worker DEFERS (passed:false + deferred_host_config, never a claimed pass), a bare passed:false still escalates, park() tallies host_config_deferrals, EVERY consumer path has a parent-side seat (build.md §4a + §3h.5 exclusion, sweep.md per-chunk merge pass, fix.md Step 5), and assess.md A.8 / pr.sh / worktree.sh are in lockstep"
+
+# ============================================================================
 # TEST (K1430): §3e mandatory/routed pre-push review runs INSIDE driveItem —
 #   the review is spawned by driveItem itself via agent({agentType}), never
 #   delegated to the 3c worker (which cannot spawn a nested subagent at all).
