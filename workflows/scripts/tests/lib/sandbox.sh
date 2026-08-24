@@ -1022,24 +1022,47 @@ sandbox_tripwire_check() {
 #     test_sandbox.sh test 6 does, so a deliberate-leak meta-test can prove
 #     the guard still fires without writing to the operator's actual HOME).
 #
-#   sandbox_snapshot_path <path>
+#   sandbox_real_children <path>
+#     The DIRECT children of <path>, one basename per line; empty for a
+#     missing path, a non-directory, or a symlink. This is the
+#     BASELINE-EXCLUSION set sandbox_snapshot_path excludes with
+#     (temperloop#1241).
+#
+#   sandbox_snapshot_path <path> [baseline_children]
 #     "absent", or "present:<n>" where <n> is a portable file-count
 #     fingerprint (no stat flags; works on both BSD/macOS and GNU find).
+#     `baseline_children` is a newline-separated list of direct-child
+#     basenames (sandbox_real_children's output) that were ALREADY THERE
+#     before the sandboxed run; each is excluded from the walk by an exact,
+#     literal basename match, and counted only for its continued existence.
+#     See that function's own comment for why the exclusion is a property of
+#     the disk at baseline time rather than a list of names.
 #
 #   sandbox_snapshot_real_candidates
 #     Fills SANDBOX_REAL_SNAPS[] with sandbox_snapshot_path of every entry in
-#     SANDBOX_REAL_CANDIDATES[]. Call BEFORE the sandboxed run.
+#     SANDBOX_REAL_CANDIDATES[], and SANDBOX_REAL_BASE_CHILDREN[] with the
+#     matching sandbox_real_children output. Call BEFORE the sandboxed run.
 #
 #   sandbox_diff_real_candidates
-#     Re-snapshots the same entries and compares against SANDBOX_REAL_SNAPS[].
-#     Returns 0 iff every one is unchanged; otherwise prints the single
-#     canonical drift message to STDOUT (so a caller can splice it into its
-#     own `fail`) and returns 1. Call AFTER the sandboxed run.
+#     Re-snapshots the same entries — excluding each one's recorded baseline
+#     children — and compares against SANDBOX_REAL_SNAPS[]. Returns 0 iff
+#     every one is unchanged; otherwise prints the single canonical drift
+#     message to STDOUT (so a caller can splice it into its own `fail`) and
+#     returns 1. Call AFTER the sandboxed run.
 #
 #   sandbox_cache_interferer_start / _count / _stop
 #     A CONTINUOUS third-party writer against the resolved REAL cache store
-#     root — the concurrency this guard must be immune to, made active
-#     rather than assumed. See those functions' own comments.
+#     root — a root the guard no longer samples (#1154).
+#
+#   sandbox_subtree_interferer_start <dir> / _count / _stop
+#     A CONTINUOUS third-party writer INSIDE <dir>, for proving immunity on a
+#     root the guard STILL samples. Callers pass a SYNTHETIC root they own,
+#     never the operator's real one — see that function's own comment for why
+#     the real root cannot host this and stay correct when the two sandbox
+#     suites run concurrently.
+#
+#   Together these are the concurrency this guard must be immune to, made
+#   active rather than assumed. See those functions' own comments.
 # =============================================================================
 
 # ---------------------------------------------------------------------------
@@ -1066,6 +1089,15 @@ sandbox_real_candidates() {
   #       basic-memory store, arriving here by a different door.
   # The removal is safe BECAUSE OF (a); (b) alone would not justify
   # deleting a working leak detector.
+  #
+  # $real_home/.local/state/foundation is the case where that reasoning does
+  # NOT reach (temperloop#1241). It is shared mutable state too — reason (b)
+  # applies in full — but reason (a) does not: its writers are third-party
+  # daemons and hooks (the basic-memory backend reached via ks_search, the
+  # nightly vault-manifest and golden-query jobs, the guard logs), not a knob
+  # sandbox_env can pin, so there is no source-level redirect to license
+  # dropping it. It therefore STAYS SAMPLED, and the concurrency is handled
+  # in the fingerprint instead — see sandbox_snapshot_path.
   SANDBOX_REAL_CANDIDATES=(
     "$real_home/.local/share/temperloop"
     "$real_home/.local/bin/temperloop"
@@ -1076,45 +1108,163 @@ sandbox_real_candidates() {
 }
 
 # ---------------------------------------------------------------------------
+# sandbox_real_children <path> — the direct children of <path>, one basename
+# per line. Empty (rc 0) for a missing path, for a non-directory, or for a
+# symlink: a candidate may legitimately be a plain file or a symlink
+# (~/.local/bin/temperloop), and "no children" is the right answer for those.
+#
+# The symlink exclusion is not cosmetic — it keeps this function agreeing with
+# sandbox_snapshot_path, which treats a symlink as a LEAF because `find` does
+# not follow one. Were a symlink-to-directory enumerated here but left
+# undescended there, its children would be added to the fingerprint as
+# baseline exclusions the count can never otherwise reach, and the two halves
+# would disagree about what the path even contains.
+# ---------------------------------------------------------------------------
+sandbox_real_children() {
+  local p="$1" child
+  [ -d "$p" ] && [ ! -L "$p" ] || return 0
+  while IFS= read -r child; do
+    [ -n "$child" ] || continue
+    printf '%s\n' "${child##*/}"
+  done < <(find "$p" -mindepth 1 -maxdepth 1 -print 2>/dev/null)
+}
+
+# ---------------------------------------------------------------------------
+# sandbox_snapshot_path <path> [baseline_children]   (temperloop#1241)
+#
+# WHY THE BASELINE-EXCLUSION SET REPLACED A NAME-PRUNE.
+#
+# This fingerprint used to prune two hard-coded directory NAMES —
+# `basic-memory-home` and `bm-*` — because the basic-memory knowledge store
+# (F#946) lives under ~/.local/state/foundation and is LIVE, concurrently
+# written runtime state: ks_search or a hook from any other session churns
+# hundreds of files inside a single test window, and counting that made the
+# no-residue assertion flake (temperloop#377, and #382 for the second copy
+# the #1154 hoist retired).
+#
+# A name list is a BLOCKLIST, and it silently degrades: it is complete only
+# for the subtrees that existed the day it was written. `.local/state/
+# foundation` has since grown `golden-queries*/`, `vault-manifests/`,
+# `gq-*/`, `agent-heartbeat/` and more — every one of them a shared root
+# written by a process outside this test's tree, and every one of them
+# counted, because none of them is spelled `bm-*`. The same flake therefore
+# re-opens on the NEXT concurrently-written path, and the only "fix" a
+# blocklist offers is to add another name after the next flake.
+#
+# The replacement prunes by a PROPERTY instead: a direct child that was
+# ALREADY PRESENT when the baseline snapshot was taken is not residue THIS
+# sandboxed run created, so its subtree is excluded — whatever it is called.
+# That is not a widening: the exclusion set is derived from the actual disk
+# at snapshot time, so a shared-state subtree added to that root next month
+# is handled with no edit here, and a directory the sandboxed run NEWLY
+# creates is counted in full, recursively.
+#
+# What each fingerprint therefore means:
+#   before: present:<1 + number of direct children>   (root + each child's
+#           continued existence; nothing is descended)
+#   after:  the same, plus every path under any child that did NOT exist at
+#           baseline — i.e. exactly the residue attributable to the run.
+# So the count still MOVES on (a) a new direct child, (b) anything created
+# beneath a new direct child, (c) a baseline child that disappeared, and (d)
+# a previously-absent candidate springing into existence — while staying
+# blind to churn inside a subtree that was already there.
+#
+# Two deliberate consequences, stated so neither is mistaken for a bug:
+#   - a leak INTO a pre-existing shared subtree is not detected here. For
+#     the one that matters, basic-memory-home, the vector is closed at the
+#     source instead and asserted positively: KNOWLEDGE_SEARCH_BM_HOME is
+#     pinned inside $SANDBOX_ROOT by sandbox_env (temperloop#1658). Same
+#     "redirect asserted -> stop count-sampling" shape #1154 used for the
+#     cache root — except the path itself stays watched, rather than being
+#     dropped from the candidate set.
+#   - a third-party writer that creates a NEW direct child of a watched root
+#     mid-window is indistinguishable from a leak and is still reported.
+#     That is the correct bias for a tripwire, and it is rare: real
+#     concurrent writers churn INSIDE their own long-lived directory.
+#
+# A baseline child is never DESCENDED, so the 400k+-file bm store stays
+# un-walked exactly as the name-based `-prune` kept it — now as a side effect
+# of it being a baseline child, with no name to keep current.
+#
+# WHY THE EXCLUSION IS APPLIED BY WALKING DIRECT CHILDREN rather than by
+# handing `find` a `-path` prune expression per baseline child: `-path` takes
+# a GLOB, not a literal. A child whose name contains `*`, `?`, or `[` would
+# not match its own `-path` pattern, so it would be descended and counted
+# after all — the blocklist failure mode re-entering through the escape
+# hatch, and doing it silently. Enumerating `-maxdepth 1` and comparing
+# basenames with `=` is a literal match by construction, so no filename can
+# opt itself out of the exclusion set.
+# ---------------------------------------------------------------------------
 sandbox_snapshot_path() {
-  # The basic-memory knowledge store (F#946) lives under
-  # ~/.local/state/foundation/{basic-memory-home,bm-*} and is LIVE,
-  # concurrently written runtime state — churned on-demand by ks_search /
-  # the CLAUDE.kernel.md § Phase-1 parity `bm` leg from any other session or
-  # hook, with hundreds of files created inside a single test window. It is
-  # NOT the bootstrap residue this guard looks for, so counting it makes the
-  # no-residue assertion flake on unrelated concurrent bm activity
-  # (temperloop#377, and #382 for the second copy this hoist retires).
-  # Prune the bm subtrees:
-  #   - by directory NAME — the bm dirs only ever appear under
-  #     .local/state/foundation, so a global name-prune cannot hide
-  #     bootstrap residue leaked into any other candidate path;
-  #   - via -prune, so the 400k+-file store is never descended (fast, and
-  #     the count stays a leak-detector, not a store-size measurement).
-  local p="$1"
-  if [ -e "$p" ]; then
-    printf 'present:%s' "$(find "$p" \( -name basic-memory-home -o -name 'bm-*' \) -prune -o -print 2>/dev/null | wc -l | tr -d ' ')"
-  else
+  local p="$1" baseline="${2-}"
+  if [ ! -e "$p" ] && [ ! -L "$p" ]; then
     printf 'absent'
+    return 0
   fi
+
+  # A leaf candidate — a plain file, or a symlink `find` will not follow.
+  # One path, no children; matches sandbox_real_children's empty answer.
+  if [ ! -d "$p" ] || [ -L "$p" ]; then
+    printf 'present:1'
+    return 0
+  fi
+
+  # 1 for the root itself, then each direct child: a baseline child counts
+  # ONLY for its continued existence (never descended — that is the whole
+  # concurrency immunity), a child that is NEW since the baseline counts its
+  # entire subtree (that is the whole leak detection).
+  local n=1 child base sub
+  while IFS= read -r child; do
+    [ -n "$child" ] || continue
+    base="${child##*/}"
+    if _sandbox_baseline_has "$base" "$baseline"; then
+      n=$((n + 1))
+    else
+      sub="$(find "$child" -print 2>/dev/null | wc -l | tr -d ' ')"
+      n=$((n + sub))
+    fi
+  done < <(find "$p" -mindepth 1 -maxdepth 1 -print 2>/dev/null)
+
+  printf 'present:%s' "$n"
+}
+
+# ---------------------------------------------------------------------------
+# _sandbox_baseline_has <name> <newline-separated-list> — exact, literal
+# line membership. Deliberately pure bash (no grep -Fx subprocess per child,
+# and no glob semantics anywhere).
+# ---------------------------------------------------------------------------
+_sandbox_baseline_has() {
+  local needle="$1" hay="$2" line
+  [ -n "$hay" ] || return 1
+  while IFS= read -r line; do
+    [ "$line" = "$needle" ] && return 0
+  done <<<"$hay"
+  return 1
 }
 
 # ---------------------------------------------------------------------------
 sandbox_snapshot_real_candidates() {
   : "${SANDBOX_REAL_CANDIDATES:?sandbox_snapshot_real_candidates: call sandbox_real_candidates first}"
-  local p
+  local p children
   SANDBOX_REAL_SNAPS=()
+  SANDBOX_REAL_BASE_CHILDREN=()
   for p in "${SANDBOX_REAL_CANDIDATES[@]}"; do
-    SANDBOX_REAL_SNAPS+=("$(sandbox_snapshot_path "$p")")
+    # Order matters: the children are read FIRST and the fingerprint is then
+    # taken against them, so `before` and `after` are computed by the same
+    # rule against the same exclusion set (temperloop#1241).
+    children="$(sandbox_real_children "$p")"
+    SANDBOX_REAL_BASE_CHILDREN+=("$children")
+    SANDBOX_REAL_SNAPS+=("$(sandbox_snapshot_path "$p" "$children")")
   done
 }
 
 # ---------------------------------------------------------------------------
 sandbox_diff_real_candidates() {
   : "${SANDBOX_REAL_CANDIDATES:?sandbox_diff_real_candidates: call sandbox_real_candidates first}"
+  : "${SANDBOX_REAL_SNAPS:?sandbox_diff_real_candidates: call sandbox_snapshot_real_candidates first}"
   local i=0 p after bad=0
   for p in "${SANDBOX_REAL_CANDIDATES[@]}"; do
-    after="$(sandbox_snapshot_path "$p")"
+    after="$(sandbox_snapshot_path "$p" "${SANDBOX_REAL_BASE_CHILDREN[$i]}")"
     if [ "$after" != "${SANDBOX_REAL_SNAPS[$i]}" ]; then
       printf 'real-HOME path changed during a sandboxed run: %s (before: %s, after: %s)\n' \
         "$p" "${SANDBOX_REAL_SNAPS[$i]}" "$after"
@@ -1203,4 +1353,98 @@ sandbox_cache_interferer_stop() {
     rmdir "$SANDBOX_CACHE_INTERFERER_ROOT" 2>/dev/null || true
     SANDBOX_CACHE_INTERFERER_CREATED_ROOT=0
   fi
+}
+
+# ---------------------------------------------------------------------------
+# sandbox_subtree_interferer_start <dir>   (temperloop#1241)
+#
+# The cache interferer above proves the guard survives concurrency against a
+# root it no longer samples. This one proves it against a root it STILL
+# samples — but it takes the target directory as an ARGUMENT, and callers
+# hand it a SYNTHETIC `.local/state/foundation`, never the operator's real
+# one. Both halves of that are deliberate.
+#
+# WHY NOT THE REAL ROOT. An earlier cut of this change pointed the writer at
+# `${XDG_STATE_HOME:-$HOME/.local/state}/foundation` itself, creating a
+# pid-namespaced subtree there. It passed alone and failed the moment the two
+# sandbox suites ran CONCURRENTLY, which is how scripts/quality-gates.sh runs
+# them. The reason is not a fingerprint bug — it is arithmetic. Each suite
+# creates a NEW direct child of that shared root and removes it again, inside
+# the other suite's assertion window; a new direct child is exactly what a
+# leak looks like, and correctly so. Two processes cannot both assert "this
+# shared directory gained no child" while each is adding one to it, under any
+# fingerprint. The only fixes available at the real root are a blocklist of
+# peer-interferer names (the thing this issue exists to delete) or a shared
+# fixture the test runner does not offer.
+#
+# It was also self-contradictory on its own terms: writing to a STILL-SAMPLED
+# real-HOME path is the precise thing assertion 5 exists to forbid. The cache
+# interferer may write its real root only because #1154 dropped that root from
+# the candidate set.
+#
+# So the CONTROLLED proof runs against a synthetic root the suite owns
+# exclusively (test_sandbox.sh test 6b), where it is parallel-safe, needs no
+# real-HOME write, and can additionally assert DISCRIMINATION — that leaks
+# into the very same root still fire. The real `.local/state/foundation`
+# stays sampled and un-written-to by the suites, exercised in assertion 5
+# against whatever genuine third-party churn the machine is producing.
+#
+# SHAPE MATTERS, and it is the shape of the real writers. Every genuine
+# third-party writer of that root — the basic-memory backend under
+# basic-memory-home/, the nightly vault-manifests/ and golden-queries*/ jobs
+# — owns a LONG-LIVED DIRECTORY there and churns files INSIDE it. So <dir> is
+# expected to be a subtree that already existed at baseline, and the writer
+# only ever writes within it. That is the whole regression bar: under the
+# retired name-prune this loop grew the sampled count on every iteration
+# (nothing here is spelled `bm-*`), so the assertion failed. Under the
+# baseline-exclusion fingerprint it is invisible, with no name added anywhere.
+#
+# Each iteration creates a NEW uniquely-named marker file (the fingerprint is
+# a count, so re-touching one file would not move it) and pauses 0.1s as a
+# CPU courtesy — same reasoning as the cache interferer.
+# ---------------------------------------------------------------------------
+sandbox_subtree_interferer_start() {
+  SANDBOX_SUBTREE_INTERFERER_DIR="${1:?sandbox_subtree_interferer_start: need a target directory}"
+  SANDBOX_SUBTREE_INTERFERER_TAG="$$"
+  SANDBOX_SUBTREE_INTERFERER_PID=""
+
+  [ -d "$SANDBOX_SUBTREE_INTERFERER_DIR" ] || {
+    echo "sandbox_subtree_interferer_start: $SANDBOX_SUBTREE_INTERFERER_DIR is not an existing directory" >&2
+    return 1
+  }
+
+  (
+    n=0
+    while :; do
+      : > "$SANDBOX_SUBTREE_INTERFERER_DIR/.sandbox-interferer-$SANDBOX_SUBTREE_INTERFERER_TAG-$n" 2>/dev/null || true
+      n=$((n + 1))
+      sleep 0.1
+    done
+  ) &
+  SANDBOX_SUBTREE_INTERFERER_PID=$!
+}
+
+# ---------------------------------------------------------------------------
+# sandbox_subtree_interferer_count — how many marker files this run's subtree
+# interferer has laid down so far. Asserted non-trivial BEFORE stopping (the
+# stop removes them): that is what proves the leg ran against a live
+# concurrent writer rather than passing vacuously.
+# ---------------------------------------------------------------------------
+sandbox_subtree_interferer_count() {
+  [ -n "${SANDBOX_SUBTREE_INTERFERER_DIR:-}" ] || { printf '0'; return 0; }
+  find "$SANDBOX_SUBTREE_INTERFERER_DIR" -maxdepth 1 \
+    -name ".sandbox-interferer-$SANDBOX_SUBTREE_INTERFERER_TAG-*" 2>/dev/null | wc -l | tr -d ' '
+}
+
+# ---------------------------------------------------------------------------
+# sandbox_subtree_interferer_stop — kill the writer and remove exactly its own
+# pid-namespaced markers. It never created the directory, so it never removes
+# one. Idempotent, and safe on an EXIT trap.
+# ---------------------------------------------------------------------------
+sandbox_subtree_interferer_stop() {
+  [ -n "${SANDBOX_SUBTREE_INTERFERER_PID:-}" ] || return 0
+  kill "$SANDBOX_SUBTREE_INTERFERER_PID" 2>/dev/null || true
+  wait "$SANDBOX_SUBTREE_INTERFERER_PID" 2>/dev/null || true
+  SANDBOX_SUBTREE_INTERFERER_PID=""
+  rm -f "$SANDBOX_SUBTREE_INTERFERER_DIR"/.sandbox-interferer-"$SANDBOX_SUBTREE_INTERFERER_TAG"-* 2>/dev/null || true
 }

@@ -24,13 +24,20 @@
 #   6. Public-knob pins: inside the sandbox, CACHE_STORE_ROOT /
 #      TEMPERLOOP_HOME / TEMPERLOOP_BIN_DIR each resolve under $SANDBOX_ROOT
 #      even when the caller exports a real-machine value for them — plus the
-#      guard-not-weakened counter-check, that a deliberate leak to a
-#      still-sampled candidate is still caught with the same message.
+#      guard-not-weakened counter-check, which since temperloop#1241 is also
+#      the DISCRIMINATION test for the baseline-exclusion fingerprint: a
+#      CONTINUOUS third-party writer runs inside a pre-existing subtree of a
+#      SYNTHETIC, still-sampled `.local/state/foundation` and must be
+#      invisible, while leaks into and removals from that same root must
+#      still fire.
 #
 # No network. The ONLY real-machine writes are test 5's interferer markers
 # under the real cache store root — pid-namespaced, and removed (along with
 # the root itself if this run created it) by sandbox_cache_interferer_stop,
-# which is wired onto an EXIT trap. No real HOME/XDG mutations otherwise.
+# which is wired onto an EXIT trap. Test 6's writers all land inside the
+# throwaway $SANDBOX_ROOT. No real HOME/XDG mutations otherwise; in
+# particular this suite never writes the real `.local/state/foundation`,
+# which it still SAMPLES (see sandbox_subtree_interferer_start).
 #
 set -uo pipefail
 
@@ -143,6 +150,14 @@ sandbox_real_candidates "$REAL_HOME_BEFORE"
 # cache root was dropped from the sampled candidate set precisely because a
 # concurrent board-adapter process writes it, and only an actual concurrent
 # writer can demonstrate that the assertion now survives one.
+#
+# The still-sampled `.local/state/foundation` root deliberately gets NO
+# interferer here, and is deliberately not written to by this suite at all.
+# Its controlled concurrency proof lives in test 6b instead, against a
+# synthetic root this suite owns exclusively — see
+# sandbox_subtree_interferer_start's comment for why a writer aimed at the
+# REAL root makes the two sandbox suites fail each other the moment
+# quality-gates.sh runs them in parallel (temperloop#1241).
 trap 'sandbox_cache_interferer_stop' EXIT
 sandbox_cache_interferer_start || fail "5: could not start the cache-root interferer"
 
@@ -185,7 +200,10 @@ pass "5: a full bootstrap+dispatch cycle leaves every real-HOME candidate path u
 #        same code path and with the same failure message. Run against a
 #        SYNTHETIC candidate root (sandbox_real_candidates takes the home
 #        root as an argument) so proving the guard fires costs no write to
-#        the operator's actual HOME.
+#        the operator's actual HOME. Since temperloop#1241 this half is the
+#        DISCRIMINATION test for the baseline-exclusion fingerprint: it runs
+#        two phases against one baseline — third-party churn alone must be
+#        silent, and only then are the leaks introduced and required to fire.
 # =============================================================================
 sandbox_up test-sandbox-6
 
@@ -233,29 +251,123 @@ pass "6a: CACHE_STORE_ROOT / TEMPERLOOP_HOME / TEMPERLOOP_BIN_DIR are pinned ins
 
 # --- 6b: guard-not-weakened counter-check ----------------------------------
 FAKE_REAL_HOME="$SANDBOX_ROOT/fake-real-home"
+FAKE_STATE="$FAKE_REAL_HOME/.local/state/foundation"
 mkdir -p "$FAKE_REAL_HOME"
+
+# Seed the synthetic .local/state/foundation the way a real operator's is:
+# long-lived shared-state SUBTREES whose names no prune list has ever heard
+# of (that is the whole point — `golden-queries-weekly` and `vault-manifests`
+# are real, and neither is `basic-memory-home` or `bm-*`), plus an ordinary
+# log file. Seeded BEFORE the baseline, so they are baseline children.
+mkdir -p "$FAKE_STATE/golden-queries-weekly/2026-08" "$FAKE_STATE/vault-manifests"
+: > "$FAKE_STATE/knowledge-reads.log"
+
+# One more baseline child, whose name contains GLOB METACHARACTERS. This is
+# the discrimination case for the exclusion being a LITERAL match: a `-path`
+# based prune expression would treat this name as a pattern, it would fail to
+# match itself, and the churn seeded into it below would be counted — the
+# blocklist failure mode sneaking back in through the escape hatch. It is
+# pruned here only because sandbox_snapshot_path compares basenames with `=`.
+GLOBBY_CHILD="$FAKE_STATE/golden-queries[2026]"
+mkdir -p "$GLOBBY_CHILD"
+
+# A CONTINUOUS third-party writer inside one of those pre-existing subtrees,
+# live for the whole of 6b. This is the controlled concurrency proof for a
+# STILL-SAMPLED root, and it runs HERE — against a synthetic root this suite
+# owns exclusively — rather than in assertion 5 against the operator's real
+# `.local/state/foundation`. sandbox_subtree_interferer_start's own comment
+# has the why: a writer aimed at the real shared root makes the two sandbox
+# suites report each other as leaks under quality-gates.sh's parallel runner,
+# and no fingerprint can fix that (temperloop#1241).
+#
+# Started BEFORE the baseline, deliberately: that is what makes its host
+# directory a baseline child, exactly as bm's home is on a real machine.
+trap 'sandbox_subtree_interferer_stop' EXIT
+sandbox_subtree_interferer_start "$FAKE_STATE/golden-queries-weekly" \
+  || fail "6b: could not start the synthetic state-root interferer"
+
 sandbox_real_candidates "$FAKE_REAL_HOME"
 sandbox_snapshot_real_candidates
 
-# A deliberate leak: a sandboxed run writing an ABSOLUTE path that lands in a
-# still-sampled candidate (.config/foundation). Nothing in the isolation
-# model prevents an absolute-path write — detecting it is the guard's whole
-# job, and this is the assertion that the removal of the cache-root entry
-# did not quietly disarm it.
-sandbox_run bash -c 'mkdir -p "$1" && : > "$1/leaked"' sandbox-leak "$FAKE_REAL_HOME/.config/foundation" \
-  || fail "6b: setup — the deliberate leak write itself failed"
+# --- 6b-i: third-party churn inside pre-existing subtrees must be SILENT ---
+# Written from OUTSIDE the sandbox, because that is what a third-party writer
+# is: another process on the same machine. Under the retired name-based
+# `-prune` every one of these files raised the sampled count and failed the
+# assertion; under the baseline-exclusion fingerprint they are invisible
+# without naming a single directory (temperloop#1241).
+for i in 1 2 3 4 5; do
+  : > "$FAKE_STATE/golden-queries-weekly/2026-08/run-$i.json"
+  : > "$FAKE_STATE/vault-manifests/manifest-$i.tsv"
+done
+mkdir -p "$FAKE_STATE/vault-manifests/nested/deeper"
+: > "$FAKE_STATE/vault-manifests/nested/deeper/late-arrival"
+printf 'appended\n' >> "$FAKE_STATE/knowledge-reads.log"
+# ...including inside the glob-metacharacter-named child (see its seed above).
+for i in 1 2 3; do : > "$GLOBBY_CHILD/run-$i.json"; done
 
-leak_msg="$(sandbox_diff_real_candidates)" && fail "6b: the guard did NOT catch a deliberate leak into a still-sampled candidate"
+# Non-vacuity, asserted INSIDE the window rather than assumed: hold here long
+# enough for the continuous writer to lay down markers strictly between the
+# baseline and the diff below, and prove it did. Without this the discrete
+# churn above would be the only thing 6b-i tests — the live writer would be
+# along for the ride, and a dead one would look identical. 0.3s against the
+# interferer's 0.1s cadence; deterministic, not a race.
+churn_writes_before="$(sandbox_subtree_interferer_count)"
+sleep 0.3
+subtree_writes="$(sandbox_subtree_interferer_count)"
+[ "$subtree_writes" -gt "$churn_writes_before" ] \
+  || fail "6b-i: the continuous third-party interferer wrote nothing between the baseline and the assertion ($churn_writes_before -> $subtree_writes markers) — 6b-i did not actually run against a LIVE concurrent writer inside a STILL-SAMPLED candidate"
+[ "$subtree_writes" -ge 2 ] \
+  || fail "6b-i: the continuous third-party interferer laid down only $subtree_writes marker(s) in total"
+
+churn_msg="$(sandbox_diff_real_candidates)" \
+  || fail "6b-i: third-party churn inside pre-existing subtrees of a sampled candidate — discrete and continuous alike — was reported as drift (got: $churn_msg)"
+
+# --- 6b-ii: deliberate leaks must still FIRE, against that same baseline ---
+# Two of them: a sandboxed run writing an ABSOLUTE path into .config/foundation
+# (the original #1154 counter-check), and one into .local/state/foundation —
+# the root 6b-i just proved is churn-immune, so the two phases together show
+# the immunity is not blindness. Nothing in the isolation model prevents an
+# absolute-path write; detecting it is the guard's whole job.
+sandbox_run bash -c 'mkdir -p "$1" && : > "$1/leaked"' sandbox-leak "$FAKE_REAL_HOME/.config/foundation" \
+  || fail "6b-ii: setup — the deliberate .config/foundation leak write itself failed"
+sandbox_run bash -c 'mkdir -p "$1" && : > "$1/leaked"' sandbox-leak "$FAKE_STATE/report-offer-dismissed" \
+  || fail "6b-ii: setup — the deliberate .local/state/foundation leak write itself failed"
+
+leak_msg="$(sandbox_diff_real_candidates)" && fail "6b-ii: the guard did NOT catch a deliberate leak into a still-sampled candidate"
 grep -F "real-HOME path changed during a sandboxed run: $FAKE_REAL_HOME/.config/foundation" <<<"$leak_msg" >/dev/null \
-  || fail "6b: the guard fired but not with the expected failure message (got: $leak_msg)"
+  || fail "6b-ii: the guard fired but not with the expected failure message (got: $leak_msg)"
+grep -F "real-HOME path changed during a sandboxed run: $FAKE_STATE" <<<"$leak_msg" >/dev/null \
+  || fail "6b-ii: the guard did not report the leak into the concurrently-written .local/state/foundation root (got: $leak_msg)"
 grep -E 'before: absent, after: present:[0-9]+' <<<"$leak_msg" >/dev/null \
-  || fail "6b: the failure message lost its before/after fingerprint detail (got: $leak_msg)"
+  || fail "6b-ii: the failure message lost its before/after fingerprint detail (got: $leak_msg)"
+
+# --- 6b-iii: a baseline child that DISAPPEARS must fire too -----------------
+# The other direction of the same fingerprint. Under the baseline-exclusion
+# rule a pre-existing subtree is counted once, for its continued existence
+# alone — so its removal by the sandboxed run is the ONLY way its disappearance
+# can register, and that makes this the newly load-bearing path. Re-baseline
+# first, because 6b-ii deliberately left the candidate set dirty.
+sandbox_snapshot_real_candidates
+sandbox_run bash -c 'rm -rf "$1"' sandbox-delete "$FAKE_STATE/vault-manifests" \
+  || fail "6b-iii: setup — the deliberate removal itself failed"
+[ ! -e "$FAKE_STATE/vault-manifests" ] || fail "6b-iii: setup — the removal did not take effect"
+
+gone_msg="$(sandbox_diff_real_candidates)" \
+  && fail "6b-iii: the guard did NOT catch a sandboxed run REMOVING a pre-existing subtree of a sampled candidate"
+grep -F "real-HOME path changed during a sandboxed run: $FAKE_STATE" <<<"$gone_msg" >/dev/null \
+  || fail "6b-iii: the guard fired but not against the expected candidate (got: $gone_msg)"
+
+# The interferer stayed live through all three phases — churning inside
+# golden-queries-weekly, which is a baseline child of every one of them.
+subtree_writes="$(sandbox_subtree_interferer_count)"
+sandbox_subtree_interferer_stop
+trap - EXIT
 
 sandbox_down
 # Restore the real candidate set — nothing runs after this today, but leaving
 # a synthetic set installed would silently defang any later leg.
 sandbox_real_candidates "$REAL_HOME_BEFORE"
-pass "6b: a deliberate leak from a sandboxed run into a still-sampled real-HOME candidate is still caught, with the same failure message"
+pass "6b: churn from a CONTINUOUS third-party writer ($subtree_writes writes) inside pre-existing subtrees of a still-sampled candidate — including one whose name is a glob pattern — is silent, while a deliberate leak from a sandboxed run into that same candidate (and into .config/foundation), and a deliberate removal of a pre-existing subtree, are all still caught with the same failure message"
 
 echo
 echo "ALL PASS: test_sandbox.sh"
