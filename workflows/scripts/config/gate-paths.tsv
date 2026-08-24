@@ -162,7 +162,7 @@ make test-board	workflows/scripts/board/**
 # uses, temperloop#567) so both lints stay on the identical binary.
 bash workflows/scripts/board-consumer-shellcheck.sh	workflows/scripts/board/** scripts/ensure-shellcheck.sh
 make test-build	workflows/scripts/build/** workflows/scripts/board/** workflows/scripts/lib/**
-make test-build-workflow	workflows/scripts/build/** claude/workflows/**
+make test-build-workflow	workflows/scripts/build/** claude/workflows/** workflows/scripts/lib/portable-timeout.sh
 bash workflows/scripts/tests/test_ready_pr_sweep.sh	workflows/scripts/ready-pr-sweep.sh workflows/scripts/board/** workflows/scripts/tests/test_ready_pr_sweep.sh
 make test-env-hygiene-report	workflows/scripts/env-hygiene-report.sh workflows/scripts/build/env-reconcile.sh workflows/scripts/tests/test_env_hygiene_report.sh
 make lint-pr-body-test	workflows/scripts/lint-pr-body.sh workflows/scripts/tests/test_lint_pr_body.sh

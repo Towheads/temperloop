@@ -4069,9 +4069,14 @@ for _f in stall.sh fast.sh batch.sh; do
   bash -n "$_lb_out/t-$_f" || fail "#1071: the emitted watchdog shell is not valid bash ($_f)"
 done
 
-# NB `|| true`: a bounded-out step exits 137 BY CONTRACT (the watchdog SIGKILLs
-# it), and this suite runs under `set -e` — without the guard the suite itself
-# would die with the very exit code the feature is supposed to produce.
+# NB the `|| _lb_stall_rc=$?` capture: a bounded-out step exits 137 BY CONTRACT
+# (the watchdog SIGKILLs it), and this suite runs under `set -e` — without the
+# guard the suite itself would die with the very exit code the feature is
+# supposed to produce. The status is KEPT rather than discarded (temperloop#1335)
+# because 137 is the other half of the bound's structured result: the payload
+# says the watchdog decided to time the step out, the status says the step
+# actually died on SIGKILL. Both are read off the run itself; neither is a
+# wall-clock comparison this harness performs.
 #
 # NB the stall probe is read from a FILE, never a `$( … )` capture, and its
 # verdict is the bound's OWN payload rather than this harness's wall clock
@@ -4086,8 +4091,11 @@ done
 # (60s observed, while the bound had reported STEP_TIMEOUT at elapsed_secs=2).
 # Reading `elapsed_secs` — the field the driver itself consumes — measures the
 # bound; timing the capture measures a descendant's lifetime.
-bash "$_lb_out/t-stall.sh" >"$_lb_out/stall.out" 2>/dev/null || true
+_lb_stall_rc=0
+bash "$_lb_out/t-stall.sh" >"$_lb_out/stall.out" 2>/dev/null || _lb_stall_rc=$?
 _lb_stall="$(cat "$_lb_out/stall.out")"
+[ "$_lb_stall_rc" -eq 137 ] \
+  || fail "#1071: a bounded-out step must exit 137 (128+SIGKILL) — the KILL half of the bound's result — got $_lb_stall_rc with output: $_lb_stall"
 case "$_lb_stall" in
   *'"outcome":"STEP_TIMEOUT"'*) : ;;
   *) fail "#1071: a bounded-out step must report STEP_TIMEOUT, got: $_lb_stall" ;;
@@ -4107,6 +4115,51 @@ _lb_bounded_at="$(printf '%s' "$_lb_stall" | sed -n 's/.*"elapsed_secs":\([0-9][
 [ "$_lb_bounded_at" -lt 20 ] \
   || fail "#1071: a stalled step was NOT bounded at its ceiling — the watchdog let it run ${_lb_bounded_at}s against a 2s ceiling (this is the 9h49m bug)"
 echo "PASS: K1071 emitted shell: a stalled step is killed at the ceiling and reports STEP_TIMEOUT, not a result"
+
+# --- K1071 DISCRIMINATION CONTROL (temperloop#1335) ---------------------------
+# The cheap way to stop a timing test flaking is to loosen it until it cannot
+# fail — which disarms the guard while leaving every PASS line in place. So the
+# assertions above ship with their own negative control: the SAME emitted shell,
+# on the SAME 60s stall body, under the SAME 2s ceiling, with ONLY the watchdog
+# removed. If that arm also came out STEP_TIMEOUT/137, the assertions above were
+# proving something other than the bound.
+#
+# The watchdog is removed by rewriting the one line that IS the watchdog — the
+# `( sleep "$__lb_ceil" … kill -9 … ) &` subshell — into an inert `( : ) &`. The
+# rewrite is verified two ways before the arm runs (the line is gone AND the file
+# actually changed), because a sed that silently matched nothing would turn this
+# control into a second copy of the live arm and quietly report a fake PASS.
+#
+# Only the WATCHDOG differs between the two arms; the body is held constant, so
+# the control cannot be explained away by a shorter stall. Its own bound is
+# external — run_with_timeout, the repo's shared portable watchdog — set to 6s,
+# 3x the ceiling being tested, so the verdict does not depend on host load: it
+# reads "still running at 3x its own ceiling", not "took longer than N".
+# shellcheck source=workflows/scripts/lib/portable-timeout.sh
+. "$REPO_ROOT/workflows/scripts/lib/portable-timeout.sh"
+_lb_nowd="$_lb_out/t-stall-nowatchdog.sh"
+sed 's|^ *( sleep "\$__lb_ceil".*|  ( : ) </dev/null >/dev/null 2>\&1 \&|' \
+  "$_lb_out/t-stall.sh" > "$_lb_nowd"
+if grep -q 'sleep "\$__lb_ceil"' "$_lb_nowd"; then
+  fail "#1335: the discrimination control still carries the watchdog — its rewrite of stepBoundPreamble's killer subshell did not match, so the control proves nothing"
+fi
+if cmp -s "$_lb_out/t-stall.sh" "$_lb_nowd"; then
+  fail "#1335: the discrimination control is byte-identical to the live arm — the watchdog-removal rewrite matched nothing"
+fi
+bash -n "$_lb_nowd" || fail "#1335: the watchdog-removed control is not valid bash"
+_lb_nowd_rc=0
+run_with_timeout 6 bash "$_lb_nowd" >"$_lb_out/nowatchdog.out" 2>/dev/null \
+  || _lb_nowd_rc=$?
+_lb_nowd_out="$(cat "$_lb_out/nowatchdog.out")"
+[ "$_lb_nowd_rc" -eq 137 ] \
+  || fail "#1335: with the watchdog removed the step should still have been running at 6s (3x its 2s ceiling); it exited $_lb_nowd_rc instead, so the live arm's kill is not what this case measures: $_lb_nowd_out"
+case "$_lb_nowd_out" in
+  *'STEP_TIMEOUT'*) fail "#1335: STEP_TIMEOUT was reported with the watchdog REMOVED — the live arm's assertion is not armed and would pass a broken bound: $_lb_nowd_out" ;;
+esac
+case "$_lb_nowd_out" in
+  *'PUSHED'*) fail "#1335: the control's step reported a result inside its window — the stall body no longer outruns the ceiling, so neither arm tests the bound: $_lb_nowd_out" ;;
+esac
+echo "PASS: K1071 discrimination control: removing ONLY the watchdog leaves the same step unbounded — no STEP_TIMEOUT, no kill, so the assertions above are armed"
 
 # The fast path must be FAST: portable-timeout.sh's #861 pipe-leak (the watchdog's
 # `sleep` grandchild holding the caller's `$( … )` pipe open) turns every quick,
@@ -4139,6 +4192,14 @@ grep -q 'input.machineryStepCeilingSecs' "$MJS" \
   || fail "#1071: build-level.mjs must read the step ceiling from the orchestrator hand-off (input.machineryStepCeilingSecs), not a bare literal"
 grep -q 'function stepBoundPreamble(' "$MJS" \
   || fail "#1071: the emitted-shell watchdog (stepBoundPreamble) is missing — the bound would live only in the Bash tool timeout that already failed to fire"
+# The #861 pipe leak's CAUSE, guarded statically (temperloop#1335). The fast-path
+# probe above catches the leak by latency, which is the only observable a leak
+# HAS — but latency is also the one thing a loaded runner perturbs. This grep
+# pins the fix itself: the watchdog subshell must be redirected AT THE SUBSHELL
+# BOUNDARY so its `sleep` grandchild never inherits a caller's `$( … )` pipe
+# write-end. Deterministic, load-free, and red the moment the redirect is dropped.
+grep -qF ') </dev/null >/dev/null 2>&1 &' "$MJS" \
+  || fail "#1071/#861: the emitted watchdog subshell is no longer redirected at the subshell boundary — its sleep grandchild will hold every caller's capture open for the full ceiling"
 grep -q 'async function disposeStepTimeout(' "$MJS" \
   || fail "#1071: disposeStepTimeout() missing — a bounded-out step has no disposal"
 grep -q "recover-probe \${sq(wt)}" "$MJS" \
