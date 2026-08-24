@@ -209,12 +209,17 @@ cli --board 7 --nope 1199
 # board scripts without claude/commands/, and this suite ships with them.
 SPEC="$(cd "$SCRIPTS_DIR/../../.." && pwd)/claude/commands/triage.md"
 if [ -f "$SPEC" ]; then
+  # These greps search for LITERAL spec text; `$CULL_GUARD` / `$repo` are the
+  # spec's own prose, not this shell's variables — single quotes are required.
+  # shellcheck disable=SC2016
   grep -F '"$CULL_GUARD" --board' "$SPEC" >/dev/null ||
     fail "case 9: claude/commands/triage.md carries no claim-guard.sh invocation — the cull path is unguarded again"
+  # shellcheck disable=SC2016
   guard_ln="$(grep -nF '"$CULL_GUARD" --board' "$SPEC" | head -1 | cut -d: -f1)"
   # The cull write itself — the FIRST reason-comment in the spec, which is the
   # one inside Step 4.8b. (Other `gh issue comment` calls in this spec belong to
   # unrelated steps, so anchor on the cull reason body, not the bare command.)
+  # shellcheck disable=SC2016
   write_ln="$(grep -nF 'gh issue comment <n> -R "$repo" --body "<reason>"' "$SPEC" | head -1 | cut -d: -f1)"
   [ -n "$write_ln" ] ||
     fail "case 9: could not locate the cull write in $SPEC — the ordering assertion has nothing to anchor on"
