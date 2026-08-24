@@ -4135,6 +4135,25 @@ echo "PASS: K1071 emitted shell: a stalled step is killed at the ceiling and rep
 # external — run_with_timeout, the repo's shared portable watchdog — set to 6s,
 # 3x the ceiling being tested, so the verdict does not depend on host load: it
 # reads "still running at 3x its own ceiling", not "took longer than N".
+#
+# KNOWN, DELIBERATE, BACKEND-DEPENDENT residue: on run_with_timeout's third-tier
+# dependency-free bash fallback (a stock macOS with neither `timeout` nor
+# `gtimeout`), this arm leaves its stall body's `sleep` running for the remainder
+# of the 60s. That tier `kill -9`s only its DIRECT child, and killing the
+# grandchildren under it is precisely the watchdog this arm exists to remove. The
+# `timeout`/`gtimeout` tiers do NOT leak: GNU timeout runs the child in its own
+# process group and signals the group, so the grandchild is reaped with it
+# (measured both ways on this host — 1 survivor on the fallback tier, 0 on the
+# GNU tier). Either way it is inert: a sleeping process holding no CPU, and this
+# arm's output goes to a FILE rather than a `$( … )` capture, so nothing blocks
+# on its EOF — the #861 shape needs a pipe. Don't diagnose it as a watchdog
+# defect. Three tempting cleanups are rejected on purpose: re-adding any killer
+# here would reintroduce the very thing the control removes; a harness-side
+# `pkill -f 'sleep 60'` is free to kill an unrelated sleep belonging to a sibling
+# gate worker or another session on a shared host, which is strictly worse than
+# the orphan; and shortening only the CONTROL's stall body would break the
+# body-held-constant property above, the property that makes the difference
+# between the two arms attributable to the watchdog alone.
 # shellcheck source=workflows/scripts/lib/portable-timeout.sh
 . "$REPO_ROOT/workflows/scripts/lib/portable-timeout.sh"
 _lb_nowd="$_lb_out/t-stall-nowatchdog.sh"
@@ -4197,8 +4216,28 @@ grep -q 'function stepBoundPreamble(' "$MJS" \
 # HAS — but latency is also the one thing a loaded runner perturbs. This grep
 # pins the fix itself: the watchdog subshell must be redirected AT THE SUBSHELL
 # BOUNDARY so its `sleep` grandchild never inherits a caller's `$( … )` pipe
-# write-end. Deterministic, load-free, and red the moment the redirect is dropped.
-grep -qF ') </dev/null >/dev/null 2>&1 &' "$MJS" \
+# write-end.
+#
+# The guard is a PAIR of greps, and the pairing is the whole point. The redirect
+# string `) </dev/null >/dev/null 2>&1 &` appears TWICE in build-level.mjs: once
+# on the emitted watchdog line, and once inside the prose comment above
+# stepBoundPreamble() that quotes it verbatim while explaining why it is there.
+# A single `grep -qF` on that string is therefore satisfied by the COMMENT, and
+# stays green when the redirect is deleted from the emitted line — i.e. it is
+# green in exactly the state it exists to catch (found in review of this very
+# change; the first cut of this guard had that hole). So: first SELECT the one
+# line that opens the watchdog subshell, then require the boundary redirect ON
+# THAT LINE. A comment can quote either half, but only the emitted line carries
+# both. Anchoring to the subshell opener rather than to a longer incidental
+# substring also keeps the guard from going spuriously red if the kill sequence
+# INSIDE the subshell is ever reordered — the redirect is what #861 is about.
+#
+# The trailing `>/dev/null` on the second grep — rather than a `-q` — is the
+# temperloop#1050 form scripts/lint-pipe-grep-q.sh enforces: a piped `grep -q`
+# exits at the first match and SIGPIPEs the upstream grep, which under pipefail
+# reports 141 as a race. Draining to EOF gives the identical exit status with no
+# signal. Don't "simplify" it back to `-qF`; the lint will catch it.
+grep -F '( sleep "$__lb_ceil"' "$MJS" | grep -F ') </dev/null >/dev/null 2>&1 &' >/dev/null \
   || fail "#1071/#861: the emitted watchdog subshell is no longer redirected at the subshell boundary — its sleep grandchild will hold every caller's capture open for the full ceiling"
 grep -q 'async function disposeStepTimeout(' "$MJS" \
   || fail "#1071: disposeStepTimeout() missing — a bounded-out step has no disposal"

@@ -9,4 +9,8 @@
   come out unbounded (no `STEP_TIMEOUT`, no kill); the rewrite that removes the
   watchdog is itself verified, so a control that silently stopped controlling
   fails the gate. A static guard pins the foundation#861 subshell-boundary
-  redirect that the adjacent pipe-leak probe detects only by latency.
+  redirect that the adjacent pipe-leak probe detects only by latency; it is
+  anchored to the emitted watchdog line — first selecting that line, then
+  requiring the redirect on it — so the prose comment that quotes the same
+  redirect verbatim cannot satisfy it, and deleting the redirect from the
+  emitted line alone turns the gate red.
