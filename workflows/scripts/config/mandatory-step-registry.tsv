@@ -76,6 +76,17 @@ claude/commands/promote.md	record/report — the three-part migrated/re-applied/
 # an AI-executed spec would catch.
 claude/commands/triage.md	Step 4.8a — claim-filter the cull set before any close write	This step is not optional	guard	workflows/scripts/board/tests/test_claim_guard.sh	claude/commands/triage.md Step 4.8a must invoke claim-guard.sh before the cull write	make test-board	Case 9 asserts the spec still invokes claim-guard.sh AND that the invocation precedes the cull's reason-comment write; deleting the step from the spec, or reordering it after the close, turns test_claim_guard.sh red under make test-board.
 
+# ── /triage Step 1 Adapter A — the process-record label exclusion (temperloop#1614) ─
+# The third naturally-excluded intake bucket. Its Step-5 report line is
+# mandatory every run (the #164 silent-skip mitigation the sibling
+# inactive-milestone line already carries), and the failure mode in an
+# AI-executed spec is the invocation quietly disappearing from the prose —
+# which no runtime tally inside that spec could catch. So the signal is a
+# STATIC guard over the spec text, the same shape /triage 4.8a's claim filter
+# uses: assert the invocation is still there, still ahead of the two
+# per-candidate-REST filters, and that the mandatory line is still present.
+claude/commands/triage.md	Step 1 Adapter A — process-record label exclusion + its mandatory Step-5 report line	process-record exclusion line is mandatory on the same terms	guard	workflows/scripts/build/tests/test_triage_intake_exclusion.sh	claude/commands/triage.md Step 1 Adapter A must invoke triage-intake-exclusion.sh before the milestone filter	make test-build	Case 12 asserts the spec still invokes triage-intake-exclusion.sh, that the invocation precedes the active-milestone filter (the ordering the report line's accuracy depends on), and that the mandatory Step-5 line and the symbolic setting reference survive; deleting the step, reordering it, or dropping the line turns test_triage_intake_exclusion.sh red under make test-build.
+
 # ── /build 3-launch + 4a + 4d — the level-composition rosters (temperloop#1310) ─
 # /workflows is opt-in, so the orchestrator transcript is the only kernel-owned
 # surface that PUSHES a level's composition to the operator — and a roster
