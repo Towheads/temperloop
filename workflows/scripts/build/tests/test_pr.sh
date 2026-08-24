@@ -397,8 +397,11 @@ echo "PASS: push onto a ref no open PR watches → PUSHED_UNWATCHED + non-zero, 
 # this is the case a naive "PR head looks stale" warning would collapse into the
 # one above, reproducing the original misdiagnosis.
 PR_ON_SAME='[{"number":1404,"url":"https://github.com/Towheads/temperloop/pull/1404","headRefName":"build/env-reconcile-1404"}]'
+rc=0
 out="$(GH_SURVEY_JSON="$PR_ON_SAME" PATH="$TMP/bin-survey:$PATH" \
-       bash "$SCRIPT" push "$REPO" "build/env-reconcile-1404" --force)"
+       bash "$SCRIPT" push "$REPO" "build/env-reconcile-1404" --force)" || rc=$?
+[ "$rc" -eq 0 ] \
+  || fail "genuine GitHub head lag must NOT be reported — the two causes are collapsed (got: $out)"
 [ "$(jq -r .outcome <<<"$out")" = "PUSHED" ] \
   || fail "a PR whose head REF matches the pushed ref is GitHub lag at worst — must stay PUSHED (got: $out)"
 [ "$(jq -r .pr_number <<<"$out")" = "1404" ] \
@@ -410,8 +413,10 @@ echo "PASS: a PR on the SAME head ref (genuine GitHub head lag) stays PUSHED —
 # CONTROL — the ordinary build-level.mjs first push: 3f-1 pushes, 3f-2 opens the
 # PR, so no PR references the ref yet and none exists elsewhere for the slug.
 # This is the path the check must never break.
+rc=0
 out="$(GH_SURVEY_JSON='[]' PATH="$TMP/bin-survey:$PATH" \
-       bash "$SCRIPT" push "$REPO" "fix/first-push-1688")"
+       bash "$SCRIPT" push "$REPO" "fix/first-push-1688")" || rc=$?
+[ "$rc" -eq 0 ] || fail "the normal build-level.mjs first push must not be reported (got: $out)"
 [ "$(jq -r .outcome <<<"$out")" = "PUSHED" ] \
   || fail "the normal pre-PR first push must stay PUSHED (got: $out)"
 [ "$(jq -r .pr_lookup <<<"$out")" = "ok" ] || fail "first push should report a successful lookup (got: $out)"
@@ -420,8 +425,10 @@ echo "PASS: the normal push-then-open-PR path (no PR anywhere yet) stays PUSHED"
 
 # CONTROL — an unrelated open PR on a different slug is not a sibling.
 PR_OTHER='[{"number":99,"url":"u","headRefName":"fix/some-other-slug-1"}]'
+rc=0
 out="$(GH_SURVEY_JSON="$PR_OTHER" PATH="$TMP/bin-survey:$PATH" \
-       bash "$SCRIPT" push "$REPO" "fix/first-push-1688" --force)"
+       bash "$SCRIPT" push "$REPO" "fix/first-push-1688" --force)" || rc=$?
+[ "$rc" -eq 0 ] || fail "an unrelated slug must not be reported (got: $out)"
 [ "$(jq -r .outcome <<<"$out")" = "PUSHED" ] \
   || fail "an unrelated PR on another slug must not trip the survey (got: $out)"
 echo "PASS: an open PR on an unrelated slug does not trip the survey"
@@ -454,9 +461,11 @@ else
 fi
 EOF
 chmod +x "$TMP/bin-survey/gh"
+rc=0
 out="$(GH_SURVEY_JSON="$PR_ON_FIX" \
        GH_HEAD_JSON='[{"number":1500,"url":"u","headRefName":"build/env-reconcile-1404"}]' \
-       PATH="$TMP/bin-survey:$PATH" bash "$SCRIPT" push "$REPO" "build/env-reconcile-1404" --force)"
+       PATH="$TMP/bin-survey:$PATH" bash "$SCRIPT" push "$REPO" "build/env-reconcile-1404" --force)" || rc=$?
+[ "$rc" -eq 0 ] || fail "a --head-confirmed match must not be reported (got: $out)"
 [ "$(jq -r .outcome <<<"$out")" = "PUSHED" ] \
   || fail "a match found only by the --head confirm must NOT be reported as a split (got: $out)"
 [ "$(jq -r .pr_number <<<"$out")" = "1500" ] \
