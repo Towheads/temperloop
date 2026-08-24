@@ -171,7 +171,7 @@ fi
 # always canonicalized to the probed repo's own toplevel (line ~120 above),
 # so it never carried a portable repo-relative fact beyond "this is the
 # repo's own root" — nothing this schema doesn't already imply elsewhere.
-# Grepped every caller in this tree (init.sh, try.sh, eject.sh,
+# Grepped every caller in this tree (init.sh, eject.sh,
 # baseline-snapshot.sh): none read `.repo.dir` / `probe.repo.dir`, so
 # nothing downstream needs it — kept present-but-null (not removed) to
 # preserve the field's schema shape for any external caller doing

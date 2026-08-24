@@ -53,8 +53,9 @@
 # comments later silently breaks the file — action at a distance. Comments are
 # also trivially rewordable (`env-reconcile.sh's` -> `the env-reconcile.sh`), so
 # the strict rule costs nothing. Here-doc bodies are the opposite case: in this
-# repo they carry English prose destined for an LLM (bin/subcommands/try.sh,
-# bin/subcommands/configure.sh) alongside embedded snippets like `jq -r '.[] | …'`.
+# repo they carry English prose destined for an LLM
+# (bin/subcommands/configure.sh) alongside embedded snippets like
+# `jq -r '.[] | …'`.
 # Mangling that prose to dodge an apostrophe would damage a legitimate construct
 # to satisfy a lint, so there the lint narrows to the real condition instead.
 # Parity is accumulated across the whole OUTERMOST `$( … )` region and reported

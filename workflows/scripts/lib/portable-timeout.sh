@@ -12,7 +12,7 @@
 # `timeout N cmd` dies with "timeout: command not found" the first time it
 # runs on a stock Mac. Before this file existed, half a dozen scripts each
 # independently rediscovered the same bash-3.2-safe background+kill
-# workaround (baseline-snapshot.sh, conventions-probe.sh, try.sh, report.sh,
+# workaround (baseline-snapshot.sh, conventions-probe.sh, report.sh, and
 # configure.sh) — correct, but duplicated, and every NEW script that needed
 # a bounded subprocess had to rediscover it again (the "recurring" half of
 # #256's title). This file is the ONE guard those call sites now source

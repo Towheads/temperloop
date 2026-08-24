@@ -369,7 +369,7 @@ weighted-units saving available at this seat at any tier that completes the job.
    through a second `jq`/`fromjson` call re-parses it as an object first
    and silently yields empty) so the call's own `usage` / `modelUsage` /
    `total_cost_usd` / `duration_ms` block is captured for free. That is now
-   the standard remedy (see C1/C2/C3 in `try.sh`/`configure.sh`,
+   the standard remedy (see C3 in `configure.sh`,
    temperloop#1264), not a one-off direct measurement — reach for a
    one-off replay only if the seat cannot be moved to `--output-format
    json` at all.

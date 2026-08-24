@@ -34,9 +34,9 @@ container — see its own header for the isolation-model note) providing:
   (the exact FAKE_*-env-steered call shapes `test_init.sh`/`test_eject.sh`
   already use, extracted here rather than re-invented) and a minimal
   no-op fake `claude` (a stand-in for a subcommand that calls `claude`
-  directly, e.g. `try.sh`'s shadow triage — per-subcommand prereq scoping,
-  temperloop#412, means `bin/temperloop`'s dispatcher no longer requires
-  `claude` on PATH just to dispatch a subcommand that never calls it)
+  directly, e.g. `configure.sh`'s AI-guided mode — per-subcommand prereq
+  scoping, temperloop#412, means `bin/temperloop`'s dispatcher no longer
+  requires `claude` on PATH just to dispatch a subcommand that never calls it)
   onto the sandbox-private PATH.
 - `sandbox_bootstrap_checkout` — bare-clones a source checkout's committed
   HEAD into the sandbox and runs *that checkout's own* `bin/bootstrap.sh`

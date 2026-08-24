@@ -40,7 +40,7 @@
 #               the winning layer. The D2 registry↔shell equality lint
 #               (registry-config-lints, a later item) is what makes this
 #               trustworthy without sourcing every individual OWNING
-#               SCRIPT (baseline-snapshot.sh, try.sh, ...) — the registry
+#               SCRIPT (baseline-snapshot.sh, init.sh, ...) — the registry
 #               default is guaranteed to equal that script's real literal.
 #
 # Layer 1 (CLI flag) is NEVER a candidate winner here — there is no live
@@ -82,7 +82,7 @@
 # script's own header) — this file declares none, so `temperloop config
 # list` reaches this script with zero dispatcher-level claude/gh checks,
 # matching what it actually needs (nothing). Testing still invokes this
-# script directly, exactly like the existing eject.sh/init.sh/try.sh test
+# script directly, exactly like the existing eject.sh/init.sh/testbed.sh test
 # suites already do — that stays the simplest path for a fixture that
 # wants no CLI-dispatch machinery involved at all.
 #

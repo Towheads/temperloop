@@ -4,7 +4,7 @@
 # added to kernel/bin/temperloop itself (foundation #766 Epic E, item
 # report-auto-offer / #880), alongside the dispatcher's existing
 # foundation_check_prereqs. Zero network — fake `claude` and `gh` binaries
-# sit on PATH ahead of the real ones (mirroring the try.sh/init.sh/
+# sit on PATH ahead of the real ones (mirroring the init.sh and
 # baseline-snapshot.sh test convention: see test_baseline_snapshot.sh)
 # purely to satisfy the dispatcher's own prereq gate; every case here
 # drives the REAL kernel/bin/temperloop dispatcher end to end against a

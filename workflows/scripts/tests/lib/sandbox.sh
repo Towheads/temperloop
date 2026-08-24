@@ -124,9 +124,8 @@
 #     PATH before dispatching ANY subcommand even though init.sh/eject.sh
 #     never invoke it themselves — that was the bug #412 fixed). Kept
 #     available for a caller that wants to simulate `claude` being present
-#     for a subcommand that DOES call it directly (e.g. try.sh's shadow
-#     triage step, or configure.sh's AI-guided mode) and inspect the call
-#     log. call_log default: $SANDBOX_ROOT/claude-calls.log, exposed as
+#     for a subcommand that DOES call it directly (e.g. configure.sh's
+#     AI-guided mode) and inspect the call log. call_log default: $SANDBOX_ROOT/claude-calls.log, exposed as
 #     SANDBOX_CLAUDE_CALL_LOG.
 #
 #   sandbox_bootstrap_checkout <source_repo_dir>
@@ -683,8 +682,8 @@ sandbox_stub_claude() {
   cat > "$SANDBOX_BIN/claude" <<'FAKE_CLAUDE_EOF'
 #!/usr/bin/env bash
 # Minimal no-op stand-in for a subcommand that calls `claude` directly
-# (try.sh's shadow triage, configure.sh's AI-guided mode) — no longer
-# needed just to satisfy bin/temperloop's dispatcher prereq gate, which
+# (configure.sh's AI-guided mode) — no longer needed just to satisfy
+# bin/temperloop's dispatcher prereq gate, which
 # (temperloop#412) checks `claude` only for a subcommand that declares it
 # via a `# prereqs: ...` header; none shipped today do. $CLAUDE_CALL_LOG is
 # injected by sandbox_env.

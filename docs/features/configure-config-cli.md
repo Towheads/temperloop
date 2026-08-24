@@ -92,7 +92,7 @@ header declares (see that script's own header) — neither `configure.sh` nor
 claude/gh checks: `configure`'s plain-prompt degradation and `config list`'s
 zero-dependency operation are both fully reachable through the real CLI with
 neither tool on PATH. They are also exercised directly in tests, exactly
-like the existing `eject.sh`/`init.sh`/`try.sh` test suites already do.
+like the existing `eject.sh`/`init.sh`/`testbed.sh` test suites already do.
 
 ## Resource impact
 
@@ -103,8 +103,7 @@ registry — a sub-second local operation. `configure`'s plain-prompt path is
 equally free. Its AI-guided path costs exactly one `claude -p` call per
 invocation, `--tools ""` and capped at `--max-budget-usd 0.25`
 (`CONFIGURE_CLAUDE_MAX_BUDGET_USD`, a fixed script constant — not a
-per-run-configurable setting, mirroring `try.sh`'s identical rationale for its
-own shadow-triage cap), with a 60s watchdog
+per-run-configurable setting), with a 60s watchdog
 (`CONFIGURE_CLAUDE_TIMEOUT_SECS`); a failed or slow call degrades to the
 zero-cost plain-prompt path rather than blocking or erroring the run.
 
@@ -112,5 +111,5 @@ zero-cost plain-prompt path rather than blocking or erroring the run.
 
 None. Both subcommands are local, interactive/scripted CLI tools with no
 raw-lake emit site — consistent with the rest of the `bin/subcommands/*`
-newcomer/adoption surface (`init.sh`, `eject.sh`, `try.sh`), none of which
+newcomer/adoption surface (`init.sh`, `eject.sh`), none of which
 emit telemetry either.

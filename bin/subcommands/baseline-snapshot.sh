@@ -64,7 +64,7 @@
 #   baseline-snapshot.sh
 #
 #   No flags are read. Every setting below is an ENV VAR test seam only (never
-#   set in production use, mirroring the INIT_GH_BIN / TRY_GH_BIN /
+#   set in production use, mirroring the INIT_GH_BIN / EJECT_GH_BIN /
 #   REWORK_SNAPSHOT_NOW conventions already in this codebase):
 #     BASELINE_SNAPSHOT_GH_BIN      override the `gh` binary. Default: gh.
 #     BASELINE_SNAPSHOT_NOW         override "now" (ISO-8601 UTC), for
@@ -115,7 +115,7 @@ esac
 command -v git >/dev/null 2>&1 || { echo "baseline-snapshot.sh: git not found on PATH" >&2; exit 1; }
 command -v jq >/dev/null 2>&1 || { echo "baseline-snapshot.sh: jq not found on PATH" >&2; exit 1; }
 
-# Test-double seam (mirrors init.sh's INIT_GH_BIN / try.sh's TRY_GH_BIN /
+# Test-double seam (mirrors init.sh's INIT_GH_BIN / eject.sh's EJECT_GH_BIN /
 # pipeline-drive.sh's PIPELINE_GH_BIN convention) — never overridden in
 # production use.
 : "${BASELINE_SNAPSHOT_GH_BIN:=gh}"

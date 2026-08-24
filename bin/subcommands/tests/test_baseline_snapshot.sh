@@ -3,8 +3,8 @@
 # Tests for baseline-snapshot.sh — `temperloop baseline-snapshot` (foundation
 # #766, Epic E "before/after value proof"). Zero real network — a fake `gh`
 # on PATH (or none at all) drives every case against a scratch fixture git
-# repo, mirroring the try.sh/init.sh test convention (see
-# kernel/bin/subcommands/tests/test_try.sh, test_init.sh).
+# repo, mirroring the init.sh/eject.sh test convention (see
+# kernel/bin/subcommands/tests/test_init.sh, test_eject.sh).
 #
 # Covers:
 #   1. happy path: fake gh returns merged PRs + open issues; asserts schema

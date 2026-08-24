@@ -23,8 +23,7 @@
 #
 #   AI-GUIDED (claude on PATH): ONE non-interactive `claude -p` call,
 #     `--tools ""` (structurally zero tool access — the model can only
-#     return text; this SCRIPT is what ever touches the filesystem,
-#     exactly like try.sh's shadow-triage/--demo judgment calls),
+#     return text; this SCRIPT is what ever touches the filesystem),
 #     `--no-session-persistence`. It is handed the curated settings' name/
 #     type/current-default/doc and asked to return one JSON object of
 #     suggested values + one-line rationales. "Keep the prompt minimal"
@@ -73,7 +72,7 @@
 # is fully reachable through `temperloop configure` with `claude` absent
 # from PATH, no dispatcher-level check standing in front of it. It is
 # still exercised directly in tests too, exactly like the existing
-# eject.sh/init.sh/try.sh test suites already do.
+# eject.sh/init.sh/testbed.sh test suites already do.
 #
 # Usage:
 #   configure.sh [--set NAME=VALUE ...] [--no-ai] [--yes] [--dry-run]
@@ -143,9 +142,9 @@ if [ -f "$CONFIGURE_BUILD_CONFIG" ]; then
   . "$CONFIGURE_BUILD_CONFIG" >/dev/null 2>&1 || true
 fi
 
-# Non-flag-configurable — a single suggestion turn, deliberately short
-# (mirrors try.sh's TRY_CLAUDE_TIMEOUT_SECS: a fixed constant, not a CLI
-# setting, so a first-run stranger never has to discover a timeout flag).
+# Non-flag-configurable — a single suggestion turn, deliberately short: a
+# fixed constant, not a CLI setting, so a first-run stranger never has to
+# discover a timeout flag.
 CONFIGURE_CLAUDE_TIMEOUT_SECS=60
 CONFIGURE_CLAUDE_MAX_BUDGET_USD="0.25"
 
@@ -360,8 +359,7 @@ PROMPT_EOF
 
   # No `set -e` toggle here — this script's top-level mode is `-uo
   # pipefail` only (`-e` was never on), so `ai_rc` is checked explicitly
-  # below rather than relying on errexit (mirrors try.sh's own rationale
-  # for its analogous judgment-call capture).
+  # below rather than relying on errexit.
   # Tier for this seat: $CONFIGURE_AI_MODEL. Emit `--model` only when the
   # setting is non-empty — an empty setting means inherit, which is expressed by
   # passing NO flag at all, never a literal empty model argument. The
@@ -408,9 +406,9 @@ PROMPT_EOF
     #
     # The `command -v jq` guard is load-bearing, NOT decorative, and mirrors
     # the identical guard on the per-setting reads below. jq is an OPTIONAL
-    # dependency of this wizard (unlike try.sh, which hard-exits without it),
-    # so unguarded, a MISSING jq lands as "command not found" in the
-    # suppressed stderr — rc 127, empty output — and gets reported as an
+    # dependency of this wizard (unlike init.sh/eject.sh, which hard-exit
+    # without it), so unguarded, a MISSING jq lands as "command not found" in
+    # the suppressed stderr — rc 127, empty output — and gets reported as an
     # unparseable ENVELOPE when the envelope was fine and jq was simply
     # absent. A format change must cost a MISSING number, never a WRONG one,
     # so the two causes get two distinct messages.

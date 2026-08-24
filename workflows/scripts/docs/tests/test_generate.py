@@ -204,8 +204,8 @@ class TestBuildSite(unittest.TestCase):
             repo = _make_fixture_repo(tmp)
             _write(repo / "bin" / "README.md", "# foundation CLI\n\nBootstrap docs here.\n")
             _write(
-                repo / "bin" / "subcommands" / "try.sh",
-                "#!/usr/bin/env bash\n# description: zero-config taste, zero writes\necho try\n",
+                repo / "bin" / "subcommands" / "testbed.sh",
+                "#!/usr/bin/env bash\n# description: disposable evaluation repo\necho testbed\n",
             )
             manifest_path = _make_manifest(tmp)
             empty_dropin = tmp / "no-dropin-here"
@@ -214,8 +214,8 @@ class TestBuildSite(unittest.TestCase):
 
         cli_page = next(p for p in pages if p.slug == "cli/getting-started")
         self.assertIn("Bootstrap docs here", cli_page.body_html)
-        self.assertIn("try", cli_page.body_html)
-        self.assertIn("zero-config taste, zero writes", cli_page.body_html)
+        self.assertIn("testbed", cli_page.body_html)
+        self.assertIn("disposable evaluation repo", cli_page.body_html)
 
     def test_overlay_dropin_absent_directory_adds_nothing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_str:
