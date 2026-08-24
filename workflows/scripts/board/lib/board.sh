@@ -1583,6 +1583,30 @@ board_host_label() {
   printf '%s' "$label"
 }
 
+# This session's OWN claim stamp — the `<host>:<sess8>` string claim.sh writes
+# into `fnd:host/session:*`, and the one any reader must compare against to
+# answer "is this claim MINE?".
+#
+# Same reasoning as board_host_label above, one level up: the format itself had
+# two would-be call sites (claim.sh writing it, claim-guard.sh reading it back),
+# and two sites deriving it independently can disagree — which for a claim stamp
+# means either culling a peer's actively-claimed issue or refusing to cull our
+# own (temperloop#1220). This is the single owner of the format; never re-derive
+# `${host}:${sess:0:8}` at a call site.
+#
+# `$CLAUDE_CODE_SESSION_ID` is truncated to 8 chars to match the board stamp's
+# historical shape; with no session id in the environment (a hand-run shell, cron
+# without the harness) the session half is the literal `manual` — so a manual
+# run's stamp is still non-empty and still comparable.
+#
+#   board_own_stamp   ->  "<host>:<sess8>" or "<host>:manual", always non-empty
+board_own_stamp() {
+  local host sess
+  host="$(board_host_label)"
+  sess="${CLAUDE_CODE_SESSION_ID:-}"
+  if [ -n "$sess" ]; then printf '%s:%s' "$host" "${sess:0:8}"; else printf '%s:manual' "$host"; fi
+}
+
 # Stamp a free-text field on an item.
 #   board_stamp <item-id> <field-name> <text>   (e.g. "Host/Session" "host:abc")
 # Delegates to _board_issues_stamp_field — a `fnd:<field-slug>:<verbatim-text>`

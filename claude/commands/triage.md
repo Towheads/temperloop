@@ -100,6 +100,7 @@ Work the full candidate set in the orchestrator. Apply, in order:
 1. **Cull.** Drop candidates that are **dupe / won't-fix / stale / already-fixed**.
    - **Re-verify "already-fixed" against current `origin/main`** before culling — a dated Backlog item is often already resolved (don't act on stale findings).
    - *Board-sourced* cull → mark for **close with a one-line reason comment** + move off Backlog → `Done` (or close the issue, which the board reflects). *Doc-sourced* cull → simply drop (no issue was ever created).
+   - **A cull candidate claimed by another session is not yours to close.** The board claim is a **cross-session lock** (`claude/CLAUDE.kernel.md` § Task workflow, "Claim first — before you investigate"): an issue wearing a `fnd:host/session:*` stamp from a session other than this one may be actively being built, with a PR already open carrying its `Closes #N`. Culling it anyway orphans that linkage silently — the PR merges pointing at a closed duplicate, the issue the merge actually fixed stays open forever, and nothing reports the mismatch (temperloop#1220, the 2026-08-08 K#1199 incident). So the cull set is **filtered by `claim-guard.sh` at Step 4.8a before any write**, and a claimed candidate is **refused and named**, never closed. This is a *mechanical* filter, not a judgment call — the pre-fix spec already implied "don't close a claimed issue" and the run read straight past it, which is exactly why the check is a command whose output the cull consumes rather than a rule to remember here. <!-- cite: TR.19 incident:K#1220 -->
    - **Semantic-dedup advisory (ks_search).** The body-marker probes at Step 4 catch *exact* re-runs (the same source re-triaged) — they don't catch a candidate that is *meaningfully* the same bug as an existing issue filed from an unrelated source, with no shared marker to match on. Where the issue corpus + search stack is available (`source workflows/scripts/lib/knowledge_store.sh; source workflows/scripts/lib/knowledge_search.sh; ks_search_available --probe`), query `ks_search "<candidate title + one-line scope>" --limit 5` per candidate and surface any high-scoring hit against an existing issue as a **dupe hint** for this cull judgment — advisory only, never an automatic cull; the orchestrator still decides. **Graceful skip:** if `ks_search_available --probe` fails (exit 3) or the libs aren't present in this checkout, note "semantic-dedup advisory skipped — knowledge_search unavailable" and continue culling on exact-match/manual judgment alone, exactly as before this item.
 2. **Root-cause collapse.** N symptoms tracing to **one** fix → collapse into a single survivor (note the absorbed symptoms in its body). This is a *logical* merge (same underlying cause), distinct from a *physical* merge edge.
    - If the collapsed survivor is itself **rework** of prior completed work, file/re-file it with `scripts/capture.sh ... --rework <regression|spec-miss|flake>` so the cause is captured at filing time (F#730) — a human-filing convention for whoever runs triage, not an automated real-time rule, so it deliberately carries no Capture/Backstop registry-table pair.
@@ -144,6 +145,7 @@ Print the planned board mutations so a bad grouping is caught before any write:
 - **Routing** → per survivor/epic, **active phase → Backlog→Ready** vs **inactive phase → stays Backlog (defers)**.
 - **Deferred at intake** → the `deferred[]` items skipped in Step 1 (issue# → inactive milestone), summarised as the one-line deferred notice (see Step 5).
 - **Culls** → list with reasons (and which close issues).
+- **Skipped (claimed by another session)** → the cull candidates Step 4.8a's claim guard refuses, each as `#<n> — claimed by <stamp> (<live|parked|unreadable>)`. These are **not** culls and **not** survivors: they stay open, in `Backlog`, untouched, and re-enter the next sweep. `none` when the cull set is clean.
 - **Decision-routes** → list with target note paths.
 - **Spikes** → which members get the `spike` label.
 - **Needs-clarification flags** → which survivors get the `needs-clarification` label + their recorded question (Step 4's sub-step).
@@ -181,6 +183,28 @@ All board bash blocks below `source "$BOARD_LIB"` first (Step 0.3); let `repo="$
 
    An **epic's** Ready flip follows its members: if **any** member's `phase_active` is true the epic flips Ready; if the whole group is on inactive phases the epic stays Backlog with them. The epic's Ready flip signals only that the *group is scoped* — member readiness follows each member's **own** `phase_active`: an **inactive-phase member of an active-phase epic is NOT dragged to Ready** — it stays in `Backlog` individually (per the rule above) and is counted in the Step-5 "Left in Backlog (inactive phase)" line.
 8. **Apply culls and decision-routes.** **Comment-first, then land Done** — same ordering discipline as Step 4.4's flagging direction: a failed comment write leaves the issue open and untouched so it re-enters the next sweep, where a markers-first order could Done an issue with no durable reason recorded.
+
+   **8a — Claim-filter the cull set FIRST. This step is not optional** (temperloop#1220): run it over **every** board-sourced cull candidate before the first `gh issue comment`, so no claimed issue is ever commented on, closed, or Done'd.
+   ```bash
+   CULL_GUARD="$(dirname "$BOARD_LIB")/../claim-guard.sh"
+   [ -x "$CULL_GUARD" ] ||
+     CULL_GUARD="$(git rev-parse --show-toplevel 2>/dev/null)/workflows/scripts/board/claim-guard.sh"
+   if [ -x "$CULL_GUARD" ]; then
+     "$CULL_GUARD" --board "$BOARD" <n1> <n2> …        # one call, the whole cull set
+   else
+     echo "cull skipped — claim-guard.sh unavailable"  # cull NOTHING this run; see below
+   fi
+   ```
+   **Both** candidate paths are `-x`-tested before the invocation, and the `else` arm is the mechanical form of the degradation the prose promises below. Without it, a vendoring checkout carrying neither copy gets an opaque `command not found` (127) — and `git rev-parse --show-toplevel` outside a repo yields a bare `/workflows/scripts/board/claim-guard.sh` — which is exactly the shape an AI-executed spec reads past on its way to culling unfiltered.
+
+   It prints one line per candidate and never blocks, waits, or writes: `CULL <n> claim=none|self` (proceed to 8b), or `SKIP <n> claim=<stamp> class=live|parked|unreadable` (**do not touch this issue at all**). Only the `CULL` lines feed 8b. Three consequences to hold onto:
+   - **A `SKIP` issue keeps everything it has** — it stays **open**, in `Backlog`, and **its `fnd:host/session:*` stamp is left exactly as found**. Never "tidy" a foreign stamp on the way past: the stamp *is* the other session's lock, and stripping it is half of what made the 2026-08-08 incident unrecoverable.
+   - **`class=parked` is a stale claim, and it still skips.** Report it and move on — a stale claim must never deadlock the cull, and disposal of the stranded stamp belongs to `/tidy`'s stale-claim sweep and `reconcile.sh --labels --apply`, not here. Once they clear it the next run culls the issue normally.
+   - **`class=unreadable` means the guard could not read claim state at all** — the board would not resolve (offline, auth, an unregistered board), the item pool would not parse, **or the candidate was not in the resolved pool** (`board_item_list` reads `--state open --limit "${BOARD_ITEM_LIMIT:-500}"`, so a board past that truncation, an issue on another board, or an already-closed one is simply absent). It fails **safe**, not open, and so do you: never read an unreadable candidate as unclaimed, cull nothing on that run, and say so. A deferred cull costs one run; a blind one cost K#1199.
+
+   Every `SKIP` line is carried into the Step 3.5 preview line and the Step-5 **"Skipped (claimed by another session)"** count, named by issue number and stamp — a refusal nobody can see is the same silence this item exists to end. If the guard script is absent from this checkout (a consuming repo that vendors an older toolkit), **do not fall back to culling unfiltered**: report `cull skipped — claim-guard.sh unavailable` and leave the whole board-sourced cull set for the next run.
+
+   **8b — Apply the write, for `CULL` candidates only.**
    ```bash
    gh issue comment <n> -R "$repo" --body "<reason>"
    if declare -F board_close_done >/dev/null 2>&1; then
@@ -201,10 +225,10 @@ All board bash blocks below `source "$BOARD_LIB"` first (Step 0.3); let `repo="$
   --items-processed <K+M+Q — total candidates considered, Step 0.6/Step 1 (the full Backlog scan, INCLUDING the N the intake filter deferred)> \
   --merged <S — survivors promoted to Ready (active phase), Step 4.7> \
   --resolved <C+D — culled (Step 4.8) + decisions routed off-board (Step 4.8)> \
-  --parked <I+N+B — left in Backlog on an inactive phase (Step 4.7) + deferred at intake (Step 1) + blocked on an open blocked_by (Step 1)>
+  --parked <I+N+B+Y — left in Backlog on an inactive phase (Step 4.7) + deferred at intake (Step 1) + blocked on an open blocked_by (Step 1) + skipped-because-claimed (Step 4.8a)>
 ```
 
-`merged`/`resolved`/`parked` are triage's analogues of /build's "landed" / "settled without a merge" / "held back": a promoted survivor is triage's terminal-success outcome (it reaches `Ready`, the next stage's intake); a **culled or decision-routed** candidate is genuinely finished but never merges anything, which is exactly what `resolved` means in this stream (temperloop#1084 added it for `/sweep`'s spike verdicts — the same shape); and everything left in `Backlog` for any reason (inactive phase, intake deferral, an open blocker) is held back exactly like a `sweep` park.
+`merged`/`resolved`/`parked` are triage's analogues of /build's "landed" / "settled without a merge" / "held back": a promoted survivor is triage's terminal-success outcome (it reaches `Ready`, the next stage's intake); a **culled or decision-routed** candidate is genuinely finished but never merges anything, which is exactly what `resolved` means in this stream (temperloop#1084 added it for `/sweep`'s spike verdicts — the same shape); and everything left in `Backlog` for any reason (inactive phase, intake deferral, an open blocker, **or a refused cull on a claimed issue**) is held back exactly like a `sweep` park. A skipped-because-claimed candidate is emphatically **not** `resolved` — nothing about it finished; it is deferred to a run that can safely close it.
 
 **The three counts MUST partition `--items-processed`**, and the emitter enforces it (`merged + resolved + parked == items_processed`, else a non-zero exit naming the arithmetic). This is why `--resolved` is mandatory here even though `/triage` has no spike-verdict disposition of its own: without it, `C+D` had no field and every run that culled anything under-reported its own total by exactly the cull count. If the counters don't add up, an item reached an outcome this record cannot express — fix the counters or add a field; never pad `--items-processed` to close the arithmetic.
 
@@ -222,6 +246,7 @@ Resolve the script bare repo-relative — if absent from a non-vendoring checkou
 - Deferred at intake (Step 1 — inactive-milestone filter): N in inactive milestones (<phase> ×k, <phase2> ×j …). Mark active to include.   ← MANDATORY #164 line (see below)
 - Blocked (skipped — open blocked_by): B  (#s → blocked_by #m)
 - Culled: C  (#s → reasons; X issues closed)
+- Skipped (claimed by another session): Y  (#s → claimed by <stamp> (live|parked|unreadable))   ← left OPEN and untouched by Step 4.8a; "none" when the cull set was clean
 - Decisions routed off-board: D  (→ note links)
 - Spikes labelled: P  (#s)
 - Work-class: O Operational, F Foundational  (#s each; all survivors labelled)
