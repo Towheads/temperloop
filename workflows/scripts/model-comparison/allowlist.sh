@@ -92,17 +92,34 @@
 #     chain that verifies clean.
 #
 # WATERMARK ANCHOR (defence in depth, not a proof). pa_disclose maintains a
-# sibling `disclosure-log.watermark` file holding `<max_seq> <last_hash>`,
-# written inside the same lock as the append. pa_verify_log_chain compares
-# the log's tail against it, so truncation below the watermark (TRUNCATED), a
-# re-forge that changes the tail hash (REFORGED), an append that bypassed
-# pa_disclose (WATERMARK-STALE), and a non-empty log with the anchor deleted
-# (WATERMARK-MISSING) all fail. State the limit plainly: THE WATERMARK IS
-# ITSELF AN UNTRACKED LOCAL FILE beside the log. It raises the cost of casual
-# tampering — a truncation is now two coordinated edits instead of one — and
-# it does NOT defeat an attacker who can write both files. Anchoring the
-# watermark somewhere an attacker cannot reach (committing or signing it) is
-# a separate, open question, deliberately not decided here.
+# `disclosure-log.watermark` file holding `<max_seq> <last_hash>`, written
+# inside the same lock as the append. pa_verify_log_chain compares the log's
+# tail against it, so truncation below the watermark (TRUNCATED), a re-forge
+# that changes the tail hash (REFORGED), an append that bypassed pa_disclose
+# (WATERMARK-STALE), and a non-empty log with the anchor deleted
+# (WATERMARK-MISSING) all fail.
+#
+# THE ANCHOR IS COMMITTED; THE LOG IS NOT (temperloop#1316). The anchor no
+# longer sits beside the log in the gitignored runtime dir — it lives in the
+# TRACKED tree at workflows/scripts/model-comparison/disclosure-log.watermark,
+# beside the committed provider allowlist, while the log itself stays
+# gitignored at .temperloop/model-comparison/disclosure-log.jsonl so no
+# provider history and no content ever enters the repo. The anchor carries
+# neither: it is two values' worth of state (how many entries the log is
+# meant to have, and its tail hash).
+#
+# WHAT THAT BUYS, stated precisely. The anchor used to live in the SAME
+# gitignored directory as the log, so whoever could rewrite the log could
+# rewrite its anchor in the same motion and a full re-forge verified clean.
+# Now pa_verify_watermark_git_anchor additionally checks the log against the
+# anchor AS COMMITTED IN GIT (HEAD's blob), so a re-forge must ALSO rewrite
+# git history to stay hidden — which leaves its own trace. The threat this
+# closes is NOT an external attacker (local write access makes everything
+# theirs anyway) but a careless or self-serving LOCAL PROCESS: an agent or
+# script regenerating state, or an operator tidying a log before review.
+# Signing entries and shipping to an external append-only sink were both
+# considered and REJECTED as overbuilt for that threat — no key management
+# story, and no second home for provider history.
 #
 # GATE SCOPE (temperloop#1250): this file (and its validator) own
 # ALLOWLIST NARROWING and DISCLOSURE-LOG FORMAT/CHAIN/MEMBERSHIP only. The
@@ -116,6 +133,10 @@
 #   PROVIDER_ALLOWLIST_COMMITTED_FILE   default: this dir's provider-allowlist.txt
 #   PROVIDER_ALLOWLIST_LOCAL_FILE       default: <repo>/.temperloop/model-comparison/allowlist.local.txt
 #   PROVIDER_DISCLOSURE_LOG_FILE        default: <repo>/.temperloop/model-comparison/disclosure-log.jsonl
+#   PROVIDER_DISCLOSURE_WATERMARK_FILE  default: this dir's disclosure-log.watermark
+#                                       (UNDER THE SEAM ONLY, the sibling of
+#                                       whatever log the seam points at — see
+#                                       the seam block below for why)
 #
 # Kept POSIX-bash-3.2-friendly (no mapfile/associative arrays) — macOS dev
 # shell + Linux CI, per this repo's usual convention.
@@ -123,21 +144,37 @@
 _PA_SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 _PA_REPO_ROOT="$(cd -P "$_PA_SCRIPT_DIR/../../.." && pwd)"
 
-# The three path seams are honoured ONLY under an explicit test-seam flag —
+# The four path seams are honoured ONLY under an explicit test-seam flag —
 # see "1. COMMITTED ALLOWLIST" above. Outside it the committed defaults are
 # ASSIGNED unconditionally, so an inherited environment cannot repoint the
-# ceiling, the personal override, or the log.
+# ceiling, the personal override, the log, or the committed anchor.
+#
+# THE WATERMARK SEAM'S DEFAULT DELIBERATELY DIFFERS BETWEEN THE TWO BRANCHES.
+# In production the anchor is the TRACKED file beside the committed allowlist
+# (temperloop#1316) — never the log's gitignored sibling, which is the whole
+# point of moving it. Under the fixture seam it defaults to the sibling of
+# whatever scratch log the seam points at, so a fixture that repoints only
+# PROVIDER_DISCLOSURE_LOG_FILE (every pre-#1316 fixture site does) is
+# STRUCTURALLY unable to read — or, worse, overwrite — the repo's real
+# committed anchor. A fixture that wants to exercise the committed-anchor
+# behaviour points this seam at its own synthesized git repo explicitly.
 if [[ "${PROVIDER_ALLOWLIST_TEST_SEAM:-0}" == "1" ]]; then
   : "${PROVIDER_ALLOWLIST_COMMITTED_FILE:=$_PA_SCRIPT_DIR/provider-allowlist.txt}"
   : "${PROVIDER_ALLOWLIST_LOCAL_FILE:=$_PA_REPO_ROOT/.temperloop/model-comparison/allowlist.local.txt}"
   : "${PROVIDER_DISCLOSURE_LOG_FILE:=$_PA_REPO_ROOT/.temperloop/model-comparison/disclosure-log.jsonl}"
+  # Nested-expansion-free so the setting-registry equality lint sees a flat
+  # literal in the `:=` seam (workflows/scripts/config/check-setting-registry.sh).
+  _PA_SEAM_SIBLING_WATERMARK="${PROVIDER_DISCLOSURE_LOG_FILE%.jsonl}.watermark"
+  : "${PROVIDER_DISCLOSURE_WATERMARK_FILE:=$_PA_SEAM_SIBLING_WATERMARK}"
 else
-  if [[ -n "${PROVIDER_ALLOWLIST_COMMITTED_FILE+x}" || -n "${PROVIDER_ALLOWLIST_LOCAL_FILE+x}" || -n "${PROVIDER_DISCLOSURE_LOG_FILE+x}" ]]; then
+  if [[ -n "${PROVIDER_ALLOWLIST_COMMITTED_FILE+x}" || -n "${PROVIDER_ALLOWLIST_LOCAL_FILE+x}" \
+        || -n "${PROVIDER_DISCLOSURE_LOG_FILE+x}" || -n "${PROVIDER_DISCLOSURE_WATERMARK_FILE+x}" ]]; then
     echo "allowlist.sh: IGNORING the PROVIDER_ALLOWLIST_*/PROVIDER_DISCLOSURE_* path overrides — they are a fixture-test seam that requires PROVIDER_ALLOWLIST_TEST_SEAM=1. The committed ceiling is never repointed from the environment (ADR 0028 decision 1)." >&2
   fi
   PROVIDER_ALLOWLIST_COMMITTED_FILE="$_PA_SCRIPT_DIR/provider-allowlist.txt"
   PROVIDER_ALLOWLIST_LOCAL_FILE="$_PA_REPO_ROOT/.temperloop/model-comparison/allowlist.local.txt"
   PROVIDER_DISCLOSURE_LOG_FILE="$_PA_REPO_ROOT/.temperloop/model-comparison/disclosure-log.jsonl"
+  PROVIDER_DISCLOSURE_WATERMARK_FILE="$_PA_SCRIPT_DIR/disclosure-log.watermark"
 fi
 
 # Kernel built-in default (layer 6, docs/config-precedence.md) — used only
@@ -149,6 +186,8 @@ _PA_BUILTIN_DEFAULT="anthropic"
 pa_committed_file() { printf '%s\n' "$PROVIDER_ALLOWLIST_COMMITTED_FILE"; }
 pa_local_file() { printf '%s\n' "$PROVIDER_ALLOWLIST_LOCAL_FILE"; }
 pa_disclosure_log_file() { printf '%s\n' "$PROVIDER_DISCLOSURE_LOG_FILE"; }
+# The COMMITTED anchor for the configured disclosure log (temperloop#1316).
+pa_watermark_file() { printf '%s\n' "$PROVIDER_DISCLOSURE_WATERMARK_FILE"; }
 
 # pa_valid_provider_name <name> — rc 0 iff it matches the same
 # [a-z0-9-]-no-leading/trailing-hyphen slug shape validate-feature-docs.sh
@@ -373,10 +412,89 @@ _pa_canonical_entry() {
   printf '%s' "$out"
 }
 
-# _pa_watermark_file <logfile> — the sibling anchor path for a given log.
-# `.../disclosure-log.jsonl` -> `.../disclosure-log.watermark`.
+# _pa_watermark_file <logfile> — the anchor path for a given log.
+#
+# For the CONFIGURED log this is the configured anchor — in production the
+# TRACKED file beside the committed allowlist, deliberately NOT the log's
+# gitignored sibling (temperloop#1316). For any other log handed in ad hoc it
+# falls back to the historical `<log>.watermark` sibling, so a caller that
+# verifies some other file still gets THAT file's own anchor rather than the
+# repo's committed one.
 _pa_watermark_file() {
+  if [[ "${1:-}" == "$PROVIDER_DISCLOSURE_LOG_FILE" ]]; then
+    printf '%s\n' "$PROVIDER_DISCLOSURE_WATERMARK_FILE"
+    return 0
+  fi
   printf '%s\n' "${1%.jsonl}.watermark"
+}
+
+# The anchor file's on-disk grammar. It is a TRACKED file a stranger will
+# open, so it carries a `#`-comment header explaining itself, and exactly one
+# value line `<max_seq> <last_hash>`. The header is rewritten by every
+# pa_disclose along with the value, so the two can never drift apart.
+#
+# `0` + the all-zero digest is the GENESIS value a fresh checkout ships: no
+# entries disclosed yet, nothing for the log to descend from.
+PA_WATERMARK_ZERO_HASH="0000000000000000000000000000000000000000000000000000000000000000"
+# A QUOTED heredoc: nothing in this prose is a shell expansion, and the
+# quoting keeps it that way no matter what punctuation the text grows.
+_PA_WATERMARK_HEADER="$(
+  cat <<'PA_WM_HEADER'
+# disclosure-log.watermark — the COMMITTED anchor for the provider disclosure
+# log (ADR 0028, temperloop#1250/#1316). Maintained by allowlist.sh's
+# pa_disclose; the single value line below is "<max_seq> <last_hash>".
+#
+# The LOG itself is gitignored at .temperloop/model-comparison/disclosure-log.jsonl
+# so no provider history and no content enters this repo. Only this anchor is
+# tracked, and it carries neither: just how many entries the log is meant to
+# have and what its tail hash is.
+#
+# COMMIT IT WHEN IT CHANGES. That is the whole mechanism: a log re-forged in
+# place no longer matches the anchor recorded in git history, so hiding the
+# re-forge means rewriting git history too — which leaves its own trace.
+# validate-provider-disclosure.sh reports REFORGED-VS-GIT / WATERMARK-GIT-*
+# when the live log stops descending from this file's committed value.
+PA_WM_HEADER
+)"
+
+# _pa_watermark_read — first non-blank, non-comment line of the anchor, read
+# from STDIN (so the same parser serves both the on-disk file and a
+# `git show HEAD:<path>` blob, which is the point of having one).
+_pa_watermark_read() {
+  local line
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    case "$line" in
+      '' | '#'*) continue ;;
+    esac
+    printf '%s\n' "$line"
+    return 0
+  done
+  return 0
+}
+
+# _pa_watermark_write <file> <seq> <hash> — header + value line, one write.
+_pa_watermark_write() {
+  {
+    printf '%s\n' "$_PA_WATERMARK_HEADER"
+    printf '%s %s\n' "$2" "$3"
+  } >"$1"
+}
+
+# pa_watermark_init [file] — seed a GENESIS anchor (seq 0, the all-zero
+# digest: nothing disclosed yet, so any log is trivially a forward extension
+# of it) at the configured anchor path, or at an explicit one. Refuses to
+# clobber an existing anchor — an anchor already carrying a real seq is the
+# audit trail, and re-seeding it IS the re-forge this whole mechanism exists
+# to make loud. This is how an adopting repo produces the file it then
+# commits; it is not part of the disclose path.
+pa_watermark_init() {
+  local wm="${1:-$(pa_watermark_file)}"
+  if [[ -e "$wm" ]]; then
+    echo "allowlist.sh: pa_watermark_init: $wm already exists — refusing to overwrite an existing anchor (re-seeding one is indistinguishable from a re-forge)" >&2
+    return 1
+  fi
+  mkdir -p "$(dirname "$wm")" 2>/dev/null || true
+  _pa_watermark_write "$wm" 0 "$PA_WATERMARK_ZERO_HASH"
 }
 
 # ── The disclose lock ──────────────────────────────────────────────────────
@@ -542,10 +660,15 @@ _pa_disclose_locked() {
   # leaves the log ahead of the anchor, which verifies as WATERMARK-STALE
   # (loud, recoverable) rather than as a phantom TRUNCATED.
   wm="$(_pa_watermark_file "$log")"
-  if ! printf '%s %s\n' "$seq" "$hash" >"$wm"; then
+  mkdir -p "$(dirname "$wm")" 2>/dev/null || true
+  if ! _pa_watermark_write "$wm" "$seq" "$hash"; then
     echo "allowlist.sh: pa_disclose: appended entry $seq but failed to update the watermark anchor ($wm) — the next verify will report WATERMARK-STALE until it is rebuilt" >&2
     return 1
   fi
+  # The anchor is TRACKED (temperloop#1316) — an updated anchor left
+  # uncommitted just means the audit trail is not yet anchored in git, so say
+  # so once, on stderr, rather than letting it drift silently.
+  echo "allowlist.sh: pa_disclose: disclosure-log anchor updated to seq=$seq ($wm) — COMMIT IT so the log stays anchored in git history" >&2
 }
 
 # pa_verify_log_chain <logfile> — format + hash-chain + watermark-anchor
@@ -580,7 +703,7 @@ pa_verify_log_chain() {
       echo "CANNOT-EVALUATE  the watermark anchor ($wm) exists but is not readable — cannot verify $log" >&2
       return "$PA_RC_CANNOT_EVALUATE"
     fi
-    wm_line="$(head -n 1 "$wm")"
+    wm_line="$(_pa_watermark_read <"$wm")"
     wm_seq="${wm_line%% *}"
     wm_hash="${wm_line#* }"
     if _pa_is_uint "$wm_seq" && _pa_is_hash "$wm_hash"; then
@@ -707,6 +830,108 @@ pa_verify_log_chain() {
   return 0
 }
 
+# pa_verify_watermark_git_anchor <logfile> — the check pa_verify_log_chain
+# STRUCTURALLY cannot make (temperloop#1316): does the live log still descend
+# from the anchor as recorded in GIT HISTORY?
+#
+# WHY THIS IS A SEPARATE FUNCTION. pa_verify_log_chain compares the log
+# against the anchor ON DISK. Both files are locally writable, so a process
+# that rewrites the log and its anchor together verifies clean there — that is
+# exactly the "full re-forge leaves no trace" hole. This function reads the
+# anchor's COMMITTED blob (`git show HEAD:<path>`) instead, which a local
+# rewrite cannot touch without also rewriting git history. It is kept out of
+# pa_verify_log_chain so that function stays git-free and reusable as its own
+# header promises ("is this log internally consistent"), and so this one can
+# be pointed at a synthesized fixture repo in a test.
+#
+#   rc 0   clean, or NOT APPLICABLE (the anchor is not inside a git work tree
+#          at all — a scratch/fixture path with no committed anchor to
+#          descend from; the validator separately requires the repo's real
+#          anchor to be tracked)
+#   rc 1   one or more violations (printed to stdout, one per line)
+#   rc 2   CANNOT EVALUATE — never a silent pass, never non-zero with an
+#          empty violation list
+pa_verify_watermark_git_anchor() {
+  local log="${1:-}" wm wm_dir wm_phys toplevel rel blob line c_seq c_hash found
+
+  wm="$(_pa_watermark_file "$log")"
+
+  if ! command -v git >/dev/null 2>&1; then
+    echo "CANNOT-EVALUATE  git not found — cannot check the disclosure log against its COMMITTED anchor ($wm)" >&2
+    return "$PA_RC_CANNOT_EVALUATE"
+  fi
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "CANNOT-EVALUATE  jq not found — cannot check the disclosure log against its COMMITTED anchor ($wm)" >&2
+    return "$PA_RC_CANNOT_EVALUATE"
+  fi
+
+  # Physical resolution + `CDPATH=''` for the same two reasons the validator's
+  # own committed-file block documents at length: a logical path under a
+  # symlinked ancestor (macOS /tmp -> /private/tmp) does not prefix-match a
+  # physically-resolved repo root, and a bare `cd` with an inherited CDPATH
+  # echoes its target and corrupts the substitution.
+  if ! wm_dir="$(CDPATH='' cd -P "$(dirname "$wm")" 2>/dev/null && pwd)"; then
+    echo "CANNOT-EVALUATE  cannot resolve the watermark anchor's directory ($(dirname "$wm")) — refusing to report a verdict on an anchor whose location could not be established" >&2
+    return "$PA_RC_CANNOT_EVALUATE"
+  fi
+  wm_phys="$wm_dir/$(basename "$wm")"
+
+  if ! toplevel="$(git -C "$wm_dir" rev-parse --show-toplevel 2>/dev/null)"; then
+    return 0
+  fi
+  [[ -n "$toplevel" ]] || return 0
+
+  if ! git -C "$toplevel" ls-files --error-unmatch -- "$wm_phys" >/dev/null 2>&1; then
+    echo "WATERMARK-NOT-TRACKED  $wm — the disclosure-log anchor sits inside a git work tree ($toplevel) but is NOT tracked; an untracked anchor can be rewritten in the same motion as the log, so a full re-forge would leave no trace (temperloop#1316)"
+    return "$PA_RC_CHAIN_VIOLATIONS"
+  fi
+
+  rel="${wm_phys#"$toplevel"/}"
+  # An anchor tracked in the INDEX but not yet in HEAD is the commit that
+  # first adds it — there is nothing committed to descend from yet, and the
+  # tracked-ness check above already fired if it were merely on disk.
+  if ! blob="$(git -C "$toplevel" show "HEAD:$rel" 2>/dev/null)" || [[ -z "$blob" ]]; then
+    return 0
+  fi
+
+  line="$(printf '%s\n' "$blob" | _pa_watermark_read)"
+  c_seq="${line%% *}"
+  c_hash="${line#* }"
+  if ! _pa_is_uint "$c_seq" || ! _pa_is_hash "$c_hash"; then
+    echo "WATERMARK-GIT-MALFORMED  $rel — the COMMITTED anchor blob (HEAD:$rel) carries no '<max_seq> <last_hash>' value line, so the log cannot be checked against git history at all"
+    return "$PA_RC_CHAIN_VIOLATIONS"
+  fi
+
+  # seq 0 is the genesis anchor a fresh checkout ships: nothing disclosed yet,
+  # so every log is trivially a forward extension of it.
+  if [[ "$c_seq" -eq 0 ]]; then
+    return 0
+  fi
+
+  if [[ ! -f "$log" || ! -s "$log" ]]; then
+    echo "WATERMARK-GIT-DIVERGED  $log — the COMMITTED anchor (HEAD:$rel) records seq=$c_seq, but the log is absent or empty; the log no longer descends from the anchor recorded in git history"
+    return "$PA_RC_CHAIN_VIOLATIONS"
+  fi
+  if [[ ! -r "$log" ]]; then
+    echo "CANNOT-EVALUATE  $log exists but is not readable — cannot check it against the COMMITTED anchor (HEAD:$rel)" >&2
+    return "$PA_RC_CANNOT_EVALUATE"
+  fi
+
+  # `--argjson` fed a value _pa_is_uint already proved is a plain integer.
+  found="$(jq -r --argjson want "$c_seq" '
+      select(type == "object") | select(.seq == $want) | .hash // empty
+    ' "$log" 2>/dev/null | head -n 1)"
+  if [[ -z "$found" ]]; then
+    echo "WATERMARK-GIT-DIVERGED  $log — the COMMITTED anchor (HEAD:$rel) records seq=$c_seq, but the log has no entry at that seq; it was truncated below, or rebuilt shorter than, the anchor recorded in git history"
+    return "$PA_RC_CHAIN_VIOLATIONS"
+  fi
+  if [[ "$found" != "$c_hash" ]]; then
+    echo "REFORGED-VS-GIT  $log — the log's entry at seq=$c_seq hashes to '$found' but the COMMITTED anchor (HEAD:$rel) records '$c_hash'; the log was re-forged. Rewriting the log and its on-disk anchor together is no longer enough — the anchor in git history still disagrees"
+    return "$PA_RC_CHAIN_VIOLATIONS"
+  fi
+  return 0
+}
+
 # ---------------------------------------------------------------------------
 # Tiny CLI dispatcher — only fires when this file is EXECUTED, never when
 # sourced (test_allowlist.sh and validate-provider-disclosure.sh source
@@ -729,8 +954,17 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     verify-log)
       pa_verify_log_chain "${2:-$(pa_disclosure_log_file)}"
       ;;
+    verify-committed-anchor)
+      pa_verify_watermark_git_anchor "${2:-$(pa_disclosure_log_file)}"
+      ;;
+    init-watermark)
+      pa_watermark_init "${2:-}"
+      ;;
+    watermark)
+      pa_watermark_file
+      ;;
     *)
-      echo "usage: allowlist.sh {is-allowed <provider>|committed|effective|disclose <provider> <item_ref>|verify-log [file]}" >&2
+      echo "usage: allowlist.sh {is-allowed <provider>|committed|effective|disclose <provider> <item_ref>|verify-log [file]|verify-committed-anchor [file]|watermark|init-watermark [file]}" >&2
       exit 64
       ;;
   esac

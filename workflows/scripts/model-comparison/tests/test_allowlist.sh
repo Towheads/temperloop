@@ -44,6 +44,23 @@
 #   29  the hash preimage is injective across the provider/item_ref boundary
 #   30  `seq` comes from the tail entry, not from a line count
 #
+# And the COMMITTED-ANCHOR half (temperloop#1316), which closes the hole every
+# check above shares — they all compare the log against the anchor ON DISK,
+# and both files are locally writable:
+#   33  a log that still descends from its committed anchor verifies clean
+#   34  a FULL RE-FORGE that rewrites the log AND rebuilds its on-disk anchor
+#       — clean to every on-disk check, asserted as such — is caught against
+#       the anchor as committed in git (REFORGED-VS-GIT)
+#   35  a log rebuilt SHORTER than the committed seq is caught
+#       (WATERMARK-GIT-DIVERGED)
+#   36  an anchor inside a git work tree but untracked is itself a failure
+#   37  the anchor this change ships is git-tracked and outside .temperloop/,
+#       while the LOG stays gitignored — no provider history in the repo
+#   38  pa_watermark_init seeds the genesis anchor an adopting repo commits,
+#       and refuses to overwrite an existing one
+#   39  the anchor can be put back out of reach by neither route: parked under
+#       .temperloop/ (WATERMARK-LOCATION) nor repointed by an env var
+#
 # No network. Deterministic. Kept POSIX-bash-3.2-friendly.
 
 set -euo pipefail
@@ -112,8 +129,25 @@ fixture_paths() {
   echo "$WORK/$n/committed.txt" "$WORK/$n/local.txt" "$WORK/$n/log.jsonl"
 }
 
-# wm_path <logfile> — the sibling watermark anchor allowlist.sh maintains.
+# wm_path <logfile> — the anchor allowlist.sh maintains for a fixture log.
+# Under PROVIDER_ALLOWLIST_TEST_SEAM=1 (which every helper here sets) the
+# anchor defaults to the sibling of whatever log the seam points at, precisely
+# so a fixture can never read or overwrite the repo's REAL committed anchor at
+# workflows/scripts/model-comparison/disclosure-log.watermark (temperloop#1316).
 wm_path() { printf '%s\n' "${1%.jsonl}.watermark"; }
+
+# wm_value <anchorfile> — the anchor's single `<max_seq> <last_hash>` value
+# line, skipping the `#`-comment header the tracked file carries.
+wm_value() {
+  local line
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    case "$line" in
+      '' | '#'*) continue ;;
+    esac
+    printf '%s\n' "$line"
+    return 0
+  done <"$1"
+}
 
 # run_lib_at / run_validator_at — explicit-path forms, used by the fixtures
 # that need a path outside $WORK (an in-repo committed file, a missing file).
@@ -274,7 +308,7 @@ run_lib 7 'pa_disclose openai "pr#3" >/dev/null'
 n="$(grep -c . "$g7")"
 [[ "$n" -eq 3 ]] || fail "7: expected 3 log lines, got $n"
 [[ -f "$(wm_path "$g7")" ]] || fail "7: pa_disclose should have written the watermark anchor $(wm_path "$g7")"
-wm_seen="$(cat "$(wm_path "$g7")")"
+wm_seen="$(wm_value "$(wm_path "$g7")")"
 [[ "${wm_seen%% *}" == "3" ]] || fail "7: watermark should record max_seq 3, got '$wm_seen'"
 
 rc=0
@@ -804,9 +838,9 @@ ok "24 unreadable log and unreadable ceiling are both CANNOT EVALUATE, non-zero,
 # ---------------------------------------------------------------------------
 # 25. THE WATERMARK ANCHOR. Tail truncation, whole-log deletion, an emptied
 #     file, a full re-forge, and a deleted anchor are each caught. (The
-#     anchor is a local untracked file and does not stop an attacker who
-#     rewrites both — see allowlist.sh's header. It closes the "one command"
-#     cases.)
+#     anchor is checked here against the log ON DISK, which closes the "one
+#     command" cases; rewriting BOTH files together is caught separately by
+#     the COMMITTED-anchor cases 33-36 below — see allowlist.sh's header.)
 # ---------------------------------------------------------------------------
 count
 read -r c25 l25 g25 <<<"$(fixture_paths 25)"
@@ -1090,6 +1124,7 @@ else
            "$HOST/workflows/scripts"
   cp "$ALLOWLIST_SH" "$HOST/kernel/workflows/scripts/model-comparison/allowlist.sh"
   cp "$MC_DIR/provider-allowlist.txt" "$HOST/kernel/workflows/scripts/model-comparison/provider-allowlist.txt"
+  cp "$MC_DIR/disclosure-log.watermark" "$HOST/kernel/workflows/scripts/model-comparison/disclosure-log.watermark"
   cp "$VALIDATOR" "$HOST/kernel/workflows/scripts/validate-provider-disclosure.sh"
   cp "$HERE/test_allowlist.sh" "$HOST/kernel/workflows/scripts/model-comparison/tests/test_allowlist.sh"
   ln -s ../../kernel/workflows/scripts/model-comparison "$HOST/workflows/scripts/model-comparison"
@@ -1111,12 +1146,258 @@ $out" ;;
 $out" ;;
   esac
   case "$out" in
-    *"32/32 tests passed"*) ;;
-    *) fail "32: expected the inner run to pass all 32 cases through the symlink, got:
+    *"39/39 tests passed"*) ;;
+    *) fail "32: expected the inner run to pass all 39 cases through the symlink, got:
 $out" ;;
   esac
   ok "32 dir-symlink composition: the suite resolves the kernel subtree and passes through a host's dir symlink"
 fi
+
+# ---------------------------------------------------------------------------
+# 33-37. THE COMMITTED ANCHOR (temperloop#1316). Cases 8-9/14-15/25 all
+#     compare the log against the anchor ON DISK. Both files are locally
+#     writable, so a process that rewrites the log AND its anchor together
+#     verifies clean there — that is the "a full re-forge leaves no trace"
+#     hole. The anchor is now a TRACKED file (the LOG stays gitignored, so no
+#     provider history or content enters the repo), and the validator checks
+#     the live log against the anchor AS COMMITTED IN GIT, which a local
+#     rewrite cannot touch without also rewriting git history.
+# ---------------------------------------------------------------------------
+
+# run_lib_wm / run_validator_wm — the 4-seam forms, used only by the cases
+# below: they additionally repoint PROVIDER_DISCLOSURE_WATERMARK_FILE at a
+# synthesized fixture git repo, so the committed-anchor behaviour can be
+# exercised without touching this repo's own tracked anchor.
+run_lib_wm() {
+  local committed="$1" local_f="$2" log="$3" wm="$4" body="$5"
+  env \
+    PROVIDER_ALLOWLIST_TEST_SEAM=1 \
+    PROVIDER_ALLOWLIST_COMMITTED_FILE="$committed" \
+    PROVIDER_ALLOWLIST_LOCAL_FILE="$local_f" \
+    PROVIDER_DISCLOSURE_LOG_FILE="$log" \
+    PROVIDER_DISCLOSURE_WATERMARK_FILE="$wm" \
+    bash -c "source '$ALLOWLIST_SH'; $body"
+}
+run_validator_wm() {
+  env \
+    PROVIDER_ALLOWLIST_TEST_SEAM=1 \
+    PROVIDER_ALLOWLIST_COMMITTED_FILE="$1" \
+    PROVIDER_ALLOWLIST_LOCAL_FILE="$2" \
+    PROVIDER_DISCLOSURE_LOG_FILE="$3" \
+    PROVIDER_DISCLOSURE_WATERMARK_FILE="$4" \
+    bash "$VALIDATOR"
+}
+# git_commit_all <repo> <msg> — identity supplied inline so the fixture never
+# depends on (or writes) the host's git config.
+git_commit_all() {
+  git -C "$1" add -A >/dev/null 2>&1 \
+    && git -C "$1" \
+         -c user.email=fixture@example.invalid \
+         -c user.name='allowlist fixture' \
+         -c commit.gpgsign=false \
+         commit -q -m "$2" >/dev/null 2>&1
+}
+
+# Shared fixture for 33-35: a 3-entry log whose anchor is COMMITTED.
+D33="$WORK/33"
+mkdir -p "$D33/repo"
+c33="$D33/committed.txt"
+l33="$D33/local.txt"
+g33="$D33/log.jsonl"
+w33="$D33/repo/disclosure-log.watermark"
+printf 'anthropic\nopenai\n' >"$c33"
+git -C "$D33/repo" init -q || fail "33: fixture setup: git init failed"
+run_lib_wm "$c33" "$l33" "$g33" "$w33" 'pa_disclose openai "issue#1" >/dev/null'
+run_lib_wm "$c33" "$l33" "$g33" "$w33" 'pa_disclose openai "issue#2" >/dev/null'
+run_lib_wm "$c33" "$l33" "$g33" "$w33" 'pa_disclose openai "issue#3" >/dev/null'
+[[ -f "$w33" ]] || fail "33: fixture setup: pa_disclose should have written the anchor at $w33"
+[[ "$(wm_value "$w33" | cut -d' ' -f1)" == "3" ]] \
+  || fail "33: fixture setup: the anchor should record seq 3, got '$(wm_value "$w33")'"
+git_commit_all "$D33/repo" "anchor at seq 3" || fail "33: fixture setup: could not commit the anchor"
+ANCHOR_AT_3="$(wm_value "$w33")"
+
+# ---------------------------------------------------------------------------
+# 33. A log that still DESCENDS from the committed anchor verifies clean —
+#     the new check is not a blanket "any committed anchor fails".
+# ---------------------------------------------------------------------------
+count
+vrc=0; vout="$(run_validator_wm "$c33" "$l33" "$g33" "$w33" 2>&1)" || vrc=$?
+[[ "$vrc" -eq 0 ]] || fail "33: a log descending from its committed anchor should pass:
+$vout"
+rc=0; run_lib_wm "$c33" "$l33" "$g33" "$w33" "pa_verify_watermark_git_anchor '$g33'" >/dev/null 2>&1 || rc=$?
+[[ "$rc" -eq 0 ]] || fail "33: pa_verify_watermark_git_anchor should report clean (rc 0), got rc=$rc"
+ok "33 committed anchor: a log that still descends from it verifies clean"
+
+# ---------------------------------------------------------------------------
+# 34. THE ACCEPTANCE CASE. A FULL RE-FORGE that rewrites the log AND its
+#     on-disk anchor together — internally perfect, and clean to every
+#     on-disk check (pa_verify_log_chain rc 0, asserted below so this case
+#     cannot pass on the OLD anchor check by accident) — is caught, because
+#     the anchor COMMITTED IN GIT still records the original tail.
+# ---------------------------------------------------------------------------
+count
+rm -f "$g33" "$w33"
+run_lib_wm "$c33" "$l33" "$g33" "$w33" 'pa_disclose openai "FORGED#1" >/dev/null'
+run_lib_wm "$c33" "$l33" "$g33" "$w33" 'pa_disclose openai "FORGED#2" >/dev/null'
+run_lib_wm "$c33" "$l33" "$g33" "$w33" 'pa_disclose openai "FORGED#3" >/dev/null'
+[[ "$(wm_value "$w33")" != "$ANCHOR_AT_3" ]] \
+  || fail "34: fixture setup: the re-forged anchor should differ from the committed one"
+rc=0; run_lib_wm "$c33" "$l33" "$g33" "$w33" "pa_verify_log_chain '$g33'" >/dev/null 2>&1 || rc=$?
+[[ "$rc" -eq 0 ]] || fail "34: fixture setup — the re-forged log + rebuilt on-disk anchor must be clean to every ON-DISK check (that is the hole), got rc=$rc"
+vrc=0; vout="$(run_validator_wm "$c33" "$l33" "$g33" "$w33" 2>&1)" || vrc=$?
+[[ "$vrc" -ne 0 ]] || fail "34: a full re-forge that also rebuilt the on-disk anchor passed the validator:
+$vout"
+case "$vout" in *REFORGED-VS-GIT*) ;; *) fail "34: expected a REFORGED-VS-GIT line, got:
+$vout" ;; esac
+ok "34 committed anchor: a full re-forge that rewrites log AND on-disk anchor is caught by git history"
+
+# ---------------------------------------------------------------------------
+# 35. A re-forge that rebuilds the log SHORTER than the committed anchor: no
+#     entry exists at the committed seq at all -> WATERMARK-GIT-DIVERGED.
+# ---------------------------------------------------------------------------
+count
+rm -f "$g33" "$w33"
+run_lib_wm "$c33" "$l33" "$g33" "$w33" 'pa_disclose openai "SHORT#1" >/dev/null'
+run_lib_wm "$c33" "$l33" "$g33" "$w33" 'pa_disclose openai "SHORT#2" >/dev/null'
+rc=0; run_lib_wm "$c33" "$l33" "$g33" "$w33" "pa_verify_log_chain '$g33'" >/dev/null 2>&1 || rc=$?
+[[ "$rc" -eq 0 ]] || fail "35: fixture setup — the shortened log + rebuilt on-disk anchor must be clean to every ON-DISK check, got rc=$rc"
+vrc=0; vout="$(run_validator_wm "$c33" "$l33" "$g33" "$w33" 2>&1)" || vrc=$?
+[[ "$vrc" -ne 0 ]] || fail "35: a log rebuilt shorter than its committed anchor passed the validator:
+$vout"
+case "$vout" in *WATERMARK-GIT-DIVERGED*) ;; *) fail "35: expected a WATERMARK-GIT-DIVERGED line, got:
+$vout" ;; esac
+ok "35 committed anchor: a log rebuilt shorter than the committed seq is caught"
+
+# ---------------------------------------------------------------------------
+# 36. An anchor sitting inside a git work tree but NOT TRACKED is a failure in
+#     its own right — an untracked anchor can be rewritten in the same motion
+#     as the log, which is the whole hole this item closes.
+# ---------------------------------------------------------------------------
+count
+D36="$WORK/36"
+mkdir -p "$D36/repo"
+c36="$D36/committed.txt"
+l36="$D36/local.txt"
+g36="$D36/log.jsonl"
+w36="$D36/repo/disclosure-log.watermark"
+printf 'anthropic\nopenai\n' >"$c36"
+git -C "$D36/repo" init -q || fail "36: fixture setup: git init failed"
+run_lib_wm "$c36" "$l36" "$g36" "$w36" 'pa_disclose openai "issue#1" >/dev/null'
+[[ -f "$w36" ]] || fail "36: fixture setup: the anchor should exist on disk"
+vrc=0; vout="$(run_validator_wm "$c36" "$l36" "$g36" "$w36" 2>&1)" || vrc=$?
+[[ "$vrc" -ne 0 ]] || fail "36: an untracked in-work-tree anchor passed the validator:
+$vout"
+case "$vout" in *WATERMARK-NOT-TRACKED*) ;; *) fail "36: expected a WATERMARK-NOT-TRACKED line, got:
+$vout" ;; esac
+git_commit_all "$D36/repo" "track the anchor" || fail "36: fixture setup: could not commit the anchor"
+vrc=0; vout="$(run_validator_wm "$c36" "$l36" "$g36" "$w36" 2>&1)" || vrc=$?
+[[ "$vrc" -eq 0 ]] || fail "36: committing the anchor should clear WATERMARK-NOT-TRACKED:
+$vout"
+ok "36 committed anchor: an untracked in-work-tree anchor fails; committing it clears the failure"
+
+# ---------------------------------------------------------------------------
+# 37. The REAL anchor this change ships is git-tracked, lives OUTSIDE the
+#     gitignored .temperloop/ runtime dir, and carries a parseable value line
+#     — the actual acceptance artifact, not a fixture stand-in (the exact
+#     shape case 2 pins for the committed allowlist).
+# ---------------------------------------------------------------------------
+count
+REAL_WATERMARK="$MC_DIR/disclosure-log.watermark"
+[[ -f "$REAL_WATERMARK" ]] || fail "37: $REAL_WATERMARK does not exist"
+git -C "$REPO_ROOT" ls-files --error-unmatch -- "$REAL_WATERMARK" >/dev/null 2>&1 \
+  || fail "37: $REAL_WATERMARK is not git-tracked — the anchor must be in version control"
+case "$REAL_WATERMARK" in
+  */.temperloop/*) fail "37: the anchor must not live under the gitignored .temperloop/ runtime dir" ;;
+esac
+real_wm_line="$(wm_value "$REAL_WATERMARK")"
+case "$real_wm_line" in
+  [0-9]*\ [0-9a-f][0-9a-f]*) ;;
+  *) fail "37: the shipped anchor should carry a '<max_seq> <last_hash>' value line, got '$real_wm_line'" ;;
+esac
+real_wm_hash="${real_wm_line#* }"
+[[ "${#real_wm_hash}" -eq 64 ]] \
+  || fail "37: the shipped anchor's hash field should be a 64-char digest, got '${real_wm_hash}'"
+# The LOG must stay gitignored — committing the anchor must never have dragged
+# provider history into the tracked tree. Skipped inside case 32's synthesized
+# composition host, which scaffolds only the module's own files and therefore
+# carries none of this repo's ignore rules (same recursion guard case 32 uses).
+REAL_LOG="$REPO_ROOT/.temperloop/model-comparison/disclosure-log.jsonl"
+if git -C "$REPO_ROOT" ls-files --error-unmatch -- "$REAL_LOG" >/dev/null 2>&1; then
+  fail "37: the disclosure LOG must stay gitignored — no provider history in the tracked tree"
+fi
+if [[ -z "${PROVIDER_ALLOWLIST_COMPOSITION_INNER:-}" ]]; then
+  git -C "$REPO_ROOT" check-ignore -q "$REAL_LOG" \
+    || fail "37: $REAL_LOG should be covered by a gitignore rule"
+fi
+ok "37 the shipped anchor is git-tracked and outside .temperloop/, while the log stays gitignored"
+
+# ---------------------------------------------------------------------------
+# 38. pa_watermark_init seeds the GENESIS anchor an adopting repo commits —
+#     seq 0, so any log is trivially a forward extension of it — and REFUSES
+#     to overwrite an existing anchor, since re-seeding one is exactly the
+#     re-forge this whole mechanism exists to make loud.
+# ---------------------------------------------------------------------------
+count
+D38="$WORK/38"
+mkdir -p "$D38"
+c38="$D38/committed.txt"
+l38="$D38/local.txt"
+g38="$D38/log.jsonl"
+w38="$D38/seed.watermark"
+printf 'anthropic\n' >"$c38"
+run_lib_wm "$c38" "$l38" "$g38" "$w38" 'pa_watermark_init' \
+  || fail "38: pa_watermark_init should seed an absent anchor"
+seeded="$(wm_value "$w38")"
+[[ "${seeded%% *}" == "0" ]] || fail "38: the seeded anchor should record seq 0, got '$seeded'"
+[[ "${#seeded}" -eq 66 ]] || fail "38: the seeded anchor line should be '0 ' + a 64-char digest, got '$seeded'"
+# A genesis anchor beside an absent log is legal — nothing disclosed yet.
+rc=0; run_lib_wm "$c38" "$l38" "$g38" "$w38" "pa_verify_log_chain '$g38'" >/dev/null 2>&1 || rc=$?
+[[ "$rc" -eq 0 ]] || fail "38: a genesis anchor with no log yet should verify clean, got rc=$rc"
+# Re-seeding an existing anchor is refused.
+rc=0; run_lib_wm "$c38" "$l38" "$g38" "$w38" 'pa_watermark_init' >/dev/null 2>&1 || rc=$?
+[[ "$rc" -ne 0 ]] || fail "38: pa_watermark_init should refuse to overwrite an existing anchor"
+[[ "$(wm_value "$w38")" == "$seeded" ]] || fail "38: the refused re-seed must leave the anchor untouched"
+ok "38 pa_watermark_init seeds a genesis anchor and refuses to overwrite an existing one"
+
+# ---------------------------------------------------------------------------
+# 39. THE ANCHOR CANNOT BE PUT BACK OUT OF REACH. Two ways to silently revert
+#     to the pre-#1316 hole, both refused: parking the anchor back under the
+#     gitignored .temperloop/ runtime dir (where it can never be committed),
+#     and repointing it from the environment (where it lands outside any git
+#     work tree and the committed-anchor check is not applicable by
+#     construction). Cases 20 and 28 pin the same two properties for the
+#     committed ceiling.
+# ---------------------------------------------------------------------------
+count
+mkdir -p "$REPO_SCRATCH_TL"
+c39="$WORK/39-committed.txt"
+printf 'anthropic\n' >"$c39"
+w39="$REPO_SCRATCH_TL/parked.watermark"
+case "$w39" in
+  */.temperloop/*) ;;
+  *) fail "39: fixture setup: $w39 was expected to sit under .temperloop/" ;;
+esac
+vrc=0
+vout="$(run_validator_wm "$c39" "$WORK/39-local.txt" "$WORK/39-log.jsonl" "$w39" 2>&1)" || vrc=$?
+[[ "$vrc" -ne 0 ]] || fail "39: validator should FAIL on an anchor parked under .temperloop/:
+$vout"
+case "$vout" in *WATERMARK-LOCATION*) ;; *) fail "39: expected a WATERMARK-LOCATION line, got:
+$vout" ;; esac
+
+# Repointing the anchor from the environment, WITHOUT the fixture-test seam:
+# the library ignores the override, and the validator hard-fails rather than
+# validating against an anchor it did not choose.
+out="$(env PROVIDER_DISCLOSURE_WATERMARK_FILE="$WORK/39-elsewhere.watermark" \
+  bash -c "source '$ALLOWLIST_SH'; pa_watermark_file" 2>/dev/null)"
+[[ "$out" == "$MC_DIR/disclosure-log.watermark" ]] \
+  || fail "39: an env var repointed the anchor outside the test seam: $out"
+vrc=0
+vout="$(env PROVIDER_DISCLOSURE_WATERMARK_FILE="$WORK/39-elsewhere.watermark" bash "$VALIDATOR" 2>&1)" || vrc=$?
+[[ "$vrc" -ne 0 ]] || fail "39: validator accepted an env-substituted anchor:
+$vout"
+case "$vout" in *CANNOT\ EVALUATE*PROVIDER_ALLOWLIST_TEST_SEAM*) ;; *) fail "39: expected a CANNOT EVALUATE naming the test seam, got:
+$vout" ;; esac
+ok "39 the anchor cannot be parked under .temperloop/ nor repointed by an env var"
 
 echo "---"
 echo "$pass/$total tests passed"
