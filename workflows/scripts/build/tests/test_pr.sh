@@ -365,6 +365,32 @@ grep -qF 'discrimination: Removed the path-prefix check at build-worktree-guard.
   || fail "recap dropped .discrimination_evidence — a jq filter reading only .passed/.criterion/.evidence silently drops this field (body: $body)"
 echo "PASS: open --body-only surfaces .discrimination_evidence in the acceptance recap (temperloop#1319)"
 
+# --- open --body-only: .deferred_host_config reaches the recap (temperloop#1182) ---
+# A host-config deferral rides `passed: false` (the worker did NOT confirm it) plus
+# the `deferred_host_config` marker. Read only .passed and the recap renders it as a
+# bare unchecked box — visually identical to "the worker failed this criterion", the
+# exact misreading this field exists to prevent. The DEFERRED line must survive.
+cat > "$TMP/verdict-hostcfg.json" <<'EOF'
+{
+  "status": "done",
+  "summary": "Wires the retro-judge spawn to the host credential seam.",
+  "acceptance_results": [
+    {"criterion": "pipeline-retro-judge-spawn.sh --dry-run reports credential_present", "passed": false, "evidence": "not observable from a worktree", "deferred_host_config": "workflows/scripts/build/build.config.local.sh (SENTRY_AUTH_TOKEN)"},
+    {"criterion": "the spawn script reads the credential from config", "passed": true, "evidence": "test_pipeline_retro_judge_spawn.sh green"}
+  ],
+  "verification_surface": "Before: no credential seam.\nAfter: the spawn sources build.config.local.sh."
+}
+EOF
+body="$(bash "$SCRIPT" open --verdict "$TMP/verdict-hostcfg.json" --gh-issue 1182 --body-only)"
+grep -qF -- '- [ ] pipeline-retro-judge-spawn.sh --dry-run reports credential_present' <<<"$body" \
+  || fail "host-config fixture missing the base recap line for the deferred criterion (body: $body)"
+grep -qF 'DEFERRED — host-config `workflows/scripts/build/build.config.local.sh (SENTRY_AUTH_TOKEN)` is invisible from a worktree; verified parent-side (temperloop#1182)' <<<"$body" \
+  || fail "recap dropped .deferred_host_config — an unchecked box then reads as a worker FAILURE rather than a criterion nobody could check worktree-side (body: $body)"
+# A non-deferred entry must not pick up a stray DEFERRED line.
+[ "$(grep -c 'DEFERRED — host-config' <<<"$body")" -eq 1 ] \
+  || fail "expected exactly one DEFERRED line — the marker leaked onto an entry with no .deferred_host_config (body: $body)"
+echo "PASS: open --body-only surfaces .deferred_host_config in the acceptance recap (temperloop#1182)"
+
 # --- open --body-only: multiple also_closes, comma-separated ---------------------
 body="$(bash "$SCRIPT" open --verdict "$TMP/verdict.json" \
   --gh-issue 278 --also-closes 171,205 --body-only)"
