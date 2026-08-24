@@ -94,14 +94,19 @@
 #      `acceptance_results[].criterion` back into the PR's `## Acceptance`
 #      section verbatim (build.md §3c), which the issue body alone does not
 #      carry (demo: issue #1199 had 3 bullets, the worker got 5). Extraction
-#      splits each bullet at the LAST ` — ` (an evidence tail may itself
-#      contain an em-dash — first-occurrence splitting silently truncates a
-#      real criterion). temperloop#1267 tracks that this delimiter is
-#      unescaped upstream in pr.sh; `corpus` applies the same last-occurrence
-#      heuristic pr.sh's own format guarantees the shape of, and FLAGS
-#      (never silently accepts) a bullet with more than one embedded em-dash
-#      as `criterion-embedded-em-dash` — the exact ambiguous shape that bit
-#      the spike's own demo item.
+#      is now format-dependent, because temperloop#1267 FIXED the delimiter
+#      upstream: since then pr.sh renders each bullet's evidence on its own
+#      nested `      — ` line, so the criterion/evidence split is positional
+#      and `corpus` recovers the criterion byte-exactly through that format's
+#      own inverse (`pr.sh acceptance-extract`) with no heuristic and no flag.
+#      A body merged BEFORE #1267 — the bulk of any historical corpus — still
+#      carries the inline ` — ` delimiter, which has no unambiguous parse: an
+#      evidence tail may itself contain an em-dash, so first-occurrence
+#      splitting silently truncates a real criterion. Those keep the
+#      last-occurrence workaround AND are FLAGGED (never silently accepted) as
+#      `criterion-embedded-em-dash` whenever a bullet holds more than one
+#      embedded em-dash — the exact ambiguous shape that bit the spike's own
+#      demo item.
 #
 # ── The isolation machinery this file REUSES, not reinvents ────────────────
 # `worktree-prepare` below calls `workflows/scripts/build/worktree.sh create`
@@ -734,14 +739,40 @@ extract_acceptance() {
     | sed -E 's/^- \[[x ]\] //'
 }
 
-# strip_at_last_emdash <line> — the last-` — `-occurrence split
-# (temperloop#1267's documented workaround: pr.sh's own recap delimiter is
-# unescaped upstream). Falls back to the raw line if perl is unavailable.
+# strip_at_last_emdash <line> — the last-` — `-occurrence split. The LEGACY
+# path only: it reads a PR body written BEFORE temperloop#1267, when pr.sh
+# appended the evidence inline after an unescaped ` — ` and no rule could tell
+# a delimiter from an em-dash inside the criterion. Falls back to the raw line
+# if perl is unavailable.
 strip_at_last_emdash() {
   if command -v perl >/dev/null 2>&1; then
     printf '%s' "$1" | perl -CSD -pe 's/^(.*) \x{2014} .*$/$1/' 2>/dev/null && return 0
   fi
   printf '%s' "$1"
+}
+
+# acceptance_from_recap <pr-body-file> — a JSON array of criteria, recovered
+# byte-exactly, for a body whose recap carries the post-temperloop#1267 nested
+# evidence line (`      — <evidence>` under the bullet). That format's split is
+# positional, so there is exactly one right way to read it — delegate to the
+# format's own owned inverse rather than re-deriving the parse here, which is
+# how the ambiguity would otherwise re-enter through the reader. Returns
+# non-zero (→ the caller's legacy path) for a pre-#1267 body, or wherever the
+# sibling script is not vendored alongside this one.
+acceptance_from_recap() {
+  local body="$1" pr_sh="$HERE/../build/pr.sh" out
+  [ -f "$pr_sh" ] || return 1
+  # New-format tell: a nested evidence line inside the FIRST ## Acceptance
+  # section. A recap-less or pre-#1267 body has none.
+  # (`exit` inside a main rule still runs END, so the verdict rides a flag —
+  # an `exit 0` there would be overwritten by END's own status.)
+  awk '/^## Acceptance$/ { if (!seen) { f = 1; seen = 1; next } }
+       /^## / { f = 0 }
+       f && /^      — / { found = 1; exit }
+       END { exit(found ? 0 : 1) }' "$body" || return 1
+  out="$(bash "$pr_sh" acceptance-extract "$body" 2>/dev/null)" || return 1
+  jq -e 'type == "array" and length > 0' <<<"$out" >/dev/null 2>&1 || return 1
+  jq -c 'map(.criterion)' <<<"$out"
 }
 
 # ── corpus (real `gh` reads; applies spike facts 1-4) ────────────────────
@@ -914,11 +945,22 @@ cmd_corpus() {
       flags="$(jq -c '. + ["post-cut-edit-unverified"]' <<<"$flags")"
     fi
 
-    # Acceptance recap (spike fact 4) — last-em-dash split, and a
-    # multi-em-dash bullet is FLAGGED (the exact ambiguous shape the spike's
-    # own demo item hit), never silently trusted.
+    # Acceptance recap (spike fact 4). A body written by pr.sh SINCE
+    # temperloop#1267 puts the evidence on its own nested line, so the recap is
+    # round-trippable and `acceptance_from_recap` recovers each criterion
+    # byte-exactly — no heuristic, and nothing to flag. A body merged BEFORE
+    # that (the bulk of any historical corpus) still carries the inline ` — `
+    # delimiter with no unambiguous parse, so it keeps the last-em-dash
+    # workaround AND is FLAGGED `criterion-embedded-em-dash` whenever a bullet
+    # holds more than one (the exact ambiguous shape the spike's own demo item
+    # hit), never silently trusted.
     local acc_lines em_dash_risk=0 acceptance_json='[]'
-    acc_lines="$(extract_acceptance "$pr_body_file")"
+    if acc_lines="$(acceptance_from_recap "$pr_body_file")"; then
+      acceptance_json="$acc_lines"
+      acc_lines=""
+    else
+      acc_lines="$(extract_acceptance "$pr_body_file")"
+    fi
     if [ -n "$acc_lines" ]; then
       local -a acc_arr=()
       while IFS= read -r line; do

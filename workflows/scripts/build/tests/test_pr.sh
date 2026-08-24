@@ -20,6 +20,12 @@
 #     also_closes=[171] → exactly `Closes #278` and `Closes #171`, own lines,
 #     never combined, never backticked); acceptance recap; ## Verification;
 #     backlinks + footer; fallback-to-recap when verification_surface absent
+#   - acceptance-extract (temperloop#1267): the recap round-trips BYTE-EXACTLY
+#     when ` — ` appears inside the criterion AND inside the evidence (evidence
+#     now rides its own nested line, so the split is positional, not a
+#     first-vs-last-em-dash guess); multi-line criteria, an evidence-less entry,
+#     a decoy `## Acceptance` inside the worker's own surface, `-` stdin, an
+#     empty result for a recap-less body, and a structured ERROR on a bad path
 #   - open (temperloop#1023): a worker surface carrying its OWN copy of the
 #     linkage block is stripped down to one block, a surface with no honored
 #     closing-keyword line (mid-sentence / backticked / indented / fenced) is
@@ -324,10 +330,17 @@ grep -q 'Closes #278 and' <<<"$body" && fail "Closes lines combined — closes o
 grep -q '`Closes' <<<"$body" && fail "backticked Closes — GitHub ignores it (ec8d5fd class)"
 # Acceptance recap with passed/evidence.
 grep -qF '## Acceptance' <<<"$body" || fail "missing acceptance recap heading"
-grep -qF -- '- [x] widget renders — test_widget.py::test_render green' <<<"$body" \
+# temperloop#1267: evidence rides its OWN nested line, never an inline ` — `.
+grep -qxF -- '- [x] widget renders' <<<"$body" \
   || fail "missing passed recap line"
-grep -qF -- '- [ ] legacy path unchanged — one diff remains' <<<"$body" \
+grep -qxF -- '      — test_widget.py::test_render green' <<<"$body" \
+  || fail "passed entry's evidence is not on its own nested line (body: $body)"
+grep -qxF -- '- [ ] legacy path unchanged' <<<"$body" \
   || fail "missing failed recap line"
+grep -qxF -- '      — one diff remains' <<<"$body" \
+  || fail "failed entry's evidence is not on its own nested line (body: $body)"
+grep -q -- '] widget renders — ' <<<"$body" \
+  && fail "evidence re-inlined after a bare em-dash — the temperloop#1267 defect (body: $body)"
 # No .discrimination_evidence on either entry above → no stray "discrimination:" line.
 grep -q 'discrimination:' <<<"$body" \
   && fail "recap emitted a stray discrimination: line for entries with no .discrimination_evidence (body: $body)"
@@ -359,8 +372,10 @@ cat > "$TMP/verdict-discrim.json" <<'EOF'
 EOF
 body="$(bash "$SCRIPT" open --verdict "$TMP/verdict-discrim.json" --gh-issue 1319 --body-only)"
 grep -qF '## Acceptance' <<<"$body" || fail "discrimination-evidence fixture missing ## Acceptance heading"
-grep -qF -- '- [x] guard rejects out-of-worktree writes — test_guard.sh::test_reject green' <<<"$body" \
+grep -qxF -- '- [x] guard rejects out-of-worktree writes' <<<"$body" \
   || fail "discrimination-evidence fixture missing the base recap line (body: $body)"
+grep -qxF -- '      — test_guard.sh::test_reject green' <<<"$body" \
+  || fail "discrimination-evidence fixture: evidence not on its own nested line (body: $body)"
 grep -qF 'discrimination: Removed the path-prefix check at build-worktree-guard.sh:42 -> test_guard.sh RED (1 failed); restored -> GREEN (12 passed).' <<<"$body" \
   || fail "recap dropped .discrimination_evidence — a jq filter reading only .passed/.criterion/.evidence silently drops this field (body: $body)"
 echo "PASS: open --body-only surfaces .discrimination_evidence in the acceptance recap (temperloop#1319)"
@@ -390,6 +405,70 @@ grep -qF 'DEFERRED — host-config `workflows/scripts/build/build.config.local.s
 [ "$(grep -c 'DEFERRED — host-config' <<<"$body")" -eq 1 ] \
   || fail "expected exactly one DEFERRED line — the marker leaked onto an entry with no .deferred_host_config (body: $body)"
 echo "PASS: open --body-only surfaces .deferred_host_config in the acceptance recap (temperloop#1182)"
+
+# --- acceptance recap round-trips through ` — ` (temperloop#1267) ----------------
+# The PR body is the ONLY durable verbatim record of the acceptance bullets a
+# worker was handed. With evidence appended inline after a bare ` — ` that record
+# was not parseable: ` — ` occurs inside real criteria (a first-occurrence split
+# silently TRUNCATES the criterion — the live #1201 bullet-3 case, where the
+# dropped clause was the anti-over-exclusion guard) and inside real evidence (a
+# last-occurrence split then eats the evidence tail). Neither rule is right, and
+# nothing picks between them. Evidence on its OWN nested line makes the split
+# positional, and `pr.sh acceptance-extract` is the heuristic-free inverse.
+#
+# The fixture below is deliberately the hard shape: BOTH fields carry ` — `,
+# one criterion spans several lines, and one entry has no evidence at all.
+cat > "$TMP/verdict-emdash.json" <<'EOF'
+{
+  "status": "done",
+  "summary": "Round-trip fixture.",
+  "acceptance_results": [
+    {"criterion": "A genuine user turn that merely FOLLOWS a command invocation is NOT over-excluded — guard the rule to the single adjacent expansion turn", "passed": true, "evidence": "test_scan_stub.sh 3c(a) — four-turn fixture yields exactly 1 match"},
+    {"criterion": "a criterion that spans\nseveral lines — with an em-dash on the last", "passed": false, "evidence": "ev — with — several — dashes", "deferred_host_config": "build.config.local.sh (TOKEN)", "discrimination_evidence": "removed the guard — RED; restored — GREEN"},
+    {"criterion": "an entry with no evidence at all — still fine", "passed": true}
+  ],
+  "verification_surface": "## Acceptance\n- [x] a decoy bullet inside the worker's own surface — must never be re-parsed"
+}
+EOF
+bash "$SCRIPT" open --verdict "$TMP/verdict-emdash.json" --gh-issue 1267 --body-only > "$TMP/body-emdash.md"
+# Byte-exact round-trip: extract → compare against the verdict's own entries.
+# `passed` plus the four optional fields, nulls dropped so an absent field and a
+# null one compare equal.
+jq -S '.acceptance_results
+       | map({passed, criterion, evidence, deferred_host_config, discrimination_evidence}
+             | with_entries(select(.value != null)))' \
+   "$TMP/verdict-emdash.json" > "$TMP/rt-want.json"
+bash "$SCRIPT" acceptance-extract "$TMP/body-emdash.md" \
+  | jq -S 'map(with_entries(select(.value != null)))' > "$TMP/rt-got.json"
+diff -u "$TMP/rt-want.json" "$TMP/rt-got.json" \
+  || fail "acceptance recap did not round-trip byte-exactly (want/got above)"
+# Both halves of the acceptance, named so a regression says which one broke.
+jq -e '.[0].criterion | endswith("single adjacent expansion turn")' "$TMP/rt-got.json" >/dev/null \
+  || fail "criterion containing ' — ' was TRUNCATED on extract (temperloop#1267 first-occurrence split)"
+jq -e '.[1].evidence == "ev — with — several — dashes"' "$TMP/rt-got.json" >/dev/null \
+  || fail "evidence containing ' — ' was truncated on extract (last-occurrence split)"
+jq -e '.[1].criterion == "a criterion that spans\nseveral lines — with an em-dash on the last"' "$TMP/rt-got.json" >/dev/null \
+  || fail "a multi-line criterion lost its continuation lines on extract"
+jq -e '.[2].evidence == null' "$TMP/rt-got.json" >/dev/null \
+  || fail "an entry with no evidence invented one on extract"
+# The worker surface's own `## Acceptance` heading must not re-open the section.
+[ "$(jq 'length' "$TMP/rt-got.json")" -eq 3 ] \
+  || fail "extract re-parsed a decoy '## Acceptance' inside the verification surface"
+# stdin (`-`) is the same extractor.
+bash "$SCRIPT" acceptance-extract - < "$TMP/body-emdash.md" \
+  | jq -S 'map(with_entries(select(.value != null)))' > "$TMP/rt-stdin.json"
+diff -q "$TMP/rt-got.json" "$TMP/rt-stdin.json" >/dev/null \
+  || fail "acceptance-extract - (stdin) disagreed with the file path form"
+echo "PASS: acceptance recap round-trips byte-exactly with ' — ' in BOTH criterion and evidence (temperloop#1267)"
+
+# A body with no ## Acceptance section extracts to an empty array, not an error.
+printf '%s\n' 'just a summary' > "$TMP/body-noacc.md"
+[ "$(bash "$SCRIPT" acceptance-extract "$TMP/body-noacc.md")" = "[]" ] \
+  || fail "acceptance-extract on a body with no ## Acceptance section did not return []"
+rc=0; out="$(bash "$SCRIPT" acceptance-extract "$TMP/nonexistent-body.md" 2>/dev/null)" || rc=$?
+[ "$rc" -ne 0 ] && [ "$(jq -r .outcome <<<"$out")" = "ERROR" ] \
+  || fail "acceptance-extract on a missing path not structured ERROR (got: $out)"
+echo "PASS: acceptance-extract returns [] for a recap-less body and structured ERROR for a missing path"
 
 # --- open --body-only: multiple also_closes, comma-separated ---------------------
 body="$(bash "$SCRIPT" open --verdict "$TMP/verdict.json" \
@@ -423,7 +502,7 @@ jq 'del(.verification_surface)' "$TMP/verdict.json" > "$TMP/verdict-nosurface.js
 body="$(bash "$SCRIPT" open --verdict "$TMP/verdict-nosurface.json" --gh-issue 278 --body-only)"
 grep -qF '## Verification' <<<"$body" || fail "fallback body missing ## Verification"
 # The recap appears twice: once under ## Acceptance, once as the fallback surface.
-[ "$(grep -cF -- '- [x] widget renders — test_widget.py::test_render green' <<<"$body")" -eq 2 ] \
+[ "$(grep -cxF -- '- [x] widget renders' <<<"$body")" -eq 2 ] \
   || fail "fallback did not reuse the acceptance recap under ## Verification (body: $body)"
 echo "PASS: open falls back to the acceptance recap only when verification_surface is absent"
 

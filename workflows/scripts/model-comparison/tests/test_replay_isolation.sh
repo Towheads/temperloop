@@ -368,6 +368,7 @@ printf 'v0\n' >"$CORPUS_FIX/src/foot2-b.sh"
 printf 'v0\n' >"$CORPUS_FIX/src/foot1-a.sh"
 printf 'v0\n' >"$CORPUS_FIX/src/pr308.sh"
 printf 'v0\n' >"$CORPUS_FIX/src/pr309.sh"
+printf 'v0\n' >"$CORPUS_FIX/src/pr311.sh"
 printf 'v0\n' >"$CORPUS_FIX/tests/test_placeholder.sh"
 printf '// build-level dummy\n' >"$CORPUS_FIX/claude/workflows/build-level.mjs"
 gitc -C "$CORPUS_FIX" add -A
@@ -418,6 +419,13 @@ MC303="$(mk_pr_merge pr303)"
 # PR 304 — a lone unnamed .md residue file -> flagged-eligible.
 mk_pr_branch pr304 docs/notes-304.md "unrelated note"
 MC304="$(mk_pr_merge pr304)"
+# PR 311 — the ONLY fixture whose PR body carries the post-temperloop#1267
+# recap (evidence on its own nested line). Its criterion AND its evidence both
+# hold ` — `: read through the legacy last-em-dash workaround the criterion
+# would be truncated and the record flagged criterion-embedded-em-dash; read
+# through the new format's own inverse it comes back byte-exact with no flag.
+mk_pr_branch pr311 src/pr311.sh "edit"
+MC311="$(mk_pr_merge pr311)"
 # PR 307 — a lone unnamed .sh residue file -> rejected unnamed-code-residue.
 mk_pr_branch pr307 src/scratch-307.sh "unnamed new file"
 MC307="$(mk_pr_merge pr307)"
@@ -531,6 +539,12 @@ mk_pr_view 309 "$(printf '## Acceptance\n- [x] 309 edit — done\n')"
 mk_issue_view 2310 'Please update `src/pr309.sh`.' '[]'
 mk_graphql 2310 "$LATE_EDIT"
 
+# The post-#1267 recap shape: evidence on its own `      — ` line, so the
+# criterion/evidence split is positional. Both fields carry an em-dash.
+mk_pr_view 311 "$(printf '## Acceptance\n- [x] Quux and friends updated — including the guard clause\n      — ev — with — several — dashes\n')"
+mk_issue_view 2312 'Please update `src/pr311.sh`.' '[]'
+mk_graphql 2312 "$SAFE_EDIT"
+
 # --- gh pr list ---------------------------------------------------------------
 pr_obj() {
   local num="$1" mc="$2" cir="$3" title="$4"
@@ -555,6 +569,7 @@ pr_obj() {
   pr_obj 308 "$MC308" '[{"number":2309}]' "Fix pr308"
   pr_obj 309 "$MC309" '[{"number":2310}]' "Fix pr309"
   pr_obj 310 "" '[{"number":2311}]' "Fix pr310"                        # no merge commit at all
+  pr_obj 311 "$MC311" '[{"number":2312}]' "Fix pr311"                  # post-#1267 nested-evidence recap
 } | jq -s '.' >"$PR_LIST_FILE"
 
 # run_corpus_on <script> <args...> — like run_corpus, against an explicit
@@ -579,7 +594,7 @@ run_corpus --repo fixture-org/fixture-repo --repo-root "$CORPUS_FIX" --limit 20 
 $(cat "$GH_CALL_LOG")"
 
 n_records="$(grep -c . "$OUT")"
-[ "$n_records" -eq 10 ] || fail "10: expected 10 records (one per gh-pr-list entry), got $n_records"
+[ "$n_records" -eq 11 ] || fail "10: expected 11 records (one per gh-pr-list entry), got $n_records"
 
 record_of() { jq -c --argjson pr "$1" 'select(.pr==$pr)' "$OUT"; }
 
@@ -644,13 +659,25 @@ r="$(record_of 310)"
 [ "$(jq -r .status <<<"$r")" = "rejected" ] || fail "10.310: expected rejected: $r"
 [ "$(jq -r .reject_reason <<<"$r")" = "no-merge-commit" ] || fail "10.310: expected no-merge-commit: $r"
 
+# 311: eligible, and the post-temperloop#1267 recap round-trips. The bullet
+# block holds FOUR ` — ` occurrences across criterion and evidence — the exact
+# shape that is unparseable inline. Byte-exact criterion, and NO
+# criterion-embedded-em-dash flag: that flag is the legacy format's honest
+# admission of ambiguity, and the new format has none to admit.
+r="$(record_of 311)"
+[ "$(jq -r .status <<<"$r")" = "eligible" ] || fail "10.311: expected eligible: $r"
+[ "$(jq -r '.acceptance[0]' <<<"$r")" = "Quux and friends updated — including the guard clause" ] \
+  || fail "10.311: post-#1267 recap criterion not recovered byte-exactly (legacy last-em-dash split would truncate it here): $r"
+[ "$(jq -r '.acceptance | length' <<<"$r")" = "1" ] || fail "10.311: expected exactly one criterion: $r"
+[ "$(jq -c .flags <<<"$r")" = "[]" ] || fail "10.311: a round-trippable recap must not carry criterion-embedded-em-dash: $r"
+
 # Every record carries the same, current schema_version.
 while IFS= read -r line; do
   sv="$(jq -r .schema_version <<<"$line")"
   [ "$sv" = "replay-record-v1" ] || fail "10: record carries wrong schema_version $sv: $line"
 done <"$OUT"
 
-ok "10 corpus: every status/reject_reason/flag classification correct across all ten fixture PRs"
+ok "10 corpus: every status/reject_reason/flag classification correct across all eleven fixture PRs (incl. the post-#1267 round-trippable recap)"
 
 # ---------------------------------------------------------------------------
 # 10b. Ranking: eligible tier precedes flagged-eligible precedes rejected;
