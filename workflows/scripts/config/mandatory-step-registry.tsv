@@ -66,3 +66,12 @@ claude/commands/triage.md	Step 5 — command-run telemetry emission	`--resolved`
 
 # ── /promote record — the three-part report (temperloop#1273) ──────────────
 claude/commands/promote.md	record/report — the three-part migrated/re-applied/left report	**The three-part report is mandatory and structural, not a style choice.**	refusal	workflows/scripts/promote/api-state-diff.sh	record: --migrated is required — the three-part report has no optional part	-	The producing code refuses to emit a record with any of the three parts omitted, so the report cannot silently degrade to a one-line "migration complete" claim.
+
+# ── /triage Step 4.8a — the claim-aware cull filter (temperloop#1220) ──────
+# A cull that read past a foreign `fnd:host/session:*` stamp closed an issue
+# another session was building (K#1199), orphaning the in-flight PR's `Closes
+# #N`. The step is mandatory because a claimed issue must never reach the close
+# write; the signal is a STATIC guard over the spec itself — the failure mode is
+# the invocation quietly disappearing from the prose, which no runtime tally in
+# an AI-executed spec would catch.
+claude/commands/triage.md	Step 4.8a — claim-filter the cull set before any close write	This step is not optional	guard	workflows/scripts/board/tests/test_claim_guard.sh	claude/commands/triage.md Step 4.8a must invoke claim-guard.sh before the cull write	make test-board	Case 9 asserts the spec still invokes claim-guard.sh AND that the invocation precedes the cull's reason-comment write; deleting the step from the spec, or reordering it after the close, turns test_claim_guard.sh red under make test-board.

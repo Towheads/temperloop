@@ -122,9 +122,15 @@ claim_main() {
   issue_title=$(board_item_title "$issue")
   [ -n "$item_id" ] || { echo "issue #$issue is not on project $PROJECT_NUMBER" >&2; return 1; }
 
+  # `host` / `sess` stay set for claim_log_emit below, which reads them from this
+  # frame (the raw full session UUID, NOT the truncated stamp — see its header).
   host="$(board_host_label)"
   sess="${CLAUDE_CODE_SESSION_ID:-}"
-  if [ -n "$sess" ]; then stamp="${host}:${sess:0:8}"; else stamp="${host}:manual"; fi
+  # The `<host>:<sess8>` STAMP format is owned by board_own_stamp (lib/board.sh),
+  # the single derivation site — claim-guard.sh reads the stamp back to decide
+  # "is this claim mine?", and a second inline copy here is exactly how the
+  # writer and the reader come to disagree (temperloop#1220).
+  stamp="$(board_own_stamp)"
 
   # Cross-session lock contention pre-check (foundation #800, extended to the
   # Projects-v2 arm): refuses a claim already held by a DIFFERENT host:session
