@@ -34,6 +34,24 @@
 # qualify today; see this item's own investigation) is legal future work,
 # never required by this gate.
 #
+# WIDENED TO claude/hooks/ (temperloop#1836). The note above judged hooks not
+# to qualify, on the reading that the executable bit "matters only for direct
+# `./script` invocation". New evidence overturned that for THIS family, so the
+# superseded premise is corrected here rather than left standing: installed
+# hooks are SYMLINKS into the tracked checkout (workflows/scripts/install/
+# links.sh deploys claude/* into ~/.claude/), a symlink resolves its TARGET's
+# mode, and ~/.claude/settings.json registers each hook as a BARE ABSOLUTE PATH
+# with no interpreter prefix. That IS direct invocation. A hook committed
+# non-executable therefore exits 126 on every matching tool call and the guard
+# silently never fires, while every hook test stays green — they all drive
+# their hook as `bash "$HOOK"`, which ignores the bit. That is not
+# hypothetical: claude-p-spawn-guard.sh shipped its first review round at
+# 100644, 44/44 green and inert once installed. Only INVOKED hooks are listed;
+# claude/hooks/eval-guard.sh is a SOURCED helper and is correctly 100644.
+# claude/hooks/tests/test_hook_exec_bits.sh is the auto-discovering companion:
+# it needs no registry row per hook and additionally asserts the GIT INDEX
+# mode, which a filesystem `-x` check cannot see in a dirty local checkout.
+#
 # FORMAT — TAB-separated, two columns:
 #   1. PATH     repo-relative path to a tracked script
 #   2. REASON   mandatory, non-empty justification for why this script is
@@ -66,3 +84,14 @@ workflows/scripts/validate-onramp-anchors.sh	top-level validator entrypoint (wor
 workflows/scripts/validate-prose-budget.sh	top-level validator entrypoint (workflows/scripts/validate-*.sh family) — human-runnable directly, matches its 15 siblings at mode 755
 workflows/scripts/validate-provider-disclosure.sh	top-level validator entrypoint (workflows/scripts/validate-*.sh family) — human-runnable directly, matches its 15 siblings at mode 755
 workflows/scripts/validate-template-refs.sh	top-level validator entrypoint (workflows/scripts/validate-*.sh family) — human-runnable directly, matches its 15 siblings at mode 755
+claude/hooks/build-worktree-guard.sh	PreToolUse guard invoked by ~/.claude/settings.json as a bare absolute path through the ~/.claude/hooks symlink — a dropped bit means rc 126 on every matching tool call and a silently dead guard (temperloop#1836)
+claude/hooks/claude-p-spawn-guard.sh	PreToolUse guard invoked by ~/.claude/settings.json as a bare absolute path — this item's own motivating instance: shipped 100644 in review round 1, 44/44 tests green and structurally inert once installed (temperloop#1836)
+claude/hooks/git-stale-branch-guard.sh	PreToolUse guard invoked by ~/.claude/settings.json as a bare absolute path through the ~/.claude/hooks symlink — a dropped bit means rc 126 and a silently dead guard (temperloop#1836)
+claude/hooks/ks-agent-read-log.sh	hook invoked by ~/.claude/settings.json as a bare absolute path through the ~/.claude/hooks symlink — a dropped bit means rc 126 and a silently dead hook (temperloop#1836)
+claude/hooks/mcp-failure-tripwire.sh	hook invoked by ~/.claude/settings.json as a bare absolute path through the ~/.claude/hooks symlink — a dropped bit means rc 126 and a silently dead hook (temperloop#1836)
+claude/hooks/mcp-health-preflight.sh	hook invoked by ~/.claude/settings.json as a bare absolute path through the ~/.claude/hooks symlink — a dropped bit means rc 126 and a silently dead hook (temperloop#1836)
+claude/hooks/session-end-log.sh	SessionEnd hook invoked by ~/.claude/settings.json as a bare absolute path — a dropped bit means rc 126 and session stubs silently stop being written (temperloop#1836)
+claude/hooks/session-end-read-summary.sh	SessionEnd hook invoked by ~/.claude/settings.json as a bare absolute path — a dropped bit means rc 126 and the summary is silently never written (temperloop#1836)
+claude/hooks/session-start-drain.sh	SessionStart hook invoked by ~/.claude/settings.json as a bare absolute path — a dropped bit means rc 126 and the stub drain silently stops running (temperloop#1836)
+claude/hooks/subtree-edit-guard.sh	PreToolUse guard invoked by ~/.claude/settings.json as a bare absolute path through the ~/.claude/hooks symlink — a dropped bit means rc 126 and a silently dead guard (temperloop#1836)
+claude/hooks/write-lane-guard.sh	PreToolUse guard invoked by ~/.claude/settings.json as a bare absolute path through the ~/.claude/hooks symlink — a dropped bit means rc 126 and a silently dead guard (temperloop#1836)

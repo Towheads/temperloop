@@ -72,6 +72,27 @@ fact and can only observe and record, never block.
   inside an already-supervised, marker-armed worktree is exempted from the
   interactive prompt (nothing to ask — no live operator is present, and a
   downstream mechanical check still catches an unwaived change).
+- **claude-p-spawn-guard.sh** — matches `Bash`. A headless `claude -p` /
+  `--print` spawn does not inherit the launching session's model; it resolves
+  the *machine's* saved default, so a fan-out composed mid-run silently routes
+  every worker to whatever tier that host was last set to. This guard scans the
+  whole command text — heredoc bodies included, not just the leading command
+  word — and returns an `ask` when a `claude` invocation carries `-p`/`--print`
+  with neither `--model` nor a `--settings` source pinning one. Scanning the
+  whole string is the point rather than a detail: the incident that prompted it
+  dispatched its spawns through an already-written script, so the earliest
+  command carrying the literal was the *heredoc that authored that script*, and
+  a guard reading only the leading command word would have stayed silent
+  through all of it. Command position is also recognised through a short,
+  *named* set of argument-taking launchers — `timeout`, `gtimeout`, `xargs`,
+  `parallel` — since those are the shapes a hand-rolled fan-out and this
+  repository's own build machinery actually reach for. It sees only spawn text
+  passing through a Bash tool call — a bare spawn inside an already-committed
+  script invoked by path (the job of `validate-model-usage-emit.sh`), one behind
+  an *unlisted* launcher prefix, or anything launched outside the harness, is
+  not covered. Those gaps are stated in the hook's own header and in
+  `claude/hooks/README.md`, and the two that can be pinned mechanically are
+  asserted as silence tests rather than left implied.
 
 **The fail-open philosophy.** Every guard above shares the same posture:
 `ask`, never `deny`, and any internal error — missing `jq`, unparseable
@@ -98,7 +119,7 @@ any non-empty value during a headless evaluation session suppresses every
 side-channel write (vault drain, session-stub logging, telemetry appends)
 and downgrades the interactive guards from `ask` to a silent pass-through.
 
-**Session lifecycle hooks.** Beyond the four guards, a set of `SessionStart`
+**Session lifecycle hooks.** Beyond the five guards, a set of `SessionStart`
 and `SessionEnd` hooks handle non-blocking bookkeeping: writing a transcript
 stub when a session ends, draining accumulated stubs into durable storage
 when a new session starts, and a health-preflight check that injects a
