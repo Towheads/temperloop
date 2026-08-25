@@ -158,8 +158,14 @@ and quality-gate list) are also browsable as a generated static site at
   rather than hard-coding a model id.
   `workflows/scripts/validate-model-usage-emit.sh` fails the `checks` gate on
   a spawn site under `workflows/scripts/build/` that omits the flag — but it
-  can only see files that live in this repo, so a one-off script an agent
-  writes into `/tmp` is covered by this rule alone.
+  can only see files that live in this repo. The run-time-composed case is
+  backstopped for Claude Code sessions by the `claude-p-spawn-guard.sh`
+  PreToolUse hook (`claude/hooks/`), which scans a Bash command's whole text —
+  heredoc bodies included, so it fires on the heredoc that *authors* a
+  `/tmp` fan-out script — and asks before a bare spawn. It sees only text
+  passing through a Bash tool call, so a bare spawn inside an already-committed
+  script invoked by path, one behind a launcher prefix the hook does not list,
+  or one launched outside the harness, is still covered by this rule alone.
 - **Portable shell only (macOS/BSD + zsh).** Scripts here run on
   contributors' macOS (BSD userland) and get sourced under both bash and
   zsh, where several silent-failure footguns slip past the whole-tree
