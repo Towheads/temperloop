@@ -37,7 +37,7 @@ trap 'rm -rf "$TMP"' EXIT
 pass=0; fail=0
 
 run_hook() { # <command-text> [extra env assignments handled by caller]
-  jq -cn --arg c "$1" '{tool_name:"Bash",tool_input:{command:$c}}' | bash "$HOOK" 2>/dev/null
+  jq -cn --arg c "$1" '{tool_name:"Bash",tool_input:{command:$c}}' | EVAL_RUN='' bash "$HOOK" 2>/dev/null
 }
 
 check() { # <desc> <expected: ask|silent> <actual-stdout>
@@ -187,6 +187,64 @@ check "non-launcher head (grep) still not command position -> silent" silent \
 check "BLIND SPOT: unlisted launcher prefix (nice -n) -> silent (documented)" silent \
   "$(run_hook 'nice -n 10 claude -p "hi"')"
 
+# --- 4d. QUOTE-GATED FLAG RECOGNITION ----------------------------------------
+# Regression, temperloop#1836 review round 2: quote state was tracked and wired
+# to the SEPARATOR break, but flag recognition below it still ran
+# UNCONDITIONALLY. So a flag-shaped word sitting in PROMPT TEXT was read as a
+# real command flag. That is one bug with two faces, and these pin both.
+#
+# Face 1, the false NEGATIVE and the dangerous one: the prompt merely MENTIONS
+# --model, the invocation passes none, and the guard went silent on a genuinely
+# bare spawn — exactly the spawn it exists to catch.
+check "quoted prompt MENTIONING --model is still bare -> ask" ask \
+  "$(run_hook 'claude -p "explain the --model flag"')"
+check "single-quoted prompt MENTIONING --model is still bare -> ask" ask \
+  "$(run_hook "claude -p 'we should pass --model here'")"
+# Face 2, the false ASK: no print flag anywhere in the invocation, only the
+# word `-p` inside a quoted system prompt, and the guard fired on it.
+check "quoted prompt MENTIONING -p, no real print flag -> silent" silent \
+  "$(run_hook 'claude --append-system-prompt "always use -p mode" --output-format json')"
+# The value-slot capture needs the same gate: a `--settings` named inside a
+# quoted prompt must not consume the next word as its settings value (which
+# would resolve as an unreadable path and fail open to silent).
+check "quoted prompt MENTIONING --settings does not consume a value -> ask" ask \
+  "$(run_hook 'claude -p "use --settings foo.json please"')"
+# The discriminating negative, and the reason this is a GATE and not a blanket
+# refusal to read flags: the SAME prompt text, plus a REAL --model after the
+# quote closes, must still go silent. If the gate leaked past the closing quote
+# this would be a false ask.
+check "same prompt + a REAL --model after the quote closes -> silent" silent \
+  "$(run_hook 'claude -p "explain the --model flag" --model sonnet')"
+
+# ATTACHED FLAG FORM: `-p"hi"` with no space. clean() strips the TRAILING quote
+# but the LEADING one survives, so the exact `-p` / `--print` comparisons missed
+# it and a real bare spawn went silent. Now MATCHED rather than documented as a
+# blind spot — it is a legitimate shell spelling of the very thing this guard
+# exists to catch, and the fix is a prefix test, not a new mechanism.
+check "attached short form (-p\"hi\") -> ask" ask "$(run_hook 'claude -p"hi"')"
+check "attached long form (--print'hi') -> ask" ask "$(run_hook "claude --print'hi'")"
+check "attached form WITH --model -> silent" silent \
+  "$(run_hook 'claude -p"hi" --model sonnet')"
+
+# The gate's cost, pinned rather than left accidental: an UNBALANCED quote
+# between `claude` and its `-p` leaves the region open, so the rest of that
+# invocation reads as prompt text and the spawn goes silent. That input is a
+# shell SYNTAX ERROR and cannot execute, so this is the hook's documented
+# fail-open-on-malformed-input rule, not a coverage gap.
+check "MALFORMED: unbalanced quote before -p -> silent (fails open)" silent \
+  "$(run_hook "claude --agents don't -p \"hi\"")"
+# And the bound on that cost, which is what keeps it acceptable: quote state
+# RESETS per invocation, so an apostrophe BEFORE the `claude` token cannot
+# suppress anything — including in a heredoc comment, which is the guard's
+# most load-bearing interception point.
+check "apostrophe in a heredoc comment BEFORE the spawn -> still ask" ask \
+  "$(run_hook "cat > x.sh <<'S'
+# don't skip this
+claude -p \"review\"
+S")"
+check "apostrophe inside a DOUBLE-quoted value, then -p -> ask" ask \
+  "$(run_hook 'claude --append-system-prompt "you'"'"'re a reviewer" -p "review"')"
+
 # --- 5. --settings dispositions ----------------------------------------------
 printf '{"model":"claude-sonnet-4-5"}\n' > "$TMP/pinned.json"
 printf '{"permissions":{"allow":[]}}\n' > "$TMP/unpinned.json"
@@ -218,7 +276,7 @@ check "--settings - (a literal dash) is treated as a VALUE, not 'no settings'" s
 # change and turned the whole guard into a no-op.) So assert the absence of
 # internal noise directly, on a payload that MUST produce a finding.
 err=$(jq -cn --arg c 'claude -p "hi"' '{tool_name:"Bash",tool_input:{command:$c}}' \
-        | bash "$HOOK" 2>&1 >/dev/null)
+        | EVAL_RUN='' bash "$HOOK" 2>&1 >/dev/null)
 if [ -z "$err" ]; then
   pass=$((pass + 1)); printf '  ✓ hook emits nothing on stderr (no masked internal error)\n'
 else
@@ -232,17 +290,17 @@ case "$out" in *"rc=0"*) pass=$((pass + 1)); printf '  ✓ EVAL_RUN exits 0\n' ;
   *) fail=$((fail + 1)); printf '  ✗ EVAL_RUN exits 0 (got %s)\n' "$out" ;; esac
 
 for bad in 'not json at all' '{"tool_name":' '{}' '{"tool_name":"Bash"}' '{"tool_name":"Bash","tool_input":{}}'; do
-  out=$(printf '%s' "$bad" | bash "$HOOK" 2>/dev/null; echo "rc=$?")
+  out=$(printf '%s' "$bad" | EVAL_RUN='' bash "$HOOK" 2>/dev/null; echo "rc=$?")
   check "malformed input fails open: $bad" silent "$out"
   case "$out" in *"rc=0"*) pass=$((pass + 1)); printf '  ✓ rc=0 on: %s\n' "$bad" ;;
     *) fail=$((fail + 1)); printf '  ✗ rc=0 on: %s (got %s)\n' "$bad" "$out" ;; esac
 done
 
-out=$(printf '' | bash "$HOOK" 2>/dev/null; echo "rc=$?")
+out=$(printf '' | EVAL_RUN='' bash "$HOOK" 2>/dev/null; echo "rc=$?")
 check "empty stdin fails open" silent "$out"
 
 check "non-Bash tool -> silent" silent \
-  "$(jq -cn '{tool_name:"Edit",tool_input:{file_path:"/x",new_string:"claude -p hi"}}' | bash "$HOOK" 2>/dev/null)"
+  "$(jq -cn '{tool_name:"Edit",tool_input:{file_path:"/x",new_string:"claude -p hi"}}' | EVAL_RUN='' bash "$HOOK" 2>/dev/null)"
 
 echo
 if [ "$fail" -gt 0 ]; then

@@ -12,7 +12,12 @@
   argument-taking launchers (`timeout`, `gtimeout`, `xargs`, `parallel`).
   Quoting is tracked as one shell-accurate state, so a `;`, `&` or `&&` inside
   a quoted prompt is prompt text rather than a command break and the compliant
-  `claude -p '…; …' --model …` form stays silent. `ask`, never `deny`; fails
+  `claude -p '…; …' --model …` form stays silent. That quote state gates flag
+  recognition too — a flag-shaped word inside a quoted prompt is prompt text,
+  so `claude -p "explain the --model flag"` still asks (it passes no `--model`)
+  while `--append-system-prompt "always use -p mode"` stays silent (it passes
+  no `-p`). The attached spellings `-p"hi"` / `--print'hi'` are recognised.
+  `ask`, never `deny`; fails
   open; silent under `EVAL_RUN`. Its residual blind spots — a bare spawn inside
   an already-committed script invoked by path, one behind an unlisted launcher
   prefix, or anything launched outside the harness — are stated in the hook

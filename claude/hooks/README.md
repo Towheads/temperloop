@@ -69,6 +69,21 @@ single), not as two independent parities: a `;`, `&` or `&&` inside a
 **single-quoted prompt** is prompt text, not a command break, and
 `claude -p 'Review this; be brief' --model sonnet` is silent.
 
+That quote state gates **flag recognition** as well as the command break — a
+flag-shaped word inside an open quote region is prompt text, not a flag. This
+cuts both ways, and both directions are pinned by tests:
+
+- `claude -p "explain the --model flag"` still **asks**. The prompt only
+  *mentions* `--model`; the invocation passes none, so it is a genuinely bare
+  spawn. (Reading it as a real flag was a silent false *negative* — the guard
+  going quiet on exactly the spawn it exists to catch.)
+- `claude --append-system-prompt "always use -p mode" --output-format json`
+  stays **silent** — there is no print flag anywhere in it, only the word `-p`
+  inside a quoted system prompt.
+
+The **attached** spellings `-p"hi"` and `--print'hi'` (a value joined to the
+flag with no space) are recognised too, so they are *not* a blind spot.
+
 ## Shared helper
 
 **`eval-guard.sh`** — sourced by every hook that owns a production write channel.  Provides a single function: <!-- cite: HK.1 guard:claude/hooks/eval-guard.sh -->

@@ -37,11 +37,25 @@
 # REGION does not terminate — quoting is tracked as one shell-accurate state
 # (none / double / single) rather than as two independent parities, so both a
 # multi-line double-quoted prompt and `-p 'be brief; be kind'` stay a single
-# invocation while an apostrophe inside "don't" stays a literal.
+# invocation while an apostrophe inside "don't" stays a literal. That same quote
+# state ALSO gates FLAG RECOGNITION: a flag-shaped word inside an open quote
+# region is prompt text, not a flag, which closes one bug with two faces —
+# `claude -p "explain the --model flag"` passes no --model and must still ask,
+# while `--append-system-prompt "always use -p mode"` passes no -p and must stay
+# silent.
 # `ask` is emitted when the invocation carries `-p`/`--print` and
 # carries NEITHER `--model`/`--model=…` NOR a `--settings` source that pins a
 # model. Deliberate edge-case dispositions:
 #   * `--print` is recognised exactly like `-p`.
+#   * the ATTACHED spellings `-p"hi"` / `--print'hi'` (a value joined to the
+#     flag with no space) are recognised too -> NOT a blind spot.
+#   * an UNBALANCED quote sitting between `claude` and its `-p` leaves the
+#     quote region open, so the rest of that invocation reads as prompt text
+#     -> silent. That input is a shell SYNTAX ERROR and cannot execute, so this
+#     is the fail-open-on-malformed-input rule below, not a coverage gap. Quote
+#     state RESETS at each invocation, so an apostrophe anywhere BEFORE the
+#     `claude` token — prose in a heredoc comment, an earlier command — is
+#     harmless and the load-bearing heredoc case is unaffected.
 #   * a `-p` sitting in the VALUE slot of a value-taking flag (e.g. `claude
 #     --output-format -p`) is a value, not the print flag -> silent.
 #   * `--settings` pointing at a file whose `.model` is set, or inline JSON
@@ -228,19 +242,41 @@ findings=$(printf '%s\n' "$cmd" | awk '
         # break — this is what stops a `;` or `&&` inside a SINGLE-QUOTED prompt
         # from ending the flag scan before a later --model is reached.
         if (sep[j] && qs == "") break
+        # Quote state ENTERING this token, captured BEFORE qscan() advances it:
+        # what makes a token prompt text rather than a flag is the state it
+        # STARTS in, not the state it leaves behind.
+        qin = qs
         qscan(tok[j])
+        # The snippet is diagnostic text and stays OUTSIDE the gate below on
+        # purpose — it quotes the invocation as written, prompt words included.
         if (tok[j] != NLTOK && sn < 8) { snippet = snippet " " tok[j]; sn++ }
         t = cl[j]
-        if (prev != "" && (prev in VAL)) {
-          if (prev == "--settings") sval = unq(tok[j])
-          prev = ""
-          if (endsep[j] && qs == "") break
-          continue
+        # A flag-shaped token INSIDE an open quote region is prompt text, not a
+        # command flag. Both directions of that are the same bug, so one gate
+        # closes both: the false NEGATIVE (`claude -p "explain the --model
+        # flag"` passes no --model, so it must still ask) and the false ASK
+        # (`--append-system-prompt "always use -p mode"` passes no -p, so it
+        # must stay silent). The VALUE-SLOT capture is gated too — a
+        # `--settings` merely named inside a quoted prompt must not consume the
+        # following word as its value.
+        if (qin == "") {
+          if (prev != "" && (prev in VAL)) {
+            if (prev == "--settings") sval = unq(tok[j])
+            prev = ""
+            if (endsep[j] && qs == "") break
+            continue
+          }
+          # `-p"hi"` / `--print"hi"` — a value attached to the flag with no
+          # space (the single-quoted spelling too; it is not written literally
+          # here because a lone apostrophe would close the shell quoting that
+          # wraps this whole awk program). clean() strips the TRAILING quote
+          # but the LEADING one survives into t, so the exact comparisons
+          # alone would miss it.
+          if (t == "-p" || t == "--print" || t ~ /^-p["\047]/ || t ~ /^--print["\047]/) printflag = 1
+          else if (t == "--model" || t ~ /^--model=/) model = 1
+          else if (t ~ /^--settings=/) sval = unq(substr(t, 12))
+          prev = (t in VAL) ? t : ""
         }
-        if (t == "-p" || t == "--print") printflag = 1
-        else if (t == "--model" || t ~ /^--model=/) model = 1
-        else if (t ~ /^--settings=/) sval = unq(substr(t, 12))
-        prev = (t in VAL) ? t : ""
         if (endsep[j] && qs == "") break
       }
       if (printflag && !model) {

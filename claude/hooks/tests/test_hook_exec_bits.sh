@@ -49,8 +49,13 @@ echo "== hook exec bits =="
 is_sourced() {
   local name="$1" f
   for f in "$HOOKS_DIR"/*.sh; do
+    [ -f "$f" ] || continue          # symmetry with the main loop below
     [ "$(basename "$f")" = "$name" ] && continue
-    if grep -qE "^[[:space:]]*(\.|source)[[:space:]]+.*/${name}\"?[[:space:]]*$" "$f"; then
+    # No end-of-line anchor: a source line may carry TRAILING TEXT and still be
+    # a source line (`source "$D/eval-guard.sh" || true`, a redirect, a
+    # comment). Anchoring to `$` classified those as NOT-sourced, which would
+    # demand an exec bit on a pure helper — a false failure on correct code.
+    if grep -qE "^[[:space:]]*(\.|source)[[:space:]]+.*/${name}" "$f"; then
       return 0
     fi
   done
