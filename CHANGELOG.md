@@ -14,6 +14,360 @@ reads that marker; a stranger greps for it before pulling.
 
 ## [Unreleased]
 
+## [0.36.0] - 2026-08-25
+
+### Added
+
+- **Response-level grounding citations are now a registered kernel Capture/Backstop pair** (#1190).
+  `CLAUDE.kernel.md` § Response-level grounding citations is the new capture half: an answer that
+  knowledge-store content materially informed cites it inline (`[source: <note path>]`), and a
+  context-dependent claim whose store query came back empty says so explicitly. `/tidy` Step 3
+  § Missing grounding citations — which previously shipped as a backstop with no kernel rule to
+  pair with — is now registered against it in `claude/commands/tidy.md`'s own kernel pairing table,
+  so `validate-capture-backstop.sh` fails the build if either half goes missing. The scan adds no
+  capture surface — no live instrumentation, no new ledger, no new lexicon tell: its input is
+  confined to the one `Sessions/_inbox/` stub the drain has already opened (that stub's Step-1 scan
+  report, its `## Transcript` section, and its own raw `.jsonl` via the Step-1.4 reach), and misses
+  are recorded on the existing friction ledger. Because the scan report structurally carries no
+  general assistant-response text, the step names candidate discovery explicitly as a routine
+  assistant-turn skim of the stub body rather than a scan-report adjudication.
+  `PROSE_BUDGET_TIER1_CAP` rises 347 → 351 to fund the four net-new kernel lines.
+
+- **Work-class precedence: `Foundational` wins over a co-present `Operational`**
+  (#1191). `claude/work-class-policy.md` now defines what the driver does with an
+  issue carrying **both** work-class labels — a state no current writer produces
+  (`capture.sh` and `/triage` both substitute rather than append), but one that
+  pre-existing dual-labeled issues are still in. Such an item resolves
+  `Foundational`, so `pipeline-tick.sh` gates it to the operator's decision queue
+  (`route-foundational`) instead of routing it to autonomous drive: an ambiguous
+  work class gets human judgment, never an autonomous merge. This is a **router
+  precedence rule only** — no backfill and no mutual-exclusivity enforcement, and
+  "exactly one work-class label" stays the authoring intent. `classify_item`
+  already matched `Foundational` first; the rule is now stated at the definition
+  site and pinned by a test asserting both label orders.
+
+- **`plan-schema.md` § Optional `model:` field gains Carve-out (b) — silent
+  failure mode** (#1286). An `S`/`M` `kind: code` item whose own failure mode is
+  invisible to CI and to its own acceptance gates — a guard that can fail open, a
+  detector that can fail to detect — now leaves `model:` absent (inherits the
+  session model) instead of being stamped `sonnet`. The carve-out ships its own
+  two-limb trigger condition, so `/assess` applies it uniformly rather than
+  re-deriving the judgment per plan. The default S/M→`sonnet` stamp and the
+  existing spec-prose Carve-out (a) are unchanged; the K#671 anti-pattern note now
+  names a carve-out in this section as the *only* sanctioned route to a tier
+  deviation, keeping inline per-plan exceptions discouraged.
+
+- **`/build` now reports each level's composition and disposition in its own
+  transcript, so `/workflows` is no longer the only progress surface** (#1310).
+  Three blocks per level, printed by the orchestrator: a **launch roster**
+  (new § 3-launch) before the level is driven, naming every item with its
+  sentinel, issue ref, `kind`, stage and the 3a–3h step it enters; a **gate
+  disposition roster** (§ 4a) that accounts for every item in the level rather
+  than only the `[m]` merge set, so an item that merged as-you-go, captured a
+  `[v]` verdict, was skipped or is still escalated no longer vanishes from the
+  one block a reader sees at the level boundary; and a **close-out roster**
+  (§ 4d) after the gate's writebacks, naming what actually happened to each
+  item plus what comes next.
+- **`plan.sh roster` renders those blocks** — a new subcommand of
+  `workflows/scripts/build/plan.sh` (#1310). Rendering them in code rather than
+  narrating them makes the guarantees structural: the row set is generated from
+  the level's own membership so a row cannot be dropped, the header counts are
+  derived from the rows rather than restated beside them, an unresolvable value
+  is named (`no issue`, the report-only `[?]` marker) instead of inferred from a
+  slug, and a roster that cannot account for the whole level exits non-zero
+  (`ROSTER_INCOMPLETE`) rather than printing short. It reads the plan note the
+  run already parsed and makes no `gh` call.
+
+- **A denied action must now report every unblock path, grant first** (#1478).
+  When a permission control refuses an action — the auto-mode safety
+  classifier, a PreToolUse hook, a missing scope — `claude/CLAUDE.kernel.md`
+  § Communication conventions now requires the operator-facing message to name
+  all three paths in order: **grant the capability**, **run it yourself**,
+  **drop or reroute it**. Previously the recurring shape was "here are the
+  commands to run yourself", which silently picked the slowest option and
+  quietly took a reversible policy choice — whether the session should hold the
+  capability — away from the operator whose call it was. The message shape ships
+  as the **denied-capability variant** of `claude/message-schema.md`
+  § Degradation notice, extending that template's remedy-pointer slot rather
+  than paralleling it; the same section records the deliberate call that this
+  rule takes **no `/tidy` backstop**, since a denial leaves no durable artifact
+  a drain could inspect. Reporting a denial honestly is explicitly not licence
+  to re-attempt it in a different shape.
+
+- **`/triage` Step 1 Adapter A gained a third naturally-excluded intake
+  bucket: the process-record label filter** (#1614). A `Backlog` item carrying
+  one of `TRIAGE_INTAKE_EXCLUDE_LABELS` (new setting, default: the
+  `retro-pending` / `retro-info` process-retro tracker state labels `/build`
+  4d-retro mints at epic close) is skipped from intake and reported on its own
+  mandatory Step-5 summary line, alongside the existing inactive-milestone
+  `deferred[]` and open-`blocked_by` `blocked[]` lines. These trackers are
+  durable build-health *records* with no correct triage outcome — promoting
+  one to `Ready` hands a build-health record to a `/sweep` fix worker, culling
+  one closes a record its consumer still reads by label — so an exclusion, not
+  a routing rule, is the right shape. The mechanical half is
+  `workflows/scripts/build/triage-intake-exclusion.sh`, a side-effect-free
+  classifier over the already-resolved board item list (zero extra REST calls,
+  which is why it runs before its two per-candidate-REST siblings), covered by
+  offline fixtures in
+  `workflows/scripts/build/tests/test_triage_intake_exclusion.sh`.
+  The invocation carries a **named failure path**: the classifier path is
+  resolved dual-path and `-x`-tested (the shape Step 4.8a's `claim-guard.sh`
+  already uses) with the run itself inside the guard, so a classifier that is
+  absent **or** exits non-zero takes one explicit degraded arm — a `SKIPPED
+  … intaken UNFILTERED` Step-5 line, `excluded[] = []`, and a refusal to cull
+  or promote any candidate carrying an exclusion label. A missing script can
+  never quietly degrade to unfiltered intake.
+
+- **`pr.sh push` now reports a push that lands on a ref no open PR watches**
+  (#1688). A new `PUSHED_UNWATCHED` outcome (non-zero exit) fires when the
+  pushed ref has no open PR while an open PR for the same slug sits on a
+  different head ref — the `build/<slug>` vs `fix/<slug>` split a worktree
+  re-push falls into. It names both refs and classifies the cause
+  (`stale_head_cause: "branch-mismatch"`), so the resulting "stale PR head" is
+  distinguishable from GitHub's benign post-force-push head lag, which keeps
+  the *same* ref. `build-level.mjs` escalates it as its own
+  `push-unwatched-branch` kind rather than opening a PR or polling CI past it —
+  the route by which a stale head's green checks become a false `CI_GREEN`. The
+  ordinary push-then-open-PR path is unchanged (`PUSHED`, now carrying
+  `pr_lookup`/`pr_number`), and an unavailable `gh` degrades fail-soft.
+
+- **`Makefile` now routes to `shell-reviewer` in `/build`'s §3e pre-push
+  review, and an unrouted changed path is now a reported figure** (#1705).
+  `reviewer-routing.tsv` gains a third key shape alongside the extension and
+  `dir/**` forms: a `**/<basename>` key matching that exact basename at any
+  depth (never as a suffix, so `**/Makefile` cannot claim `NotAMakefile`).
+  It is implemented in all three consumers of the table —
+  `build-level.mjs`'s `reviewGlobMatch()` (the copy §3e actually routes
+  through), `workflow-reviewer-coverage.sh`, and
+  `reviewer-activation-coverage.sh`. `Makefile` was the 7th-highest-churn
+  reviewable file in the repo (41 changes in 90 days) and had no extension
+  and no directory prefix, so every one of those changes was pushed with no
+  routed reviewer — on the file that decides what the gate set runs.
+  `workflow-reviewer-coverage.sh` now also partitions the window's distinct
+  changed paths into `routed_paths` / `prose_md_fallback_paths` /
+  `unrouted_paths` (with `unrouted_path_examples`, and a matching text-mode
+  line), so a path no rule matches is counted and named instead of being
+  absent from the denominator entirely — the mirror of the reviewer-side gap
+  #1446 closed. The next unrouted high-churn file shows up as a number
+  rather than by someone reading the table by hand.
+
+- **Every headless `claude -p` spawn must now pass an explicit `--model`, and a
+  gate enforces it for the spawn sites that live in the repo** (#1829). A bare
+  `claude -p` does not inherit the launching session's model — it resolves
+  whatever default model the *machine* has saved — so a fan-out script composed
+  mid-run silently routed its workers to an unintended tier, discarding the
+  cost-tier choice `CLAUDE.kernel.md` § Subagent usage exists to make explicit.
+  `validate-model-usage-emit.sh` gains section **6e**, the direct sibling of the
+  existing generic emit net: any `*.sh` directly under
+  `workflows/scripts/build/` whose comment-stripped body spawns a headless
+  claude (a `claude -p` / `--print` invocation, or a `--output-format json`
+  capture) must also carry a `--model`, or the `checks` gate goes red — caught
+  by literal signature, never by having been enumerated in advance. The tier's
+  value comes from a named `build.config.sh` setting, never a hard-coded model
+  id.
+
+  **Scope, stated honestly:** a repo-scanning net can only see spawn sites that
+  live in the repo. The incident behind this change was an ad-hoc script written
+  into `/tmp` and run once, which no validator would ever have seen; that case is
+  carried by the prose halves alone (`CLAUDE.kernel.md` § Subagent usage
+  cost-tier routing, `AGENTS.md` § Safety rails). A machine-level control — a
+  `claude` wrapper refusing a bare `-p` — is deliberately out of scope. All seven
+  files the issue flagged as invoking `claude -p` with no `--model` turned out to
+  be comment/echo-string mentions rather than spawn sites, so the gate lands
+  green; the disposition is recorded in section 6e's own header. Adopters:
+  an overlay carrying a genuinely bare `claude -p` spawn under
+  `workflows/scripts/build/` will go red until it passes the flag.
+
+- **The macOS-vs-ubuntu CI slowdown is now measured and attributed to named
+  gates** (#968, measurement phase only). `nightly-macos.yml` already published
+  per-gate wall-clock on both legs; this adds a `Runner characterization` step
+  to both (raw core count beside the pool's clamped width, plus process-spawn
+  and filesystem throughput — asserts nothing, cannot fail the run), records
+  five nights of both legs under
+  `docs/validation/data/macos-ci-gate-timing/`, and writes up the verdict in
+  `docs/validation/macos-ci-gate-timing.md`. `make macos-gate-timing-report`
+  recomputes every table in that document from the committed data — zero
+  network, and it refuses to print if a recorded file disagrees with the
+  totals its own run reported.
+
+  The finding: the gap is two independent multipliers — 3 workers vs 4 (a
+  fixed 1.33x) and 1.36-1.71x more CPU-seconds for the same gates — whose
+  product predicts the observed wall ratio within 0.05x on every night. The
+  CPU half is concentrated: 12 of 180 gates carry 73% of a 1036s delta, 53
+  gates are identical, and 15 (including `make shellcheck`) are *faster* on
+  macOS. No reintroduction target is set and macOS is not restored to
+  pre-merge gating; both are the follow-up's call.
+
+### Changed
+
+- **A host-config/secret acceptance criterion is now DEFERRED by the `/build`
+  worker and verified parent-side by the orchestrator** (#1182). A worktree is
+  populated from the git index, so a gitignored host-local file (a credential
+  file, an operator-placed secret) is never carried into one — every worker read
+  it as absent, on every host, always, and escalated `acceptance-incomplete`
+  over a guaranteed false negative. The worker verdict schema gains a
+  `deferred_host_config` field: paired with `passed: false` it marks the
+  criterion deferred, which §3d treats as neither a pass nor a failure (a bare
+  `passed: false` with no marker still blocks, unchanged), `park()` reports as
+  `host_config_deferrals`, and `pr.sh` renders in the PR body so an unchecked
+  box is not misread as a worker failure. **Every path that invokes the shared
+  driver now carries its own parent-side verification seat**, because the worker
+  instruction is ungated: `/build` §4a (the level merge gate — and §3h.5's
+  as-you-go fast path is explicitly ineligible for such an item, since it never
+  reaches §4a), `/sweep`'s per-chunk merge pass (verify before
+  `gh pr merge --auto`; not-confirmed parks the issue instead of merging it),
+  and `/fix` Step 5's one modal gate (the deferral rides that same single ask as
+  a named state caveat). The `/assess` A.8 confirmed-set bar is unchanged — this
+  moves who confirms, never whether — and the named file is still never copied
+  into a worktree.
+
+- **The provider disclosure log's watermark anchor is now committed to git**
+  (#1316). The two-value anchor (`<max_seq> <last_hash>`) moved out of the
+  gitignored `.temperloop/model-comparison/` runtime dir to a tracked file at
+  `workflows/scripts/model-comparison/disclosure-log.watermark`, beside the
+  committed provider allowlist. The **log itself stays gitignored**, so no
+  provider history and no content enters the repo, and the anchor carries
+  neither. `validate-provider-disclosure.sh` now also checks the live log
+  against the anchor *as committed in git*
+  (`WATERMARK-LOCATION` / `WATERMARK-NOT-TRACKED` / `WATERMARK-GIT-MALFORMED` /
+  `WATERMARK-GIT-DIVERGED` / `REFORGED-VS-GIT`), so a full re-forge — which
+  previously verified clean once the log and its on-disk anchor were rewritten
+  together — must now rewrite git history too, which leaves its own trace.
+  Commit the anchor when a run changes it; `pa_disclose` says so on stderr.
+  New setting `PROVIDER_DISCLOSURE_WATERMARK_FILE` (fixture-test seam only).
+
+### Fixed
+
+- **`/tidy` § Contradiction detection now names an invocation `ks_search` actually
+  accepts** (#1170). The step told the drain to run `ks_search` "scoped to
+  `Decisions/` with a small `limit` (~5)", but `ks_search` accepts only `--limit`
+  and `--partition` and rejects anything else with **exit 2 before any backend
+  call** — so a session reaching for the implied folder argument
+  (`--folders Decisions`) got a hard usage error, and the pass's degradation
+  clause ("if `ks_search` is unavailable, skip") read that error as unavailability
+  and silently disabled the whole cross-session supersession proposer. Step 1 now
+  gives the literal call (`ks_search "<claim text>" --limit 15`), states that
+  folder scoping is a **post-filter** on each result's store-relative `doc_id`
+  rather than an argument, and the degradation clause now discriminates the exit
+  codes: **exit 3** (backend unavailable) skips the pass, **exit 2** means the
+  call was malformed and must be corrected and re-run, never skipped. The
+  originally-reported site was `mcp__obsidian__search_vault_smart` with
+  `folders`/`limit` written as top-level parameters when both live under `filter`;
+  #1570's knowledge-store cutover had already migrated that site off the Obsidian
+  MCP, but carried the same "names a parameter the tool does not take" defect
+  across to the new transport.
+
+- **`worktree.sh create` no longer loses a `.git/config` race when two items of
+  one level start at once** (#1171). `git worktree add` writes the new branch's
+  upstream into `.git/config` and git takes that lock without waiting, so
+  concurrent creates — an ordinary `/build` level, a `/sweep` chunk at
+  `SWEEP_FANOUT_WIDTH > 1` — failed outright with `could not lock config file
+  .git/config: File exists`. Every config- and ref-mutating region of `create`,
+  `remove` and `prune` now runs under one per-repo directory lock (portable:
+  stock macOS ships no `flock`), so the losers queue instead of failing. A
+  failed `git worktree add` is also rolled back now, so the `ERROR` outcome
+  leaves no orphan `build/<slug>` branch to delete by hand and a naive retry is
+  a clean create.
+  A crashed `worktree.sh` no longer wedges the repo either: a lock whose owner
+  process is provably gone is reclaimed at once, and one that never recorded an
+  owner is reclaimed once it ages past `WORKTREE_LOCK_STALE_SECS`.
+
+- **`/build`'s class-A activation gate (§3e.6) now actually runs on the default
+  path** (#1219). `claude/workflows/build-level.mjs` — the default Step-3 driver
+  since #998 — contained zero references to activation, and `activation` was
+  missing from the Step 3 `items[]` args contract, so an item's `activation:`
+  block never crossed the orchestrator→workflow boundary at all. Since
+  `plan.sh` rule 14 hard-fails a product-source item that omits `activation:`,
+  every such block was inert: an item could merge green with its feature
+  dormant — a runner never registered, a flag never flipped, a rule nothing
+  greps for — which is exactly what the activation-completeness contract exists
+  to catch. `driveItem` now evaluates a `class: A` item's `proof:` predicate
+  against the worker's worktree **between 3e.5 and 3f**, so a Fail loops back to
+  3c instead of landing on an open PR, and an absence-asserting predicate gets
+  the #944 merge-base control pass first — a proof that also passes at the merge
+  base is reported vacuous rather than trusted. A control that cannot be
+  *established* is its own outcome (`activation-control-unavailable`), never
+  laundered into a pass. Items with no `activation:` block, or `class: B`/`C`,
+  take a byte-identical path: the gate returns on its first line and spawns
+  nothing.
+
+- **`/triage`'s cull path no longer closes an issue another session is
+  building** (#1220). The board claim is a cross-session lock, and the cull
+  read straight past it: on 2026-08-08 a concurrent `/triage` closed an issue
+  claimed 30 minutes earlier — with a green PR already open carrying its
+  `Closes #N` — and stripped the foreign session's claim stamp as part of its
+  own Done bookkeeping, silently orphaning the PR's issue linkage. A new
+  `workflows/scripts/board/claim-guard.sh` partitions the cull set into
+  `CULL` (unclaimed, or claimed by this session) and `SKIP` (a foreign
+  `fnd:host/session:*` stamp), and Step 4.8a of the spec runs it before the
+  first close write. A skipped candidate stays open, keeps its stamp
+  untouched, and is named in the run report's new "Skipped (claimed by
+  another session)" line. The guard issues no writes on any path, never
+  blocks — a **stale** foreign claim reports and skips exactly like a live
+  one, leaving disposal to `/tidy`'s stale-claim sweep — and fails **safe**
+  rather than open, per candidate as well as per run: an unresolvable board, a
+  pool that will not parse, and a candidate **missing from the resolved pool**
+  (`board_item_list` reads only `--state open --limit "${BOARD_ITEM_LIMIT:-500}"`,
+  so any board past that truncation drops issues out of it) all report
+  `class=unreadable` and cull nothing. `claim=none` means a *matched* item
+  carrying no stamp, never an empty lookup result.
+
+- **A PR body's `## Acceptance` recap is now round-trippable** (#1267). `pr.sh`
+  used to append each criterion's evidence inline after a bare ` — `, but that
+  delimiter occurs inside real criteria *and* inside real evidence, so the only
+  durable verbatim record of the acceptance contract a worker was handed had no
+  unambiguous parse — a first-occurrence split silently truncated the criterion,
+  a last-occurrence one ate the evidence. Evidence now rides its own nested line
+  under the bullet, making the split positional, and the new
+  `pr.sh acceptance-extract <bodyFile|->` reads a body back into its
+  `acceptance_results` entries byte-exactly with no heuristic. GitHub renders the
+  indented continuation as part of the same list item, so the body reads the same.
+  `replay.sh corpus` consumes the new format through that extractor and keeps its
+  last-em-dash workaround, and its `criterion-embedded-em-dash` flag, for bodies
+  merged before this change.
+
+- **The `make test-build-workflow` gate's K1071 step-ceiling case no longer
+  depends on host load, and now ships a negative control** (#1335). The stalled
+  step's verdict is read entirely off the bound's own structured result — the
+  `STEP_TIMEOUT` payload plus the 137 (128+SIGKILL) exit status the driver acts
+  on — rather than off a duration this harness measures, so a loaded parallel
+  gate runner can no longer report a working watchdog as broken. To keep that
+  from being a loosened bound, the case now also runs the same emitted shell on
+  the same 60s stall body with **only the watchdog removed** and requires it to
+  come out unbounded (no `STEP_TIMEOUT`, no kill); the rewrite that removes the
+  watchdog is itself verified, so a control that silently stopped controlling
+  fails the gate. A static guard pins the foundation#861 subshell-boundary
+  redirect that the adjacent pipe-leak probe detects only by latency; it is
+  anchored to the emitted watchdog line — first selecting that line, then
+  requiring the redirect on it — so the prose comment that quotes the same
+  redirect verbatim cannot satisfy it, and deleting the redirect from the
+  emitted line alone turns the gate red.
+
+- **`pipeline-spend-report.sh --run` no longer glob-expands against the
+  caller's working directory** (#1393). The filter value is word-split
+  unquoted so `--run a,b` yields two ids, which also exposed it to pathname
+  expansion: `--run 'new-*'` selected a run when invoked from a directory
+  that happened to hold a file named `new-007`, and selected nothing from
+  anywhere else — the same command answering differently by cwd. The split
+  now runs under `set -f` (restoring the caller's own `-f` state after), so a
+  run id is always taken literally. Comma-splitting is unchanged in both the
+  `wf_abc-123` and bare `abc-123` forms, and `--by-agent-type`, which routes
+  through the same normalization, inherits the fix.
+
+- **The Step-4a.5 combined-tree pre-check no longer false-fails under a
+  symlinked `$TMPDIR`** (#773, #1678). `combined-tree-precheck.sh` built its
+  throwaway worktree at the *logical* `mktemp -d` name, so on macOS — where
+  `$TMPDIR` is `/var/folders/…` and `/var` is a symlink to `/private/var` — the
+  gate suite ran with a cwd whose spelling differed from what any script inside
+  it resolved with `pwd -P`. A test comparing the two spellings of the same file
+  failed on string inequality alone, producing a `GATE_FAILED` for every
+  multi-PR level; `/build` risk trigger (d) treats that verdict as unappealable,
+  so batch merge was blocked and levels merged one PR at a time — leaving `main`
+  transiently red whenever a level's members were only jointly consistent. The
+  worktree root is now resolved physically before it is registered, added or
+  used, so the whole suite sees one spelling and no individual test has to
+  normalize defensively to survive this worktree.
+
 ## [0.35.3] - 2026-08-23
 
 ### Fixed
