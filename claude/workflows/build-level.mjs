@@ -110,7 +110,7 @@
 //   Input  (via global `args`):
 //     { repoRoot, planLink, board, items:[{ slug, branch, title, kind,
 //        ghIssue, alsoCloses, repo, model, acceptance, source, scope, notes,
-//        dependsOn }],
+//        dependsOn, activation }],
 //       ownerRepo, claimCmd, verdicts, onlySlugs }
 //
 //     repoRoot   — the parent checkout's top-level path; worktrees live at
@@ -134,6 +134,14 @@
 //                  below (temperloop#852); it does NOT yet retarget worktree
 //                  creation/`repoRoot` or CI polling per item, a separate,
 //                  larger gap this fix does not attempt.
+//                  `activation` is the item's plan-schema `activation:` block
+//                  straight through — `{ class, proof, locus }`, absent on an
+//                  item that declares none (temperloop#1219). ONLY `class: A`
+//                  does anything here: §3e.6 runs its `proof:` predicate against
+//                  the worktree between 3e.5 and 3f. Absent, or `class: B`/`C`
+//                  (ledger-discharged at 4d-epic step 2a, orchestrator-side),
+//                  is a no-op on this path. WITHOUT this field the §3e.6 gate
+//                  cannot run at all — the defect temperloop#1219 filed.
 //     ownerRepo  — "owner/repo" for ci-poll.sh / gh ops. The workflow has no
 //                  shell to derive it, so the orchestrator passes it in (Step 0
 //                  probe: `gh repo view --json nameWithOwner -q .nameWithOwner`).
@@ -300,6 +308,18 @@ const SPINE_OUTCOME_SCHEMA = {
         // tree. Collapsing either into GATE_FAIL is what made an escalation
         // payload indistinguishable from real breakage.
         'GATE_PASS', 'GATE_FAIL', 'GATE_ABSENT', 'GATE_SLICE', 'GATE_TIMEOUT',
+        // The 3e.6 class-A activation gate (temperloop#1219). ACTIVATION_PASS /
+        // ACTIVATION_FAIL are the `proof:` predicate's own exit status against
+        // the worker's worktree. The three CONTROL outcomes are the
+        // temperloop#944 merge-base control pass, run FIRST for an absence-
+        // asserting predicate: DISCRIMINATES (fails at the merge base — good,
+        // proceed to the worktree run), VACUOUS (passes at the merge base, so it
+        // would pass on an untouched tree and proves nothing), ERROR (the control
+        // could not be ESTABLISHED — an UNKNOWN, never laundered into either
+        // verdict, the same #1021 discipline GATE_TIMEOUT encodes).
+        // ACTIVATION_TIMEOUT is that same discipline for the Bash-tool timeout.
+        'ACTIVATION_PASS', 'ACTIVATION_FAIL', 'ACTIVATION_TIMEOUT',
+        'ACTIVATION_CONTROL_DISCRIMINATES', 'ACTIVATION_CONTROL_VACUOUS', 'ACTIVATION_CONTROL_ERROR',
         // The 3e pre-push review's diff/routing-data fetch (temperloop#1430).
         // ONE outcome carrying both the changed-file list and the
         // reviewer-routing.tsv text — the .mjs does the routing DECISION
@@ -357,6 +377,10 @@ const SPINE_OUTCOME_SCHEMA = {
     failed_run_ids: { type: 'array', items: { type: ['number', 'string'] } },
     // free-form detail the executor may pass through (e.g. gate output tail)
     detail: { type: 'string' },
+    // 3e.6 activation-gate passthrough (temperloop#1219): the `proof:`
+    // predicate's own exit status, carried into the escalation payload so an
+    // operator sees WHY it failed without opening a log.
+    exitCode: { type: ['number', 'string'] },
     // REVIEW_DIFF passthrough (temperloop#1430) — the changed-file list (repo-
     // relative paths, from `git diff --name-only` in the worktree) and the raw
     // reviewer-routing.tsv text (empty string when the worktree ships none).
@@ -2608,6 +2632,234 @@ function reviewTally(...rounds) {
   return { ran, skipped, mandatory_ok: !skipped.some((s) => s.mandatory) };
 }
 
+// --- 3e.6. Class-A activation gate (temperloop#1219) -------------------------
+// build.md §3e.6 specifies a synchronous, in-repo ACTIVATION check: an item
+// carrying `activation: class: A` has its `proof:` predicate run against the
+// worker's worktree BEFORE 3f pushes anything, and a Fail loops back to 3c.
+// This driver — the DEFAULT Step-3 path since temperloop#998 — implemented none
+// of it, and `activation` was not even in the items[] args contract, so the
+// block never crossed the orchestrator→workflow boundary at all. Every gate
+// plan.sh rule 14 forces onto a product-source item was therefore inert here:
+// an item could merge green with its feature dormant (a runner never
+// registered, a flag never flipped, a rule nothing greps for) — exactly the
+// failure `Decisions/temperloop - Activation-completeness contract` exists to
+// catch. THE PREDICATE IS THE GATE: there is no fallback actor and no skip arm
+// (temperloop#1451), so an arriving class-A block with no `proof:` escalates
+// rather than degrading to a no-op.
+//
+// WHY IN driveItem, BETWEEN 3e.5 AND 3f (the issue's candidate 1, chosen):
+// running it parent-side after the workflow returns would put it AFTER push and
+// PR-open, so a Fail would cost a re-push on an already-open PR instead of a
+// loop-back to 3c. The gate's whole value is that it fires before the branch
+// leaves the worktree.
+//
+// BYTE-IDENTICAL FOR EVERYONE ELSE: activationClass() returns '' for an item
+// with no `activation` block and 'B'/'C' for a ledger-discharged one, and
+// runActivationGate() returns null on the first line in those cases — zero
+// agent spawns, zero log lines, zero stage transitions. B/C stay
+// ledger-recorded at 4d-epic step 2a (orchestrator-side, off this path).
+
+// activationClass(item) — the item's declared activation class, normalized and
+// upper-cased ('' when the item declares no block). Read off the plan-schema
+// `activation:` block the orchestrator now passes through (build.md Step 3).
+function activationClass(item) {
+  const a = item && item.activation;
+  if (!a || typeof a !== 'object') return '';
+  return String(a.class ?? '').trim().toUpperCase();
+}
+
+// isAbsenceProof(proof) — does the predicate ASSERT AN ABSENCE (temperloop#944)?
+// build.md §3e.6 / plan-schema § activation define this by shape: the predicate
+// "negates its check (opens with `!`)". An absence proof passes trivially
+// against a tree where the thing never existed, so it — and only it — needs the
+// merge-base control pass below. A PRESENCE proof is false on an untouched tree
+// by construction and has nothing to vacuously pass.
+function isAbsenceProof(proof) {
+  return /^\s*!/.test(String(proof ?? ''));
+}
+
+// jsonSafeDetail — shell fragment that reduces "$__out" to a string safe to
+// interpolate into a JSON string literal: newlines/tabs to spaces, quotes and
+// backslashes deleted, non-printables dropped, tail-truncated. Deliberately no
+// jq dependency (the predicate runs in a bare worktree, on any host).
+const ACTIVATION_DETAIL_FILTER =
+  `__d="$(printf '%s' "$__out" | tr '\\n\\r\\t' '   ' | tr -d '\\\\"' | tr -cd '[:print:]' | tail -c 300)"`;
+
+// activationProofCmd — run the class-A `proof:` predicate from <dir>'s root and
+// report Pass/Fail as the predicate's OWN exit code.
+//
+// THE VERDICT IS READ UN-PIPED, WHICH IS §3e.5'S *PREFERRED* SHAPE, NOT A
+// WEAKER ONE (temperloop#68/#801). The predicate runs inside a command
+// substitution — not a pipe — so `$?` is already the predicate's own status
+// under both bash and zsh, with no PIPESTATUS/pipestatus read to get
+// dialect-wrong and no `tee` to swallow it. build.md §3e.5 names exactly this:
+// "prefer running the gate un-piped and branching on its exit directly".
+//
+// DO NOT ADD `set -o pipefail` HERE. It looks like belt-and-suspenders and is
+// the opposite: it silently rewrites the meaning of the AUTHOR'S OWN predicate,
+// in the one direction that makes this gate theater. `pipefail` reports the
+// rightmost NON-ZERO status, and a predicate whose tail exits early on a match
+// (`grep -q`, `head`) SIGPIPEs its upstream writer, which dies 141. For the
+// wrap-immune ABSENCE idiom plan-schema.md documents
+// (`! tr '\n' ' ' < f | tr -s ' ' | grep -q '<phrase>'`) that inverts the
+// verdict on the case that matters:
+//   phrase PRESENT (must FAIL):  pipefail -> 141 -> `!` -> 0  == false PASS
+//                                no pipefail -> 0 -> `!` -> 1 == correct FAIL
+// Reproduced deterministically, and asserted by the "pipefail" case in
+// test_workflow.sh. `scripts/lint-pipe-grep-q.sh` (temperloop#1050) is the
+// tree-wide guard for the same footgun. A false PASS on an absence proof is
+// precisely what the temperloop#944 control pass exists to stop, so
+// reintroducing it here would defeat the control one layer up.
+function activationProofCmd(dir, proof, passOutcome, failOutcome) {
+  return [
+    `cd ${sq(dir)} || { printf '{"outcome":"%s","detail":"cannot cd to the checkout root"}\\n' ${sq(failOutcome)}; exit 0; }`,
+    `__out="$( { ${proof} ; } 2>&1 )"; __rc=$?`,
+    ACTIVATION_DETAIL_FILTER,
+    `if [ "$__rc" = 0 ]; then printf '{"outcome":"%s","exitCode":0,"detail":"%s"}\\n' ${sq(passOutcome)} "$__d";`,
+    `else printf '{"outcome":"%s","exitCode":%s,"detail":"%s"}\\n' ${sq(failOutcome)} "$__rc" "$__d"; fi`,
+  ].join('\n');
+}
+
+// activationControlCmd — the temperloop#944 MERGE-BASE CONTROL PASS.
+// Materializes the item's merge-base as a throwaway detached worktree, runs the
+// IDENTICAL predicate there, and reports which way it went:
+//   ACTIVATION_CONTROL_DISCRIMINATES — the proof FAILS at the merge base, i.e.
+//       it genuinely discriminates this item's work from an untouched tree.
+//   ACTIVATION_CONTROL_VACUOUS      — the proof PASSES at the merge base, so it
+//       would read Pass with no work done at all and proves nothing.
+//   ACTIVATION_CONTROL_ERROR        — the control could not be ESTABLISHED
+//       (no merge-base, worktree add failed). Never collapsed into either
+//       verdict: an unestablished control is an UNKNOWN, and the #1021 lesson
+//       is that an unknown must never wear a pass or a fail.
+// Mirrors pr.sh's own default_branch() fallback chain (origin/HEAD, else
+// main/master), the same way reviewDiffCmd does, so it never depends on pr.sh
+// having run first. The temp worktree is removed plainly FIRST — git's own
+// refusal is the last belt (kernel § Environment hygiene) — with --force and
+// then rm -rf only as fallbacks, so a throwaway can never leak either way.
+function activationControlCmd(wt, proof) {
+  const err = (msg) =>
+    `{ printf '{"outcome":"ACTIVATION_CONTROL_ERROR","detail":"%s"}\\n' ${sq(msg)}; exit 0; }`;
+  // No `set -o pipefail` here either, and for the same reason as
+  // activationProofCmd above — the control MUST evaluate the identical
+  // predicate under identical semantics, or it is not a control at all.
+  return [
+    `cd ${sq(wt)} || ${err('cannot cd to the worktree')}`,
+    `default="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##')"`,
+    `if [ -z "$default" ]; then`,
+    `  for b in main master; do`,
+    `    if git show-ref --verify --quiet "refs/remotes/origin/$b"; then default="$b"; break; fi`,
+    `  done`,
+    `fi`,
+    `[ -n "$default" ] || default=main`,
+    `__base="$(git merge-base HEAD "origin/$default" 2>/dev/null)"`,
+    `[ -n "$__base" ] || ${err('cannot resolve the merge-base against origin/<default>')}`,
+    `__tmp="$(mktemp -d)"`,
+    `git worktree add --detach "$__tmp" "$__base" >/dev/null 2>&1 || { rm -rf "$__tmp"; ${err('cannot materialize the merge-base worktree')} }`,
+    `__out="$( cd "$__tmp" && { ${proof} ; } 2>&1 )"; __rc=$?`,
+    `git worktree remove "$__tmp" >/dev/null 2>&1 || git worktree remove --force "$__tmp" >/dev/null 2>&1 || rm -rf "$__tmp"`,
+    `git worktree prune >/dev/null 2>&1 || true`,
+    ACTIVATION_DETAIL_FILTER,
+    `if [ "$__rc" = 0 ]; then printf '{"outcome":"ACTIVATION_CONTROL_VACUOUS","base":"%s","exitCode":0,"detail":"%s"}\\n' "$__base" "$__d";`,
+    `else printf '{"outcome":"ACTIVATION_CONTROL_DISCRIMINATES","base":"%s","exitCode":%s,"detail":"%s"}\\n' "$__base" "$__rc" "$__d"; fi`,
+  ].join('\n');
+}
+
+// runActivationGate(item, wt) — the §3e.6 gate. Returns an ESCALATION object to
+// return straight out of driveItem, or null to proceed to 3f.
+//
+// Ordering is the contract, not an implementation detail: for an absence-
+// asserting predicate the control pass runs FIRST and a VACUOUS verdict
+// escalates WITHOUT EVER RUNNING THE WORKTREE COPY (build.md §3e.6: "escalate
+// … and loop back to 3c exactly like a Fail, without even checking the worktree
+// copy"). That is why the control is its own machinery call rather than a
+// branch inside one combined shell command — the ordering is then observable,
+// and a test can assert the worktree run never happened.
+async function runActivationGate(item, wt) {
+  if (activationClass(item) !== 'A') return null; // no block, or class B/C — byte-identical path
+
+  const proof = typeof item.activation.proof === 'string' ? item.activation.proof.trim() : '';
+  if (!proof) {
+    // temperloop#1451: plan.sh rule 13 fails a class-A block with no `proof:` at
+    // Step 1, so this is only reachable via a hand-edited/mutated plan note. No
+    // fallback actor exists, so it escalates rather than skipping.
+    return escalate(item.slug, 'activation-proof-missing', {
+      class: 'A',
+      locus: item.activation.locus ?? null,
+      reason: 'a class: A activation block reached §3e.6 with no proof: predicate; the predicate IS the gate (temperloop#1451) — author it, do not weaken or remove the block',
+    });
+  }
+
+  const absence = isAbsenceProof(proof);
+  const base = { class: 'A', proof, absenceAsserting: absence, locus: item.activation.locus ?? null };
+
+  if (absence) {
+    const ctl = await runMachinery(activationControlCmd(wt, proof), {
+      label: `activation-control:${item.slug}`,
+      slug: item.slug,
+      phase: enterStage(STAGE_GATE),
+      timeoutOutcome: 'ACTIVATION_TIMEOUT',
+    });
+    if (machineryDenied(ctl)) {
+      return escalate(item.slug, 'machinery-denied', { step: 'activation-control', out: ctl });
+    }
+    if (ctl.outcome === 'STEP_TIMEOUT') {
+      return (await disposeStepTimeout(item, wt, ctl, 'activation-control', { adoptable: false })).escalation;
+    }
+    if (ctl.outcome === 'ACTIVATION_CONTROL_VACUOUS') {
+      // The proof reads Pass on a tree where this item's work never happened, so
+      // running it on the worker's copy would tell us nothing. Same disposition
+      // as a Fail: loop back to 3c and fix the PREDICATE, never the gate.
+      return escalate(item.slug, 'absence-proof-vacuous-at-merge-base', {
+        ...base,
+        mergeBase: ctl.base ?? null,
+        detail: ctl.detail ?? '',
+        reason: 'the absence-asserting proof: ALSO passes at the merge base, so it proves nothing about this item\'s work (temperloop#944). Re-author it in the wrap-immune form plan-schema.md § activation documents; do NOT relax the gate.',
+      });
+    }
+    if (ctl.outcome !== 'ACTIVATION_CONTROL_DISCRIMINATES') {
+      // ACTIVATION_CONTROL_ERROR / ACTIVATION_TIMEOUT / anything unexpected: the
+      // control was never ESTABLISHED. Not a Fail (it says nothing about the
+      // tree) and emphatically not a Pass — proceeding would let a possibly
+      // vacuous proof wave the item through, which is the whole defect. Halt.
+      return escalate(item.slug, 'activation-control-unavailable', {
+        ...base,
+        outcome: ctl.outcome,
+        detail: ctl.detail ?? '',
+        reason: 'the merge-base control pass could not be established, so an absence-asserting proof cannot be trusted either way; re-run once the merge-base worktree can be materialized',
+      });
+    }
+    log(`[${item.slug}] 3e.6 activation control PASS — the absence proof FAILS at merge base ${String(ctl.base ?? '').slice(0, 12)}, so it discriminates`);
+  }
+
+  const out = await runMachinery(activationProofCmd(wt, proof, 'ACTIVATION_PASS', 'ACTIVATION_FAIL'), {
+    label: `activation:${item.slug}`,
+    slug: item.slug,
+    phase: enterStage(STAGE_GATE),
+    timeoutOutcome: 'ACTIVATION_TIMEOUT',
+  });
+  if (machineryDenied(out)) {
+    return escalate(item.slug, 'machinery-denied', { step: 'activation', out });
+  }
+  if (out.outcome === 'STEP_TIMEOUT') {
+    return (await disposeStepTimeout(item, wt, out, 'activation', { adoptable: false })).escalation;
+  }
+  if (out.outcome !== 'ACTIVATION_PASS') {
+    // Fail (or an unknown/timeout outcome, which is equally not a Pass) → loop
+    // back to 3c with the activation output as context. Do NOT push a branch
+    // whose feature is dormant. The worker's fix is the missing WIRING
+    // (register / flip / render), never a weaker predicate.
+    return escalate(item.slug, 'activation-failed', {
+      ...base,
+      outcome: out.outcome,
+      exitCode: out.exitCode ?? null,
+      detail: out.detail ?? '',
+      reason: 'the class: A activation proof did not pass against the worker\'s worktree — the built thing is not reachable on the running path. Add the missing wiring; do NOT weaken the predicate.',
+    });
+  }
+  log(`[${item.slug}] 3e.6 activation gate PASS — class A${absence ? ' (absence-asserting, control-verified at merge base)' : ''}`);
+  return null;
+}
+
 async function driveItem(item) {
   const { repoRoot, board, planLink } = input;
   const ownerRepo = input.ownerRepo; // "owner/repo" — passed by the orchestrator
@@ -3189,6 +3441,15 @@ async function driveItem(item) {
       : '';
     log(`[${item.slug}] 3e.5 gate PASS — ${gateSlices + 1} slice(s), ${gateElapsed}s of gate wall time (slice budget ${GATE_SLICE_SECS}s, cap ${GATE_MAX_SLICES} slices)${marginNote}`);
   }
+
+  // --- 3e.6. Class-A activation gate (temperloop#1219) ----------------------
+  // Runs HERE — strictly between 3e.5 and 3f, before anything is pushed — so a
+  // Fail costs a loop-back to 3c rather than a re-push onto an open PR. The
+  // whole gate lives in runActivationGate() above (with its rationale); this is
+  // the ONE line the ordering contract is about. A non-class-A item returns null
+  // from its first line: no agent spawn, no log, path unchanged.
+  const activationEscalation = await runActivationGate(item, wt);
+  if (activationEscalation) return activationEscalation;
 
   // --- 3f. Push and open the PR (ONE batched executor — temperloop#942) -----
   // rebase → scan → push → pr-open are four adjacent, seconds-scale machinery
