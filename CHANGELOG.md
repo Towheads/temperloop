@@ -14,6 +14,31 @@ reads that marker; a stranger greps for it before pulling.
 
 ## [Unreleased]
 
+## [0.36.1] - 2026-08-25
+
+### Fixed
+
+- **v0.36.0's new `--model` gate no longer hard-requires an `AGENTS.md` at the
+  CONSUMER repo root, which made that release unvendorable** (#1834). The
+  #1829 assertion in `workflows/scripts/tests/test_model_usage_emit.sh` read
+  `$REPO/AGENTS.md`, and `$REPO` is `$HERE/../../..` resolved with `cd -P`. In a
+  composed overlay the *tests directory* is a real directory holding compat
+  symlinks, so `$REPO` lands on the **consumer** repo root rather than the
+  vendored kernel subtree — and nothing in the kernel contract requires an
+  adopter to have a root `AGENTS.md` at all. foundation has `kernel/AGENTS.md`
+  and no root copy, so its v0.36.0 vendor PR was red on arrival with
+  `test_model_usage_emit: FAILED 1 of 213`; the sibling `claude/CLAUDE.kernel.md`
+  assertion survived only because consumers carry a compat symlink for that one.
+  A new `kernel_root_doc()` helper now resolves a kernel-root doc through
+  `$REPO/<doc>`, falling back to `$REPO/kernel/<doc>`, and treats **neither
+  copy present** as a hard FATAL so the assertions stay load-bearing rather than
+  degrading to a silent skip. Applied to both `AGENTS.md` and
+  `claude/CLAUDE.kernel.md`. Doc prose is untouched — this is a resolution fix,
+  not a rule change. Known follow-up (#1838): the helper probes the consumer
+  root *before* `kernel/`, which is correct against every adopter today but can
+  retarget to a consumer's own root `AGENTS.md` if one is ever authored, and the
+  new fallback/FATAL branches are not yet exercised by a test.
+
 ## [0.36.0] - 2026-08-25
 
 ### Added
