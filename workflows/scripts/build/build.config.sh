@@ -806,6 +806,13 @@ fi
 # once registered. Measured against the live file, not estimated: 4 net-new
 # lines (heading + blank + one paragraph + section separator), 345 → 349.
 # +2 lines of review contingency = 351.
+#
+# NOT RAISED 2026-08-24 (item claude-p-explicit-model, temperloop#1829): that
+# item's kernel prose is ONE new bullet under the existing § Subagent usage
+# cost-tier routing list (350 → 351), which fits inside the contingency above
+# rather than needing a ratchet. Recorded here so the next author knows the
+# headroom is now SPENT — tier-1 sits exactly at its cap, so the next
+# kernel-prose line does need a measured raise (or a subtraction pass).
 : "${PROSE_BUDGET_TIER1_CAP:=351}"
 # TIER-2: ONE uniform per-file cap over every tracked claude/**/*.md file
 # (agent charters included) — deliberately a single setting, not a per-file
