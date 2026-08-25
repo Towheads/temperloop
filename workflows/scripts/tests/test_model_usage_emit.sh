@@ -42,6 +42,41 @@ PIPELINE_DRIVE_SH="$REPO/workflows/scripts/build/pipeline-drive.sh"
 RETRO_JUDGE_SPAWN_SH="$REPO/workflows/scripts/build/pipeline-retro-judge-spawn.sh"
 ENVELOPE_LIB="$REPO/workflows/scripts/lib/model-usage-envelope.sh"
 PORTABLE_TIMEOUT="$REPO/workflows/scripts/lib/portable-timeout.sh"
+
+# --- composed-tree doc resolution (temperloop#1834) -------------------------
+# $REPO above is derived from this suite's own PHYSICAL directory. In a
+# COMPOSED OVERLAY tree — a consumer repo vendoring this kernel as a `kernel/`
+# subtree — the `workflows/scripts/tests` directory is a REAL consumer-owned
+# directory holding per-file compat symlinks into the subtree, so `cd -P` on it
+# does NOT resolve into `kernel/`: $REPO lands on the CONSUMER root, not the
+# kernel root. Every kernel-owned path this suite reads through a compat
+# symlink (the scripts above) still resolves there; the two KERNEL-ROOT DOCS
+# below do not, because a consumer owns its own root and need not carry them
+# (foundation has kernel/AGENTS.md and no root AGENTS.md — the failure that
+# made v0.36.0 unvendorable).
+#
+# So resolve a kernel-root doc through a fallback: the consumer-root copy when
+# it exists (kernel checkout, or a consumer carrying a compat symlink — which
+# is why claude/CLAUDE.kernel.md already resolved everywhere), else the
+# vendored kernel/ copy. A tree carrying NEITHER is a hard FATAL, never a
+# silent skip: the assertions these feed (§48c, temperloop#1829) are
+# load-bearing and must stay able to go red.
+kernel_root_doc() {
+  local rel="${1:?kernel_root_doc: relative doc path required}"
+  if [ -f "$REPO/$rel" ]; then
+    printf '%s' "$REPO/$rel"
+  elif [ -f "$REPO/kernel/$rel" ]; then
+    printf '%s' "$REPO/kernel/$rel"
+  else
+    echo "FATAL: kernel doc '$rel' not found at $REPO/$rel nor $REPO/kernel/$rel" >&2
+    return 1
+  fi
+}
+# `|| exit 1` is load-bearing: the `return 1` above fires inside a command
+# substitution, which would otherwise leave the variable empty and continue.
+AGENTS_MD="$(kernel_root_doc AGENTS.md)" || exit 1
+CLAUDE_KERNEL_MD="$(kernel_root_doc claude/CLAUDE.kernel.md)" || exit 1
+
 [ -f "$PORTABLE_TIMEOUT" ] || { echo "FATAL: portable-timeout.sh not found at $PORTABLE_TIMEOUT" >&2; exit 1; }
 # shellcheck source=workflows/scripts/lib/portable-timeout.sh
 source "$PORTABLE_TIMEOUT"
@@ -1250,12 +1285,15 @@ echo "── 48c. temperloop#1829: the prose half is sited where a fan-out autho
 # The gate can only see spawn sites that live in the repo; the /tmp ad-hoc
 # script that motivated #1829 is carried by the prose half alone. Assert
 # both homes carry the rule, so a doc rewrite cannot silently drop it.
+# Both docs are read through $CLAUDE_KERNEL_MD / $AGENTS_MD — resolved once at
+# the top of this file through the composed-tree fallback (temperloop#1834), so
+# these stay load-bearing in a vendoring consumer instead of failing on layout.
 check "claude/CLAUDE.kernel.md § Subagent usage states the explicit --model rule" bash -c \
-  "grep -F -- 'passes an explicit \`--model\`' '$REPO/claude/CLAUDE.kernel.md' >/dev/null"
+  "grep -F -- 'passes an explicit \`--model\`' '$CLAUDE_KERNEL_MD' >/dev/null"
 check "...and names the failure it prevents (the machine's saved default model)" bash -c \
-  "grep -F -- \"machine's saved default model\" '$REPO/claude/CLAUDE.kernel.md' >/dev/null"
+  "grep -F -- \"machine's saved default model\" '$CLAUDE_KERNEL_MD' >/dev/null"
 check "AGENTS.md carries the cross-agent statement of the same rule" bash -c \
-  "grep -F -- 'claude -p' '$REPO/AGENTS.md' | grep -F -- '--model' >/dev/null"
+  "grep -F -- 'claude -p' '$AGENTS_MD' | grep -F -- '--model' >/dev/null"
 
 echo
 if [ "$fail" -gt 0 ]; then
