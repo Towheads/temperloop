@@ -182,6 +182,11 @@ EMPTY_LAKE="$WORK/empty-lake"; mkdir -p "$EMPTY_LAKE"
 run_pf() {
   local quota="$NOCACHE"
   while [ "${1:-}" = "--quota" ]; do
+    # Guard $2 before reading it: under this file's `set -u` a valueless
+    # --quota would abort the whole script, bypassing fail() — so the run
+    # would emit no FAIL: line and no trailing summary, just a bare
+    # unbound-variable message.
+    [ $# -ge 2 ] || fail "run_pf: --quota given with no value"
     quota="$2"; shift 2
   done
   ( export BUILD_QUOTA_CACHE="$quota" MODEL_USAGE_RAW_DIR="$EMPTY_LAKE"; "$@" )
@@ -697,15 +702,28 @@ ok "27 a trailing --corpus-file with no value fails fast and bounded, never an i
 #                         shape the first check DOES cover
 # Both patterns spell the sigil as a character class ("[\$]SUT") so the
 # detector's own source lines can never match the detector itself.
+#
+# The sigil accepts the QUOTED, BRACED and UNQUOTED spellings alike
+# ("$SUT" / "${SUT}" / $SUT). Matching only the exact `"$SUT"` form left the
+# guard blind to `bash "${SUT}"` — an equally idiomatic spelling that would
+# reintroduce the temperloop#1832 host-lake bypass with test 28 still green,
+# which is the one failure this guard exists to make impossible. 28m proves
+# every spelling is covered.
 scan_for_unpinned_sut_invocations() {
   perl -0777 -ne '
     s/\\\n/ /g;
     for my $l (split /\n/, $_) {
       next if $l =~ /^\s*#/;
+      # Strip a trailing comment before the pinned-ness test: otherwise the
+      # word run_pf merely MENTIONED in a trailing comment (or a string) on
+      # an otherwise-unpinned line reads as pinned.
+      my $code = $l;
+      $code =~ s/\s#.*$//;
       print "UNPINNED-INVOCATION: $l\n"
-        if $l =~ /bash\s+"[\$]SUT[A-Z0-9_]*"/ && $l !~ /\brun_pf\b/;
+        if $code =~ /bash\s+["\x27]?[\$]\{?SUT[A-Z0-9_]*\}?/ && $code !~ /\brun_pf\b/;
       print "DIRECT-EXEC: $l\n"
-        if $l =~ /"[\$]SUT[A-Z0-9_]*"\s+preflight/ && $l !~ /bash\s+"[\$]SUT/;
+        if $code =~ /["\x27]?[\$]\{?SUT[A-Z0-9_]*\}?["\x27]?\s+preflight/
+        && $code !~ /bash\s+["\x27]?[\$]\{?SUT/;
     }
   ' "$1"
 }
@@ -737,8 +755,34 @@ scan_for_unpinned_sut_invocations "$SYNTH_SUITE" | grep '^UNPINNED-INVOCATION:' 
 printf '\nout98="%s("%sSUT" preflight --corpus-file c)"\n' "$SIGIL" "$SIGIL" >>"$SYNTH_SUITE"
 scan_for_unpinned_sut_invocations "$SYNTH_SUITE" | grep '^DIRECT-EXEC:' >/dev/null \
   || fail "28m: MUTATION PROOF FAILED — the detector did not catch an injected direct (no-bash) SUT invocation in a synthetic copy of this suite"
+
+# Every SPELLING of the sigil, not just the one this file happens to use.
+# A guard that only sees `"$SUT"` would let `bash "${SUT}"` reintroduce
+# temperloop#1832 while staying green — so each spelling gets its own
+# throwaway copy and must be caught on its own.
+for spelling in braced unquoted trailing-comment; do
+  SPELL_SUITE="$WORK/synthetic-unpinned-$spelling.sh"
+  cp "$SELF" "$SPELL_SUITE"
+  case "$spelling" in
+    braced)
+      printf '\nout97="%s(env BUILD_QUOTA_CACHE=x bash "%s{SUT}" preflight --corpus-file c)"\n' \
+        "$SIGIL" "$SIGIL" >>"$SPELL_SUITE" ;;
+    unquoted)
+      printf '\nout96="%s(env BUILD_QUOTA_CACHE=x bash %sSUT preflight --corpus-file c)"\n' \
+        "$SIGIL" "$SIGIL" >>"$SPELL_SUITE" ;;
+    trailing-comment)
+      # run_pf appears ONLY inside a trailing comment — the line is genuinely
+      # unpinned and must still be flagged.
+      printf '\nout95="%s(env BUILD_QUOTA_CACHE=x bash "%sSUT" preflight --corpus-file c)"  # was run_pf before\n' \
+        "$SIGIL" "$SIGIL" >>"$SPELL_SUITE" ;;
+  esac
+  scan_for_unpinned_sut_invocations "$SPELL_SUITE" | grep '^UNPINNED-INVOCATION:' >/dev/null \
+    || fail "28m: MUTATION PROOF FAILED — the detector did not catch an injected '$spelling' SUT invocation; a future author using that spelling would reintroduce the temperloop#1832 host-lake bypass with this guard still green"
+  rm -f "$SPELL_SUITE"
+done
+
 rm -f "$SYNTH_SUITE"
-ok "28m MUTATION PROOF: the same detector used in test 28 DOES catch both bypass shapes (a bare-env invocation and a direct no-bash exec) when injected into a throwaway copy of this suite"
+ok "28m MUTATION PROOF: the same detector used in test 28 catches every bypass shape — a bare-env invocation, a direct no-bash exec, and the braced / unquoted / run_pf-only-in-a-trailing-comment spellings"
 
 echo "---"
 echo "$pass/$total tests passed"
