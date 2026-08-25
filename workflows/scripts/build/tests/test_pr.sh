@@ -16,6 +16,13 @@
 #     flips between the two outcomes purely on whether the tree is clean
 #   - push: push-by-SHA places the branch on a local bare remote → PUSHED;
 #     non-fast-forward → PUSH_REJECTED + non-zero; --force recovers
+#   - push (temperloop#1688): the open-PR survey — a push onto a ref no open PR
+#     references while a sibling PR sits on a DIFFERENT ref for the same slug is
+#     PUSHED_UNWATCHED + non-zero, naming both refs and `stale_head_cause`; the
+#     benign neighbours it must NOT fire on are all pinned as controls (a PR
+#     whose head ref MATCHES but whose head sha trails — genuine GitHub lag; the
+#     ordinary first push with no PR anywhere; an unrelated PR on a different
+#     slug; a bounded-listing miss the --head confirm resolves; an erroring gh)
 #   - open --body-only: per-entry bare `Closes` emission (gh_issue=278 +
 #     also_closes=[171] → exactly `Closes #278` and `Closes #171`, own lines,
 #     never combined, never backticked); acceptance recap; ## Verification;
@@ -247,9 +254,22 @@ echo "PASS: rebase → dirty-over-a-conflicting-base is DIRTY_WORKTREE; clean th
 # expect clean-br checked out on the (now twice-advanced) main lineage.
 git -C "$REPO" checkout -q clean-br
 
+# `pr.sh push` now surveys open PRs (temperloop#1688), so every push below runs
+# with an erroring `gh` on PATH — deterministic and network-free (kernel
+# principle 3), and the fail-soft arm the survey must degrade through. The
+# survey's own outcomes get real stubs in the #1688 block further down.
+NOGH="$TMP/bin-nogh"
+mkdir -p "$NOGH"
+cat > "$NOGH/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "gh: could not determine repository" >&2
+exit 1
+EOF
+chmod +x "$NOGH/gh"
+
 # --- push: push-by-SHA places the branch on the bare remote ----------------------
 sha="$(git -C "$REPO" rev-parse HEAD)"
-out="$(bash "$SCRIPT" push "$REPO" feat/widget)"
+out="$(PATH="$NOGH:$PATH" bash "$SCRIPT" push "$REPO" feat/widget)"
 [ "$(jq -r .outcome <<<"$out")" = "PUSHED" ] || fail "push outcome (got: $out)"
 [ "$(jq -r .sha <<<"$out")" = "$sha" ] || fail "push sha mismatch (got: $out)"
 [ "$(jq -r .branch <<<"$out")" = "feat/widget" ] || fail "push branch (got: $out)"
@@ -260,10 +280,10 @@ echo "PASS: push places HEAD by SHA on the remote plan branch (PUSHED)"
 # --- push: non-fast-forward rejected without --force; --force recovers -----------
 git -C "$REPO" commit -q --amend --allow-empty -m "reworded widget commit"
 newsha="$(git -C "$REPO" rev-parse HEAD)"
-rc=0; out="$(bash "$SCRIPT" push "$REPO" feat/widget)" || rc=$?
+rc=0; out="$(PATH="$NOGH:$PATH" bash "$SCRIPT" push "$REPO" feat/widget)" || rc=$?
 [ "$rc" -ne 0 ] || fail "non-FF push did not exit non-zero"
 [ "$(jq -r .outcome <<<"$out")" = "PUSH_REJECTED" ] || fail "collision not PUSH_REJECTED (got: $out)"
-out="$(bash "$SCRIPT" push "$REPO" feat/widget --force)"
+out="$(PATH="$NOGH:$PATH" bash "$SCRIPT" push "$REPO" feat/widget --force)"
 [ "$(jq -r .outcome <<<"$out")" = "PUSHED" ] || fail "push --force outcome (got: $out)"
 [ "$(git -C "$BARE" rev-parse refs/heads/feat/widget)" = "$newsha" ] \
   || fail "remote branch not at force-pushed sha"
@@ -286,7 +306,7 @@ ff_base="$(git -C "$REPO" rev-parse HEAD)"
 git -C "$REPO" commit -q --allow-empty -m "CI-retry fix commit (ff descendant)"
 ff_sha="$(git -C "$REPO" rev-parse HEAD)"
 [ "$ff_sha" != "$ff_base" ] || fail "fixture error: ff-retry commit did not advance HEAD"
-out="$(bash "$SCRIPT" push "$REPO" feat/widget --force)"
+out="$(PATH="$NOGH:$PATH" bash "$SCRIPT" push "$REPO" feat/widget --force)"
 [ "$(jq -r .outcome <<<"$out")" = "PUSHED" ] || fail "ff --force push outcome (got: $out)"
 [ "$(jq -r .forced <<<"$out")" = "false" ] \
   || fail "fast-forward --force must DOWNGRADE to a plain push (forced=false) (got: $out)"
@@ -299,12 +319,158 @@ git -C "$REPO" fetch -q origin
 git -C "$REPO" checkout -q -b plainpush origin/main
 git -C "$REPO" commit -q --allow-empty -m "fresh branch commit"
 plainsha="$(git -C "$REPO" rev-parse HEAD)"
-out="$(bash "$SCRIPT" push "$REPO" feat/plainpush)"
+out="$(PATH="$NOGH:$PATH" bash "$SCRIPT" push "$REPO" feat/plainpush)"
 [ "$(jq -r .outcome <<<"$out")" = "PUSHED" ] || fail "plain push outcome (got: $out)"
 [ "$(jq -r .forced <<<"$out")" = "false" ] || fail "plain push must report forced=false (got: $out)"
 [ "$(git -C "$BARE" rev-parse refs/heads/feat/plainpush)" = "$plainsha" ] \
   || fail "plain push did not land the branch"
 echo "PASS: plain push (no --force requested) reports forced=false"
+
+# --- push: the open-PR survey (temperloop#1688) -----------------------------------
+# The live 2026-08-21 shape: the worktree's local branch is `build/<slug>` while
+# the PR was opened on `fix/<slug>`, so a rebase-and-re-push aimed at the obvious
+# `build/<slug>` lands a SECOND remote ref that no PR watches. The push is
+# truthful and useless; the only downstream symptom is a PR head that looks
+# "stale", which reads as GitHub's post-force-push lag. Every case below is
+# stubbed at `gh` — no network, deterministic listings.
+#
+# Stub grammar: $GH_SURVEY_JSON is the `gh pr list --state open` listing; a call
+# carrying `--head` (pr.sh's authoritative confirm) answers from that same
+# listing filtered to the requested ref, so the stub can never disagree with
+# itself the way two hand-written fixtures could.
+mkdir -p "$TMP/bin-survey"
+cat > "$TMP/bin-survey/gh" <<'EOF'
+#!/usr/bin/env bash
+head_ref=""; want_head=0
+for a in "$@"; do
+  if [ "$want_head" = 1 ]; then head_ref="$a"; want_head=0; continue; fi
+  [ "$a" = "--head" ] && want_head=1
+done
+if [ -n "$head_ref" ]; then
+  jq -c --arg h "$head_ref" 'map(select(.headRefName == $h))' <<<"${GH_SURVEY_JSON:?}"
+else
+  printf '%s\n' "${GH_SURVEY_JSON:?}"
+fi
+EOF
+chmod +x "$TMP/bin-survey/gh"
+
+git -C "$REPO" fetch -q origin
+git -C "$REPO" checkout -q -b "build/env-reconcile-1404" origin/main
+git -C "$REPO" commit -q --allow-empty -m "rebased worker commit"
+wt_sha="$(git -C "$REPO" rev-parse HEAD)"
+
+# THE REGRESSION CASE. PR #1404 is open on fix/env-reconcile-1404; the re-push
+# aims at build/env-reconcile-1404. Must REPORT, not proceed.
+PR_ON_FIX='[{"number":1404,"url":"https://github.com/Towheads/temperloop/pull/1404","headRefName":"fix/env-reconcile-1404"}]'
+rc=0
+out="$(GH_SURVEY_JSON="$PR_ON_FIX" PATH="$TMP/bin-survey:$PATH" \
+       bash "$SCRIPT" push "$REPO" "build/env-reconcile-1404" --force)" || rc=$?
+[ "$rc" -ne 0 ] || fail "a push onto a ref no open PR watches must exit non-zero (got: $out)"
+[ "$(jq -r .outcome <<<"$out")" = "PUSHED_UNWATCHED" ] \
+  || fail "build/<slug> push while the PR is on fix/<slug> must be PUSHED_UNWATCHED (got: $out)"
+[ "$(jq -r .branch <<<"$out")" = "build/env-reconcile-1404" ] \
+  || fail "PUSHED_UNWATCHED must name the ref actually pushed (got: $out)"
+[ "$(jq -r .pr_number <<<"$out")" = "1404" ] \
+  || fail "PUSHED_UNWATCHED must name the PR that is NOT watching (got: $out)"
+[ "$(jq -r .pr_head_ref <<<"$out")" = "fix/env-reconcile-1404" ] \
+  || fail "PUSHED_UNWATCHED must name the ref the PR DOES track (got: $out)"
+[ "$(jq -r .sha <<<"$out")" = "$wt_sha" ] || fail "PUSHED_UNWATCHED sha mismatch (got: $out)"
+# The push still LANDED — this is a report about where it landed, not a failure
+# to land, and a caller must not re-push believing nothing happened.
+[ "$(git -C "$BARE" rev-parse refs/heads/build/env-reconcile-1404)" = "$wt_sha" ] \
+  || fail "PUSHED_UNWATCHED must still have placed the branch (the push DID succeed)"
+# Criterion 2 — the two meanings must be TOLD APART, not merely flagged. The
+# machine-readable cause says which one this is, and the message names both refs
+# plus the discriminating fact (lag keeps the SAME ref).
+[ "$(jq -r .stale_head_cause <<<"$out")" = "branch-mismatch" ] \
+  || fail "PUSHED_UNWATCHED must classify the stale-head cause as branch-mismatch (got: $out)"
+msg="$(jq -r .error <<<"$out")"
+grep -q 'build/env-reconcile-1404' <<<"$msg" || fail "message omits the pushed ref (got: $msg)"
+grep -q 'fix/env-reconcile-1404'   <<<"$msg" || fail "message omits the PR's ref (got: $msg)"
+grep -qi 'not GitHub'              <<<"$msg" || fail "message does not rule out the GitHub lag (got: $msg)"
+grep -qi 'SAME ref'                <<<"$msg" || fail "message does not state what lag looks like instead (got: $msg)"
+echo "PASS: push onto a ref no open PR watches → PUSHED_UNWATCHED + non-zero, both refs named, cause classified"
+
+# CONTROL — genuine GitHub post-force-push head lag. Same visible symptom (the
+# PR's head looks stale), but the PR's head REF *is* the ref just pushed, so the
+# push reached it and the lag converges on its own. Must stay a plain PUSHED:
+# this is the case a naive "PR head looks stale" warning would collapse into the
+# one above, reproducing the original misdiagnosis.
+PR_ON_SAME='[{"number":1404,"url":"https://github.com/Towheads/temperloop/pull/1404","headRefName":"build/env-reconcile-1404"}]'
+rc=0
+out="$(GH_SURVEY_JSON="$PR_ON_SAME" PATH="$TMP/bin-survey:$PATH" \
+       bash "$SCRIPT" push "$REPO" "build/env-reconcile-1404" --force)" || rc=$?
+[ "$rc" -eq 0 ] \
+  || fail "genuine GitHub head lag must NOT be reported — the two causes are collapsed (got: $out)"
+[ "$(jq -r .outcome <<<"$out")" = "PUSHED" ] \
+  || fail "a PR whose head REF matches the pushed ref is GitHub lag at worst — must stay PUSHED (got: $out)"
+[ "$(jq -r .pr_number <<<"$out")" = "1404" ] \
+  || fail "PUSHED must still name the PR watching the ref (got: $out)"
+[ "$(jq -r .stale_head_cause <<<"$out")" = "null" ] \
+  || fail "the benign lag case must carry no stale_head_cause (got: $out)"
+echo "PASS: a PR on the SAME head ref (genuine GitHub head lag) stays PUSHED — the two causes are not collapsed"
+
+# CONTROL — the ordinary build-level.mjs first push: 3f-1 pushes, 3f-2 opens the
+# PR, so no PR references the ref yet and none exists elsewhere for the slug.
+# This is the path the check must never break.
+rc=0
+out="$(GH_SURVEY_JSON='[]' PATH="$TMP/bin-survey:$PATH" \
+       bash "$SCRIPT" push "$REPO" "fix/first-push-1688")" || rc=$?
+[ "$rc" -eq 0 ] || fail "the normal build-level.mjs first push must not be reported (got: $out)"
+[ "$(jq -r .outcome <<<"$out")" = "PUSHED" ] \
+  || fail "the normal pre-PR first push must stay PUSHED (got: $out)"
+[ "$(jq -r .pr_lookup <<<"$out")" = "ok" ] || fail "first push should report a successful lookup (got: $out)"
+[ "$(jq -r .pr_number <<<"$out")" = "null" ] || fail "first push has no PR yet (got: $out)"
+echo "PASS: the normal push-then-open-PR path (no PR anywhere yet) stays PUSHED"
+
+# CONTROL — an unrelated open PR on a different slug is not a sibling.
+PR_OTHER='[{"number":99,"url":"u","headRefName":"fix/some-other-slug-1"}]'
+rc=0
+out="$(GH_SURVEY_JSON="$PR_OTHER" PATH="$TMP/bin-survey:$PATH" \
+       bash "$SCRIPT" push "$REPO" "fix/first-push-1688" --force)" || rc=$?
+[ "$rc" -eq 0 ] || fail "an unrelated slug must not be reported (got: $out)"
+[ "$(jq -r .outcome <<<"$out")" = "PUSHED" ] \
+  || fail "an unrelated PR on another slug must not trip the survey (got: $out)"
+echo "PASS: an open PR on an unrelated slug does not trip the survey"
+
+# CONTROL — fail-soft. An erroring `gh` cannot OBSERVE the split, and a push that
+# already succeeded must never be turned into a failure by an inability to look.
+out="$(PATH="$NOGH:$PATH" bash "$SCRIPT" push "$REPO" "build/env-reconcile-1404" --force)"
+[ "$(jq -r .outcome <<<"$out")" = "PUSHED" ] \
+  || fail "an erroring gh must degrade to PUSHED, not fail the push (got: $out)"
+[ "$(jq -r .pr_lookup <<<"$out")" = "unavailable" ] \
+  || fail "an erroring gh must be reported as pr_lookup:unavailable (got: $out)"
+echo "PASS: push survey degrades fail-soft when gh errors (PUSHED, pr_lookup:unavailable)"
+
+# CONTROL — a match outside the bounded listing. The survey lists at most 100
+# open PRs, so on a busy repo the real match can fall outside the window while a
+# sibling sits inside it. The authoritative `--head` confirm resolves it, and no
+# split is reported. Stub: the listing shows only the sibling; the --head lookup
+# is answered from a listing that DOES contain the match.
+cat > "$TMP/bin-survey/gh" <<'EOF'
+#!/usr/bin/env bash
+head_ref=""; want_head=0
+for a in "$@"; do
+  if [ "$want_head" = 1 ]; then head_ref="$a"; want_head=0; continue; fi
+  [ "$a" = "--head" ] && want_head=1
+done
+if [ -n "$head_ref" ]; then
+  jq -c --arg h "$head_ref" 'map(select(.headRefName == $h))' <<<"${GH_HEAD_JSON:?}"
+else
+  printf '%s\n' "${GH_SURVEY_JSON:?}"
+fi
+EOF
+chmod +x "$TMP/bin-survey/gh"
+rc=0
+out="$(GH_SURVEY_JSON="$PR_ON_FIX" \
+       GH_HEAD_JSON='[{"number":1500,"url":"u","headRefName":"build/env-reconcile-1404"}]' \
+       PATH="$TMP/bin-survey:$PATH" bash "$SCRIPT" push "$REPO" "build/env-reconcile-1404" --force)" || rc=$?
+[ "$rc" -eq 0 ] || fail "a --head-confirmed match must not be reported (got: $out)"
+[ "$(jq -r .outcome <<<"$out")" = "PUSHED" ] \
+  || fail "a match found only by the --head confirm must NOT be reported as a split (got: $out)"
+[ "$(jq -r .pr_number <<<"$out")" = "1500" ] \
+  || fail "the confirm's PR number must be adopted (got: $out)"
+echo "PASS: a real match outside the bounded listing is recovered by the --head confirm, not reported"
 
 # --- open --body-only: per-entry bare Closes + full 3f body shape ----------------
 cat > "$TMP/verdict.json" <<'EOF'
@@ -747,7 +913,7 @@ out="$(bash "$SCRIPT" recover-probe "$REPO" feat/recov)"
   || fail "verification_surface_present should be false (got: $out)"
 echo "PASS: recover-probe → RECOVER_COMMITTED on an unpushed worktree commit (the #939 L1 shape)"
 
-bash "$SCRIPT" push "$REPO" feat/recov >/dev/null
+PATH="$NOGH:$PATH" bash "$SCRIPT" push "$REPO" feat/recov >/dev/null
 : > "$REPO/.build-verification.md"
 out="$(bash "$SCRIPT" recover-probe "$REPO" feat/recov)"
 [ "$(jq -r .outcome <<<"$out")" = "RECOVER_PUSHED" ] \
@@ -800,7 +966,7 @@ rc=0; out="$(bash "$SCRIPT" open --gh-issue 1 --body-only 2>/dev/null)" || rc=$?
 rc=0; out="$(bash "$SCRIPT" open --verdict "$TMP/verdict.json" --gh-issue 'abc' --body-only 2>/dev/null)" || rc=$?
 [ "$rc" -ne 0 ] && [ "$(jq -r .outcome <<<"$out")" = "ERROR" ] \
   || fail "non-numeric --gh-issue not structured ERROR (got: $out)"
-rc=0; out="$(bash "$SCRIPT" push "$REPO" 'bad..branch' 2>/dev/null)" || rc=$?
+rc=0; out="$(PATH="$NOGH:$PATH" bash "$SCRIPT" push "$REPO" 'bad..branch' 2>/dev/null)" || rc=$?
 [ "$rc" -ne 0 ] && [ "$(jq -r .outcome <<<"$out")" = "ERROR" ] \
   || fail "invalid branch name not structured ERROR (got: $out)"
 echo "PASS: failures emit structured ERROR + non-zero exit (closed outcome set)"

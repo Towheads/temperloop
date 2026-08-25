@@ -283,7 +283,13 @@ const SPINE_OUTCOME_SCHEMA = {
         'SCAN_CLEAN', 'SCAN_BLOCKED',
         'BASE_CURRENT', 'BASE_STALE',
         'REBASED', 'REBASE_CONFLICT', 'DIRTY_WORKTREE',
-        'PUSHED', 'PUSH_REJECTED',
+        // PUSHED_UNWATCHED (temperloop#1688): the push LANDED, but on a ref no
+        // open PR references while a sibling PR for the same slug sits on a
+        // DIFFERENT head ref. NOT a push failure — a report about WHERE it
+        // landed, so a caller must never re-push believing nothing happened,
+        // and never route it through the lost-return probe (the result line was
+        // not lost; it says something specific).
+        'PUSHED', 'PUSHED_UNWATCHED', 'PUSH_REJECTED',
         'PR_OPENED', 'EXISTS',
         'CI_GREEN', 'CI_FAILED', 'NO_CI', 'TIMEOUT',
         // The 3e.5 acceptance gate. GATE_SLICE / GATE_TIMEOUT are temperloop#1021:
@@ -2012,6 +2018,13 @@ async function recoverLostReturn(item, wt, openCmd) {
       if (pushOut.outcome === 'PUSH_REJECTED') {
         return { kind: 'escalate', escKind: 'push-rejected', payload: { pushOut } };
       }
+      if (pushOut.outcome === 'PUSHED_UNWATCHED') {
+        // temperloop#1688 — the push landed on a ref no open PR watches. Its own
+        // escalation kind, never 'push-error': the push did not fail, and the
+        // disposition (re-push onto the PR's head ref, named in the payload) is
+        // specific to this state.
+        return { kind: 'escalate', escKind: 'push-unwatched-branch', payload: { pushOut } };
+      }
       if (pushOut.outcome !== 'PUSHED') {
         return { kind: 'escalate', escKind: 'push-error', payload: { pushOut } };
       }
@@ -3360,6 +3373,16 @@ async function driveItem(item) {
     if (pushOut.outcome === 'PUSH_REJECTED') {
       // Remote-branch collision / non-ff — orchestrator triages (force vs rename).
       return escalate(item.slug, 'push-rejected', { pushOut });
+    }
+    if (pushOut.outcome === 'PUSHED_UNWATCHED') {
+      // temperloop#1688 — the push LANDED, on a ref no open PR references while
+      // an open PR for the same slug sits on a different head ref. Its own
+      // escalation kind, checked BEFORE the lost-return probe: the result line
+      // was not lost (it says something specific), and 'push-error' would bury
+      // the one fact the operator needs — which ref the PR actually tracks,
+      // carried on the payload's pr_head_ref. Opening/CI-polling past this is
+      // exactly the false-green route #254 arrives by here.
+      return escalate(item.slug, 'push-unwatched-branch', { pushOut });
     }
     if (pushOut.outcome !== 'PUSHED') {
       const rec = isLostReturn(pushOut) ? await recoverLostReturn(item, wt, openCmd) : { kind: 'none' };

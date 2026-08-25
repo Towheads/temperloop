@@ -949,7 +949,18 @@ fi
 # shape of is not reviewable). A trim pass ran on the new prose first (1180 -> 1177
 # measured, not drafted) before the ratchet moved. Reseeded to build.md's measured
 # size under the zero-headroom convention this row has used since temperloop#956.
-: "${PROSE_BUDGET_TIER2_FILE_CAP:=1177}"
+#
+# RAISED 1177 -> 1178 (2026-08-24, temperloop#1688): `pr.sh push` grew a new
+# value in its frozen outcome set, `PUSHED_UNWATCHED`, so build.md 3f step 1
+# grew the one bullet that gives that outcome a disposition. Measured net +1
+# (1177 -> 1178, post-rebase); the item's three other build.md edits are
+# in-place rewrites of existing lines and cost nothing. No subtraction pass ran,
+# deliberately: build.md's per-outcome disposition list is precisely what stops
+# an undocumented payload shape from becoming a silent stall, so folding this
+# bullet into the neighbouring PUSH_REJECTED one — or trimming an unrelated
+# contract line to buy the line back — would delete more contract surface than
+# the ratchet step costs. Reseeded to build.md's measured size, zero headroom.
+: "${PROSE_BUDGET_TIER2_FILE_CAP:=1178}"
 
 # ── Pipeline spend profiler (temperloop#958) ───────────────────────────────
 # Settings for `workflows/scripts/pipeline-spend-report.sh` and its
