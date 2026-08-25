@@ -967,7 +967,7 @@ fi
 # bullet into the neighbouring PUSH_REJECTED one — or trimming an unrelated
 # contract line to buy the line back — would delete more contract surface than
 # the ratchet step costs. Reseeded to build.md's measured size, zero headroom.
-: "${PROSE_BUDGET_TIER2_FILE_CAP:=1178}"
+: "${PROSE_BUDGET_TIER2_FILE_CAP:=1179}"
 
 # ── Pipeline spend profiler (temperloop#958) ───────────────────────────────
 # Settings for `workflows/scripts/pipeline-spend-report.sh` and its

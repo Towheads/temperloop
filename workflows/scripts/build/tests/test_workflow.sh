@@ -35,6 +35,12 @@
 #   - gate verdict/payload agreement (#1587): the escalation kind, its verdict,
 #     its failure count and its reason all derive from ONE slice ledger, in all
 #     four gate outcomes — no payload field may contradict the kind it ships under
+#   - 3e.6 class-A activation gate (temperloop#1219): a class-A proof that fails
+#     never reaches 3f; an absence-asserting proof gets the temperloop#944
+#     merge-base control FIRST (both arms — vacuous escalates without ever
+#     running the worktree copy, discriminating proceeds); no block / class B/C
+#     take the byte-identical pre-#1219 path with zero activation agent spawns;
+#     and the GENERATED shell is executed for real against a git fixture
 #   - worktree-failed: worktree.sh non-CREATED → worktree-failed escalation
 #   - continuation: onlySlugs+verdicts → verdict injected into worker prompt,
 #     existing worktree reused (no create/claim), only continued slug driven
@@ -5625,6 +5631,460 @@ grep -q 'workflow-reviewer' "$K1430_BUILD_MD" \
 grep -q 'orchestrator↔workflow boundary is irreversible-action plus single-writer' "$K1430_BUILD_MD" \
   || fail "#1430: build.md §3e must record WHY the review runs inside the workflow rather than the orchestrator (temperloop#1430's own rationale)"
 echo "PASS: #1430 build.md rationale guard — §3e records why the review runs inside build-level.mjs, not the orchestrator"
+
+# ============================================================================
+# TEST 1219: §3e.6 class-A activation gate (temperloop#1219)
+#
+# The defect: build.md §3e.6 specified this gate; build-level.mjs — the DEFAULT
+# Step-3 path since temperloop#998 — contained zero references to activation, and
+# `activation` was absent from the items[] args contract, so the block never even
+# crossed the orchestrator->workflow boundary. Every `activation: class: A` block
+# plan.sh rule 14 forces onto a product-source item was inert on the default path.
+#
+# The four arms below are the whole contract:
+#   a. a class-A proof that FAILS never reaches 3f (the gate actually runs)
+#   b. an absence-asserting proof gets the temperloop#944 merge-base CONTROL pass
+#      FIRST, and a control that PASSES (vacuous) escalates without ever running
+#      the worktree copy
+#   c. the OTHER control arm — a control that FAILS at the merge base
+#      (discriminates) lets the worktree run proceed, and a Pass reaches 3f
+#   d. no block / class B / class C take the byte-identical pre-#1219 path:
+#      ZERO activation agent spawns, item parks green
+# ============================================================================
+
+# --- a. class-A proof FAILS → activation-failed, item never reaches 3f -------
+run_node_case "1219 activation: a class-A proof that FAILS escalates activation-failed and never reaches 3f" "
+$PREAMBLE
+
+setMachinery('item-act-fail',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/item-act-fail' },
+  { outcome: 'REVIEW_DIFF' },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'ACTIVATION_FAIL', exitCode: 1, detail: 'GeminiRunner not registered' },
+);
+happyWorker('item-act-fail');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'item-act-fail', branch: 'build/item-act-fail', title: 'Dormant feature', kind: 'impl',
+    activation: { class: 'A', proof: 'grep -q GeminiRunner evals/runners/__init__.py' } },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+const bad = (r) => { console.log(JSON.stringify({ ok: false, reason: r })); process.exit(0); };
+
+if ((result.escalations ?? []).length !== 1) bad('expected 1 escalation: ' + JSON.stringify(result));
+const e = result.escalations[0];
+if (e.kind !== 'activation-failed') bad('escalation kind wrong: ' + e.kind);
+if (e.payload.class !== 'A') bad('payload must name the class it gated: ' + JSON.stringify(e.payload));
+if (e.payload.absenceAsserting !== false) bad('a presence proof must NOT be flagged absence-asserting');
+if ((result.parked ?? []).length !== 0) bad('a dormant item must not park: ' + JSON.stringify(result.parked));
+
+// The whole point of candidate 1: the gate fires BEFORE push/PR-open, so a Fail
+// costs a loop-back to 3c, not a re-push onto an already-open PR.
+const ran = stepsRun('item-act-fail');
+if (ran.includes('push') || ran.includes('rebase') || ran.includes('pr-open'))
+  bad('a failed activation gate must not reach 3f; steps ran: ' + JSON.stringify(ran));
+// And it really was OUR gate that stopped it — one activation agent spawn.
+const acts = callLog.filter(c => /^activation:/.test(String(c.opts.label || '')));
+if (acts.length !== 1) bad('expected exactly 1 activation machinery call, got ' + acts.length);
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+# --- b. absence proof VACUOUS at the merge base ------------------------------
+# temperloop#944's control pass is the criterion easiest to skip and the one that
+# makes an absence proof mean anything: a proof that asserts a phrase is GONE
+# passes trivially against a tree where it never existed. So it is run at the
+# merge base FIRST, and a Pass there is a vacuity verdict — escalated WITHOUT
+# even running the worker's copy (build.md §3e.6).
+run_node_case "1219 activation: an absence proof that ALSO passes at the merge base is vacuous — escalated without running the worktree copy" "
+$PREAMBLE
+
+setMachinery('item-act-vac',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/item-act-vac' },
+  { outcome: 'REVIEW_DIFF' },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'ACTIVATION_CONTROL_VACUOUS', base: 'deadbeefcafe', exitCode: 0, detail: '' },
+);
+happyWorker('item-act-vac');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'item-act-vac', branch: 'build/item-act-vac', title: 'Vacuous absence proof', kind: 'impl',
+    activation: { class: 'A', proof: \"! tr '\\\\n' ' ' < claude/commands/workshop.md | tr -s ' ' | grep 'batched draft is still fine' >/dev/null\" } },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+const bad = (r) => { console.log(JSON.stringify({ ok: false, reason: r })); process.exit(0); };
+
+if ((result.escalations ?? []).length !== 1) bad('expected 1 escalation: ' + JSON.stringify(result));
+const e = result.escalations[0];
+if (e.kind !== 'absence-proof-vacuous-at-merge-base') bad('escalation kind wrong: ' + e.kind);
+if (e.payload.absenceAsserting !== true) bad('a proof opening with ! must be flagged absence-asserting');
+if (e.payload.mergeBase !== 'deadbeefcafe') bad('payload must carry the merge base it controlled against');
+if ((result.parked ?? []).length !== 0) bad('a vacuously-proven item must not park');
+
+// The ordering IS the contract: control first, and on VACUOUS the worktree copy
+// is never even consulted.
+const ctl = callLog.filter(c => /^activation-control:/.test(String(c.opts.label || '')));
+const acts = callLog.filter(c => /^activation:/.test(String(c.opts.label || '')));
+if (ctl.length !== 1) bad('expected exactly 1 merge-base control call, got ' + ctl.length);
+if (acts.length !== 0) bad('VACUOUS must escalate WITHOUT running the worktree copy; worktree runs: ' + acts.length);
+const ran = stepsRun('item-act-vac');
+if (ran.includes('push') || ran.includes('pr-open')) bad('a vacuous absence proof must not reach 3f: ' + JSON.stringify(ran));
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+# --- c. the OTHER control arm: DISCRIMINATES → worktree run → Pass → 3f ------
+# Both arms of the control must be exercised. A control that FAILS at the merge
+# base is the GOOD case: the predicate genuinely discriminates this item's work
+# from an untouched tree, so the gate proceeds to the worker's copy.
+run_node_case "1219 activation: an absence proof that FAILS at the merge base discriminates — the worktree run then proceeds and a Pass reaches 3f" "
+$PREAMBLE
+
+setMachinery('item-act-ok',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/item-act-ok' },
+  { outcome: 'REVIEW_DIFF' },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'ACTIVATION_CONTROL_DISCRIMINATES', base: 'deadbeefcafe', exitCode: 1, detail: '' },
+  { outcome: 'ACTIVATION_PASS', exitCode: 0, detail: '' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-ok' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'sha-ok', branch: 'build/item-act-ok' },
+  { outcome: 'PR_OPENED', pr_number: 777 },
+  { outcome: 'CI_GREEN' },
+);
+happyWorker('item-act-ok');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'item-act-ok', branch: 'build/item-act-ok', title: 'Sound absence proof', kind: 'impl',
+    activation: { class: 'A', proof: \"! tr '\\\\n' ' ' < claude/commands/build.md | tr -s ' ' | grep 'a phrase this item removed' >/dev/null\" } },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+const bad = (r) => { console.log(JSON.stringify({ ok: false, reason: r })); process.exit(0); };
+
+if ((result.escalations ?? []).length !== 0) bad('expected 0 escalations: ' + JSON.stringify(result.escalations));
+if ((result.parked ?? []).length !== 1) bad('expected the item to park: ' + JSON.stringify(result));
+if (result.parked[0].pr !== 777) bad('parked PR wrong: ' + JSON.stringify(result.parked[0]));
+
+const ctl = callLog.filter(c => /^activation-control:/.test(String(c.opts.label || '')));
+const acts = callLog.filter(c => /^activation:/.test(String(c.opts.label || '')));
+if (ctl.length !== 1) bad('expected exactly 1 merge-base control call, got ' + ctl.length);
+if (acts.length !== 1) bad('expected exactly 1 worktree proof run, got ' + acts.length);
+// Control BEFORE the worktree run, always.
+if (callLog.indexOf(ctl[0]) > callLog.indexOf(acts[0])) bad('the merge-base control must run BEFORE the worktree copy');
+// …and both must carry the identical predicate — a control run against a
+// DIFFERENT command controls nothing.
+if (!/a phrase this item removed/.test(ctl[0].promptFull)) bad('the control ran a different predicate than the item declared');
+if (!/a phrase this item removed/.test(acts[0].promptFull)) bad('the worktree run used a different predicate than the item declared');
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+# --- c2. the control could not be ESTABLISHED → its own UNKNOWN kind ---------
+run_node_case "1219 activation: a merge-base control that cannot be ESTABLISHED is an UNKNOWN, not a pass — activation-control-unavailable, no push" "
+$PREAMBLE
+
+setMachinery('item-act-err',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/item-act-err' },
+  { outcome: 'REVIEW_DIFF' },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'ACTIVATION_CONTROL_ERROR', detail: 'cannot materialize the merge-base worktree' },
+);
+happyWorker('item-act-err');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'item-act-err', branch: 'build/item-act-err', title: 'Control unavailable', kind: 'impl',
+    activation: { class: 'A', proof: \"! grep 'gone' file.md >/dev/null\" } },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+const bad = (r) => { console.log(JSON.stringify({ ok: false, reason: r })); process.exit(0); };
+
+if ((result.escalations ?? []).length !== 1) bad('expected 1 escalation: ' + JSON.stringify(result));
+if (result.escalations[0].kind !== 'activation-control-unavailable') bad('escalation kind wrong: ' + result.escalations[0].kind);
+if ((result.parked ?? []).length !== 0) bad('an unestablished control must not park the item');
+const ran = stepsRun('item-act-err');
+if (ran.includes('push') || ran.includes('pr-open')) bad('must not reach 3f: ' + JSON.stringify(ran));
+const acts = callLog.filter(c => /^activation:/.test(String(c.opts.label || '')));
+if (acts.length !== 0) bad('an unestablished control must not fall through to the worktree run');
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+# --- c3. a class-A block with no proof: is a hard escalation, never a skip ---
+run_node_case "1219 activation: a class-A block that arrives with NO proof: escalates activation-proof-missing (no fallback actor, temperloop#1451)" "
+$PREAMBLE
+
+setMachinery('item-act-nop',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/item-act-nop' },
+  { outcome: 'REVIEW_DIFF' },
+  { outcome: 'GATE_PASS' },
+);
+happyWorker('item-act-nop');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'item-act-nop', branch: 'build/item-act-nop', title: 'No predicate', kind: 'impl',
+    activation: { class: 'A' } },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+const bad = (r) => { console.log(JSON.stringify({ ok: false, reason: r })); process.exit(0); };
+
+if ((result.escalations ?? []).length !== 1) bad('expected 1 escalation: ' + JSON.stringify(result));
+if (result.escalations[0].kind !== 'activation-proof-missing') bad('escalation kind wrong: ' + result.escalations[0].kind);
+if ((result.parked ?? []).length !== 0) bad('a no-predicate class-A item must not park (that is the #1451 silent no-op)');
+const ran = stepsRun('item-act-nop');
+if (ran.includes('push')) bad('must not reach 3f: ' + JSON.stringify(ran));
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+# --- d. regression guard: no block / class B / class C are UNAFFECTED --------
+# build-level.mjs is the default driver for EVERY item; a change that perturbs
+# the common path would be worse than the gap it closes. All three items below
+# run the UNMODIFIED 8-outcome happy queue — if the gate spawned even one agent
+# for them, that queue would desync and the case would fail.
+run_node_case "1219 activation: an item with NO block, or class B/C, takes the byte-identical path — zero activation agent spawns" "
+$PREAMBLE
+
+happyMachinery('item-none', 201, 'sha-none');
+happyMachinery('item-b', 202, 'sha-b');
+happyMachinery('item-c', 203, 'sha-c');
+happyWorker('item-none');
+happyWorker('item-b');
+happyWorker('item-c');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'item-none', branch: 'build/item-none', title: 'No activation block', kind: 'impl' },
+  { slug: 'item-b', branch: 'build/item-b', title: 'Class B', kind: 'impl',
+    activation: { class: 'B', watermark: 'v0.36.0' } },
+  { slug: 'item-c', branch: 'build/item-c', title: 'Class C', kind: 'impl',
+    activation: { class: 'C', 'soak-until': '2026-09-01' } },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+const bad = (r) => { console.log(JSON.stringify({ ok: false, reason: r })); process.exit(0); };
+
+if ((result.escalations ?? []).length !== 0) bad('expected 0 escalations: ' + JSON.stringify(result.escalations));
+if ((result.parked ?? []).length !== 3) bad('all three must park green: ' + JSON.stringify(result));
+const touched = callLog.filter(c => /^activation(-control)?:/.test(String(c.opts.label || '')));
+if (touched.length !== 0) bad('the gate must not spawn ANY agent for a non-class-A item, got ' + touched.length);
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+# --- Static guards: the boundary crossing and the ORDERING -------------------
+# The items[] args contract is where the defect actually lived: the gate could
+# not run because `activation` was not on it. Assert the crossing in BOTH
+# surfaces (the orchestrator prose that produces it, the workflow header that
+# consumes it), so removing either half fails here.
+K1219_BUILD_MD="$REPO_ROOT/claude/commands/build.md"
+[ -f "$K1219_BUILD_MD" ] || fail "#1219: claude/commands/build.md is missing"
+grep -q 'notes, dependsOn, activation }' "$K1219_BUILD_MD" \
+  || fail "#1219: build.md Step 3's items[] element must name \`activation\` — without it the block never crosses the orchestrator->workflow boundary and §3e.6 is dead"
+grep -q '\*\*`activation`\*\* — the item' "$K1219_BUILD_MD" \
+  || fail "#1219: build.md Step 3 must document how the \`activation\` arg is resolved, like every other item arg"
+grep -q 'dependsOn, activation }' "$MJS" \
+  || fail "#1219: build-level.mjs's I/O CONTRACT must name \`activation\` on the items[] element it consumes"
+grep -q 'runActivationGate' "$MJS" \
+  || fail "#1219: build-level.mjs must implement the §3e.6 class-A activation gate (runActivationGate)"
+grep -q 'ACTIVATION_CONTROL_VACUOUS' "$MJS" \
+  || fail "#1219/#944: the merge-base control pass must be implemented — an absence proof with no control run proves nothing"
+echo "PASS: #1219 boundary guard — \`activation\` crosses the orchestrator->workflow contract in both surfaces, and the gate + its #944 control exist"
+
+# Ordering — §3e.6 runs strictly BETWEEN 3e.5's gate and 3f's push/PR-open. This
+# is candidate 1 (the operator-chosen fix) as opposed to candidate 2: run it
+# after 3f and a Fail costs a re-push onto an already-open PR instead of a
+# loop-back to 3c. A future edit that MOVES the call — rather than removing it —
+# must fail here, unconditionally.
+K1219_GATE_LINE="$(grep -n -- '--- 3e.5. Parent-side acceptance gate' "$MJS" | head -1 | cut -d: -f1)"
+K1219_ACT_LINE="$(grep -n 'const activationEscalation = await runActivationGate' "$MJS" | head -1 | cut -d: -f1)"
+K1219_PR_LINE="$(grep -n -- '--- 3f. Push and open the PR' "$MJS" | head -1 | cut -d: -f1)"
+[ -n "$K1219_GATE_LINE" ] || fail "#1219: could not locate the 3e.5 acceptance-gate marker in build-level.mjs"
+[ -n "$K1219_ACT_LINE" ] || fail "#1219: could not locate the §3e.6 activation-gate call site in driveItem"
+[ -n "$K1219_PR_LINE" ] || fail "#1219: could not locate the 3f push/PR marker in build-level.mjs"
+[ "$K1219_GATE_LINE" -lt "$K1219_ACT_LINE" ] \
+  || fail "#1219: the §3e.6 activation gate must run AFTER 3e.5's acceptance gate"
+[ "$K1219_ACT_LINE" -lt "$K1219_PR_LINE" ] \
+  || fail "#1219: the §3e.6 activation gate must run BEFORE 3f pushes — that is the whole reason candidate 1 was chosen over a parent-side check after the workflow returns"
+echo "PASS: #1219 ordering guard — the class-A activation gate is called from driveItem strictly between 3e.5 and 3f"
+
+# ============================================================================
+# TEST 1219-e2e: the gate's GENERATED SHELL, executed for real
+#
+# Every case above drives the .mjs through the mock, which never RUNS the shell
+# the driver synthesizes — so a quoting or dialect bug in activationProofCmd() /
+# activationControlCmd() would be invisible to all of them (kernel principle 4:
+# verify at the human-AI seam; the seam here is "the .mjs writes shell text a
+# subagent then executes"). This case closes that: it drives the real driver,
+# lifts the command text out of the executor prompt it produced, and runs it
+# against a REAL git fixture — asserting the JSON outcome the driver would
+# branch on. It is also the only place the temperloop#944 control pass is
+# exercised end-to-end, materializing an actual merge-base worktree.
+# ============================================================================
+K1219_E2E="$WF_TEST_TMPDIR/e2e"
+mkdir -p "$K1219_E2E"
+
+# --- fixture: a repo whose branch REMOVES a phrase origin/main still has ------
+# Built as ONE checkout with a bare `origin` pushed from it, never `git clone`:
+# a clone of a bare repo whose HEAD names a branch that does not exist leaves an
+# UNBORN head, and the next `checkout -b` then silently produces an ORPHAN branch
+# with no merge-base at all — a broken fixture that would make every assertion
+# below measure nothing (it did, on the first draft of this case).
+mkdir -p "$K1219_E2E/repo.wt/x"
+git init --quiet --bare "$K1219_E2E/origin.git"
+(
+  set -e
+  cd "$K1219_E2E/repo.wt/x"
+  git init --quiet .
+  git symbolic-ref HEAD refs/heads/main
+  git config user.email t@example.com
+  git config user.name t
+  # The phrase is WRAPPED across two physical lines on purpose: a bare
+  # `! grep -q '<phrase>'` can never match it (grep is line-oriented), which is
+  # exactly the temperloop#930 vacuity this fixture must be able to expose.
+  printf 'intro line\nthe batched draft\nis still fine here\ntail line\n' > doc.md
+  printf 'placeholder\n' > reg.py
+  git add -A && git commit --quiet -m base
+  git remote add origin "$K1219_E2E/origin.git"
+  git push --quiet -u origin main
+  # The item's "work": remove the wrapped phrase, and register the runner.
+  git checkout --quiet -b build/x
+  printf 'intro line\ntail line\n' > doc.md
+  printf 'from .gemini import GeminiRunner\n' > reg.py
+  git add -A && git commit --quiet -m work
+) || fail "#1219-e2e: could not build the git fixture"
+# Fixture self-check — an orphan branch has no merge-base, so assert one exists
+# before trusting anything the control pass reports.
+git -C "$K1219_E2E/repo.wt/x" merge-base HEAD origin/main >/dev/null 2>&1 \
+  || fail "#1219-e2e: the fixture branch has no merge-base against origin/main — the fixture is broken, not the gate"
+
+# --- lift the generated command text out of the driver's own executor prompt --
+k1219_emit() { # <label> <proof> <outfile-prefix>
+  # The case body is written to a temp .mjs and run with `node <file>` — the
+  # same shape run_node_case uses, and for the same reason: $PREAMBLE contains
+  # backticks and `$`, which a `node -e "…"` double-quoted bash argument would
+  # let the SHELL expand before node ever saw them.
+  local k1219_case="$WF_TEST_TMPDIR/e2e-$1.mjs"
+  printf '%s\n' "$PREAMBLE" > "$k1219_case"
+  printf '%s\n' "$K1219_EMIT_BODY" >> "$k1219_case"
+  MJS_PATH="$MJS" AGENT_DEF_PATH="$AGENT_DEF" \
+  K1219_ROOT="$K1219_E2E/repo" K1219_PROOF="$2" K1219_OUT="$3" \
+  node "$k1219_case" >/dev/null || fail "#1219-e2e: could not emit the generated command for $1 (node failed)"
+}
+
+read -r -d '' K1219_EMIT_BODY << 'K1219_EMIT_END' || true
+import { writeFileSync } from 'fs';
+setMachinery('x',
+  { outcome: 'CREATED', path: process.env.K1219_ROOT + '.wt/x' },
+  { outcome: 'REVIEW_DIFF' },
+  { outcome: 'GATE_PASS' },
+  // Both activation calls are answered VACUOUS/FAIL so the driver stops after
+  // emitting them — we only want the command TEXT, not a full drive.
+  { outcome: 'ACTIVATION_CONTROL_VACUOUS', base: 'x' },
+);
+happyWorker('x');
+globalThis.args = { ...baseArgs, repoRoot: process.env.K1219_ROOT, items: [
+  { slug: 'x', branch: 'build/x', title: 'e2e', kind: 'impl',
+    activation: { class: 'A', proof: process.env.K1219_PROOF } },
+]};
+const mod = await loadLevel();
+await mod.default();
+for (const c of callLog) {
+  const l = String(c.opts.label || '');
+  if (!/^activation(-control)?:/.test(l)) continue;
+  const body = c.promptFull.split(/\nCommand:\n/)[1];
+  if (!body) { console.error('no Command: section in the executor prompt'); process.exit(1); }
+  writeFileSync(process.env.K1219_OUT + (l.startsWith('activation-control') ? '.control.sh' : '.proof.sh'), body);
+}
+K1219_EMIT_END
+
+# A control-only emit (absence proof) — the driver stops at the control call, so
+# only .control.sh is written. Run it for real against the fixture.
+# NB: every stage is `|| true`-guarded. This file runs under `set -euo pipefail`,
+# so a generated command that is BROKEN (prints no JSON at all — the exact
+# regression this case exists to catch) would otherwise make the command
+# substitution non-zero and abort the whole suite SILENTLY, with no failing test
+# name. Swallowing the status here lets the explicit `|| fail` below name it.
+k1219_run() { { bash "$1" 2>/dev/null || true; } | { grep -o '"outcome":"[A-Z_]*"' || true; } | head -1; }
+
+# 1. ABSENCE proof, wrap-immune form, phrase genuinely removed by the branch.
+#    At the MERGE BASE the phrase is present (wrapped!), so the predicate must
+#    FAIL there → DISCRIMINATES. This is the arm that makes an absence proof mean
+#    something, and the one a bare `! grep -q` would get wrong.
+k1219_emit sound "! tr '\n' ' ' < doc.md | tr -s ' ' | grep 'batched draft is still fine' >/dev/null" "$K1219_E2E/sound"
+[ -f "$K1219_E2E/sound.control.sh" ] || fail "#1219-e2e: no control command was generated for an absence-asserting proof"
+K1219_R="$(k1219_run "$K1219_E2E/sound.control.sh")"
+[ "$K1219_R" = '"outcome":"ACTIVATION_CONTROL_DISCRIMINATES"' ] \
+  || fail "#1219-e2e/#944: a sound absence proof must FAIL at the merge base (DISCRIMINATES); got $K1219_R"
+echo "PASS: #1219-e2e control/sound — the generated merge-base control runs for real and the wrap-immune absence proof FAILS at the base"
+
+# 2. ABSENCE proof for a phrase that NEVER existed — passes at the merge base,
+#    so it proves nothing about this item's work. The vacuity arm.
+k1219_emit vac "! tr '\n' ' ' < doc.md | tr -s ' ' | grep 'a phrase that never existed' >/dev/null" "$K1219_E2E/vac"
+K1219_R="$(k1219_run "$K1219_E2E/vac.control.sh")"
+[ "$K1219_R" = '"outcome":"ACTIVATION_CONTROL_VACUOUS"' ] \
+  || fail "#1219-e2e/#944: an absence proof for a never-present phrase must read VACUOUS at the merge base; got $K1219_R"
+echo "PASS: #1219-e2e control/vacuous — a proof that also passes at the merge base is caught as vacuous, not waved through"
+
+# 3. The merge-base worktree must be CLEANED UP — a gate that leaks a worktree
+#    per class-A item is its own drift class (kernel § Environment hygiene).
+K1219_WT_COUNT="$(git -C "$K1219_E2E/repo.wt/x" worktree list | wc -l | tr -d ' ')"
+[ "$K1219_WT_COUNT" = "1" ] \
+  || fail "#1219-e2e: the throwaway merge-base worktree leaked ($K1219_WT_COUNT entries in 'git worktree list')"
+echo "PASS: #1219-e2e cleanup — the throwaway merge-base worktree is removed, leaking nothing"
+
+# 3b. THE PREDICATE MUST NOT BE RUN UNDER `set -o pipefail`.
+#     Imposing pipefail on the AUTHOR'S OWN predicate silently rewrites its
+#     meaning, in the one direction that makes this gate theater. pipefail
+#     reports the rightmost NON-ZERO status, and any predicate whose tail exits
+#     early (`grep -q`, `head`) SIGPIPEs its upstream writer, which dies 141 —
+#     so an ABSENCE proof that should FAIL inverts to a PASS:
+#         `! <big writer> | head -1 >/dev/null`
+#            with pipefail: 141 -> `!` -> 0  == false PASS
+#            correct:         0 -> `!` -> 1  == FAIL
+#     The predicate below is tree-independent and deterministic, so at the merge
+#     base it must read DISCRIMINATES (predicate failed). Under pipefail it would
+#     read VACUOUS instead — which is how this case discriminates.
+#     `scripts/lint-pipe-grep-q.sh` (temperloop#1050) guards the same footgun
+#     tree-wide; this pins it for generated predicate text, which that lint
+#     cannot see.
+k1219_emit nopipefail "! seq 1 3000000 | head -1 >/dev/null" "$K1219_E2E/nopf"
+K1219_R="$(k1219_run "$K1219_E2E/nopf.control.sh")"
+[ "$K1219_R" = '"outcome":"ACTIVATION_CONTROL_DISCRIMINATES"' ] \
+  || fail "#1219-e2e: the proof: predicate must NOT run under \`set -o pipefail\` — an early-exiting tail SIGPIPEs its writer and inverts an absence proof into a false PASS; got $K1219_R"
+for k1219_fn in activationProofCmd activationControlCmd; do
+  # Comment lines are stripped first: both builders explain in prose WHY they
+  # omit pipefail, and a guard that fires on documentation of the thing it
+  # guards is the temperloop#1152 defect class (lint-pipe-grep-q.sh's own header
+  # names it).
+  if awk "/^function $k1219_fn/,/^}/" "$MJS" | grep -v '^[[:space:]]*//' | grep 'pipefail' >/dev/null; then
+    fail "#1219-e2e: $k1219_fn must not impose \`set -o pipefail\` on the author's own proof: predicate (see the DO NOT ADD note in build-level.mjs)"
+  fi
+done
+echo "PASS: #1219-e2e no-pipefail — the author's predicate runs with its own pipeline semantics; an early-exiting tail cannot invert an absence proof into a false pass"
+
+# 4. PRESENCE proof (no control run) — Pass and Fail, executed for real. This is
+#    where a quoting bug in activationProofCmd() would surface, and it confirms
+#    the un-piped exit read reports the predicate's OWN status.
+k1219_emit pass "grep GeminiRunner reg.py >/dev/null" "$K1219_E2E/pass"
+[ -f "$K1219_E2E/pass.control.sh" ] && fail "#1219-e2e: a PRESENCE proof must NOT get a merge-base control run (#944 is absence-only)"
+K1219_R="$(k1219_run "$K1219_E2E/pass.proof.sh")"
+[ "$K1219_R" = '"outcome":"ACTIVATION_PASS"' ] \
+  || fail "#1219-e2e: a presence proof whose wiring IS in place must report ACTIVATION_PASS; got $K1219_R"
+k1219_emit fail "grep NeverRegisteredRunner reg.py >/dev/null" "$K1219_E2E/fail"
+K1219_R="$(k1219_run "$K1219_E2E/fail.proof.sh")"
+[ "$K1219_R" = '"outcome":"ACTIVATION_FAIL"' ] \
+  || fail "#1219-e2e: a presence proof whose wiring is ABSENT must report ACTIVATION_FAIL; got $K1219_R"
+echo "PASS: #1219-e2e proof — the generated worktree predicate runs for real, reports the predicate's own exit status, and skips the control on a presence proof"
 
 echo ""
 echo "All test_workflow.sh cases passed."
