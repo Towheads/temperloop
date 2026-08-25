@@ -68,6 +68,16 @@
 #           fails the gate" mechanical: a brand-new file introducing its own
 #           captured-envelope spawn is caught by NAME (it need not be
 #           enumerated), not merely the two files (a) already knows about.
+#        c. EXPLICIT --model NET (temperloop#1829) — the direct sibling of
+#           (b): every *.sh directly under the scan dir that spawns a
+#           headless claude (a `claude -p` / `--print` invocation, or a
+#           `--output-format json` capture) must ALSO pass `--model`
+#           somewhere in that same file. A bare `claude -p` inherits the
+#           MACHINE's saved default model rather than the launching
+#           session's tier. See section 6e's own header for the signature,
+#           its one named blind spot, the #1829 audit-list disposition, and
+#           the honest scope limit (a repo-scanning net can never see an
+#           ad-hoc script written into /tmp — that half is prose-only).
 #      GATE SCOPE stays the emit-feasible subset ONLY (A7/A8/A9 today) — an
 #      un-emittable seat (the A1-A6/A2/B1/B2/C1-C3 exclusion list this script
 #      also prints) never participates in either coverage layer, so it can
@@ -691,6 +701,99 @@ for f in "$scan_dir"/*.sh; do
 done
 if [ "$generic_hit" -eq 0 ]; then
   echo "ok    spawn-site coverage: every --output-format json capture site directly under $scan_dir wires model_usage_emit_from_envelope somewhere in its own file"
+fi
+
+# ---- 6e. layer (c): every headless spawn passes an explicit --model --------
+# temperloop#1829, the direct sibling of 6d's generic net: same scan dir,
+# same maxdepth-1 glob, same comment-strip-then-grep discipline, a different
+# obligation. A `*.sh` directly under $scan_dir that spawns a headless claude
+# MUST also pass `--model` somewhere in that same file.
+#
+# WHY. A bare `claude -p` resolves its model from the MACHINE's saved
+# default, not from the launching session — so a spawn site that omits
+# --model silently routes its worker to whatever tier that host happened to
+# be configured for, which is precisely the "default to whatever tier the
+# driver runs" leak the kernel's explicit cost-tier routing rule exists to
+# close (claude/CLAUDE.kernel.md § Subagent usage). The tier a fixed site
+# passes should come from a NAMED setting in build.config.sh (e.g.
+# PIPELINE_DRIVE_MODEL / PIPELINE_DRIVE_MERGE_MODEL, as
+# pipeline-retro-judge-spawn.sh already does), never a hard-coded model id
+# (§ Named-setting convention).
+#
+# HONEST SCOPE — read this before citing the gate as a fix. This net can
+# only ever see spawn sites that LIVE IN THE REPO. The incident behind
+# #1829 was an ad-hoc fan-out script a build worker wrote into /tmp and ran
+# once; no repo-scanning validator would ever have seen that file, and this
+# check does not claim to catch it. That case is carried by the PROSE half
+# alone (claude/CLAUDE.kernel.md § Subagent usage cost-tier routing,
+# AGENTS.md § Safety rails). A machine-level control — a `claude` wrapper
+# that refuses a bare -p, or a session-scoped model default — is
+# deliberately OUT OF SCOPE here, tracked as a follow-on.
+#
+# THE SIGNATURE, and its one named blind spot. Two literals mark a headless
+# spawn: (1) an explicit `claude -p` / `--print` invocation, including the
+# `"$CLAUDE_BIN" -p` / `${CLAUDE_BIN}" --print` forms; and (2)
+# `--output-format json` — 6d's own signature, reused because nothing
+# captures a claude envelope without being a headless spawn. Signature (2)
+# is what covers a spawn assembled through an argument ARRAY whose `-p`
+# never sits beside the binary (`args=(-p "$prompt" …)` — pipeline-drive.sh's
+# real shape, invisible to signature (1)). A file that did BOTH — built its
+# `-p` in an array AND captured no JSON envelope — would still slip through;
+# that residue is named here rather than papered over.
+#
+# THE #1829 AUDIT LIST, dispositioned. Every file the issue named as
+# invoking `claude -p` with zero `--model` occurrences was checked, and ALL
+# SEVEN are doc/comment/echo-string mentions, not spawn sites — none needed
+# a code change, and none of them trips this net:
+#   build/pipeline-cron.sh              comment-only (header prose)      -> no change
+#   build/pipeline-retro-health.sh      comment-only (header prose)      -> no change
+#   lib/spawn-diagnostic.sh             comment-only (header prose)      -> no change
+#   lib/command_declared.sh             comment-only (header prose)      -> no change
+#   build/tests/test_pipeline_drive.sh  echo/assertion label text        -> no change
+#   model-comparison/tests/test_judge_rotation.sh    comment-only        -> no change
+#   model-comparison/tests/test_replay_live_cwd.sh   heredoc comment     -> no change
+# The four that DO spawn under this scan dir (pipeline-drive.sh,
+# pipeline-retro-judge-spawn.sh, pipeline-tick.sh's emitted spawn_cmd, and
+# — outside the scan dir — bin/subcommands/configure.sh) already pass an
+# explicit --model, so this gate lands green rather than needing a fixup
+# commit to make it green.
+echo "── spawn-site coverage: every headless claude spawn passes an explicit --model (temperloop#1829) ──"
+model_hit=0
+for f in "$scan_dir"/*.sh; do
+  [ -e "$f" ] || continue
+  [ -f "$f" ] || continue
+  if [ ! -r "$f" ]; then
+    echo "validate-model-usage-emit: CANNOT EVALUATE — explicit --model coverage cannot read $f" >&2
+    exit 1
+  fi
+  # Comment-stripped FIRST, exactly as 6c/6d do: a `claude -p` living only
+  # in a header comment is documentation, not a spawn, and must not trip
+  # this net (the temperloop#1152 class — a guard firing on prose ABOUT the
+  # thing it guards). Six of the seven audited files above are green for
+  # precisely this reason.
+  code="$(grep -v '^[[:space:]]*#' "$f" 2>/dev/null || true)"
+  # `grep -E/-F ... >/dev/null` (never a `q` in the flag cluster) piped from
+  # a writer — see the 6d note: a piped `-q` exits at its first match and
+  # SIGPIPEs the upstream writer nondeterministically under pipefail
+  # (temperloop#1050; scripts/lint-pipe-grep-q.sh enforces this).
+  spawn_site=0
+  if printf '%s\n' "$code" | grep -E -- '(claude|CLAUDE_BIN[}"]*)[[:space:]]+(-p|--print)([[:space:]]|$)' >/dev/null; then
+    spawn_site=1
+  elif printf '%s\n' "$code" | grep -F -- '--output-format json' >/dev/null; then
+    spawn_site=1
+  fi
+  [ "$spawn_site" -eq 1 ] || continue
+  # Comment-stripped $code again (never the raw $f) — a `--model` surviving
+  # only in a comment after the real flag was deleted must NOT count as
+  # passing, the same trap 6c's anchor_block and 6d's second grep guard.
+  if ! printf '%s\n' "$code" | grep -F -- '--model' >/dev/null; then
+    echo "FAIL  spawn-site coverage: $f spawns a headless claude (-p/--print) but never passes --model anywhere in the file — a bare spawn inherits the MACHINE's saved default model rather than the launching session's tier (temperloop#1829); pass an explicit --model resolved from a named build.config.sh setting"
+    fail=1
+    model_hit=1
+  fi
+done
+if [ "$model_hit" -eq 0 ]; then
+  echo "ok    spawn-site coverage: every headless claude spawn site directly under $scan_dir passes an explicit --model"
 fi
 
 echo "---"

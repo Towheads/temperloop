@@ -1125,6 +1125,138 @@ chmod +x "$FIXR/workflows/scripts/validate-model-usage-emit.sh"
 check "RESTORED: fixture passes cleanly again" \
   bash "$FIXR/workflows/scripts/validate-model-usage-emit.sh" --file "$TMP/good.jsonl"
 
+echo "── 48. temperloop#1829: the explicit --model net (6e) — BOTH states, on a scan-dir fixture ──"
+# The obligation: a *.sh directly under the scan dir that spawns a headless
+# claude must ALSO pass --model somewhere in that same file. A bare
+# `claude -p` inherits the MACHINE's saved default model, not the launching
+# session's tier. Every case below runs against $COVR (a disposable copy),
+# never the real workflows/scripts/build/.
+reset_covr
+check "BEFORE: the pristine coverage fixture passes the --model net" bash "$LINT" --scan-dir "$COVR"
+
+# --- state 1: a --model-CARRYING spawn site passes -------------------------
+cat > "$COVR/fake-new-driver.sh" <<'EOF'
+#!/usr/bin/env bash
+set -uo pipefail
+out="$("$CLAUDE_BIN" -p "/do-a-thing" --model "$PIPELINE_DRIVE_MODEL" --output-format json)"
+model_usage_emit_from_envelope "fake-new-driver" "$out"
+EOF
+check "a NEW spawn site that DOES pass --model passes the net (the green half — proves the net is not simply always-red)" \
+  bash "$LINT" --scan-dir "$COVR"
+
+# --- state 2: the SAME file with --model removed FAILS ---------------------
+# One-flag delta from the passing file above, so the only thing that changed
+# between green and red is the presence of --model itself.
+cat > "$COVR/fake-new-driver.sh" <<'EOF'
+#!/usr/bin/env bash
+set -uo pipefail
+out="$("$CLAUDE_BIN" -p "/do-a-thing" --output-format json)"
+model_usage_emit_from_envelope "fake-new-driver" "$out"
+EOF
+check_not "the SAME spawn site with --model REMOVED turns the gate red (the red half)" \
+  bash "$LINT" --scan-dir "$COVR"
+check "...names the offending file and the #1829 reason, never a generic failure" bash -c \
+  "bash '$LINT' --scan-dir '$COVR' 2>&1 | grep -F 'fake-new-driver.sh' | grep -F 'never passes --model' >/dev/null"
+
+# --- the bare `claude -p` literal form, never enumerated in advance --------
+# Acceptance 1's exact shape: a brand-new file this validator has never been
+# told about, carrying a BARE `claude -p` with no envelope capture at all,
+# is caught by literal signature alone.
+cat > "$COVR/fake-new-driver.sh" <<'EOF'
+#!/usr/bin/env bash
+set -uo pipefail
+claude -p "/do-a-thing" > /dev/null
+EOF
+check_not "a bare 'claude -p' spawn site with NO --model and no envelope capture FAILS — caught by literal signature, never enumerated in advance" \
+  bash "$LINT" --scan-dir "$COVR"
+check "...still names the file specifically" bash -c \
+  "bash '$LINT' --scan-dir '$COVR' 2>&1 | grep -F 'fake-new-driver.sh' | grep -F 'spawns a headless claude' >/dev/null"
+
+# --- the --print long form is the same spawn --------------------------------
+cat > "$COVR/fake-new-driver.sh" <<'EOF'
+#!/usr/bin/env bash
+set -uo pipefail
+claude --print "/do-a-thing" > /dev/null
+EOF
+check_not "the '--print' long form is the same spawn and FAILS identically" \
+  bash "$LINT" --scan-dir "$COVR"
+
+# --- the temperloop#1152 class: prose ABOUT the shape is not the shape ------
+cat > "$COVR/fake-new-driver.sh" <<'EOF'
+#!/usr/bin/env bash
+# This file only DOCUMENTS the shape: a bare `claude -p` inherits the
+# machine default, so never type one. It spawns nothing itself.
+set -uo pipefail
+echo "no spawn here"
+EOF
+check "a comment-ONLY 'claude -p' mention does NOT trip the net (temperloop#1152 class — a guard must not fire on prose about the thing it guards; this is why 6 of the 7 audited #1829 files needed no change)" \
+  bash "$LINT" --scan-dir "$COVR"
+
+# --- the mirror trap: a --model surviving only in a COMMENT is not wiring ---
+cat > "$COVR/fake-new-driver.sh" <<'EOF'
+#!/usr/bin/env bash
+# was: --model "$PIPELINE_DRIVE_MODEL"
+set -uo pipefail
+out="$("$CLAUDE_BIN" -p "/do-a-thing" --output-format json)"
+model_usage_emit_from_envelope "fake-new-driver" "$out"
+EOF
+check_not "a --model surviving ONLY in a comment after the real flag was deleted does NOT count as passing — comment-stripped before the grep, same trap 6c/6d guard" \
+  bash "$LINT" --scan-dir "$COVR"
+reset_covr
+check "RESTORED (fixture file removed): the --model net passes again" bash "$LINT" --scan-dir "$COVR"
+
+echo "── 48b. MUTATION: the 6e --model check is genuinely load-bearing (neuter it and the bad file WRONGLY passes) ──"
+# Discrimination evidence for section 48: without this, "the bad file fails"
+# could be an artifact of some OTHER check in the script rejecting the same
+# fixture. Neuter ONLY 6e's spawn-site gate in a COPY of the validator and
+# confirm the identical fixture flips red -> green. The copy lives in $FIXR
+# (this suite's established mutated-validator home, section 11b), NOT a bare
+# $TMP path — the script resolves emit-model-usage.sh and the allowlist
+# relative to its OWN dir, so a copy outside a complete fixture tree fails
+# check 1 for an unrelated reason and would discriminate nothing.
+reset_covr
+cat > "$COVR/fake-new-driver.sh" <<'EOF'
+#!/usr/bin/env bash
+set -uo pipefail
+out="$("$CLAUDE_BIN" -p "/do-a-thing" --output-format json)"
+model_usage_emit_from_envelope "fake-new-driver" "$out"
+EOF
+check_not "BEFORE tamper: the --model-less spawn site FAILS with the real validator" \
+  bash "$LINT" --scan-dir "$COVR"
+# python3 (not sed) for the exact-text mutation, matching this suite's own
+# established convention for source mutations with shell-special characters.
+NEUTERED_LINT="$FIXR/workflows/scripts/validate-model-usage-emit.sh"
+check "sanity: the UNMUTATED fixture-tree copy rejects the same file (so the tamper below is the only delta)" \
+  bash -c "! bash '$NEUTERED_LINT' --scan-dir '$COVR' >/dev/null 2>&1"
+python3 - "$LINT" "$NEUTERED_LINT" <<'PYEOF'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+c = open(src).read()
+needle = "  [ \"$spawn_site\" -eq 1 ] || continue\n"
+assert c.count(needle) == 1, "6e spawn_site gate not found exactly once — production text drifted"
+open(dst, "w").write(c.replace(needle, "  spawn_site=0\n" + needle))
+PYEOF
+chmod +x "$NEUTERED_LINT"
+check "AFTER tamper (6e's spawn-site gate forced off): the IDENTICAL fixture WRONGLY passes — proves 6e, not some other check, is what rejected it" \
+  bash "$NEUTERED_LINT" --scan-dir "$COVR"
+cp "$LINT" "$NEUTERED_LINT"
+chmod +x "$NEUTERED_LINT"
+reset_covr
+check "RESTORED: the real validator passes the pristine fixture again" bash "$LINT" --scan-dir "$COVR"
+check "RESTORED: the fixture-tree copy is pristine again too" \
+  bash "$NEUTERED_LINT" --scan-dir "$COVR"
+
+echo "── 48c. temperloop#1829: the prose half is sited where a fan-out author reads it ──"
+# The gate can only see spawn sites that live in the repo; the /tmp ad-hoc
+# script that motivated #1829 is carried by the prose half alone. Assert
+# both homes carry the rule, so a doc rewrite cannot silently drop it.
+check "claude/CLAUDE.kernel.md § Subagent usage states the explicit --model rule" bash -c \
+  "grep -F -- 'passes an explicit \`--model\`' '$REPO/claude/CLAUDE.kernel.md' >/dev/null"
+check "...and names the failure it prevents (the machine's saved default model)" bash -c \
+  "grep -F -- \"machine's saved default model\" '$REPO/claude/CLAUDE.kernel.md' >/dev/null"
+check "AGENTS.md carries the cross-agent statement of the same rule" bash -c \
+  "grep -F -- 'claude -p' '$REPO/AGENTS.md' | grep -F -- '--model' >/dev/null"
+
 echo
 if [ "$fail" -gt 0 ]; then
   printf 'test_model_usage_emit: FAILED %d of %d\n' "$fail" "$((pass + fail))"

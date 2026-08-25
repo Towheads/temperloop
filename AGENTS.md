@@ -149,6 +149,17 @@ and quality-gate list) are also browsable as a generated static site at
   Claude Code sessions by the `write-lane-guard.sh` PreToolUse hook
   (`claude/hooks/`), which intercepts a state-mutating call into a foreign
   checkout and asks before proceeding.
+- **Every headless `claude -p` spawn passes an explicit `--model`.** A bare
+  `claude -p` (or `--print`) does *not* inherit the launching session's
+  model — it resolves whatever default model that machine has saved, so a
+  fan-out script silently routes its workers to an unintended tier. Always
+  pass `--model`, and take its value from a named setting in
+  `workflows/scripts/build/build.config.sh` (e.g. `PIPELINE_DRIVE_MODEL`)
+  rather than hard-coding a model id.
+  `workflows/scripts/validate-model-usage-emit.sh` fails the `checks` gate on
+  a spawn site under `workflows/scripts/build/` that omits the flag — but it
+  can only see files that live in this repo, so a one-off script an agent
+  writes into `/tmp` is covered by this rule alone.
 - **Portable shell only (macOS/BSD + zsh).** Scripts here run on
   contributors' macOS (BSD userland) and get sourced under both bash and
   zsh, where several silent-failure footguns slip past the whole-tree
