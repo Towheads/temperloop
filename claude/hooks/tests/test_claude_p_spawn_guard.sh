@@ -35,7 +35,6 @@ TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
 pass=0; fail=0
-fixn=0
 
 run_hook() { # <command-text> [extra env assignments handled by caller]
   # PIPE-FED ON PURPOSE, and safe on two independent counts: `EVAL_RUN=''` takes
@@ -64,11 +63,34 @@ run_hook() { # <command-text> [extra env assignments handled by caller]
 #
 # THE RULE, and what §7's structural guard mechanically enforces: an assertion
 # that measures the hook's EXIT STATUS must be fed by `<file`, never by `|`.
+#
+# TWO THINGS THIS HELPER MUST NOT DO, both learned the hard way in CI run
+# 32915921501 (this branch's first push), where they compounded into one red:
+#
+#  (1) NAME THE FILE FROM A COUNTER. Every call site is `f=$(fixture …)`, and a
+#      command substitution runs in a SUBSHELL — so a `fixn=$((fixn+1))` inside
+#      never advances the parent's copy. Every fixture came back as the SAME
+#      path, and the last writer silently clobbered the earlier one's content.
+#      `mktemp` is used instead precisely because it cannot depend on state the
+#      subshell is unable to keep.
+#  (2) PUT THE PAYLOAD ON argv. Linux caps a SINGLE exec argument at 128 KiB
+#      (MAX_ARG_STRLEN), which macOS's flat 1 MiB ARG_MAX does not, so
+#      `jq --arg c "<200 KB>"` works locally and dies with "Argument list too
+#      long" on the CI runner. The payload reaches jq through a FILE
+#      (`--rawfile`); `printf` is a shell builtin, so writing that file never
+#      execs and has no such limit.
+#
+# Together they produced a FALSE GREEN, which is the part worth remembering:
+# the failed jq still ran its `> "$f"` redirect, truncating the one shared
+# fixture to zero bytes. The >pipe-buffer regression case then "passed" on an
+# EMPTY payload — the exact case that exists to make the race deterministic
+# quietly stopped exercising it. §6a's fixture-size assertion is the backstop.
 fixture() { # <command-text> -> prints the path of a file holding the payload
-  local f
-  fixn=$((fixn + 1))
-  f="$TMP/fixture.$fixn.json"
-  jq -cn --arg c "$1" '{tool_name:"Bash",tool_input:{command:$c}}' > "$f"
+  local f t
+  f=$(mktemp "$TMP/fixture.XXXXXX")
+  t=$(mktemp "$TMP/cmdtext.XXXXXX")
+  printf '%s' "$1" > "$t"
+  jq -cn --rawfile c "$t" '{tool_name:"Bash",tool_input:{command:$c}}' > "$f"
   printf '%s' "$f"
 }
 
@@ -398,8 +420,28 @@ check_eval_run_clean "EVAL_RUN=1 is strictly silent (stdout+stderr empty, rc 0)"
 
 # A payload comfortably past the 64 KiB pipe buffer. Under the pre-fix pipe-fed
 # shape this is a reliable red; fed from a file it cannot be.
+PIPE_BUF=65536
 BIG_PROMPT=$(head -c 200000 /dev/zero | tr '\0' 'x')
 BIG_FIXTURE=$(fixture "claude -p \"$BIG_PROMPT\"")
+
+# The fixture must actually BE big — assert it, do not assume it. This case is
+# the whole discriminating proof for #1844, and a case that silently stops
+# exercising its own premise is worse than no case: it reports green forever.
+# That is not hypothetical — CI run 32915921501 ran this very assertion against
+# a ZERO-BYTE fixture (see fixture()'s header) and passed, because EVAL_RUN
+# exits 0 silently on empty stdin too. Anything that breaks fixture generation
+# — an argv limit, a jq that lacks --rawfile, a full $TMPDIR — now lands HERE,
+# loudly, instead of hollowing out the assertion below.
+BIG_BYTES=$(wc -c < "$BIG_FIXTURE" | tr -d ' ')
+if [ "$BIG_BYTES" -gt "$PIPE_BUF" ]; then
+  pass=$((pass + 1))
+  printf '  ✓ the >pipe-buffer fixture really is >pipe-buffer (%s bytes > %s)\n' "$BIG_BYTES" "$PIPE_BUF"
+else
+  fail=$((fail + 1))
+  printf '  ✗ the >pipe-buffer fixture is only %s bytes (need >%s) — the case below is NOT exercising the race\n' \
+    "$BIG_BYTES" "$PIPE_BUF"
+fi
+
 check_eval_run_clean "EVAL_RUN=1 stays clean on a payload LARGER than the pipe buffer (the #1844 race, made deterministic)" \
   "$HOOK" "$BIG_FIXTURE"
 
