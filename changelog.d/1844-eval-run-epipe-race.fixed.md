@@ -8,6 +8,8 @@
   locally). Because it is a race on the 64 KiB pipe buffer it fired only on a
   busy host, i.e. in the merge queue: it ejected an unrelated PR from the queue
   on a diff that never touched the file. Every assertion that measures the
-  hook's exit status is now fed from a file, `test_write_lane_guard.sh` carried
-  the same latent shape and is fixed too, and a structural guard in the suite
-  fails if a future exit-status assertion is pipe-fed again.
+  hook's exit status is now fed from a file, in this suite and in
+  `test_write_lane_guard.sh` (which carried the same latent shape at both of
+  its exit-status sites), and a structural guard fails if a future exit-status
+  assertion in either suite is pipe-fed again — including through an indirect
+  interpreter or with the `rc=$?` on the following line.
