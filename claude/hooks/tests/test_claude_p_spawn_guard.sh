@@ -37,7 +37,94 @@ trap 'rm -rf "$TMP"' EXIT
 pass=0; fail=0
 
 run_hook() { # <command-text> [extra env assignments handled by caller]
+  # PIPE-FED ON PURPOSE, and safe on two independent counts: `EVAL_RUN=''` takes
+  # the hook PAST its EVAL_RUN early exit into `INPUT=$(cat …)`, which drains
+  # stdin to EOF so the upstream jq is never signalled — and, decisively, every
+  # caller asserts only on STDOUT. No `$?` is measured here, so even a failed
+  # writer could not reach a verdict. See fixture() for the shape that is NOT
+  # safe (temperloop#1844).
   jq -cn --arg c "$1" '{tool_name:"Bash",tool_input:{command:$c}}' | EVAL_RUN='' bash "$HOOK" 2>/dev/null
+}
+
+# fixture: write a PreToolUse payload to a FILE and print its path, so a call
+# site can feed the hook by REDIRECT instead of through a pipe (temperloop#1844).
+#
+# THE BUG THIS EXISTS FOR. The hook's EVAL_RUN arm is its first executable line
+# and exits WITHOUT draining stdin — deliberately, because an unanswerable
+# interactive `ask` would hang a headless eval run. Feed it through a pipe and
+# the upstream writer is still writing into a read end that just closed, so it
+# takes EPIPE/SIGPIPE; under this file's `set -o pipefail` that UPSTREAM status
+# becomes the pipeline's status. An assertion that then reads `$?` measures the
+# writer, not the hook. CI's shape was `jq: error: writing output failed: Broken
+# pipe` followed by `✗ EVAL_RUN exits 0 (got rc=2)`; locally the same race
+# surfaces as rc=141. It is a race on the 64 KiB pipe buffer, so it fires when
+# the host is busiest — which is how it ejected PR #1842 from the merge queue on
+# a diff that never touched this file.
+#
+# THE RULE, and what §7's structural guard mechanically enforces: an assertion
+# that measures the hook's EXIT STATUS must be fed by `<file`, never by `|`.
+#
+# TWO THINGS THIS HELPER MUST NOT DO, both learned the hard way in CI run
+# 32915921501 (this branch's first push), where they compounded into one red:
+#
+#  (1) NAME THE FILE FROM A COUNTER. Every call site is `f=$(fixture …)`, and a
+#      command substitution runs in a SUBSHELL — so a `fixn=$((fixn+1))` inside
+#      never advances the parent's copy. Every fixture came back as the SAME
+#      path, and the last writer silently clobbered the earlier one's content.
+#      `mktemp` is used instead precisely because it cannot depend on state the
+#      subshell is unable to keep.
+#  (2) PUT THE PAYLOAD ON argv. Linux caps a SINGLE exec argument at 128 KiB
+#      (MAX_ARG_STRLEN), which macOS's flat 1 MiB ARG_MAX does not, so
+#      `jq --arg c "<200 KB>"` works locally and dies with "Argument list too
+#      long" on the CI runner. The payload reaches jq through a FILE
+#      (`--rawfile`); `printf` is a shell builtin, so writing that file never
+#      execs and has no such limit.
+#
+# Together they produced a FALSE GREEN, which is the part worth remembering:
+# the failed jq still ran its `> "$f"` redirect, truncating the one shared
+# fixture to zero bytes. The >pipe-buffer regression case then "passed" on an
+# EMPTY payload — the exact case that exists to make the race deterministic
+# quietly stopped exercising it. §6a's fixture-size assertion is the backstop.
+fixture() { # <command-text> -> prints the path of a file holding the payload
+  local f t
+  f=$(mktemp "$TMP/fixture.XXXXXX")
+  t=$(mktemp "$TMP/cmdtext.XXXXXX")
+  printf '%s' "$1" > "$t"
+  jq -cn --rawfile c "$t" '{tool_name:"Bash",tool_input:{command:$c}}' > "$f"
+  printf '%s' "$f"
+}
+
+# probe_eval_run: the EVAL_RUN contract as ONE indivisible triple — stdout
+# EMPTY, stderr EMPTY, exit status 0. check()'s ask/silent comparison cannot see
+# the middle of that (it classifies any non-`ask` output as "silent"), so a hook
+# that PRINTED something before its EVAL_RUN exit would still read as silent.
+# Shared by the live assertions and by the mutation proofs below, so the two can
+# never drift apart.
+probe_eval_run() { # <hook> <fixture-file> -> "rc=<n>;out=<stdout>;err=<stderr>"
+  local hook="$1" f="$2" o rc
+  o=$(EVAL_RUN=1 bash "$hook" <"$f" 2>"$TMP/evalrun.err"); rc=$?
+  printf 'rc=%s;out=%s;err=%s' "$rc" "$o" "$(cat "$TMP/evalrun.err")"
+}
+EVAL_RUN_CLEAN='rc=0;out=;err='
+
+check_eval_run_clean() { # <desc> <hook> <fixture>
+  local desc="$1" got
+  got=$(probe_eval_run "$2" "$3")
+  if [ "$got" = "$EVAL_RUN_CLEAN" ]; then
+    pass=$((pass + 1)); printf '  ✓ %s\n' "$desc"
+  else
+    fail=$((fail + 1)); printf '  ✗ %s (want %q got %q)\n' "$desc" "$EVAL_RUN_CLEAN" "$got"
+  fi
+}
+
+check_eval_run_dirty() { # <desc> <mutant-hook> <fixture> — the mutation proof's half
+  local desc="$1" got
+  got=$(probe_eval_run "$2" "$3")
+  if [ "$got" != "$EVAL_RUN_CLEAN" ]; then
+    pass=$((pass + 1)); printf '  ✓ %s\n' "$desc"
+  else
+    fail=$((fail + 1)); printf '  ✗ %s (mutant still produced a CLEAN triple: %q)\n' "$desc" "$got"
+  fi
 }
 
 check() { # <desc> <expected: ask|silent> <actual-stdout>
@@ -284,23 +371,233 @@ else
 fi
 
 # --- 6. suppression and fail-open --------------------------------------------
-out=$(jq -cn --arg c "$INLINE" '{tool_name:"Bash",tool_input:{command:$c}}' | EVAL_RUN=1 bash "$HOOK" 2>/dev/null; echo "rc=$?")
+# EVERY assertion below measures the hook's EXIT STATUS, so every one of them is
+# fed by REDIRECT, never a pipe (temperloop#1844 — see fixture()). A pipe here
+# would let the upstream writer's EPIPE status masquerade as the hook's.
+EVAL_FIXTURE=$(fixture "$INLINE")
+out=$(EVAL_RUN=1 bash "$HOOK" <"$EVAL_FIXTURE" 2>/dev/null; echo "rc=$?")
 check "EVAL_RUN=1 -> silent" silent "$out"
 case "$out" in *"rc=0"*) pass=$((pass + 1)); printf '  ✓ EVAL_RUN exits 0\n' ;;
   *) fail=$((fail + 1)); printf '  ✗ EVAL_RUN exits 0 (got %s)\n' "$out" ;; esac
 
+BADF="$TMP/malformed.json"
 for bad in 'not json at all' '{"tool_name":' '{}' '{"tool_name":"Bash"}' '{"tool_name":"Bash","tool_input":{}}'; do
-  out=$(printf '%s' "$bad" | EVAL_RUN='' bash "$HOOK" 2>/dev/null; echo "rc=$?")
+  printf '%s' "$bad" > "$BADF"
+  out=$(EVAL_RUN='' bash "$HOOK" <"$BADF" 2>/dev/null; echo "rc=$?")
   check "malformed input fails open: $bad" silent "$out"
   case "$out" in *"rc=0"*) pass=$((pass + 1)); printf '  ✓ rc=0 on: %s\n' "$bad" ;;
     *) fail=$((fail + 1)); printf '  ✗ rc=0 on: %s (got %s)\n' "$bad" "$out" ;; esac
 done
 
-out=$(printf '' | EVAL_RUN='' bash "$HOOK" 2>/dev/null; echo "rc=$?")
+: > "$TMP/empty.json"
+out=$(EVAL_RUN='' bash "$HOOK" <"$TMP/empty.json" 2>/dev/null; echo "rc=$?")
 check "empty stdin fails open" silent "$out"
 
+# PIPE-FED, and safe for the same two reasons run_hook() is: `EVAL_RUN=''`
+# reaches the draining `cat`, and only STDOUT is asserted — no `$?` is read.
 check "non-Bash tool -> silent" silent \
   "$(jq -cn '{tool_name:"Edit",tool_input:{file_path:"/x",new_string:"claude -p hi"}}' | EVAL_RUN='' bash "$HOOK" 2>/dev/null)"
+
+# --- 6a. EVAL_RUN asserted STRICTLY, and proven immune to the pipe race ------
+# temperloop#1844. Three things this section pins that §6's pair cannot:
+#
+#  (1) STRICT silence. check() reads any non-`ask` output as "silent", so a hook
+#      that printed noise before its EVAL_RUN exit would still pass §6.
+#      probe_eval_run() asserts the whole contract at once: stdout EMPTY,
+#      stderr EMPTY, rc 0.
+#  (2) IMMUNITY to the race, made DETERMINISTIC. Whether the old pipe-fed shape
+#      failed was a function of the 64 KiB pipe buffer: a small payload fits, so
+#      the writer finishes before the hook exits and rc is 0 — that is the size
+#      that ALWAYS passed and therefore proves nothing. A payload larger than
+#      the buffer leaves the writer mid-write, and the race becomes a certainty
+#      (rc=141 locally, rc=2 in CI where jq reports the failed write). The same
+#      case is run at BOTH sizes and both must report the HOOK's own rc=0.
+#  (3) DISCRIMINATION. Two mutants of the hook — built in $TMP, never the real
+#      file — prove the assertion still goes red if the early exit is REMOVED or
+#      made NON-SILENT.
+check_eval_run_clean "EVAL_RUN=1 is strictly silent (stdout+stderr empty, rc 0)" \
+  "$HOOK" "$EVAL_FIXTURE"
+
+# A payload comfortably past the 64 KiB pipe buffer. Under the pre-fix pipe-fed
+# shape this is a reliable red; fed from a file it cannot be.
+PIPE_BUF=65536
+BIG_PROMPT=$(head -c 200000 /dev/zero | tr '\0' 'x')
+BIG_FIXTURE=$(fixture "claude -p \"$BIG_PROMPT\"")
+
+# The fixture must actually BE big — assert it, do not assume it. This case is
+# the whole discriminating proof for #1844, and a case that silently stops
+# exercising its own premise is worse than no case: it reports green forever.
+# That is not hypothetical — CI run 32915921501 ran this very assertion against
+# a ZERO-BYTE fixture (see fixture()'s header) and passed, because EVAL_RUN
+# exits 0 silently on empty stdin too. Anything that breaks fixture generation
+# — an argv limit, a jq that lacks --rawfile, a full $TMPDIR — now lands HERE,
+# loudly, instead of hollowing out the assertion below.
+BIG_BYTES=$(wc -c < "$BIG_FIXTURE" | tr -d ' ')
+if [ "$BIG_BYTES" -gt "$PIPE_BUF" ]; then
+  pass=$((pass + 1))
+  printf '  ✓ the >pipe-buffer fixture really is >pipe-buffer (%s bytes > %s)\n' "$BIG_BYTES" "$PIPE_BUF"
+else
+  fail=$((fail + 1))
+  printf '  ✗ the >pipe-buffer fixture is only %s bytes (need >%s) — the case below is NOT exercising the race\n' \
+    "$BIG_BYTES" "$PIPE_BUF"
+fi
+
+check_eval_run_clean "EVAL_RUN=1 stays clean on a payload LARGER than the pipe buffer (the #1844 race, made deterministic)" \
+  "$HOOK" "$BIG_FIXTURE"
+
+# MUTATION PROOF (a): delete the EVAL_RUN early exit. The hook then runs its
+# scan and emits an `ask` for the bare spawn in the fixture -> not silent.
+MUT_NOEXIT="$TMP/hook-mutant-no-eval-exit.sh"
+awk '!/EVAL_RUN:-/' "$HOOK" > "$MUT_NOEXIT"
+check_eval_run_dirty "MUTATION PROOF: removing the EVAL_RUN early exit turns the case RED" \
+  "$MUT_NOEXIT" "$EVAL_FIXTURE"
+
+# MUTATION PROOF (b): keep the early exit but make it NON-SILENT. §6's check()
+# would still read this as "silent" (it is not an `ask`); the strict triple does
+# not. This is why the assertion was strengthened rather than merely re-fed.
+MUT_NOISY="$TMP/hook-mutant-noisy-eval-exit.sh"
+awk '/EVAL_RUN:-/ { print "[ -n \"${EVAL_RUN:-}\" ] && { echo \"eval-run noise\"; exit 0; }"; next } { print }' \
+  "$HOOK" > "$MUT_NOISY"
+check_eval_run_dirty "MUTATION PROOF: a NON-SILENT EVAL_RUN early exit turns the case RED" \
+  "$MUT_NOISY" "$EVAL_FIXTURE"
+
+# --- 7. STRUCTURAL GUARD: no exit-status assertion may be PIPE-FED ------------
+# temperloop#1844 lived because the rule it broke existed nowhere but in a
+# reviewer's head. The shape is statically recognisable, so recognise it: an
+# assertion in THIS file that measures the hook's exit status (`rc=$?`) must be
+# fed by `<file`, never through a `|`.
+#
+# The guard is deliberately SCOPED TO rc-MEASURING call sites rather than
+# banning pipes into the hook outright. run_hook() and the two stdout-only
+# assertions above are pipe-fed and correct — they read no `$?`, so no upstream
+# status can reach a verdict — and a blanket ban would force a pointless rewrite
+# of ~60 call sites while teaching the wrong rule.
+# Three narrowings were found and closed by review before this shipped, each of
+# which let the detector report green while a real instance stood one file over:
+#   1. it scanned only its OWN file, so the sibling suite was invisible;
+#   2. it keyed on the literal `bash "$HOOK"`, so an indirect interpreter
+#      (`"$BASH_BIN" "$HOOK"`) did not match;
+#   3. it joined only backslash-continued lines, so the `out=$(…)` /
+#      next-line `rc=$?` split — a common idiom — was invisible.
+# It now keys on the HOOK token itself (interpreter-agnostic) and looks ahead
+# one logical line for the rc measurement.
+#
+# The sigil is spelled as a character class ("[$]HOOK") so the detector's own
+# source can never match the detector.
+scan_for_pipe_fed_rc_assertions() { # <file> -> one "PIPE-FED-RC: <line>" per finding
+  awk '
+    { raw[NR] = $0 }
+    END {
+      n = 0
+      for (i = 1; i <= NR; i++) {          # fold backslash continuations first
+        line = raw[i]
+        while (line ~ /\\[ \t]*$/ && i < NR) { sub(/\\[ \t]*$/, "", line); i++; line = line " " raw[i] }
+        logical[++n] = line
+      }
+      for (i = 1; i <= n; i++) {
+        line = logical[i]
+        t = line; sub(/^[ \t]+/, "", t)
+        if (t ~ /^#/) continue                   # prose NAMING the shape is not a call site
+        where = match(line, /["\x27]?[$]\{?HOOK\}?["\x27]?/)
+        if (where == 0) continue                 # not a SUT invocation
+        # The rc measurement may sit on this logical line OR the next one --
+        # `out=$(...)` then `rc=$?` is as common as the one-line `; rc=$?`.
+        measures = (line ~ /rc=[$][?]/)
+        if (!measures && i < n) {
+          nxt = logical[i+1]; sub(/^[ \t]+/, "", nxt)
+          measures = (nxt ~ /^rc=[$][?]/)
+        }
+        if (!measures) continue
+        pre = substr(line, 1, where - 1)
+        gsub(/\|\|/, "", pre)                    # || is a logical operator, not a pipe
+        if (index(pre, "|") == 0) continue       # fed by redirect: correct
+        sub(/^[ \t]+/, "", line)
+        print "PIPE-FED-RC: " line
+      }
+    }
+  ' "$1"
+}
+
+# Scan BOTH suites whose hook has a non-draining EVAL_RUN arm, not just this
+# file: the defect class does not respect file boundaries, and a guard that
+# reports green while the sibling instance stands teaches that the rule is
+# enforced when it is not (that is exactly what review caught here). Kept to an
+# explicit two-file set rather than a general hook-test linter over
+# claude/hooks/tests/*.sh -- kernel principle 7, advisory over enforced
+# discipline: a hook that DOES drain stdin cannot exhibit this, so a blanket
+# scan buys false positives and a pointless rewrite. Add a suite here when its
+# hook grows a non-draining early exit.
+GUARDED_SUITES="${BASH_SOURCE[0]} $HERE/test_write_lane_guard.sh"
+offenders=""
+for _suite in $GUARDED_SUITES; do
+  [ -f "$_suite" ] || continue
+  _found=$(scan_for_pipe_fed_rc_assertions "$_suite")
+  [ -z "$_found" ] || offenders="${offenders}${offenders:+
+}$(basename "$_suite"): $_found"
+done
+if [ -z "$offenders" ]; then
+  pass=$((pass + 1))
+  printf '  ✓ STRUCTURAL GUARD: no exit-status assertion in this suite is pipe-fed (temperloop#1844)\n'
+else
+  fail=$((fail + 1))
+  printf '  ✗ STRUCTURAL GUARD: an assertion here measures the hook exit status through a PIPE.\n'
+  printf '     The hook exits under EVAL_RUN WITHOUT draining stdin, so the upstream writer takes\n'
+  printf '     EPIPE and pipefail hands you ITS status. Feed it from a file: bash "$HOOK" <"$(fixture …)"\n'
+  printf '%s\n' "$offenders" | sed 's/^/     /'
+fi
+
+# 7m. MUTATION PROOF for the guard: the SAME detector, run over a throwaway file
+# carrying both shapes. The offending bytes are assembled through printf with a
+# split sigil so this file never contains them contiguously — otherwise test 7,
+# which scans this very file, would flag its own fixture.
+SIGIL='$'
+SYNTH="$TMP/synthetic-pipe-fed-suite.sh"
+# Lines 1-3 are the original three. Lines 4-5 cover the two spellings the
+# NARROW detector missed (review found both): an indirect interpreter, and the
+# `out=$(…)` / next-line `rc=$?` split. Line 6 is the negative for the split
+# lookahead — redirect-fed, so it must NOT be flagged even though an rc= line
+# follows it. Expected findings: exactly 3 (lines 1, 4, 5).
+{
+  printf '%s\n' 'out=$(printf x | EVAL_RUN=1 bash "'"$SIGIL"'HOOK" 2>/dev/null; echo "rc='"$SIGIL"'?")'
+  printf '%s\n' 'out=$(EVAL_RUN=1 bash "'"$SIGIL"'HOOK" <"'"$SIGIL"'f" 2>/dev/null; echo "rc='"$SIGIL"'?")'
+  printf '%s\n' 'plain=$(jq -cn . | EVAL_RUN='"''"' bash "'"$SIGIL"'HOOK" 2>/dev/null)'
+  printf '%s\n' 'out=$(printf x | PATH=$N "'"$SIGIL"'BASH_BIN" "'"$SIGIL"'HOOK")'"'"'; rc='"$SIGIL"'?'
+  printf '%s\n' 'out=$(printf x | EVAL_RUN=1 bash "'"$SIGIL"'HOOK")'
+  printf '%s\n' 'rc='"$SIGIL"'?'
+  printf '%s\n' 'safe=$(EVAL_RUN=1 bash "'"$SIGIL"'HOOK" <"'"$SIGIL"'f")'
+  printf '%s\n' 'rc='"$SIGIL"'?'
+} > "$SYNTH"
+synth_out=$(scan_for_pipe_fed_rc_assertions "$SYNTH")
+synth_n=$(printf '%s\n' "$synth_out" | grep -c 'PIPE-FED-RC:' || true)
+synth_ok=1
+[ "$synth_n" = "3" ] || synth_ok=0
+printf '%s' "$synth_out" | grep 'printf x |' >/dev/null || synth_ok=0
+printf '%s' "$synth_out" | grep 'BASH_BIN' >/dev/null || synth_ok=0          # indirect interpreter
+printf '%s' "$synth_out" | grep -v 'BASH_BIN' | grep -c 'printf x |' >/dev/null || synth_ok=0
+printf '%s' "$synth_out" | grep 'safe=' >/dev/null && synth_ok=0             # redirect-fed: must NOT flag
+if [ "$synth_ok" = "1" ]; then
+  pass=$((pass + 1))
+  printf '  ✓ MUTATION PROOF: the detector catches all THREE pipe-fed rc shapes — direct, indirect interpreter, and next-line rc=$? — and does not flag the redirect-fed one\n'
+else
+  fail=$((fail + 1))
+  printf '  ✗ MUTATION PROOF: detector found %s finding(s), expected exactly 3 (direct, indirect, next-line-rc):\n%s\n' \
+    "$synth_n" "$synth_out"
+fi
+
+# 7s. The guard must actually SEE the sibling suite — the blind spot review
+# caught. Inject the pre-fix pipe-fed shape into a throwaway copy of it and
+# require the two-suite scan to name it.
+SYNTH_SIB="$TMP/synthetic-sibling-suite.sh"
+cp "$HERE/test_write_lane_guard.sh" "$SYNTH_SIB"
+printf '%s\n' 'out="$(printf x | PATH=$N "'"$SIGIL"'BASH_BIN" "'"$SIGIL"'HOOK")"; rc='"$SIGIL"'?' >>"$SYNTH_SIB"
+if scan_for_pipe_fed_rc_assertions "$SYNTH_SIB" | grep 'PIPE-FED-RC:' >/dev/null; then
+  pass=$((pass + 1))
+  printf '  ✓ MUTATION PROOF: the detector catches a pipe-fed rc assertion injected into the SIBLING suite (the blind spot that let temperloop#1844 stand one file over)\n'
+else
+  fail=$((fail + 1))
+  printf '  ✗ MUTATION PROOF: the detector did NOT catch an injected pipe-fed rc assertion in the sibling suite — the two-suite scan is not doing its job\n'
+fi
+rm -f "$SYNTH_SIB"
 
 echo
 if [ "$fail" -gt 0 ]; then
