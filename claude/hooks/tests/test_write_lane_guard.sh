@@ -111,8 +111,14 @@ check "non-matching tool (Read) -> silent"          silent \
   "$( cd "$HOME_REPO" && env CLAUDE_PROJECT_DIR="$HOME_REPO" bash "$HOOK" \
       <<<"$(jq -cn --arg cwd "$HOME_REPO" '{tool_name:"Read", tool_input:{file_path:"whatever"}, cwd:$cwd}')" )"
 
-# malformed input -> exit 0, no output
-out="$(cd "$HOME_REPO" && printf 'not json' | CLAUDE_PROJECT_DIR="$HOME_REPO" bash "$HOOK")"; rc=$?
+# malformed input -> exit 0, no output.
+# Fed by HERE-STRING, not a pipe (temperloop#1844): this hook's EVAL_RUN arm
+# exits at line 68 WITHOUT draining stdin, so a pipe-fed writer can take
+# EPIPE/SIGPIPE and — under this file's `set -o pipefail` — donate ITS status to
+# the `$?` measured on the next line. The same latent shape that ejected PR
+# #1842 from the merge queue. `<<<` is already this suite's idiom (see the Read
+# case above); it costs one trailing newline that `INPUT=$(cat)` strips anyway.
+out="$(cd "$HOME_REPO" && CLAUDE_PROJECT_DIR="$HOME_REPO" bash "$HOOK" <<<'not json')"; rc=$?
 [ "$rc" -eq 0 ] || { fail=$((fail+1)); printf '  ✗ malformed input: exit=%s (want 0)\n' "$rc"; }
 [ -z "$out" ]   || { fail=$((fail+1)); printf '  ✗ malformed input produced output: %s\n' "$out"; }
 echo "  ✓ malformed input fails open (exit 0, no output)"
