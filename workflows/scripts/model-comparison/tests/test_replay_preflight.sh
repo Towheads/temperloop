@@ -39,6 +39,10 @@
 #   25-26 no scheduled/cron/autonomous entry point exists, + mutation proof
 #         the detector itself would catch one
 #   27    hard constraint: a trailing flag with no value fails fast, bounded
+#   28    STRUCTURAL GUARD (temperloop#1832): every SUT invocation in this
+#         file goes through run_pf, so the empty-lake / quota-cache pin is
+#         universal by construction rather than by convention, + mutation
+#         proof the detector catches both bypass shapes
 #
 # Usage: bash workflows/scripts/model-comparison/tests/test_replay_preflight.sh
 #
@@ -139,20 +143,53 @@ mk_quota_cache() {
 
 NOCACHE="$WORK/no-such-quota-cache.json"
 
-# run_pf <env-assignments-string> -- <args...> — invoke preflight with the
-# given env (a single string passed to `env`) plus a deterministic
-# BUILD_QUOTA_CACHE pointing at a nonexistent file by default (fail-open,
-# never stops the batch) unless the caller's env string overrides it.
-# ...and a deterministically EMPTY attribution raw lake, so the per-replay
-# figure is always the configured literal here (temperloop#1555). Without
-# this the derivation would read the REAL checkout's meta/data/raw, and a
-# developer host that has executed live replays would flip this whole suite
-# into the derived arm — a suite that passes or fails depending on whose
-# machine it runs on is not a measurement. The derivation itself is
-# exercised in test_replay_preflight_derive.sh.
+# run_pf [--quota <cache-file>] <cmd...> — THE ONLY sanctioned path to the
+# SUT in this file (structurally enforced by test 28 below). It pins the two
+# host-dependent inputs preflight reads out of the ambient environment:
+#
+#   BUILD_QUOTA_CACHE      — a nonexistent file by default (quota
+#                            "unavailable" -> fail-open, never stops the
+#                            batch). `--quota <file>` swaps in a fixture
+#                            cache for the SECTION E gate tests, which need
+#                            a real pause/healthy snapshot.
+#   MODEL_USAGE_RAW_DIR    — a deterministically EMPTY attribution raw lake,
+#                            so the per-replay figure is always the
+#                            configured literal here (temperloop#1555).
+#                            Without this the derivation would read the REAL
+#                            checkout's meta/data/raw, and a developer host
+#                            that has executed live replays would flip this
+#                            whole suite into the derived arm — a suite that
+#                            passes or fails depending on whose machine it
+#                            runs on is not a measurement. The derivation
+#                            itself is exercised in
+#                            test_replay_preflight_derive.sh.
+#
+# Both pins are EXPORTS in a subshell rather than an `env` prefix, so a
+# caller may still be a shell FUNCTION (`run_with_timeout`, test 27) and not
+# only an external command — `env` can exec only the latter. A caller's own
+# `env VAR=…` prefix still wins over both pins, which is how the SECTION E
+# tests once (wrongly) reached the SUT with a bare `env` and lost the lake
+# pin with it (temperloop#1832): the fix is `--quota`, not a bare `env`.
+#
+# temperloop#1832: tests 13/14/16m/27 formerly bypassed this helper and so
+# read whatever lake the host happened to have. On a host with n>=
+# REPLAY_PREFLIGHT_DERIVE_MIN_N real replay-candidate records the derived
+# per-replay figure (observed ~931859) swamped test 13's configured literal
+# (1), pushing a 20-replay batch to ~18.6M against its 1,000,000 ceiling, so
+# `ceiling_exceeded` won the stop_reason race over the expected
+# `quota_paused`. CI stayed green only because its lake is empty.
 EMPTY_LAKE="$WORK/empty-lake"; mkdir -p "$EMPTY_LAKE"
 run_pf() {
-  env BUILD_QUOTA_CACHE="$NOCACHE" MODEL_USAGE_RAW_DIR="$EMPTY_LAKE" "$@"
+  local quota="$NOCACHE"
+  while [ "${1:-}" = "--quota" ]; do
+    # Guard $2 before reading it: under this file's `set -u` a valueless
+    # --quota would abort the whole script, bypassing fail() — so the run
+    # would emit no FAIL: line and no trailing summary, just a bare
+    # unbound-variable message.
+    [ $# -ge 2 ] || fail "run_pf: --quota given with no value"
+    quota="$2"; shift 2
+  done
+  ( export BUILD_QUOTA_CACHE="$quota" MODEL_USAGE_RAW_DIR="$EMPTY_LAKE"; "$@" )
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -353,7 +390,7 @@ mk_quota_cache "$QUOTA_HEALTHY" 20    # 80% remaining, well above pause threshol
 # ---------------------------------------------------------------------------
 count
 rc=0
-out13="$(env BUILD_QUOTA_CACHE="$QUOTA_PAUSE" REPLAY_PREFLIGHT_BATCH_CAP=10 \
+out13="$(run_pf --quota "$QUOTA_PAUSE" env REPLAY_PREFLIGHT_BATCH_CAP=10 \
   REPLAY_PREFLIGHT_TOKENS_PER_REPLAY=1 REPLAY_PREFLIGHT_CEILING_TOKENS=1000000 \
   MODEL_COMPARISON_MIN_SAMPLE_N=1 bash "$SUT" preflight --corpus-file "$CORPUS_B")" || rc=$?
 [ "$rc" -ne 0 ] || fail "13: expected non-zero exit when quota-gate reports pause"
@@ -367,7 +404,7 @@ ok "13 quota-gate.sh reporting pause STOPS the batch even when well under the to
 # ---------------------------------------------------------------------------
 count
 rc=0
-out14="$(env BUILD_QUOTA_CACHE="$QUOTA_HEALTHY" REPLAY_PREFLIGHT_BATCH_CAP=10 \
+out14="$(run_pf --quota "$QUOTA_HEALTHY" env REPLAY_PREFLIGHT_BATCH_CAP=10 \
   REPLAY_PREFLIGHT_TOKENS_PER_REPLAY=1 REPLAY_PREFLIGHT_CEILING_TOKENS=1000000 \
   MODEL_COMPARISON_MIN_SAMPLE_N=1 bash "$SUT" preflight --corpus-file "$CORPUS_B")" || rc=$?
 [ "$rc" -eq 0 ] || fail "14: expected exit 0 on healthy quota, got rc=$rc: $out14"
@@ -401,7 +438,7 @@ mutate_file "$SUT_16" \
   '  quota_json="{\"action\":\"proceed\"}"' \
   || fail "16m: mutation apply failed"
 mut_rc=0
-mut_out="$(env BUILD_QUOTA_CACHE="$QUOTA_PAUSE" REPLAY_PREFLIGHT_BATCH_CAP=10 \
+mut_out="$(run_pf --quota "$QUOTA_PAUSE" env REPLAY_PREFLIGHT_BATCH_CAP=10 \
   REPLAY_PREFLIGHT_TOKENS_PER_REPLAY=1 REPLAY_PREFLIGHT_CEILING_TOKENS=1000000 \
   MODEL_COMPARISON_MIN_SAMPLE_N=1 bash "$SUT_16" preflight --corpus-file "$CORPUS_B")" || mut_rc=$?
 rm -rf "$MIRROR_16"
@@ -633,10 +670,119 @@ ok "26m MUTATION PROOF: the same detector used in test 26 DOES catch an injected
 # ---------------------------------------------------------------------------
 count
 rc=0
-run_with_timeout 5 bash "$SUT" preflight --corpus-file >/dev/null 2>&1 || rc=$?
+run_pf run_with_timeout 5 bash "$SUT" preflight --corpus-file >/dev/null 2>&1 || rc=$?
 [ "$rc" -ne 0 ] || fail "27: preflight --corpus-file (trailing, no value) should fail, got rc=0"
 [ "$rc" -ne 137 ] || fail "27: preflight --corpus-file (trailing, no value) HUNG (timed out) instead of failing fast"
 ok "27 a trailing --corpus-file with no value fails fast and bounded, never an infinite shift-2-no-op loop"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SECTION J — STRUCTURAL GUARD on this suite's own hermeticity
+# (temperloop#1832). The run_pf comment above has always STATED the intent —
+# "a suite that passes or fails depending on whose machine it runs on is not
+# a measurement" — but nothing ENFORCED it, and four invocations (13, 14,
+# 16m, 27) silently drifted off the helper and back onto the host's real
+# quota cache and attribution lake. A comment is not a control; this is.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# scan_for_unpinned_sut_invocations <file> — print one line per SUT
+# invocation in <file> that does NOT go through run_pf; print nothing when
+# the file is clean. The ONE detector both the real-file assertion (28) and
+# the mutation proof (28m) share, so the two can never silently drift apart
+# (same shape as scan_for_autonomous_replay_wiring above).
+#
+# It first joins backslash-continuations into logical lines (every
+# invocation here is wrapped across 2-3 physical lines, so a per-physical-
+# line scan would report every one of them as unpinned), skips comments,
+# then flags two shapes:
+#   UNPINNED-INVOCATION — a `bash "$SUT…"` launch on a logical line with no
+#                         run_pf on it
+#   DIRECT-EXEC         — a `"$SUT…" preflight` launch with no `bash`, the
+#                         one form the first check cannot see; flagging it
+#                         forces every future call site into the `bash`
+#                         shape the first check DOES cover
+# Both patterns spell the sigil as a character class ("[\$]SUT") so the
+# detector's own source lines can never match the detector itself.
+#
+# The sigil accepts the QUOTED, BRACED and UNQUOTED spellings alike
+# ("$SUT" / "${SUT}" / $SUT). Matching only the exact `"$SUT"` form left the
+# guard blind to `bash "${SUT}"` — an equally idiomatic spelling that would
+# reintroduce the temperloop#1832 host-lake bypass with test 28 still green,
+# which is the one failure this guard exists to make impossible. 28m proves
+# every spelling is covered.
+scan_for_unpinned_sut_invocations() {
+  perl -0777 -ne '
+    s/\\\n/ /g;
+    for my $l (split /\n/, $_) {
+      next if $l =~ /^\s*#/;
+      # Strip a trailing comment before the pinned-ness test: otherwise the
+      # word run_pf merely MENTIONED in a trailing comment (or a string) on
+      # an otherwise-unpinned line reads as pinned.
+      my $code = $l;
+      $code =~ s/\s#.*$//;
+      print "UNPINNED-INVOCATION: $l\n"
+        if $code =~ /bash\s+["\x27]?[\$]\{?SUT[A-Z0-9_]*\}?/ && $code !~ /\brun_pf\b/;
+      print "DIRECT-EXEC: $l\n"
+        if $code =~ /["\x27]?[\$]\{?SUT[A-Z0-9_]*\}?["\x27]?\s+preflight/
+        && $code !~ /bash\s+["\x27]?[\$]\{?SUT/;
+    }
+  ' "$1"
+}
+
+# ---------------------------------------------------------------------------
+# 28. Every SUT invocation in THIS file is routed through run_pf, so the
+#     empty-lake + quota-cache pin is universal by construction and a future
+#     test cannot silently drop it.
+# ---------------------------------------------------------------------------
+count
+SELF="$HERE/$(basename "${BASH_SOURCE[0]}")"
+[ -f "$SELF" ] || fail "28: could not resolve this suite's own source path: $SELF"
+unpinned="$(scan_for_unpinned_sut_invocations "$SELF")"
+[ -z "$unpinned" ] || fail "28: a SUT invocation in this suite bypasses run_pf and so reads the HOST's real BUILD_QUOTA_CACHE / MODEL_USAGE_RAW_DIR instead of the pinned fixtures (temperloop#1832). Route it through run_pf — use 'run_pf --quota <file>' when the test needs a real quota-cache fixture, never a bare env prefix:
+$unpinned"
+ok "28 STRUCTURAL GUARD: every SUT invocation in this suite goes through run_pf — the empty-lake / quota-cache pin cannot be silently dropped by a future test"
+
+# --- mutation proof: the detector itself catches both bypass shapes -------
+count
+SYNTH_SUITE="$WORK/synthetic-unpinned-suite.sh"
+cp "$SELF" "$SYNTH_SUITE"
+# The injected literals are assembled through printf %s so that THIS file's
+# own source never contains the byte sequences the detector matches on.
+SIGIL='$'
+printf '\nout99="%s(env BUILD_QUOTA_CACHE=x bash "%sSUT" preflight --corpus-file c)"\n' \
+  "$SIGIL" "$SIGIL" >>"$SYNTH_SUITE"
+scan_for_unpinned_sut_invocations "$SYNTH_SUITE" | grep '^UNPINNED-INVOCATION:' >/dev/null \
+  || fail "28m: MUTATION PROOF FAILED — the detector did not catch an injected bare-env (run_pf-bypassing) SUT invocation in a synthetic copy of this suite"
+printf '\nout98="%s("%sSUT" preflight --corpus-file c)"\n' "$SIGIL" "$SIGIL" >>"$SYNTH_SUITE"
+scan_for_unpinned_sut_invocations "$SYNTH_SUITE" | grep '^DIRECT-EXEC:' >/dev/null \
+  || fail "28m: MUTATION PROOF FAILED — the detector did not catch an injected direct (no-bash) SUT invocation in a synthetic copy of this suite"
+
+# Every SPELLING of the sigil, not just the one this file happens to use.
+# A guard that only sees `"$SUT"` would let `bash "${SUT}"` reintroduce
+# temperloop#1832 while staying green — so each spelling gets its own
+# throwaway copy and must be caught on its own.
+for spelling in braced unquoted trailing-comment; do
+  SPELL_SUITE="$WORK/synthetic-unpinned-$spelling.sh"
+  cp "$SELF" "$SPELL_SUITE"
+  case "$spelling" in
+    braced)
+      printf '\nout97="%s(env BUILD_QUOTA_CACHE=x bash "%s{SUT}" preflight --corpus-file c)"\n' \
+        "$SIGIL" "$SIGIL" >>"$SPELL_SUITE" ;;
+    unquoted)
+      printf '\nout96="%s(env BUILD_QUOTA_CACHE=x bash %sSUT preflight --corpus-file c)"\n' \
+        "$SIGIL" "$SIGIL" >>"$SPELL_SUITE" ;;
+    trailing-comment)
+      # run_pf appears ONLY inside a trailing comment — the line is genuinely
+      # unpinned and must still be flagged.
+      printf '\nout95="%s(env BUILD_QUOTA_CACHE=x bash "%sSUT" preflight --corpus-file c)"  # was run_pf before\n' \
+        "$SIGIL" "$SIGIL" >>"$SPELL_SUITE" ;;
+  esac
+  scan_for_unpinned_sut_invocations "$SPELL_SUITE" | grep '^UNPINNED-INVOCATION:' >/dev/null \
+    || fail "28m: MUTATION PROOF FAILED — the detector did not catch an injected '$spelling' SUT invocation; a future author using that spelling would reintroduce the temperloop#1832 host-lake bypass with this guard still green"
+  rm -f "$SPELL_SUITE"
+done
+
+rm -f "$SYNTH_SUITE"
+ok "28m MUTATION PROOF: the same detector used in test 28 catches every bypass shape — a bare-env invocation, a direct no-bash exec, and the braced / unquoted / run_pf-only-in-a-trailing-comment spellings"
 
 echo "---"
 echo "$pass/$total tests passed"
