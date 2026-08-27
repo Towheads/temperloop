@@ -1,6 +1,8 @@
 - **`/sweep` now reviews and offers to close fully-drained Operational
   epics at the end of every run** (epic #1847 (epic-as-metadata for
-  operational work)). Once an epic's members admitted into sweep's pool
+  operational work)). "Operational" is the established-pattern half of
+  the Operational/Foundational work-class split (`claude/work-class-policy.md`).
+  Once an epic's members admitted into sweep's pool
   have all reached a terminal state — every one of the epic's members, not
   just the ones this run drove — the parent is offered for close on an
   attended run (default: close), with a one-line closing comment pointing
