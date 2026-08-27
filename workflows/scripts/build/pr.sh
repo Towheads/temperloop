@@ -16,7 +16,8 @@
 #   pr.sh recover-probe <worktreePath> <branch>    # 3c lost-return side-effect probe
 #   pr.sh open --verdict <file|-> [--gh-issue N] [--also-closes N,N,...]
 #         [--plan-link <target>] [--source <ref>] [--verification-surface-file <path>] \
-#         ( --body-only | --repo <repo-root> --branch <b> --title <t> )
+#         ( --body-only | --update-pr <n> --repo <repo-root>
+#           | --repo <repo-root> --branch <b> --title <t> )
 #   pr.sh acceptance-extract <bodyFile|->     # inverse of the ## Acceptance recap
 #
 # `open` assembles the PR body from the worker's verdict JSON (summary,
@@ -38,7 +39,11 @@
 # its own verification surface is STRIPPED from that surface before the body is
 # assembled (temperloop#1023 — see strip_surface_closes below), so the assembled
 # body carries exactly one linkage block. `--body-only` prints the assembled
-# body verbatim and exits — the dry mode tests assert on.
+# body verbatim and exits — the dry mode tests assert on. `--update-pr <n>`
+# (temperloop#1846) assembles the body through this exact same path but runs
+# `gh pr edit <n> --body` instead of create — the .mjs re-renders an open PR's
+# body after a CI-fix re-review round adds §3e reviewer evidence the original
+# 3f body couldn't carry.
 #
 # `acceptance-extract` is the INVERSE of `open`'s `## Acceptance` recap: it
 # reads an assembled PR body back into the worker's `acceptance_results`
@@ -81,8 +86,11 @@
 #   open       → {"outcome":"PR_OPENED","pr_number":…,"url":…,
 #                 "surface_closes_stripped":N} |
 #                {"outcome":"EXISTS","pr_number":…,"url":…,
+#                 "surface_closes_stripped":N} |
+#                {"outcome":"BODY_UPDATED","pr_number":…,
 #                 "surface_closes_stripped":N}
 #                (EXISTS when gh reports a PR for that branch already exists — adopt it;
+#                 BODY_UPDATED for the --update-pr re-render arm (temperloop#1846);
 #                 surface_closes_stripped = how many duplicate bare closing-keyword
 #                 lines were removed from the worker's verification surface, normally 0)
 #   recover-probe → {"outcome":"RECOVER_NONE"|"RECOVER_DIRTY"|"RECOVER_COMMITTED"
@@ -113,7 +121,7 @@ die() {
 }
 
 usage() {
-  die "usage: pr.sh scan <worktreePath> | base-check <worktreePath> | rebase <worktreePath> | push <worktreePath> <branch> [--force] | recover-probe <worktreePath> <branch> | open --verdict <file|-> [--gh-issue N] [--also-closes N,N,...] [--plan-link <target>] [--source <ref>] [--verification-surface-file <path>] (--body-only | --repo <repo-root> --branch <branch> --title <title>) | acceptance-extract <bodyFile|->"
+  die "usage: pr.sh scan <worktreePath> | base-check <worktreePath> | rebase <worktreePath> | push <worktreePath> <branch> [--force] | recover-probe <worktreePath> <branch> | open --verdict <file|-> [--gh-issue N] [--also-closes N,N,...] [--plan-link <target>] [--source <ref>] [--verification-surface-file <path>] (--body-only | --update-pr <n> --repo <repo-root> | --repo <repo-root> --branch <branch> --title <title>) | acceptance-extract <bodyFile|->"
 }
 
 # Physical-path resolve for an EXISTING dir (portable — no GNU readlink -f).
@@ -825,7 +833,7 @@ cmd_acceptance_extract() {
 
 cmd_open() {
   local verdict_src="" repo="" branch="" title="" gh_issue="" also_closes="" \
-        plan_link="" source_ref="" surface_file="" surface="" body_only="" verdict body out url pr_number n raw
+        plan_link="" source_ref="" surface_file="" surface="" body_only="" update_pr="" verdict body out url pr_number n raw
   local stripped=0
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -839,6 +847,7 @@ cmd_open() {
       --source)      [ $# -ge 2 ] || usage; source_ref="$2"; shift ;;
       --verification-surface-file) [ $# -ge 2 ] || usage; surface_file="$2"; shift ;;
       --body-only)   body_only=1 ;;
+      --update-pr)   [ $# -ge 2 ] || usage; update_pr="$2"; shift ;;
       *) usage ;;
     esac
     shift
@@ -877,6 +886,27 @@ cmd_open() {
 
   if [ -n "$body_only" ]; then
     printf '%s\n' "$body"
+    return 0
+  fi
+
+  # --update-pr <n> (temperloop#1846): re-render an EXISTING PR's body through
+  # this same assemble_body path — the .mjs's 3g.5 re-render after a CI-fix
+  # re-review round adds reviewer evidence 3f's original body couldn't carry.
+  # Deliberately a mode of `open`, not a sibling command: the body must be
+  # byte-identical to what a fresh `open` would assemble (same verdict read,
+  # linkage validation, surface resolve + closes strip), so the one shared
+  # code path is the guarantee. --branch/--title are create-time-only.
+  if [ -n "$update_pr" ]; then
+    case "$update_pr" in
+      ''|*[!0-9]*) die "open --update-pr requires a numeric PR number (got '$update_pr')" ;;
+    esac
+    [ -n "$repo" ] || die "open --update-pr requires --repo <repo-root>"
+    repo="$(abs_dir "$repo")" || die "repo-root does not exist"
+    if ! out="$(cd "$repo" && gh pr edit "$update_pr" --body "$body" 2>&1)"; then
+      die "gh pr edit failed: $out"
+    fi
+    jq -cn --arg n "$update_pr" --argjson stripped "$stripped" \
+      '{outcome:"BODY_UPDATED", pr_number:($n|tonumber), surface_closes_stripped:$stripped}'
     return 0
   fi
 

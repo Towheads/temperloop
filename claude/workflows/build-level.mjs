@@ -2569,13 +2569,18 @@ async function runReviewers(item, wt) {
   const tsvText = typeof diffOut.tsv === 'string' ? diffOut.tsv : '';
   const routes = determineReviewers(item, files, tsvText);
   if (routes.length === 0) {
-    return { summary: '', notes: '', blocking: [], ran: [], skipped: [] };
+    return { summary: '', notes: '', sections: [], blocking: [], ran: [], skipped: [] };
   }
 
   const ran = [];
   const skipped = [];
   const blocking = [];
-  const notesParts = [];
+  // sections — the STRUCTURED per-reviewer findings ({ reviewer, text }, ran
+  // order), alongside the pre-joined `notes` string (temperloop#1846). The
+  // structure is what lets reviewBodySuffix() relabel a CI-fix round's block
+  // (`### <reviewer> (ci-fix round N)`) without regex surgery on reviewer
+  // text that may itself contain `### ` lines.
+  const sections = [];
   for (const route of routes) {
     let text;
     try {
@@ -2632,7 +2637,7 @@ async function runReviewers(item, wt) {
     // temperloop#1450 — keep the FULL text, not just the name: a MEDIUM/LOW-only
     // review is still real advisory output and must not evaporate once the HIGH
     // check below has read it.
-    notesParts.push(`### ${route.reviewer}\n${textStr}`);
+    sections.push({ reviewer: route.reviewer, text: textStr });
     if (reviewHasBlockingFinding(textStr)) {
       blocking.push({ reviewer: route.reviewer, findings: textStr });
     }
@@ -2641,7 +2646,58 @@ async function runReviewers(item, wt) {
   const parts = [];
   if (ran.length) parts.push(`§3e review — ran: ${ran.map((r) => r.reviewer).join(', ')}`);
   if (skipped.length) parts.push(skipped.map((s) => s.note).join('; '));
-  return { summary: parts.join(' · '), notes: notesParts.join('\n\n'), blocking, ran, skipped };
+  return {
+    summary: parts.join(' · '),
+    notes: sections.map((s) => `### ${s.reviewer}\n${s.text}`).join('\n\n'),
+    sections,
+    blocking,
+    ran,
+    skipped,
+  };
+}
+
+// reviewBodySuffix — the ONE renderer of §3e evidence into the PR body
+// (temperloop#1846), across EVERY round handed to it: rounds[0] is the
+// original 3f pass, rounds[1..] are ciPollLoop's CI-fix re-reviews. Before
+// this, the body suffix was built from rounds[0] alone while park()'s tally
+// merged every round — so a reviewer that ran only in a CI-fix round (its
+// diff includes the fix commit, which can touch file classes the original
+// diff never did) had its findings affirmatively OMITTED from the body's
+// "ran:" line and ## Review notes, the exact #1846 failure (body said
+// "ran: docs-reviewer" while review.ran carried shell-reviewer and its three
+// findings). Rendering rules:
+//   - the "ran:" line names every DISTINCT reviewer across all rounds — a
+//     name-set union, so it can never be a subset of the tally's review.ran;
+//   - every round's findings section is spliced, none de-duped away: a
+//     CI-fix round's block is relabeled `### <reviewer> (ci-fix round N)` so
+//     a reviewer that ran in two rounds keeps BOTH blocks, distinguishable;
+//   - skip notices are de-duped by their full note text only (byte-identical
+//     notices from re-running the same degraded route add no information).
+// For a single round this renders byte-identically to the pre-#1846 shape.
+function reviewBodySuffix(rounds) {
+  const ranNames = [];
+  const skippedNotes = [];
+  const sectionParts = [];
+  rounds.filter(Boolean).forEach((r, i) => {
+    for (const e of r.ran ?? []) {
+      if (!ranNames.includes(e.reviewer)) ranNames.push(e.reviewer);
+    }
+    for (const s of r.skipped ?? []) {
+      if (!skippedNotes.includes(s.note)) skippedNotes.push(s.note);
+    }
+    for (const sec of r.sections ?? []) {
+      const heading = i === 0 ? sec.reviewer : `${sec.reviewer} (ci-fix round ${i})`;
+      sectionParts.push(`### ${heading}\n${sec.text}`);
+    }
+  });
+  const parts = [];
+  if (ranNames.length) parts.push(`§3e review — ran: ${ranNames.join(', ')}`);
+  if (skippedNotes.length) parts.push(skippedNotes.join('; '));
+  const line = parts.join(' · ');
+  return (
+    (line ? `\n\n${line}` : '') +
+    (sectionParts.length ? `\n\n## Review notes\n${sectionParts.join('\n\n')}` : '')
+  );
 }
 
 // reviewTally — merge one or more runReviewers() rounds (the original 3e pass
@@ -3205,10 +3261,11 @@ async function driveItem(item) {
   // `notes` (temperloop#1450) is the reviewer's FULL findings text, rendered
   // as its own `## Review notes` section so a non-blocking (MEDIUM/LOW-only)
   // pass is still visible to the human reviewer — not computed, checked for
-  // HIGH, and thrown away.
-  const reviewSummarySuffix =
-    (review.summary ? `\n\n${review.summary}` : '') +
-    (review.notes ? `\n\n## Review notes\n${review.notes}` : '');
+  // HIGH, and thrown away. Rendered via reviewBodySuffix (temperloop#1846) —
+  // the SAME renderer 3g.5's post-CI-fix re-render uses, so the two surfaces
+  // can never drift; with the single round it renders the pre-#1846 shape
+  // byte-identically.
+  const reviewSummarySuffix = reviewBodySuffix([review]);
 
   // --- 3e.5. Parent-side acceptance gate (quality-gates.sh) ----------------
   // Run the project's static gate SSOT against the worker's work. ABSENT (the
@@ -3719,6 +3776,50 @@ async function driveItem(item) {
   const ciResult = await ciPollLoop(item, ownerRepo, pr, pushedSha, wt);
   if (ciResult.escalation) {
     return escalate(item.slug, ciResult.escalation, { ...ciResult.payload, pr });
+  }
+
+  // --- 3g.5. Re-render §3e evidence after any CI-fix re-review (#1846) ------
+  // The PR body was assembled at 3f from the ORIGINAL review round only, while
+  // park()'s Step-6 tally merges every round — so a reviewer that ran only in
+  // a CI-fix round (its diff includes the fix commit, which can touch file
+  // classes the original diff never did) had real findings that reached ONLY
+  // the tally: the body's "ran:" line affirmatively named a reviewer set that
+  // omitted it, and its findings were invisible at the merge gate (issue
+  // #1846 — body said "ran: docs-reviewer"; review.ran carried shell-reviewer
+  // and its three findings). Rebuild the FULL body through pr.sh's own
+  // assemble_body path (`open --update-pr` — never regex surgery on the live
+  // body) with the suffix merged across every round. Skipped when the merged
+  // suffix equals 3f's (no fix round, or fix rounds that routed no reviewer)
+  // — the common path costs nothing. A failed update DEGRADES with a loud log
+  // line rather than taking down a CI-green item: review is advisory (never a
+  // `checks` gate), and the findings still ride the Step-6 tally below.
+  const fixRounds = ciResult.fixReviewRounds ?? [];
+  const mergedReviewSuffix = reviewBodySuffix([review, ...fixRounds]);
+  if (mergedReviewSuffix !== reviewSummarySuffix) {
+    const mergedVerdictJson = JSON.stringify({
+      status: 'done',
+      summary: (verdict.summary ?? '') + mergedReviewSuffix,
+      acceptance_results: verdict.acceptance_results ?? [],
+      ...(verdict.verification_surface ? { verification_surface: verdict.verification_surface } : {}),
+    });
+    const updateCmd =
+      `vf=$(mktemp) && printf %s ${sq(mergedVerdictJson)} > "$vf" && ` +
+      `${prBin} open --repo ${sq(repoRoot)} --update-pr ${sq(String(pr))} --verdict "$vf"${ghIssueFlag}${alsoClosesFlag}${surfaceFlag} ` +
+      `--plan-link ${sq(planLink)} --source ${sq(item.source ?? '')}; ` +
+      `rc=$?; rm -f "$vf"; exit $rc`;
+    const upd = await runMachinery(updateCmd, {
+      label: `pr-body-update:${item.slug}`,
+      slug: item.slug,
+      phase: enterStage(STAGE_CI),
+    });
+    if (upd && upd.outcome === 'BODY_UPDATED') {
+      log(`[${item.slug}] PR #${pr}: §3e evidence re-rendered across ${1 + fixRounds.length} review round(s) (temperloop#1846)`);
+    } else {
+      log(
+        `[${item.slug}] PR #${pr}: §3e body re-render FAILED — the body's review line may omit CI-fix round ` +
+          `reviewer(s)/findings; they still ride the Step-6 review tally (temperloop#1846): ${JSON.stringify(upd?.outcome ?? upd)}`,
+      );
+    }
   }
 
   // --- 3h. Park as [m] (the workflow returns the record; orchestrator writes)
