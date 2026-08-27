@@ -112,8 +112,16 @@ case "$lookback" in
   ''|*[!0-9]*) lookback=7 ;;
 esac
 
-# Per-stream dir resolution: the emitter's own override env first (so reader
-# and writer can never silently diverge), else the shared kernel lake.
+# Per-stream dir resolution: the emitter's own override env first (the reader
+# follows the writer wherever an override pointed it), else the shared
+# checkout-relative lake — which, with no env set, is ALSO where the three
+# streams' writers land by default: emit-command-run.sh, emit-issue-touch.sh,
+# capture.sh and claim.sh all default to their own checkout's
+# meta/data/raw (claim.sh/capture.sh via git-toplevel since temperloop#1822;
+# before that they pinned $HOME/dev/foundation and this reader silently saw
+# an empty directory from any other checkout). The default-path convergence
+# therefore holds only when reader and writers are the SAME checkout's
+# scripts — a cross-checkout read still needs the env overrides.
 cmd_run_dir="${CMD_RUN_RAW_DIR:-$TELEMETRY_RAW_DIR}"
 issue_touch_dir="${ISSUE_TOUCHES_RAW_DIR:-$TELEMETRY_RAW_DIR}"
 claims_dir="${CLAIMS_RAW_DIR:-$TELEMETRY_RAW_DIR}"

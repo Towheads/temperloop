@@ -85,15 +85,22 @@ source "$SCRIPT_DIR/lib/board.sh"
 
 # Canonical default sink for the append-only issue-touches log (F#916/#919,
 # epic #916 issue-touch-stream) — computed ONCE as a module constant, same
-# pattern as scripts/claim.sh's CLAIMS_RAW_DIR_DEFAULT. capture.sh runs from
-# CONSUMING checkouts too (stageFind, worker cwds symlink/copy this script), so
-# the sink is pinned to the foundation checkout's own raw lake regardless of
-# cwd, exactly like claim.sh's claims log. ISSUE_TOUCHES_RAW_DIR overrides it
+# pattern (and the same resolution, byte-for-byte modulo the var name) as
+# claim.sh's CLAIMS_RAW_DIR_DEFAULT. CHECKOUT-RELATIVE (temperloop#1822): the
+# lake of the checkout THIS script file lives in — the same directory this
+# stream's OTHER writer (emit-issue-touch.sh's `$raw_root/meta/data/raw`) and
+# the reader (telemetry-brief.sh) already resolve — so the one stream no
+# longer tears in half by writer identity, and no phantom `~/dev/foundation/`
+# tree is grown on a host that never cloned foundation. See claim.sh's
+# CLAIMS_RAW_DIR_DEFAULT comment for the full rationale (git-toplevel rather
+# than a fixed `../..` hop, because consuming checkouts vendor this script at
+# a different depth; the absolute literal survives only as the
+# outside-any-git-checkout fallback). ISSUE_TOUCHES_RAW_DIR overrides it
 # (tests only).
 # canonical sink spec: meta/data/raw/README.md (lake path + schema-version
 # convention; this stream's record shape is documented at
 # issue_touch_log_emit below).
-ISSUE_TOUCHES_RAW_DIR_DEFAULT="$HOME/dev/foundation/meta/data/raw"
+ISSUE_TOUCHES_RAW_DIR_DEFAULT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null || echo "$HOME/dev/foundation")/meta/data/raw"
 
 # Append one JSONL record of this capture to the append-only issue-touches
 # stream (F#916/#919) — the `kind:"capture"` half of the stream; `pr-open` and

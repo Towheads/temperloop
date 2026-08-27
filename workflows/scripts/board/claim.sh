@@ -48,27 +48,42 @@ PROJECT_NUMBER=3
 issue=""
 
 # Canonical default sink for the append-only claims log (F#728) — computed ONCE as
-# a module constant, never re-literal'd at the call site. claim.sh runs from
-# CONSUMING checkouts too (stageFind, worker cwds symlink/copy this script), so the
-# sink is pinned to the foundation checkout's own raw lake regardless of cwd — this
-# is deliberate: the lake is all-boards by design (stageFind claims flow in here
-# alongside foundation's own). CLAIMS_RAW_DIR overrides it (tests only).
+# a module constant, never re-literal'd at the call site. CHECKOUT-RELATIVE
+# (temperloop#1822): the lake of the checkout THIS script file lives in, so the
+# writer and that same checkout's own readers (telemetry-brief.sh's
+# `$raw_root/meta/data/raw`) resolve the SAME directory with no env set. The
+# old `$HOME/dev/foundation` absolute pin made every non-foundation checkout's
+# reader see zero claims — and grew a phantom `~/dev/foundation/` tree on
+# hosts that never cloned foundation (the stranger-test tail of #1822).
+# Resolution is `git rev-parse --show-toplevel` on SCRIPT_DIR — not a fixed
+# `../..` hop like emit-issue-touch.sh's, because this script is vendored at a
+# DIFFERENT depth in consuming checkouts (workflows/scripts/board/ in the
+# kernel/foundation layout, scripts/ in stageFind's synced copy) and the
+# symlink resolution above already pinned SCRIPT_DIR to the real file, so an
+# installed-on-PATH symlink still resolves its SOURCE checkout's lake. The
+# old absolute literal survives only as the last-resort fallback for a copy
+# of this script living outside any git checkout — the same fallback literal
+# telemetry-brief.sh's own raw_root uses. CLAIMS_RAW_DIR overrides it (tests
+# only). Which checkout's lake a claim lands in therefore follows which
+# checkout's claim.sh ran — cross-checkout aggregation, where wanted, is a
+# reader-side union (meta/data/raw/README.md), no longer a writer-side pin.
 # canonical sink spec: meta/data/raw/README.md (lake path + schema-version
 # convention; this stream's record shape is documented at claim_log_emit below).
-CLAIMS_RAW_DIR_DEFAULT="$HOME/dev/foundation/meta/data/raw"
+CLAIMS_RAW_DIR_DEFAULT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null || echo "$HOME/dev/foundation")/meta/data/raw"
 
 # Append one JSONL record of this claim to the durable session↔issue join key the
 # cost model needs (F#728). The board's Host/Session field is OVERWRITTEN by every
 # subsequent claim (transient — no history), so it can't answer "which session
-# claimed issue N, and when" after the fact; this log can. Sink: canonical
-# `$HOME`-based CLAIMS_RAW_DIR_DEFAULT above (override via CLAIMS_RAW_DIR, tests
+# claimed issue N, and when" after the fact; this log can. Sink: the
+# checkout-relative CLAIMS_RAW_DIR_DEFAULT above (override via CLAIMS_RAW_DIR, tests
 # only), file `claims-YYYY-MM.jsonl` (monthly rotation, matching the other raw-lake
-# streams). ALL-BOARDS BY DESIGN: this is the one canonical foundation checkout's
-# lake, so a claim run from a stageFind (or any consuming) checkout still lands
-# here — cost attribution is meant to span every board, not just foundation's.
-# COVERAGE CAVEAT: meta/data/raw/ is gitignored and per-host, so today this only
-# captures work claimed on ONE host; a claim made on a different machine never reaches this file
-# until a future cross-host ingest exists to merge raw lakes.
+# streams). PER-CHECKOUT since temperloop#1822 (which superseded the earlier
+# all-boards-in-foundation's-lake pin): a claim lands in the lake of the
+# checkout whose claim.sh ran, and cross-board/cross-checkout cost attribution
+# is a reader-side union of lakes, not a writer-side pin.
+# COVERAGE CAVEAT: meta/data/raw/ is gitignored and per-host/per-checkout, so this
+# captures only work claimed through THIS checkout's script; claims made on another
+# machine or checkout never reach this file until an ingest unions the raw lakes.
 #
 # session_id is the RAW, FULL `$CLAUDE_CODE_SESSION_ID` UUID — NOT the truncated
 # `host:sess8` board stamp computed above for `stamp`. The cost rollup joins on

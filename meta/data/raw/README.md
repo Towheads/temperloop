@@ -220,18 +220,23 @@ full at `claim_log_emit`'s own header comment):
 `{ts, host, session_id, board, issue, item_id}` — no `schema_version` field
 yet (see the schema-version convention above for what that implies).
 
-**Pinned sink — `claims` does not honor cwd.** Unlike every other stream here
-(which lands in the invoking checkout's own `meta/data/raw/`), `claim.sh` pins
-its claims sink to `$HOME/dev/foundation/meta/data/raw` **regardless of the cwd
-it runs in** (`CLAIMS_RAW_DIR_DEFAULT` in `claim.sh`; `CLAIMS_RAW_DIR` overrides
-it, tests only) — deliberate, so every host's claims aggregate in one place
-rather than scattering across per-checkout lakes. **Consequence for a reader:** a
-touch-stream consumer running from a **non-foundation checkout** (a kernel or
-consumer checkout) has **no** `claims-*.jsonl` in its own local `meta/data/raw/`,
-so to see the claims half of an issue's touch history it must read the pinned
-sink — `$HOME/dev/foundation/meta/data/raw/claims-*.jsonl` — directly, unioned
-with its own local lake. (In a composed/foundation checkout, the overlay
-`/retro` command's Step 1 performs exactly this union — foundation#1216.)
+**Checkout-relative sink (temperloop#1822 — the earlier absolute pin is
+superseded).** `claim.sh` (and its sibling `capture.sh`, for the
+issue-touches stream) defaults its sink to the lake of the checkout the
+script file itself lives in — `git rev-parse --show-toplevel` on the script's
+own resolved dir, then `/meta/data/raw` (`CLAIMS_RAW_DIR_DEFAULT` in
+`claim.sh`; `CLAIMS_RAW_DIR` overrides it, tests only) — the same directory
+every other stream's writer and `telemetry-brief.sh`'s reader resolve, so
+writer and reader converge with no env set. Before #1822 the sink was pinned
+to `$HOME/dev/foundation/meta/data/raw` regardless of checkout, which made
+every non-foundation checkout's telemetry read zero claims (and grew a
+phantom `~/dev/foundation/` tree on hosts without that clone).
+**Consequence for a reader:** claims recorded before that fix — and claims
+recorded by *another* checkout's `claim.sh` — live in that checkout's (or the
+old pinned) lake, not necessarily the local one; a full cross-checkout touch
+history is a reader-side **union** of lakes. (In a composed/foundation
+checkout, the overlay `/retro` command's Step 1 performs exactly this union —
+foundation#1216.)
 
 ### `pipeline` — `pipeline-<YYYY-MM>.jsonl` (+ the permanent legacy prefix)
 

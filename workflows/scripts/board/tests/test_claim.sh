@@ -54,8 +54,9 @@ unset CMUX_WORKSPACE_ID || true
 # Keep cache busts off the real cache dir.
 BOARD_CACHE_DIR="$(mktemp -d)"; export BOARD_CACHE_DIR
 # Keep the claims-log emit (F#728) off the REAL raw lake (CLAIMS_RAW_DIR_DEFAULT
-# points at $HOME/dev/foundation/meta/data/raw — the actual checkout, not this
-# worktree) for every case, not just the one that inspects it.
+# resolves checkout-relative since temperloop#1822 — the git toplevel this test
+# runs in, i.e. the real checkout's meta/data/raw) for every case, not just the
+# one that inspects it.
 CLAIMS_LOG_DIR="$(mktemp -d)"; export CLAIMS_RAW_DIR="$CLAIMS_LOG_DIR"
 
 # shellcheck source=scripts/claim.sh

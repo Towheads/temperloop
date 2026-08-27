@@ -429,6 +429,89 @@ assert_has "$out10" "Foundational epics (assessed → built via /build, 7d): 1 r
 assert_not_has "$out10" "epics_left_open here is stalled" "no line renders a left-open Operational epic as stalled outright"
 assert_not_has "$out10" "#701 is stalled" "no line renders the Foundational built epic as stalled"
 
+# ── 11. writer/reader default-path convergence for the claims +
+#     issue-touches streams (temperloop#1822) ────────────────────────────────
+# claim.sh's CLAIMS_RAW_DIR_DEFAULT and capture.sh's
+# ISSUE_TOUCHES_RAW_DIR_DEFAULT used to pin $HOME/dev/foundation/meta/data/raw
+# while this reader resolved its own checkout's meta/data/raw — so a claim
+# emitted on any non-foundation checkout was invisible to that checkout's own
+# brief (0 claims, forever, silently), and a stranger's bare kernel checkout
+# grew a phantom ~/dev/foundation tree. Both writers now resolve
+# checkout-relative (git toplevel of the script's own resolved dir). This case
+# proves the loop END-TO-END in a sandbox checkout with NO *_RAW_DIR /
+# TELEMETRY_RAW_DIR env set: a record emitted through claim.sh's real
+# claim_log_emit lands where the SAME checkout's telemetry-brief.sh counts it.
+# HOME is pointed at a decoy so a regression to the absolute pin fails loudly
+# (phantom $HOME/dev/foundation tree + a zero claims count) instead of
+# passing against the operator's real foundation lake.
+echo "writer/reader default-path convergence (temperloop#1822):"
+fake="$TMP/fake-checkout"
+mkdir -p "$fake/workflows/scripts/board"
+cp "$SCRIPT" "$fake/workflows/scripts/telemetry-brief.sh"
+cp "$REPO/workflows/scripts/board/claim.sh" "$fake/workflows/scripts/board/claim.sh"
+cp -R "$REPO/workflows/scripts/board/lib" "$fake/workflows/scripts/board/lib"
+git -C "$fake" init -q
+decoy_home="$TMP/decoy-home-1822"
+mkdir -p "$decoy_home"
+
+# Writer leg: source the SANDBOX checkout's claim.sh (the execute-guard
+# suppresses the CLI when sourced) and drive its real claim_log_emit with the
+# module defaults — no CLAIMS_RAW_DIR anywhere in the env.
+(
+  cd "$fake" &&
+  env -u CLAIMS_RAW_DIR -u ISSUE_TOUCHES_RAW_DIR -u TELEMETRY_RAW_DIR \
+      HOME="$decoy_home" SUBSET_HOST_LABEL=testhost \
+      BOARDS_CONF_REPO_LOCAL=/dev/null BOARDS_CONF_MACHINE=/dev/null \
+      bash -c '
+        source workflows/scripts/board/claim.sh
+        host=testhost
+        sess=11111111-2222-3333-4444-555555555555
+        PROJECT_NUMBER=7
+        issue=42
+        claim_log_emit ITEM_TEST
+      '
+) || fail_test "claim_log_emit writer leg runs" "sourcing claim.sh / claim_log_emit failed"
+if [ -f "$fake/meta/data/raw/claims-${month}.jsonl" ]; then
+  ok "claim_log_emit's default sink is the sandbox checkout's own meta/data/raw (no env set)"
+else
+  fail_test "claim_log_emit's default sink is the sandbox checkout's own meta/data/raw (no env set)" "no $fake/meta/data/raw/claims-${month}.jsonl"
+fi
+if [ -e "$decoy_home/dev/foundation" ]; then
+  fail_test "no phantom \$HOME/dev/foundation tree is grown (stranger-test tail of #1822)" "writer re-grew \$HOME/dev/foundation"
+else
+  ok "no phantom \$HOME/dev/foundation tree is grown (stranger-test tail of #1822)"
+fi
+
+# Reader leg: the SAME sandbox checkout's brief, again with no lake env at all
+# — it must count the claim the writer just emitted.
+out11="$(env -u CLAIMS_RAW_DIR -u ISSUE_TOUCHES_RAW_DIR -u TELEMETRY_RAW_DIR \
+         -u CMD_RUN_RAW_DIR -u PIPELINE_RAW_DIR -u GH_CALLS_RAW_DIR \
+         -u KS_SEARCH_FALLBACK_RAW_DIR -u ITEM_EFFICIENCY_RAW_DIR \
+         HOME="$decoy_home" KNOWLEDGE_READ_LOG="$fake/absent-reads.log" \
+         bash "$fake/workflows/scripts/telemetry-brief.sh" 2>&1)"; rc11=$?
+assert_rc0 "$rc11" "sandbox-checkout brief exits 0 with no env overrides"
+assert_has "$out11" "0 captured · 1 claimed" "the sandbox checkout's own brief counts the claim its own claim.sh emitted, with no env vars set (temperloop#1822)"
+
+# capture.sh has no source-guard (it runs gh top-to-bottom), so its default is
+# proven by LITERAL EQUALITY with the behaviorally-proven claim.sh resolution
+# above — the same convention test 9 uses for the pipeline-cron literal: the
+# two module constants' right-hand sides must be byte-identical, so the
+# end-to-end proof for claims extends to the issue-touches default verbatim.
+claim_rhs="$(grep -oE '^CLAIMS_RAW_DIR_DEFAULT=.*$' "$REPO/workflows/scripts/board/claim.sh" | cut -d= -f2-)"
+capture_rhs="$(grep -oE '^ISSUE_TOUCHES_RAW_DIR_DEFAULT=.*$' "$REPO/workflows/scripts/board/capture.sh" | cut -d= -f2-)"
+if [ -n "$claim_rhs" ] && [ "$claim_rhs" = "$capture_rhs" ]; then
+  ok "capture.sh's ISSUE_TOUCHES_RAW_DIR_DEFAULT is byte-identical to claim.sh's proven checkout-relative resolution"
+else
+  fail_test "capture.sh's ISSUE_TOUCHES_RAW_DIR_DEFAULT is byte-identical to claim.sh's proven checkout-relative resolution" "claim: $claim_rhs / capture: $capture_rhs"
+fi
+# shellcheck disable=SC2016  # intentional: single-quoted so the pattern matches the writer's LITERAL source text, not a shell-expanded path
+case "$claim_rhs" in
+  '"$HOME/dev/foundation/meta/data/raw"')
+    fail_test "the claims/issue-touches writer default is no longer the absolute foundation pin" "still pinned: $claim_rhs" ;;
+  *)
+    ok "the claims/issue-touches writer default is no longer the absolute foundation pin" ;;
+esac
+
 echo
 echo "test_telemetry_brief: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
