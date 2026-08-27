@@ -1,0 +1,1 @@
+- **`/check-in`'s environment-hygiene "acts" remedy no longer names `make install-kiosk`** (#1786). That worked example was a consumer-specific target being deleted downstream (foundation#1812); the remedy now leads with the consumer-neutral `launchctl bootstrap gui/$(id -u) <plist>` and refers generically to a checkout's own installer target where one exists.
