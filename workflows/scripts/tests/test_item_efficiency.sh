@@ -338,6 +338,15 @@ else
   else
     bad "build.md passes --build-run" "wiring drifted — the emit would record no tokens"
   fi
+  # temperloop#1877: --build-run takes EVERY build-level.mjs invocation for the
+  # level (initial + each 3d-esc continuation round), comma-separated — a
+  # singular "the wf_ id" reading leaves continuation-round spend unattributed.
+  if grep -Fq -- '--build-run <WF[,WF...]' <<<"$block"; then
+    ok "build.md's --build-run names the comma-separated multi-invocation form (WF[,WF...])"
+  else
+    bad "build.md's --build-run names the comma-separated multi-invocation form" \
+      "wording drifted back to a single wf id — continuation rounds' spend would go unattributed"
+  fi
 fi
 
 # The additive profiler fields this metric depends on must not silently
