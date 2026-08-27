@@ -14,6 +14,251 @@ reads that marker; a stranger greps for it before pulling.
 
 ## [Unreleased]
 
+## [0.38.0] - 2026-08-27 — BREAKING
+
+### Added
+
+- **The kernel telemetry brief now reports epic funnel health class-
+  conditionally** (`workflows/scripts/telemetry-brief.sh` § 2b, epic #1847
+  "epic-as-metadata for operational work" Produces #9). A Foundational
+  epic's healthy path stays epic → plan (assessed) → built, read from the
+  existing `item-efficiency` per-epic merged-item rollup (`/build`'s sole
+  emitter). An Operational epic's healthy path is epic →
+  members-drained-via-sweep, with no plan-note step at all — read from
+  `/sweep`'s end-of-run epic-closing gate tally
+  (`epics_reviewed`/`epics_closed`/`epics_left_open` on the `command-runs`
+  stream, which only ever covers Operational epics per the
+  Foundational-wins mutual-exclusion guard). Plan-note absence on an
+  Operational epic no longer has any path to reading as stalled-unassessed:
+  each class is rendered from a stream only that class's machinery ever
+  writes to. No new telemetry stream — both reads consume records already
+  in the lake.
+
+- **`/sweep`'s admitted Operational-epic members now get the same secret-seam
+  scrutiny `/assess` gives a Foundational epic's members, before they can be
+  driven at all** (epic #1847 (epic-as-metadata for operational work)).
+  Phase 1's underspecification pass additionally scans an admitted member's
+  issue body + acceptance text for a credential/token/DSN/API key the
+  operator must supply on the host; one with no already-confirmed-set supply
+  seam parks via `needs-clarification` rather than reaching Phase 2, at the
+  same **confirmed-set, not merely location-named** bar `/assess`'s own
+  host-config/secret-seam principle (foundation#716 (host-config/secret-seam
+  principle)) uses. This is a pre-work static gate — Step 3's existing
+  runtime host-config-deferral settlement (`isHostConfigDeferral`) remains
+  unchanged as the merge-time backstop for anything Phase 1's text scan
+  misses; the two compose, neither supersedes the other. Separately, an
+  admitted member's worker prompt now carries its parent epic's own "group
+  summary" as a `## Parent epic context` section (`build-level.mjs`'s new
+  `parentSummarySection()`, gated on `item.parentSummary`) — plain
+  singletons and ordinary `/build` plan items are unaffected and carry no
+  such section.
+
+- **`/sweep` can now optionally drain Operational-epic members, not just
+  ungrouped singletons** (`SWEEP_ADMIT_OPERATIONAL_EPICS`, off by default;
+  epic #1847 (epic-as-metadata for operational work)). With the setting on,
+  a Ready sub-issue whose parent epic is labeled `Operational` — the
+  established-pattern half of the Operational/Foundational work-class split —
+  and carries no `Foundational` label anywhere in the group joins sweep's
+  fix pool alongside singletons. Admission is re-checked live on every pool
+  build: a single Foundational label anywhere in the group always wins, an
+  epic with a plan note in ANY non-superseded status — under active
+  `/assess` review, or already mid-`/build` or finished — is left alone
+  (with a distinct reason for each case), and an epic whose member ordering
+  triage never finished recording is refused rather than admitted on an
+  unconsidered read. A genuinely mixed-class group is
+  reported, never silently resolved either way. The setting is off by
+  default, and a routine vendored config sync leaves the effective value
+  unchanged. See `docs/features/sweep.md`.
+
+- **`/assess` now refuses to decompose an epic that `/sweep` already owns**
+  (epic #1847 (epic-as-metadata for operational work), item 5 of the
+  mutual-exclusion pair). When the checkout-wide `SWEEP_ADMIT_OPERATIONAL_EPICS`
+  setting is on, an Operational epic with no `Foundational` label anywhere
+  in the group drains through `/sweep`, not through `/assess` → `/build` —
+  running `/assess --epic <N>` on one now stops with a message naming the
+  sweep path, `docs/features/sweep.md`, and the checkout-wide
+  scope of the setting, rather than silently decomposing an epic two
+  mechanisms could then double-drive. The autonomous pipeline driver's own
+  `route-foundational` hand-off is exempted (it predates the sweep cutover,
+  #1848 "pipeline-drive sweep-cutover rewiring"), and a new
+  `--override-operational-refusal` flag lets an operator
+  explicitly proceed anyway — the override is always logged, both as a
+  comment on the epic and as a bullet in the written plan note.
+
+- **`/triage` now stamps durable logical order between an Operational
+  group's members as native `blocked_by` edges** (docs/adr/0031). At Step 4
+  materialization, a genuine meaning-level precedence pair (never a
+  merge-safety one) is written via the board adapter's `board_blocked_by_add`
+  behind a script-backed cycle check (`workflows/scripts/board/cycle-check.sh`)
+  that refuses any edge that would close a loop; each stamped edge carries a
+  one-line rationale comment, and the epic receives an `edges-considered`
+  marker once the sub-step completes (stamped, or legitimately none). The
+  formerly-unqualified "edges never live on the board" invariant is narrowed
+  accordingly — merge-safety edges and levels stay plan-resident and are
+  still never stored — with the amended invariant stated once
+  (`claude/commands/triage.md` § Operating principles) and pointed to from
+  `/assess`'s recomputed-fresh line. `/triage`'s Step 3 requirements-auditor
+  pass also now flags a group whose members carry mixed `Operational`/
+  `Foundational` work-class labels at birth, before any stamping is
+  attempted.
+
+- **`/sweep` now reviews and offers to close fully-drained Operational
+  epics at the end of every run** (epic #1847 (epic-as-metadata for
+  operational work)). "Operational" is the established-pattern half of
+  the Operational/Foundational work-class split (`claude/work-class-policy.md`).
+  Once an epic's members admitted into sweep's pool
+  have all reached a terminal state — every one of the epic's members, not
+  just the ones this run drove — the parent is offered for close on an
+  attended run (default: close), with a one-line closing comment pointing
+  back at the run's report; a partially-drained epic is instead reported as
+  progress, naming what's still open and, where known, what it's blocked
+  on. An epic explicitly marked `keep-open` is reported but never offered
+  for close, and that label is created on first use rather than assumed to
+  already exist. On an unattended run a fully-drained epic's parent is left
+  open, with one pending-decision entry recorded per epic ever (a re-run
+  never posts a duplicate). A run that admitted no epics still runs the
+  review and records a genuine zero. The tally (`epics_reviewed` /
+  `epics_closed` / `epics_left_open`) rides the existing per-run
+  `emit-command-run.sh` telemetry record as a purely additive schema
+  extension, reconciled by its own independent accounting check. See
+  `docs/features/sweep.md`.
+
+### Changed — BREAKING
+
+- **`/sweep`'s per-chunk merge pass now regime-selects member-bearing chunks
+  before merging** (#1847 follow-on). A chunk containing at least one
+  Operational-epic-admitted member (`SWEEP_ADMIT_OPERATIONAL_EPICS`) runs the
+  mechanical `gate.sh risk` partition over its mergeable PR set before
+  landing anything; a `RISKY` verdict is offered modally (an `AskUserQuestion`
+  when attended, held with no auto-merge when operator-absent) rather than
+  auto-merged, preserving the kernel merge-autonomy contract that only a
+  clean, disjoint set is timed. A singleton-only chunk is unaffected — it
+  skips the gate entirely and merges exactly as before.
+
+- **The Operational/Foundational work-class labels widen from
+  pipeline-driver autonomy policy to a pipeline-wide routing key** (epic
+  #1847 (epic-as-metadata for operational work), docs/adr/0030). The
+  sweep/assess partition now keys on the work-class label, not on epic
+  membership: an `Operational` epic's members drain through `/sweep`
+  (admission gated by `SWEEP_ADMIT_OPERATIONAL_EPICS`, default off), and a
+  `Foundational` label anywhere in the group — parent or any member,
+  evaluated live at every pool build — keeps the whole epic on the
+  assess → plan → build ceremony path. Any consumer that read the labels
+  as driver-private autonomy policy (the previous scope of
+  `claude/work-class-policy.md`'s table) must now treat them as routing
+  contract: mislabeling no longer only changes autonomy tier, it changes
+  which pipeline drains the work. See
+  `docs/features/operational-drain.md`.
+- **Triage's edges-never-live-on-the-board charter is formally
+  superseded** (docs/adr/0031, same epic). The old invariant — `/triage`
+  forbidden to compute or store dependency edges, `/assess` recomputing
+  everything fresh per plan note — is replaced by a narrower one: durable
+  meaning-level order may live on the board as native `blocked_by` edges
+  (stamped by `/triage` at materialization, Operational groups only, with
+  a script-backed cycle check and an `edges-considered` marker sweep
+  admission requires), while computed merge-safety edges and levels stay
+  plan-resident and are still never stored. Tooling or prose that relied
+  on the old charter's blanket prohibition must follow the amended
+  invariant's single statement site (`claude/commands/triage.md`
+  § Operating principles).
+
+- **`work-class-policy.md` catches up to the Operational-epic sweep-admission
+  machinery `/sweep`/`/triage` already ship** (epic #1847 ("epic-as-metadata
+  for operational work")). The policy table's Operational autonomy path is
+  now stated as `triage → sweep` (auto-merge per chunk once CI green;
+  modal, never timed, for a correlated set — e.g. an
+  epic-admitted member chunk `gate.sh risk` flags), not the stale
+  `triage → assess → build`. The doc now also states explicitly that the
+  work-class labels have widened from a driver-private setting into a
+  pipeline-wide routing key (`/sweep`'s member-admission gate, `/triage`'s
+  logical-order stamping both read it), and the `Foundational`-wins
+  precedence rule is extended from per-item (a dual-labeled issue) to
+  per-group (a mixed-class epic — one `Foundational` member refuses
+  admission for the whole group).
+- **`next.md` recommends `/sweep` for a triaged Operational epic** instead of
+  routing every epic through `/assess`, matching the policy above.
+- **`triage.md` and `sweep.md`'s pipeline diagrams now show the class-keyed
+  partition** (Operational → `/sweep`, Foundational → `/assess` → `/build`).
+- **`ISSUES-ONLY-BACKEND.md` documents the `edges-considered` marker, the
+  `keep-open` label, and the durable-logical-vs-computed-merge-safety edge
+  split** (docs/adr/0031) — vocabulary the sweep-admission and epic-closing
+  gates already consume but that was previously undocumented outside the
+  command specs themselves.
+
+### Fixed
+
+- **`/sweep` now honors native `blocked_by` for every pool item** (#1835).
+  Step 1's fix pool previously ignored native GitHub issue `blocked_by`
+  dependencies entirely — `/next`'s actionable-set build already dropped a
+  Ready singleton with an open `blocked_by` edge, but `sweep` would claim
+  and drive it anyway, risking a worker building against a base that
+  assumed an unmerged blocker's fix. The pool build now calls
+  `board_blocked_by_open` for every pooled item (member or singleton,
+  forward-provisioned for epic-as-metadata's future Operational-epic
+  admission) and defers any item with an open blocker — never co-chunked
+  with, or driven ahead of, that blocker, and re-checked at every chunk
+  boundary so a blocker that lands mid-run un-defers its dependents within
+  the same sweep. The un-defer predicate is explicit and mechanized
+  (`workflows/scripts/build/sweep-blocked-undefer.sh`): a blocker releases
+  its dependents iff its issue is closed **and** its landing commit —
+  resolved via the blocker's linked merged PR — is an ancestor of
+  `origin/<default>` (`worktree.sh deps-merged`); a blocker closed with no
+  linked merged PR releases its dependents (the ambiguity case), while a
+  blocker whose own sweep disposition is `parked` never does. A new
+  pool-level cycle walk (`workflows/scripts/build/sweep-pool-cycle-detect.sh`)
+  catches a `blocked_by` cycle among pool members, which would otherwise
+  defer every member forever with nothing ever explaining why, and the
+  Step-4 report gains a blocked-frontier section (blocked item → open
+  blockers, cycles called out separately, multi-run stalls noted via a
+  durable comment trail on the issue).
+
+- **The hook test suites no longer fail spuriously under load** (#1844). The
+  `claude-p-spawn-guard` suite's `EVAL_RUN` case fed the hook through a pipe.
+  The hook's `EVAL_RUN` arm exits before draining stdin — deliberately, so an
+  unanswerable interactive `ask` cannot hang a headless eval run — which leaves
+  the upstream `jq` writing into a closed pipe. Under the suite's `pipefail`
+  that writer's status became the pipeline's, so the assertion measured `jq`
+  rather than the hook and reported `EVAL_RUN exits 0 (got rc=2)` (`rc=141`
+  locally). Because it is a race on the 64 KiB pipe buffer it fired only on a
+  busy host, i.e. in the merge queue: it ejected an unrelated PR from the queue
+  on a diff that never touched the file. Every assertion that measures the
+  hook's exit status is now fed from a file, in this suite and in
+  `test_write_lane_guard.sh` (which carried the same latent shape at both of
+  its exit-status sites), and a structural guard fails if a future exit-status
+  assertion in either suite is pipe-fed again — including through an indirect
+  interpreter or with the `rc=$?` on the following line.
+
+- **The exec-bit registry gate no longer fails a vendoring consumer for kernel
+  rows naming content that consumer never adopted** (#1876). A consumer adopts
+  a SUBSET of the kernel's hooks and scripts by design, so `claude/hooks/` in
+  a downstream tree carries compat symlinks only for what it actually
+  installed. `workflows/scripts/validate-exec-bit-registry.sh` inherited the
+  registry+allowlist design from
+  `validate-check-surface-degenerate-coverage.sh` but not the unadopted-row
+  tolerance added to it in #1740, so the v0.37.0 vendor bump was red on
+  arrival on 5 of 28 registered paths. It now tolerates such a row when
+  **both** hold: the repo is a vendoring consumer (a repo-root `.kernel-pin`),
+  **and** the row came from a kernel-owned source file. Each tolerated row is
+  reported as a `note: … skipped (temperloop#1876)` line — never silently
+  dropped.
+- **`exec-bit-registry.overlay.tsv` is the new overlay-extension seam for the
+  same gate** (#1876). A consumer's own directly-executable scripts now have a
+  home that a subtree pull cannot overwrite, matching the
+  `<base>.overlay.<ext>` seam `check-surface-registry.overlay.tsv` (#1738) and
+  `setting-registry.overlay.tsv` already use. It is absent in a kernel-only
+  checkout and its absence is never an error; an unreadable one is CANNOT
+  EVALUATE rather than a silent pass. This is also what makes the tolerance's
+  second condition real rather than vacuous: an overlay-authored row naming an
+  absent path is genuine ledger rot and still fails `PATH-NOT-FOUND`, even
+  under a `.kernel-pin`. The grandfather allowlist deliberately gets no
+  overlay twin — it is a shrink-only ratchet, and an overlay copy would be a
+  hole straight through it.
+- **`PATH-NOT-FOUND` now carries a remediation line naming the adopted-subset
+  case** (#1876), and explicitly warns off symlinking kernel content into a
+  consumer to satisfy a row. That is the wrong remedy, and the analogous
+  `WATERMARK-NOT-TRACKED` wording walked an operator straight into it — see
+  temperloop#1840 for that incident.
+
 ## [0.37.0] - 2026-08-26
 
 ### Added
