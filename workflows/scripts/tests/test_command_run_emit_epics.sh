@@ -30,9 +30,11 @@ HERE="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd -P "$HERE/../../.." && pwd)"
 EMIT="$REPO/workflows/scripts/emit-command-run.sh"
 SWEEP_MD="$REPO/claude/commands/sweep.md"
+TIDY_MD="$REPO/claude/commands/tidy.md"
 
 [ -f "$EMIT" ] || { echo "FATAL: emit-command-run.sh not found at $EMIT" >&2; exit 1; }
 [ -f "$SWEEP_MD" ] || { echo "FATAL: sweep.md not found at $SWEEP_MD" >&2; exit 1; }
+[ -f "$TIDY_MD" ] || { echo "FATAL: tidy.md not found at $TIDY_MD" >&2; exit 1; }
 command -v jq >/dev/null 2>&1 || { echo "FATAL: jq required for this test" >&2; exit 1; }
 
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/command-run-emit-epics-test.XXXXXX")"
@@ -146,6 +148,32 @@ check "sweep.md names board_item_list as the open-only slice epic_open relies on
   grep -Fq "board's ACTIVE (open) slice" "$SWEEP_MD"
 check "sweep.md states epic_open is true for every candidate arm (b)'s query returns" \
   grep -Fq '`epic_open` is true for every candidate this query returns' "$SWEEP_MD"
+
+echo "── 9. round-7 escalation HIGH: no unbacked retry claim; the closing comment post is idempotent ──"
+check "sweep.md no longer claims the write is 'retried, not re-asked' (no such mechanism exists)" \
+  bash -c '! grep -Fq "write retried, not re-asked" "$1"' _ "$SWEEP_MD"
+check "sweep.md instead states a write-failed epic is simply RE-OFFERED next run" \
+  grep -Fq 'RE-OFFERED next run' "$SWEEP_MD"
+check "sweep.md probes for an already-posted closing comment before posting (idempotency)" \
+  grep -Fq 'probe for an already-posted closing comment before posting' "$SWEEP_MD"
+check "sweep.md reuses item 2's already-read comments rather than an extra call" \
+  grep -Fq 'reuse the `comments` array item 2 above already read' "$SWEEP_MD"
+
+echo "── 10. round-7 escalation LOW: the comment-post failure disposition is named ──"
+check "sweep.md names the comment-post failure warn-and-skip-the-write disposition" \
+  grep -Fq 'If that comment post itself fails' "$SWEEP_MD"
+check "sweep.md skips the write (never closes unexplained) on a comment-post failure" \
+  grep -Fq 'skip the write this run' "$SWEEP_MD"
+check "sweep.md reports a comment-post failure via the write-failed row (re-offered next run)" \
+  grep -Fq 'record the outcome as `close-write-failed` so it is re-offered next run via the write-failed report row' "$SWEEP_MD"
+
+echo "── 11. round-7 escalation MEDIUM: tidy.md's pending-decisions backstop dedup matches the capture's epic-keyed match ──"
+check "tidy.md special-cases the epic-closing-gate site's dedup key" \
+  grep -Fq 'except when the decision names an epic number' "$TIDY_MD"
+check "tidy.md matches an epic-keyed decision on the epic number anywhere in the surface's WHOLE history" \
+  grep -Fq "anywhere in this surface's WHOLE history" "$TIDY_MD"
+check "tidy.md states a site+date-scoped match would violate the one-per-epic-ever invariant" \
+  grep -Fq 'violating the one-per-epic-ever invariant' "$TIDY_MD"
 
 echo
 if [ "$fail" -gt 0 ]; then
