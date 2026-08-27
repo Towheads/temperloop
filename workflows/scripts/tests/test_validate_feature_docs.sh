@@ -130,6 +130,25 @@ run_validator "$ROOT"
 assert_rc "$rc" 1 "unclaimed path exits 1"
 assert_has "$out" "UNCLAIMED  src/unclaimed.sh" "unclaimed path named"
 
+# ── 2b. duplicate claim: same glob on two manifest lines (temperloop#1801) ───
+echo "--- 2b. duplicate claim (same glob twice, any slug) ---"
+ROOT="$(make_fixture dupclaim)"
+printf 'alpha src/a.sh\n' >> "$ROOT/docs/features/feature-manifest.txt"
+git -C "$ROOT" add -A
+run_validator "$ROOT"
+assert_rc "$rc" 1 "duplicate claim exits 1"
+# fixture manifest: line 3 is `alpha src/a.sh`, appended dup lands on line 5.
+assert_has "$out" "DUPLICATE-CLAIM  src/a.sh — claimed at manifest lines 3 and 5" "duplicate names the glob and both line numbers"
+
+# ── 2c. duplicate claim across DIFFERENT slugs is still a duplicate ──────────
+echo "--- 2c. duplicate claim across different slugs ---"
+ROOT="$(make_fixture dupclaimslug)"
+printf 'beta src/a.sh\n' >> "$ROOT/docs/features/feature-manifest.txt"
+git -C "$ROOT" add -A
+run_validator "$ROOT"
+assert_rc "$rc" 1 "cross-slug duplicate exits 1"
+assert_has "$out" "DUPLICATE-CLAIM  src/a.sh" "cross-slug duplicate flagged by glob"
+
 # ── 3. missing doc for a non-exempt slug ─────────────────────────────────────
 echo "--- 3. missing doc, non-exempt slug ---"
 ROOT="$(make_fixture missingdoc)"

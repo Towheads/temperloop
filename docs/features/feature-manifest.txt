@@ -10,6 +10,19 @@
 # A glob that matches no tracked path YET is legal and inert — that is how
 # sibling PRs' paths are pre-claimed below before those files land.
 #
+# TWO-MANIFEST PRE-CLAIM CONTRACT (temperloop#1801 — the generalised form of
+# the rule ADR-0000 § Manifest registration first stated for docs/adr/* only,
+# and now defers to): any item that pre-claims a NEW subtree ahead of its
+# files landing MUST add its claim to BOTH governance manifests in the same
+# change — this file AND workflows/scripts/kernel/kernel-manifest.txt. The
+# two files are independent, both-mandatory coverage gates over the same
+# tracked paths, so a claim in only one leaves the other to be patched
+# inline by each sibling PR in turn, each unaware of the last — the drift
+# that left duplicate kernel-manifest entries behind after temperloop#1291's
+# one-manifest pre-claim. Each gate now carries a duplicate-entry lint
+# (check-kernel-manifest.sh, validate-feature-docs.sh) that fails on any
+# glob claimed by more than one line, catching that residue mechanically.
+#
 # Enforced by workflows/scripts/validate-feature-docs.sh (a KERNEL_GATES
 # entry in scripts/quality-gates.sh). Every non-`none` slug named here must
 # have docs/features/<slug>.md or a backfill-exempt.txt line.

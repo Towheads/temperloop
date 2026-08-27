@@ -28,6 +28,10 @@
 # What fails CI (collect-all-failures, one run surfaces everything —
 # message/summary style modeled on workflows/scripts/validate-capture-backstop.sh):
 #   UNCLAIMED              tracked path no manifest glob claims
+#   DUPLICATE-CLAIM        same glob on more than one manifest line (any
+#                          slug) — the residue a missed two-manifest
+#                          pre-claim leaves behind (temperloop#1801; see the
+#                          manifest's own header)
 #   MISSING-DOC            non-exempt slug with no docs/features/<slug>.md
 #   MISSING-SECTION        required section heading absent from a doc
 #   EMPTY-SECTION          required section present but has no content
@@ -183,6 +187,32 @@ EOF
 }
 
 failures=()
+
+# ---------------------------------------------------------------------------
+# 0. Duplicate-claim lint (temperloop#1801): the same glob claimed on more
+#    than one manifest line — REGARDLESS of slug — is drift residue, the
+#    trace a missed two-manifest pre-claim leaves behind (see the manifest's
+#    own header, the contract's canonical statement). A duplicate is never
+#    load-bearing ("longest pattern wins" ties resolve by incidental parse
+#    order), so it always fails. Same comment/blank-line rules as the parse
+#    above; malformed lines already exited there.
+# ---------------------------------------------------------------------------
+while IFS= read -r dup; do
+  [[ -z "$dup" ]] && continue
+  failures+=("DUPLICATE-CLAIM  $dup")
+done < <(awk '
+  {
+    line = $0
+    sub(/#.*/, "", line)
+    gsub(/^[ \t]+|[ \t]+$/, "", line)
+    if (line == "") next
+    sp = index(line, " ")
+    if (sp == 0) next
+    pat = substr(line, sp + 1)
+    if (pat in first) printf "%s — claimed at manifest lines %d and %d (keep exactly one line per glob)\n", pat, first[pat], NR
+    else first[pat] = NR
+  }
+' "$FEATURE_MANIFEST_FILE")
 
 # ---------------------------------------------------------------------------
 # 1. Coverage walk: every git-tracked path must be claimed by some glob.
