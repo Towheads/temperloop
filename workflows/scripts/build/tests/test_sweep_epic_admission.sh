@@ -16,11 +16,25 @@
 #      branch.
 #   2. reader_helpers_available=false -> refused (readers-unavailable),
 #      even with the setting on and every other field admit-favorable.
-#   3. epic_work_class != Operational -> refused (not-operational-epic).
+#   2b. epic_reads_available=false -> refused (readers-unavailable), the
+#      per-epic call-failure branch (escalation round 2, HIGH finding): an
+#      errored per-epic read is never the permissive branch, even with
+#      epic_work_class="Operational" and any_foundational_in_group=false
+#      explicitly present and admit-favorable (proving the failure signal
+#      overrides them, not merely that they happen to also be absent).
+#   2c. epic_reads_available OMITTED -> refused (readers-unavailable), same
+#      as 2b — the field's own default is refusing, never a permissive
+#      guess when the caller forgets to pass it.
+#   3. epic_work_class != Operational -> refused (not-operational-epic); an
+#      ABSENT epic_work_class field refuses the same way (default "",
+#      never "Operational" — an unread field is never admit-favorable).
 #   4. any_foundational_in_group=true -> refused (foundational-wins); with
 #      mixed_class_group=true, surface_required=true (the anomaly needing
 #      operator surfacing); with mixed_class_group=false (a uniformly
-#      Foundational epic — not an anomaly), surface_required=false.
+#      Foundational epic — not an anomaly), surface_required=false. An
+#      ABSENT any_foundational_in_group field refuses the same way
+#      (default true, mirroring edges_considered_marker's existing false
+#      default — an unread group is never assumed foundational-free).
 #   5. live_plan_note=true -> refused (live-plan-note), the /assess race
 #      guard.
 #   6. edges_considered_marker=false -> refused (marker-missing), the
@@ -60,7 +74,7 @@ check_field() { # <desc> <fixture-json> <jq-field> <want>
 
 # The fully admit-favorable baseline every negative case starts from and
 # flips exactly one field away from.
-ADMIT_ALL='{"setting_enabled":true,"reader_helpers_available":true,"epic_work_class":"Operational","any_foundational_in_group":false,"mixed_class_group":false,"live_plan_note":false,"edges_considered_marker":true}'
+ADMIT_ALL='{"setting_enabled":true,"reader_helpers_available":true,"epic_reads_available":true,"epic_work_class":"Operational","any_foundational_in_group":false,"mixed_class_group":false,"live_plan_note":false,"edges_considered_marker":true}'
 
 # ── 1: setting off — rollback identity ──────────────────────────────────
 echo "--- 1: setting_enabled=false always refuses (setting-off), even fully admit-favorable otherwise ---"
@@ -76,12 +90,38 @@ jq -n --argjson base "$ADMIT_ALL" '$base + {reader_helpers_available: false}' > 
 check_field "readers unavailable -> admit=false" "$NOREAD" '.admit' "false"
 check_field "...reason=readers-unavailable" "$NOREAD" '.reason' "readers-unavailable"
 
+# ── 2b: per-epic read failure — an error is never the permissive branch ──
+echo "--- 2b: epic_reads_available=false refuses (readers-unavailable) even with everything else admit-favorable (escalation round 2, HIGH) ---"
+EPICREADFAIL="$TMP/epic-read-fail.json"
+jq -n --argjson base "$ADMIT_ALL" '$base + {epic_reads_available: false}' > "$EPICREADFAIL"
+check_field "epic read failure -> admit=false" "$EPICREADFAIL" '.admit' "false"
+check_field "...reason=readers-unavailable" "$EPICREADFAIL" '.reason' "readers-unavailable"
+
+echo "--- 2c: epic_reads_available OMITTED refuses the same way (default is refusing, never a permissive guess) ---"
+EPICREADABSENT="$TMP/epic-read-absent.json"
+jq -n '{setting_enabled:true, reader_helpers_available:true, epic_work_class:"Operational", any_foundational_in_group:false, mixed_class_group:false, live_plan_note:false, edges_considered_marker:true}' > "$EPICREADABSENT"
+check_field "epic_reads_available omitted -> admit=false" "$EPICREADABSENT" '.admit' "false"
+check_field "...reason=readers-unavailable" "$EPICREADABSENT" '.reason' "readers-unavailable"
+
 # ── 3: not an Operational epic ───────────────────────────────────────────
 echo "--- 3: epic_work_class=Foundational refuses (not-operational-epic) ---"
 NOTOP="$TMP/not-operational.json"
 jq -n --argjson base "$ADMIT_ALL" '$base + {epic_work_class: "Foundational"}' > "$NOTOP"
 check_field "Foundational epic -> admit=false" "$NOTOP" '.admit' "false"
 check_field "...reason=not-operational-epic" "$NOTOP" '.reason' "not-operational-epic"
+
+echo "--- 3b: epic_work_class OMITTED refuses (not-operational-epic) — absent field defaults refusing, never 'Operational' ---"
+NOWORKCLASS="$TMP/no-work-class.json"
+jq -n --argjson base "$ADMIT_ALL" '$base | del(.epic_work_class)' > "$NOWORKCLASS"
+check_field "epic_work_class omitted -> admit=false" "$NOWORKCLASS" '.admit' "false"
+check_field "...reason=not-operational-epic" "$NOWORKCLASS" '.reason' "not-operational-epic"
+
+# ── 4c: any_foundational_in_group omitted -> refuses the same as true ────
+echo "--- 4c: any_foundational_in_group OMITTED refuses (foundational-wins) — absent field defaults refusing, never false ---"
+NOFOUNDFIELD="$TMP/no-foundational-field.json"
+jq -n --argjson base "$ADMIT_ALL" '$base | del(.any_foundational_in_group)' > "$NOFOUNDFIELD"
+check_field "any_foundational_in_group omitted -> admit=false" "$NOFOUNDFIELD" '.admit' "false"
+check_field "...reason=foundational-wins" "$NOFOUNDFIELD" '.reason' "foundational-wins"
 
 # ── 4: Foundational-wins, mixed group -> surfaced ────────────────────────
 echo "--- 4a: any_foundational_in_group=true + mixed_class_group=true -> refused AND surface_required=true ---"
