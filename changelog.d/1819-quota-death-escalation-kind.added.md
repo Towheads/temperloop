@@ -5,8 +5,11 @@
   since a quota death usually leaves finished work intact in the worktree). The
   thrown-error-text shape is matched directly and carries the harness's reset
   time in the payload's `reset_time`; the bare-null shape — which carries no
-  text at all — is classified by a one-shot agent-liveness canary (a classifier
-  denial is per-command, a quota death kills every spawn). The payload states
+  text at all — is classified by an agent-liveness canary (a classifier denial
+  is per-command, a quota death kills every spawn), which re-probes on every
+  bare-null and memoizes only a DEAD verdict — an alive reading is never
+  cached, so a quota that dies late in a level cannot be misrouted through a
+  stale early "alive". The payload states
   `worktree_left_intact: true`, and `claude/commands/build.md` documents the
   kind's wait-for-reset-then-resume disposition in the 3d-esc escalation-kind
   list plus an orchestrator-side `<failures>`-block cross-check.

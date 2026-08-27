@@ -6411,5 +6411,250 @@ if (esc[0].payload.where !== 'worker (spike)')
 console.log(JSON.stringify({ ok: true }));
 "
 
+# ----------------------------------------------------------------------------
+# temperloop#1819 attempt-2 finding 1 (HIGH): the canary memoization must be
+# ASYMMETRIC — only a DEAD verdict is sticky. An ALIVE verdict answered early
+# in a level says nothing about a spawn that dies LATER in the same level; if
+# it were cached, that later quota death would be misrouted back into
+# worker-error/machinery-denied — the destructive mis-cure #1819 exists to
+# prevent. Discriminator: this case FAILS against the attempt-1 build (whole-
+# level alive cache → 1 canary, worker-error kind).
+# ----------------------------------------------------------------------------
+
+run_node_case "K1819f stale-cache: an early ALIVE canary is NOT memoized — a later bare-null re-probes and a now-dead quota classifies quota-exhausted" "
+$PREAMBLE
+setMachinery('qstale',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/qstale' },
+  noSideEffects(),                       // recover-probe after the first (alive-canary) null
+);
+// Canary #1 (first worker null): ALIVE. Canary #2 (retry null): the quota has
+// since died — the canary itself cannot spawn.
+setMachinery('quota-probe', { ok: true }, null);
+setWorker('qstale', null, null);         // worker null, then retry null
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'qstale', branch: 'build/qstale', title: 'Stale canary', kind: 'impl', acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+const result = await mod.default();
+const esc = result.escalations ?? [];
+if (esc.length !== 1 || esc[0].kind !== 'quota-exhausted')
+  { console.log(JSON.stringify({ ok: false, reason: 'a quota death AFTER an alive canary must still classify quota-exhausted (stale-cache bug), got ' + JSON.stringify(result) })); process.exit(0); }
+const p = esc[0].payload;
+if (p.where !== 'worker (retry)' || p.classified_by !== 'agent-liveness-canary')
+  { console.log(JSON.stringify({ ok: false, reason: 'expected the retry-site canary classification, got ' + JSON.stringify(p) })); process.exit(0); }
+const canaries = callLog.filter(c => /^canary:/.test(String(c.opts.label))).length;
+if (canaries !== 2)
+  { console.log(JSON.stringify({ ok: false, reason: 'the second bare-null must RE-PROBE (alive is never cached) — expected 2 canaries, got ' + canaries })); process.exit(0); }
+const workers = callLog.filter(c => isWorkerCall(c.opts)).length;
+if (workers !== 2)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected worker + one retry (2 calls), got ' + workers })); process.exit(0); }
+console.log(JSON.stringify({ ok: true }));
+"
+
+# ----------------------------------------------------------------------------
+# temperloop#1819 attempt-2 finding 2 (MEDIUM): the three deniedOrQuota call
+# sites that had no coverage — ciPollLoop's batch.denied, the push-retry
+# machineryDenied(fpush) branch, and recoverLostReturn's rb.denied branch —
+# each exercised in BOTH classifications (dead canary → quota-exhausted, live
+# canary → machinery-denied unchanged), asserting the esc.escalation.* unwrap
+# plumbing carries the payload (sha/pr/step) through each site's own return
+# shape.
+# ----------------------------------------------------------------------------
+
+run_node_case "K1819g ci-batch denied + dead canary → quota-exhausted; the unwrap carries sha and pr through ciPollLoop's return shape" "
+$PREAMBLE
+setMachinery('qcib',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/qcib' },
+  { outcome: 'REVIEW_DIFF' },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-cib' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'sha-cib', branch: 'build/qcib' },
+  { outcome: 'PR_OPENED', pr_number: 601 },
+  null,   // ci-poll slice dies on the session limit → the whole ci-batch is denied
+);
+setMachinery('quota-probe', null);
+happyWorker('qcib');
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'qcib', branch: 'build/qcib', title: 'Quota ci-batch', kind: 'impl', acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+const result = await mod.default();
+const esc = result.escalations ?? [];
+if ((result.parked ?? []).length !== 0 || esc.length !== 1 || esc[0].kind !== 'quota-exhausted')
+  { console.log(JSON.stringify({ ok: false, reason: 'expected 1 quota-exhausted escalation from the ci-batch site, got ' + JSON.stringify(result) })); process.exit(0); }
+const p = esc[0].payload;
+if (p.where !== 'machinery:ci-batch')
+  { console.log(JSON.stringify({ ok: false, reason: 'payload.where must name the ci-batch step, got ' + JSON.stringify(p) })); process.exit(0); }
+if (p.sha !== 'sha-cib' || p.pr !== 601)
+  { console.log(JSON.stringify({ ok: false, reason: 'the unwrap must carry sha + pr through ciPollLoop\\'s {escalation, payload} return, got ' + JSON.stringify(p) })); process.exit(0); }
+if (p.worktree_left_intact !== true || !p.denied_out || p.denied_out.outcome !== 'SPINE_DENIED')
+  { console.log(JSON.stringify({ ok: false, reason: 'payload must state worktree_left_intact and carry denied_out for the audit trail, got ' + JSON.stringify(p) })); process.exit(0); }
+console.log(JSON.stringify({ ok: true }));
+"
+
+run_node_case "K1819h ci-batch denied + LIVE canary keeps machinery-denied with sha and pr — genuine CI-stage denials retain their meaning" "
+$PREAMBLE
+setMachinery('gcib',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/gcib' },
+  { outcome: 'REVIEW_DIFF' },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-gcib' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'sha-gcib', branch: 'build/gcib' },
+  { outcome: 'PR_OPENED', pr_number: 602 },
+  null,   // ci-batch denied by the classifier; the harness itself is fine
+);
+// NO quota-probe override: the canary hits the mock default (non-null) → alive.
+happyWorker('gcib');
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'gcib', branch: 'build/gcib', title: 'Genuine ci denial', kind: 'impl', acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+const result = await mod.default();
+const esc = result.escalations ?? [];
+if (esc.length !== 1 || esc[0].kind !== 'machinery-denied')
+  { console.log(JSON.stringify({ ok: false, reason: 'expected machinery-denied unchanged at the ci-batch site, got ' + JSON.stringify(result) })); process.exit(0); }
+const p = esc[0].payload;
+if (p.step !== 'ci-batch' || p.sha !== 'sha-gcib' || p.pr !== 602)
+  { console.log(JSON.stringify({ ok: false, reason: 'machinery-denied payload must keep step=ci-batch with sha + pr, got ' + JSON.stringify(p) })); process.exit(0); }
+const canaries = callLog.filter(c => /^canary:/.test(String(c.opts.label))).length;
+if (canaries !== 1)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected exactly 1 canary probe, got ' + canaries })); process.exit(0); }
+console.log(JSON.stringify({ ok: true }));
+"
+
+run_node_case "K1819i push-retry denied + dead canary → quota-exhausted; the unwrap carries the pinned sha and pr through the CI-fix return shape" "
+$PREAMBLE
+setMachinery('qpret',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/qpret' },
+  { outcome: 'REVIEW_DIFF' },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-p1' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'sha-p1', branch: 'build/qpret' },
+  { outcome: 'PR_OPENED', pr_number: 603 },
+  { outcome: 'CI_FAILED', failed_run_ids: [9101] },
+  { outcome: 'REVIEW_DIFF' },   // temperloop#1450 re-review of the CI-fix commit
+  null,                          // the retry push dies on the session limit
+);
+setMachinery('quota-probe', null);
+setWorker('qpret',
+  { status: 'done', summary: 'initial', acceptance_results: [{ criterion: 'c', passed: true, evidence: 'e' }], commits: [] },
+  { status: 'done', summary: 'ci fixed', acceptance_results: [], commits: [] },
+);
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'qpret', branch: 'build/qpret', title: 'Quota push-retry', kind: 'impl', acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+const result = await mod.default();
+const esc = result.escalations ?? [];
+if (esc.length !== 1 || esc[0].kind !== 'quota-exhausted')
+  { console.log(JSON.stringify({ ok: false, reason: 'expected 1 quota-exhausted escalation from the push-retry site, got ' + JSON.stringify(result) })); process.exit(0); }
+const p = esc[0].payload;
+if (p.where !== 'machinery:push-retry')
+  { console.log(JSON.stringify({ ok: false, reason: 'payload.where must name the push-retry step, got ' + JSON.stringify(p) })); process.exit(0); }
+if (p.sha !== 'sha-p1' || p.pr !== 603 || p.worktree_left_intact !== true)
+  { console.log(JSON.stringify({ ok: false, reason: 'the unwrap must carry the pre-fix pinned sha + pr with worktree_left_intact, got ' + JSON.stringify(p) })); process.exit(0); }
+console.log(JSON.stringify({ ok: true }));
+"
+
+run_node_case "K1819j push-retry denied + LIVE canary keeps machinery-denied step=push-retry — a genuine push-retry denial retains its meaning" "
+$PREAMBLE
+setMachinery('gpret',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/gpret' },
+  { outcome: 'REVIEW_DIFF' },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-g1' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'sha-g1', branch: 'build/gpret' },
+  { outcome: 'PR_OPENED', pr_number: 604 },
+  { outcome: 'CI_FAILED', failed_run_ids: [9102] },
+  { outcome: 'REVIEW_DIFF' },
+  null,   // push-retry denied by the classifier; the harness itself is fine
+);
+// NO quota-probe override → alive.
+setWorker('gpret',
+  { status: 'done', summary: 'initial', acceptance_results: [{ criterion: 'c', passed: true, evidence: 'e' }], commits: [] },
+  { status: 'done', summary: 'ci fixed', acceptance_results: [], commits: [] },
+);
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'gpret', branch: 'build/gpret', title: 'Genuine push-retry denial', kind: 'impl', acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+const result = await mod.default();
+const esc = result.escalations ?? [];
+if (esc.length !== 1 || esc[0].kind !== 'machinery-denied')
+  { console.log(JSON.stringify({ ok: false, reason: 'expected machinery-denied unchanged at the push-retry site, got ' + JSON.stringify(result) })); process.exit(0); }
+const p = esc[0].payload;
+if (p.step !== 'push-retry' || p.sha !== 'sha-g1' || p.pr !== 604)
+  { console.log(JSON.stringify({ ok: false, reason: 'machinery-denied payload must keep step=push-retry with sha + pr, got ' + JSON.stringify(p) })); process.exit(0); }
+const canaries = callLog.filter(c => /^canary:/.test(String(c.opts.label))).length;
+if (canaries !== 1)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected exactly 1 canary probe, got ' + canaries })); process.exit(0); }
+console.log(JSON.stringify({ ok: true }));
+"
+
+run_node_case "K1819k pr-batch-resume denied + dead canary → quota-exhausted through recoverLostReturn's {kind, escKind, payload} return shape" "
+$PREAMBLE
+setMachinery('qres',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/qres' },
+  { outcome: 'REVIEW_DIFF' },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-rs' },
+  { outcome: 'SCAN_CLEAN' },
+  lostReturn(),   // push ran; its JSON line was dropped (temperloop#1067)
+  { outcome: 'RECOVER_COMMITTED', sha: 'sha-rs', pushed: false, verification_surface_present: false },
+  null,           // the resume batch (push + pr-open) dies on the session limit
+);
+setMachinery('quota-probe', null);
+happyWorker('qres');
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'qres', branch: 'build/qres', title: 'Quota resume', kind: 'impl', acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+const result = await mod.default();
+const esc = result.escalations ?? [];
+if ((result.parked ?? []).length !== 0 || esc.length !== 1 || esc[0].kind !== 'quota-exhausted')
+  { console.log(JSON.stringify({ ok: false, reason: 'expected 1 quota-exhausted escalation from the pr-batch-resume site, got ' + JSON.stringify(result) })); process.exit(0); }
+const p = esc[0].payload;
+if (p.where !== 'machinery:pr-batch-resume')
+  { console.log(JSON.stringify({ ok: false, reason: 'payload.where must name the resume batch, got ' + JSON.stringify(p) })); process.exit(0); }
+if (p.worktree_left_intact !== true || !p.denied_out || p.denied_out.outcome !== 'SPINE_DENIED')
+  { console.log(JSON.stringify({ ok: false, reason: 'payload must state worktree_left_intact and carry denied_out, got ' + JSON.stringify(p) })); process.exit(0); }
+console.log(JSON.stringify({ ok: true }));
+"
+
+run_node_case "K1819l pr-batch-resume denied + LIVE canary keeps machinery-denied naming the resume batch and its steps" "
+$PREAMBLE
+setMachinery('gres',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/gres' },
+  { outcome: 'REVIEW_DIFF' },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-gr' },
+  { outcome: 'SCAN_CLEAN' },
+  lostReturn(),
+  { outcome: 'RECOVER_COMMITTED', sha: 'sha-gr', pushed: false, verification_surface_present: false },
+  null,   // resume batch denied by the classifier; the harness itself is fine
+);
+// NO quota-probe override → alive.
+happyWorker('gres');
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'gres', branch: 'build/gres', title: 'Genuine resume denial', kind: 'impl', acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+const result = await mod.default();
+const esc = result.escalations ?? [];
+if (esc.length !== 1 || esc[0].kind !== 'machinery-denied')
+  { console.log(JSON.stringify({ ok: false, reason: 'expected machinery-denied unchanged at the pr-batch-resume site, got ' + JSON.stringify(result) })); process.exit(0); }
+const p = esc[0].payload;
+if (p.step !== 'pr-batch-resume' || JSON.stringify(p.steps) !== JSON.stringify(['push','pr-open']))
+  { console.log(JSON.stringify({ ok: false, reason: 'machinery-denied payload must name the resume batch and its steps, got ' + JSON.stringify(p) })); process.exit(0); }
+const canaries = callLog.filter(c => /^canary:/.test(String(c.opts.label))).length;
+if (canaries !== 1)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected exactly 1 canary probe, got ' + canaries })); process.exit(0); }
+console.log(JSON.stringify({ ok: true }));
+"
+
 echo ""
 echo "All test_workflow.sh cases passed."

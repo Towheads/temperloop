@@ -2422,8 +2422,9 @@ function machineryDenied(out) {
 //     The one in-process discriminator left is BEHAVIORAL: a classifier
 //     denial is per-command (an innocuous probe still spawns), while a quota
 //     death kills EVERY spawn. harnessCanSpawnAgents() runs that probe — a
-//     one-shot cheap canary agent — and a failed canary reclassifies the null
-//     as quota-exhausted. A canary that spawns fine leaves the pre-#1819
+//     cheap canary agent, re-run per bare-null with only its DEAD verdict
+//     memoized (see its own comment) — and a failed canary reclassifies the
+//     null as quota-exhausted. A canary that spawns fine leaves the pre-#1819
 //     kinds untouched, so genuine denials/skips keep their meanings.
 const QUOTA_KIND = 'quota-exhausted';
 const QUOTA_DEATH_RE =
@@ -2439,15 +2440,22 @@ function quotaDeath(text) {
   return { reset: m ? m[1].trim() : null };
 }
 
-// harnessCanSpawnAgents — the null-shape discriminator above. Cached for the
-// lifetime of this workflow invocation: under an exhausted quota every spawn
-// fails identically and a level's items die in a burst, so one probe answers
-// for all of them. (A quota window that resets mid-level could make a cached
-// "dead" reading stale for a later item; that item still escalates with its
-// work intact — exactly what the wait-then-resume disposition handles — so
-// the cache stays.) Fails OPEN: an inconclusive canary (a non-quota throw)
-// reads as "alive" so the pre-#1819 kinds stand rather than inventing a
-// quota verdict from a probe that merely misbehaved.
+// harnessCanSpawnAgents — the null-shape discriminator above. Memoization is
+// deliberately ASYMMETRIC (temperloop#1819 attempt-2 review finding 1): only a
+// DEAD verdict is sticky. The quota is monotone within one exhaustion window —
+// once every spawn dies, they keep dying — so one dead probe answers for the
+// whole level's burst of deaths. (A window that resets mid-level could make the
+// cached "dead" stale for a later item; that item still escalates with its work
+// intact — exactly what the wait-then-resume disposition handles — so the dead
+// cache stays.) An ALIVE verdict is NOT cached: "alive at probe time" says
+// nothing about a spawn that dies LATER in the same level, and a memoized alive
+// would misroute that later quota death back into machinery-denied/worker-error
+// — the destructive mis-cure this whole classifier exists to prevent. So every
+// bare-null re-probes; concurrent callers still share one in-flight probe (the
+// promise is the cache entry until it resolves alive). Fails OPEN: an
+// inconclusive canary (a non-quota throw) reads as "alive" so the pre-#1819
+// kinds stand rather than inventing a quota verdict from a probe that merely
+// misbehaved.
 let agentLivenessCheck = null;
 function harnessCanSpawnAgents() {
   if (!agentLivenessCheck) {
@@ -2467,7 +2475,12 @@ function harnessCanSpawnAgents() {
       } catch (err) {
         return !quotaDeath(String((err && err.message) || err));
       }
-    })();
+    })().then((alive) => {
+      // Alive → drop the cache so the NEXT bare-null probes afresh; dead →
+      // leave the resolved promise in place (the sticky verdict).
+      if (alive) agentLivenessCheck = null;
+      return alive;
+    });
   }
   return agentLivenessCheck;
 }
