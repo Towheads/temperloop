@@ -36,7 +36,11 @@
 #      (default true, mirroring edges_considered_marker's existing false
 #      default — an unread group is never assumed foundational-free).
 #   5. live_plan_note=true -> refused (live-plan-note), the /assess race
-#      guard.
+#      guard (status: draft/approved — assess owns the cycle).
+#   5b. epic_mid_build=true -> refused (epic-mid-build), a DISTINCT reason
+#      from live-plan-note (escalation round 4 HIGH finding: status:
+#      executing/done — a /build run already owns this epic's members,
+#      live or finished — the two states must be legible apart).
 #   6. edges_considered_marker=false -> refused (marker-missing), the
 #      stale-writer guard.
 #   7. every conjunct satisfied -> admit=true, reason=admitted.
@@ -74,7 +78,7 @@ check_field() { # <desc> <fixture-json> <jq-field> <want>
 
 # The fully admit-favorable baseline every negative case starts from and
 # flips exactly one field away from.
-ADMIT_ALL='{"setting_enabled":true,"reader_helpers_available":true,"epic_reads_available":true,"epic_work_class":"Operational","any_foundational_in_group":false,"mixed_class_group":false,"live_plan_note":false,"edges_considered_marker":true}'
+ADMIT_ALL='{"setting_enabled":true,"reader_helpers_available":true,"epic_reads_available":true,"epic_work_class":"Operational","any_foundational_in_group":false,"mixed_class_group":false,"live_plan_note":false,"epic_mid_build":false,"edges_considered_marker":true}'
 
 # ── 1: setting off — rollback identity ──────────────────────────────────
 echo "--- 1: setting_enabled=false always refuses (setting-off), even fully admit-favorable otherwise ---"
@@ -144,6 +148,18 @@ LIVEPLAN="$TMP/live-plan.json"
 jq -n --argjson base "$ADMIT_ALL" '$base + {live_plan_note: true}' > "$LIVEPLAN"
 check_field "live plan note -> admit=false" "$LIVEPLAN" '.admit' "false"
 check_field "...reason=live-plan-note" "$LIVEPLAN" '.reason' "live-plan-note"
+
+# ── 5b: epic mid-build — a DISTINCT reason from live-plan-note ───────────
+echo "--- 5b: epic_mid_build=true refuses (epic-mid-build), distinct from live-plan-note (escalation round 4 HIGH) ---"
+MIDBUILD="$TMP/mid-build.json"
+jq -n --argjson base "$ADMIT_ALL" '$base + {epic_mid_build: true}' > "$MIDBUILD"
+check_field "epic mid-build -> admit=false" "$MIDBUILD" '.admit' "false"
+check_field "...reason=epic-mid-build (not live-plan-note)" "$MIDBUILD" '.reason' "epic-mid-build"
+
+echo "--- 5c: live_plan_note=true takes precedence over epic_mid_build=true when both somehow set (draft/approved checked first) ---"
+BOTHPLAN="$TMP/both-plan-states.json"
+jq -n --argjson base "$ADMIT_ALL" '$base + {live_plan_note: true, epic_mid_build: true}' > "$BOTHPLAN"
+check_field "both set -> reason=live-plan-note (checked first)" "$BOTHPLAN" '.reason' "live-plan-note"
 
 # ── 6: marker missing — the stale-writer guard ───────────────────────────
 echo "--- 6: edges_considered_marker=false refuses (marker-missing) ---"

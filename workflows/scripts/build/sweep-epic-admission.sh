@@ -23,8 +23,13 @@
 #   4. the epic parent's work-class label (gh issue view --json labels)
 #   5. whether ANY Foundational label exists anywhere in the group — parent
 #      or any member (gh issue view --json labels, per member)
-#   6. whether a LIVE (draft/approved, non-superseded) Plans/ note exists
-#      for this epic (a vault read — the /assess race guard)
+#   6. the epic's Plans/ note status (if any non-superseded note exists at
+#      all) — draft/approved (a plan still being decided, /assess's own
+#      race guard) is a DISTINCT signal from executing/done (a plan already
+#      mid-build or finished — /build's own live/finished work, the same
+#      hard stop /assess's own Step 0.5 applies to itself, escalation round
+#      4 HIGH finding: sweep must never double-drive a member a live /build
+#      already owns)
 #   7. whether the parent carries triage's `<!-- triage:edges-considered -->`
 #      marker (gh issue view --json comments)
 #
@@ -48,11 +53,16 @@
 # false default) — an omitted field is read the same as a signalled
 # failure, never as an admit-favorable guess.
 #
-# THE PREDICATE (epic #1847 Produces #1, verbatim): setting ON AND parent
-# epic Operational AND no Foundational label anywhere in the group (parent
-# or member — Foundational-wins, re-evaluated live every pool build) AND no
-# live (draft/approved, non-superseded) plan note for the epic (race guard)
-# AND the edges-considered marker present (stale-writer guard).
+# THE PREDICATE (epic #1847 Produces #1, verbatim, widened round 4): setting
+# ON AND parent epic Operational AND no Foundational label anywhere in the
+# group (parent or member — Foundational-wins, re-evaluated live every pool
+# build) AND no plan note for the epic in ANY non-superseded status
+# (draft/approved refuses as live-plan-note, the /assess race guard;
+# executing/done refuses as epic-mid-build, a distinct reason so the two
+# states are legible apart — a plan can legitimately sit at status:
+# executing across a multi-level /build run while later-level members still
+# read Ready on the board) AND the edges-considered marker present
+# (stale-writer guard).
 #
 # PRECEDENCE (checked in this order — the first matching branch wins):
 #   1. setting_enabled=false            -> refuse, reason=setting-off
@@ -81,13 +91,21 @@
 #      Default when absent: true — refusing, mirroring #6's existing false
 #      default; an unread group is never assumed foundational-free.)
 #   6. live_plan_note=true              -> refuse, reason=live-plan-note
-#      (the /assess race guard — a plan note already in flight for this
-#      epic owns it; sweep must not double-drive it.)
-#   7. edges_considered_marker=false    -> refuse, reason=marker-missing
+#      (the /assess race guard — a plan note at status: draft or approved
+#      already in flight for this epic owns it; sweep must not double-drive
+#      it. assess owns the cycle.)
+#   7. epic_mid_build=true              -> refuse, reason=epic-mid-build
+#      (a DISTINCT reason from #6, escalation round 4 HIGH finding — a plan
+#      note at status: executing or done means a /build run already owns
+#      this epic's members, live or finished. This makes the "same probe as
+#      /assess" claim true: /assess's own Step 0.5 treats executing/done as
+#      a hard stop, same as here, distinct from draft/approved which /assess
+#      itself is still deciding.)
+#   8. edges_considered_marker=false    -> refuse, reason=marker-missing
 #      (the stale-writer guard: an empty edge read alone never proves
 #      order-freedom, docs/adr/0031 — a marker-less Operational epic is
 #      refused rather than silently admitted on an unconsidered read.)
-#   8. else                             -> admit=true, reason=admitted
+#   9. else                             -> admit=true, reason=admitted
 #
 # Usage:
 #   sweep-epic-admission.sh <epic-json-file>
@@ -113,6 +131,14 @@
 #       # Only consulted when any_foundational_in_group=true; ignored
 #       # otherwise (a uniformly-Operational group is never "mixed").
 #     "live_plan_note": bool,
+#       # true iff a Plans/ note for this epic exists, non-superseded, at
+#       # status: draft or status: approved.
+#     "epic_mid_build": bool,
+#       # true iff a Plans/ note for this epic exists, non-superseded, at
+#       # status: executing or status: done. Distinct field/reason from
+#       # live_plan_note above (escalation round 4 HIGH finding) — never
+#       # collapse the two into one boolean, the two states must stay
+#       # legible apart in the verdict.
 #     "edges_considered_marker": bool
 #   }
 #
@@ -121,7 +147,8 @@
 #     "admit": bool,
 #     "reason": "setting-off" | "readers-unavailable" |
 #               "not-operational-epic" | "foundational-wins" |
-#               "live-plan-note" | "marker-missing" | "admitted",
+#               "live-plan-note" | "epic-mid-build" | "marker-missing" |
+#               "admitted",
 #     "surface_required": bool
 #   }
 
@@ -135,9 +162,10 @@ Usage: sweep-epic-admission.sh <epic-json-file>
 Evaluates /sweep's Operational-epic member admission predicate for a single
 epic, given the admission setting, the reader-helper availability probe,
 this epic's own per-epic read-success signal, the group's work-class
-reads, the live-plan-note race-guard read, and the edges-considered marker
-read. Prints a verdict JSON object to stdout. See this script's own header
-for the input/output shape and the predicate it implements.
+reads, the plan-note status reads (live-plan-note / epic-mid-build), and
+the edges-considered marker read. Prints a verdict JSON object to stdout.
+See this script's own header for the input/output shape and the predicate
+it implements.
 EOF
 }
 
@@ -172,6 +200,7 @@ printf '%s' "$EPIC_JSON" | jq -c '
   | (if .any_foundational_in_group == null then true else .any_foundational_in_group end) as $any_foundational
   | (.mixed_class_group // false) as $mixed
   | (.live_plan_note // false) as $live_plan_note
+  | (.epic_mid_build // false) as $mid_build
   | (.edges_considered_marker // false) as $marker
   | if $setting_enabled != true then
       {admit: false, reason: "setting-off", surface_required: false}
@@ -185,6 +214,8 @@ printf '%s' "$EPIC_JSON" | jq -c '
       {admit: false, reason: "foundational-wins", surface_required: $mixed}
     elif $live_plan_note == true then
       {admit: false, reason: "live-plan-note", surface_required: false}
+    elif $mid_build == true then
+      {admit: false, reason: "epic-mid-build", surface_required: false}
     elif $marker != true then
       {admit: false, reason: "marker-missing", surface_required: false}
     else
