@@ -322,11 +322,12 @@ echo
 
 # ---------------------------------------------------------------------------
 # Step 0 — load the manifest. A refusal here (bad JSON, unknown/future
-# schema_version) is a HARD stop before anything else runs: no partial
-# deletion is ever attempted against a manifest this build can't trust
-# itself to have parsed correctly. manifest_load already prints the exact
-# version found + what this build can read to stderr (see manifest.sh's
-# read-compatibility stance).
+# schema_version, malformed/missing .paths — temperloop#1824) is a HARD
+# stop before anything else runs: no partial deletion is ever attempted
+# against a manifest this build can't trust itself to have parsed
+# correctly. manifest_load already prints the exact version found + what
+# this build can read to stderr (see manifest.sh's read-compatibility
+# stance).
 # ---------------------------------------------------------------------------
 manifest_json="$(manifest_load)" || {
   echo >&2
@@ -334,10 +335,22 @@ manifest_json="$(manifest_load)" || {
   exit 1
 }
 
+# Enumerate the recorded paths, CHECKING the jq exit status
+# (temperloop#1824). The old `done < <(jq ...)` shape made jq's failure
+# unreachable — a manifest whose .paths would not enumerate read as
+# "nothing recorded" and produced a clean 'done (no-op)'. manifest_load now
+# validates .paths structurally, so a failure here should be impossible;
+# this belt-and-suspenders guard keeps any future enumeration failure a
+# loud refusal rather than a silent success.
+paths_list="$(jq -r '.paths | keys_unsorted[]' <<<"$manifest_json")" || {
+  echo "uninstall.sh: could not enumerate the manifest's .paths (malformed manifest?) — refusing to proceed; nothing was touched." >&2
+  exit 1
+}
+
 recorded_paths=()
 while IFS= read -r p; do
   [ -n "$p" ] && recorded_paths+=("$p")
-done < <(jq -r '.paths | keys_unsorted[]' <<<"$manifest_json")
+done <<<"$paths_list"
 
 n_paths="${#recorded_paths[@]}"
 

@@ -195,9 +195,11 @@ _manifest_require_jq() {
 # yet, prints a fresh empty skeleton (schema_version=current, paths={}) —
 # this is the normal first-install state, not an error. If a file exists,
 # it MUST be valid JSON with a schema_version this build recognises
-# (MANIFEST_READABLE_SCHEMA_VERSIONS); otherwise this refuses legibly (see
-# the header's "Read-compatibility stance") and returns 1 with nothing on
-# stdout.
+# (MANIFEST_READABLE_SCHEMA_VERSIONS) AND a .paths that is an object (an
+# empty {} is fine — that is the legitimate nothing-recorded state; a
+# missing/null/array/string .paths is a malformed manifest, temperloop#1824);
+# otherwise this refuses legibly (see the header's "Read-compatibility
+# stance") and returns 1 with nothing on stdout.
 # ---------------------------------------------------------------------------
 manifest_load() {
   _manifest_require_jq || return 1
@@ -224,6 +226,19 @@ manifest_load() {
       return 1
       ;;
   esac
+
+  # Structural check (temperloop#1824): .paths must exist and be an object.
+  # Without this, a manifest like {"schema_version":1} or {"paths":null}
+  # reads "successfully" and every downstream .paths query silently comes
+  # up empty — uninstall then reports "nothing recorded" against a manifest
+  # it never actually understood. A genuinely-empty {} paths object is the
+  # legitimate nothing-installed state and passes.
+  local paths_type
+  paths_type="$(jq -r '.paths | type' <<<"$json")"
+  if [[ "$paths_type" != "object" ]]; then
+    echo "manifest.sh: $file has a malformed .paths — expected an object, found ${paths_type} — refusing to read (fix or remove by hand)" >&2
+    return 1
+  fi
 
   printf '%s\n' "$json"
 }

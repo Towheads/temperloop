@@ -60,6 +60,11 @@
 # The fixture is a plain directory — `uv` is never a dependency of this
 # suite; what is under test is the disclosure, which keys on existence.
 #
+# Test 14 covers temperloop#1824 — a manifest whose .paths is missing, null,
+# an array, or a string exits non-zero with a message naming the manifest
+# problem (never the clean 'done (no-op)' / 'nothing recorded' success),
+# while a genuinely-empty {} paths object remains a legitimate no-op.
+#
 # No network. Every test runs inside a throwaway sandbox HOME/XDG root —
 # nothing touches real machine state.
 set -uo pipefail
@@ -489,6 +494,45 @@ grep -qF "$default_home13" <<<"$out13" && fail "13: guidance must NOT print the 
 
 sandbox_down
 echo "PASS: 13 (backend-home guidance honors an explicit KNOWLEDGE_SEARCH_BM_HOME override)"
+
+# =============================================================================
+# Test 14: malformed .paths (temperloop#1824) — every shape from the issue's
+#          repro table exits non-zero with a message naming the manifest
+#          problem, never the clean 'done (no-op)'; a decoy path survives.
+#          A genuinely-empty {} paths object remains a legitimate no-op
+#          (rc 0, 'done (no-op)').
+# =============================================================================
+sandbox_up uninstall-test14
+
+mkdir -p "$SANDBOX_XDG_STATE_HOME/temperloop"
+manifest14="$SANDBOX_XDG_STATE_HOME/temperloop/install-manifest.json"
+decoy14="$SANDBOX_HOME/should-never-be-touched"
+printf 'must survive — the manifest naming nothing readable\n' > "$decoy14"
+
+for shape in \
+  '{"schema_version":1}' \
+  '{"schema_version":1,"paths":null}' \
+  '{"schema_version":1,"paths":[]}' \
+  '{"schema_version":1,"paths":"oops"}'
+do
+  printf '%s' "$shape" > "$manifest14"
+  out14="$(run_uninstall --yes 2>&1)" && rc14=0 || rc14=$?
+  [ "$rc14" -ne 0 ] || fail "14: a manifest with malformed .paths must exit non-zero (shape: $shape, rc=$rc14, out: $out14)"
+  grep -q "malformed .paths" <<<"$out14" || fail "14: refusal must name the .paths problem (shape: $shape, got: $out14)"
+  grep -q "refusing to proceed" <<<"$out14" || fail "14: expected uninstall.sh's own refusal framing (shape: $shape, got: $out14)"
+  grep -q "done (no-op)" <<<"$out14" && fail "14: a malformed manifest must NEVER report 'done (no-op)' (shape: $shape, got: $out14)"
+  grep -q "nothing recorded" <<<"$out14" && fail "14: a malformed manifest must NEVER read as 'nothing recorded' (shape: $shape, got: $out14)"
+  [ -f "$decoy14" ] || fail "14: a refused manifest must leave every path untouched (shape: $shape)"
+done
+
+# The genuinely-empty {} paths object is the legitimate no-op state.
+printf '{"schema_version":1,"paths":{}}' > "$manifest14"
+out14e="$(run_uninstall --yes 2>&1)" && rc14e=0 || rc14e=$?
+[ "$rc14e" -eq 0 ] || fail "14: an empty {} paths object must remain a clean no-op (rc=$rc14e, out: $out14e)"
+grep -q "done (no-op)" <<<"$out14e" || fail "14: an empty {} paths object should report 'done (no-op)' (got: $out14e)"
+
+sandbox_down
+echo "PASS: 14 (malformed .paths -> loud refusal + exit 1, never 'done (no-op)'; empty {} stays a legitimate no-op)"
 
 echo
 echo "ALL PASS: test_uninstall.sh"
