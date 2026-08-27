@@ -585,6 +585,42 @@ fi
 : "${SWEEP_BG_POLL_ATTEMPTS:=6}"      # bounded poll count before declaring the chunk dropped
 : "${SWEEP_BG_POLL_INTERVAL:=120}"    # seconds between polls
 
+# sweep.md Step 1 — Operational-epic member admission (epic #1847
+# "epic-as-metadata for operational work", Produces #1). Default OFF: with
+# this 0, sweep's fix-pool build is behavior-identical to legacy — a Ready
+# item with a parent is skipped as an epic leg, full stop (rollback
+# identity, acceptance-tested by test_sweep_epic_admission.sh's
+# setting-off case). Set to 1 to additionally admit a Ready sub-issue whose
+# parent epic is genuinely Operational (no Foundational label anywhere in
+# the group — Foundational always wins, re-evaluated live at every pool
+# build, never cached from triage time), carries no live (draft/approved,
+# non-superseded) plan note (the /assess race guard), and whose parent
+# carries triage's `<!-- triage:edges-considered -->` marker (the
+# stale-writer guard — a marker-less Operational epic is refused with a
+# legible notice rather than silently admitted on an unconsidered edge
+# read). See workflows/scripts/build/sweep-epic-admission.sh for the
+# combinator that evaluates this predicate, and docs/features/sweep.md for
+# the operator-facing writeup.
+#
+# SCOPE: per-checkout, not per-board — build.config.sh has no board axis, so
+# this setting governs every board a checkout's `/sweep` drains. What keeps
+# a pipeline-enabled board (stageFind) on the ceremony path while this is
+# off elsewhere is the un-rewired pipeline-drive router, not this setting.
+#
+# SYNC SURVIVAL (the #711 pattern): every reader of this setting MUST use
+# the belt-and-suspenders `${SWEEP_ADMIT_OPERATIONAL_EPICS:-0}` form (never
+# a bare `$SWEEP_ADMIT_OPERATIONAL_EPICS`), so a routine vendored sync that
+# overwrites THIS file back to its tracked default can never silently flip
+# an operator's opt-in back off mid-checkout — same failure class the local
+# override hook (build.config.local.sh, layer 4 above) exists to prevent
+# generally. The operator's actual flip belongs in the gitignored,
+# sync-preserved `build.config.local.sh` sibling (`: "${SWEEP_ADMIT_OPERATIONAL_EPICS:=1}"`
+# there), never edited directly on this tracked line — see
+# test_sweep_admit_operational_epics_sync.sh for the acceptance proof
+# (overwriting this file's own tracked default leaves an already-set local
+# override's effective value unchanged).
+: "${SWEEP_ADMIT_OPERATIONAL_EPICS:=0}"   # 0|1 — admit Ready Operational-epic members into sweep's fix pool
+
 # ── Pipeline operator identity + required CI check (tracker seam v0, #772) ────
 # The operator handle the async decision-issue backend, the merge-tier escalation
 # path, and pipeline-tick's assignee baton all target. MUST be the operator's real
@@ -1361,6 +1397,7 @@ export BUILD_QUOTA_PAUSE_PCT BUILD_QUOTA_CACHE BUILD_QUOTA_WAIT_BUFFER \
        TRIAGE_INTAKE_EXCLUDE_LABELS \
        NEXT_SEQ_STALE_AFTER TIDY_SYNC_WAIT TIDY_LOCK_STALE_AFTER CHECKIN_PRUNE_DAYS \
        SWEEP_FANOUT_WIDTH SWEEP_DETECT_MODEL SWEEP_WORKER_MODEL SWEEP_BG_POLL_ATTEMPTS SWEEP_BG_POLL_INTERVAL \
+       SWEEP_ADMIT_OPERATIONAL_EPICS \
        FIX_WORKER_MODEL BUILD_MACHINERY_SOLO_MODEL BUILD_MACHINERY_BATCH_MODEL BUILD_GATE_SLICE_SECS \
        BUILD_MACHINERY_STEP_CEILING_SECS BUILD_MACHINERY_STEP_SLOW_SECS \
        PIPELINE_OPERATOR PIPELINE_REQUIRED_CHECK \
