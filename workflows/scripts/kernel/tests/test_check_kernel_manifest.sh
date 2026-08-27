@@ -18,6 +18,10 @@
 #               relaxation didn't just delete the guard outright.
 #   4. GREEN  — the classic case (root IS a checkout's own toplevel, real
 #               .git) is unaffected by the relaxation.
+#   5. RED    — duplicate-entry lint (temperloop#1801): the same glob on two
+#               manifest lines fails, naming the pattern and both line
+#               numbers.
+#   6. RED    — a duplicate is flagged even across DIFFERENT classes.
 #
 # Mirrors test_check_producer_egress.sh / test_check_personal_token_denylist.sh's
 # plain mktemp-fixture style — no framework, just `fail()` + sequential asserts.
@@ -116,4 +120,43 @@ if ! KERNEL_MANIFEST_ROOT="$CLASSIC" KERNEL_MANIFEST_FILE="$CLASSIC/manifest.txt
 fi
 echo "PASS: 4 classic own-.git root invocation is unaffected"
 
-echo "ALL PASS: check-kernel-manifest.sh subtree-root support"
+# --- 5: RED — duplicate-entry lint (temperloop#1801): the same glob on two
+# manifest lines fails, naming the pattern and BOTH line numbers, even
+# though coverage itself is complete. ------------------------------------
+DUP_MANIFEST="$WORK/dup-manifest.txt"
+cat > "$DUP_MANIFEST" <<'EOF'
+# comment line (line numbers below must count this line too)
+kernel foo.sh
+kernel manifest.txt
+kernel foo.sh
+EOF
+if KERNEL_MANIFEST_ROOT="$CLASSIC" KERNEL_MANIFEST_FILE="$DUP_MANIFEST" bash "$SCRIPT" >/dev/null 2>&1; then
+  fail "5: a duplicated manifest glob should FAIL the duplicate-entry lint, but it passed"
+fi
+out="$(KERNEL_MANIFEST_ROOT="$CLASSIC" KERNEL_MANIFEST_FILE="$DUP_MANIFEST" bash "$SCRIPT" 2>&1 || true)"
+case "$out" in
+  *"DUPLICATE"*"foo.sh — lines 2 and 4"*) ;;
+  *) fail "5: duplicate failure should name the glob and both line numbers ('foo.sh — lines 2 and 4'); got: $out" ;;
+esac
+echo "PASS: 5 duplicated manifest glob fails, naming the pattern and both line numbers"
+
+# --- 6: RED — a duplicate is flagged even when the two lines carry
+# DIFFERENT classes (a same-length tie the longest-pattern rule cannot
+# break — resolution would be incidental parse order). --------------------
+DUPCLASS_MANIFEST="$WORK/dupclass-manifest.txt"
+cat > "$DUPCLASS_MANIFEST" <<'EOF'
+kernel foo.sh
+kernel manifest.txt
+overlay foo.sh
+EOF
+if KERNEL_MANIFEST_ROOT="$CLASSIC" KERNEL_MANIFEST_FILE="$DUPCLASS_MANIFEST" bash "$SCRIPT" >/dev/null 2>&1; then
+  fail "6: the same glob under two DIFFERENT classes should FAIL the duplicate-entry lint, but it passed"
+fi
+out="$(KERNEL_MANIFEST_ROOT="$CLASSIC" KERNEL_MANIFEST_FILE="$DUPCLASS_MANIFEST" bash "$SCRIPT" 2>&1 || true)"
+case "$out" in
+  *"DUPLICATE"*"foo.sh — lines 1 and 3"*) ;;
+  *) fail "6: cross-class duplicate should be flagged by pattern with both line numbers; got: $out" ;;
+esac
+echo "PASS: 6 same glob under two different classes is still a duplicate"
+
+echo "ALL PASS: check-kernel-manifest.sh subtree-root support + duplicate-entry lint"

@@ -33,6 +33,16 @@
 # otherwise-kernel directory) sit anywhere in the file relative to the
 # broader directory glob it overrides, without fragile ordering.
 #
+# TWO-MANIFEST PRE-CLAIM CONTRACT (temperloop#1801): any item that
+# pre-claims a NEW subtree ahead of its files landing MUST add its claim to
+# BOTH governance manifests in the same change — this file AND
+# docs/features/feature-manifest.txt (see that file's header for the full
+# statement; ADR-0000 § Manifest registration defers there too). A claim in
+# only one manifest leaves sibling PRs to patch the other inline, each
+# unaware of the last — the drift that leaves DUPLICATE entries behind.
+# check-kernel-manifest.sh's duplicate-entry lint fails this file on any
+# glob claimed by more than one line.
+#
 # LICENSE / NOTICE / SECURITY.md: none of these three files exist in this
 # repo yet — they are seeded fresh into the kernel repo by the sibling
 # `kernel-repo-seed` item, not carried over from here. They belong to the
@@ -259,7 +269,6 @@ kernel workflows/scripts/demo/*
 kernel workflows/scripts/demo/tests/*
 kernel workflows/scripts/proposal/*
 kernel workflows/scripts/proposal/tests/*
-kernel workflows/scripts/testbed/*
 kernel workflows/scripts/testbed/tests/*
 # /promote's mechanical half (temperloop#1233): carries a testbed's real
 # commits into the reader's own repository. Generic evaluation-workflow
@@ -446,14 +455,6 @@ kernel workflows/scripts/validate-diagnose-queue-emit.sh
 kernel workflows/scripts/validate-feature-docs.sh
 kernel workflows/scripts/validate-issue-touch-emit.sh
 kernel workflows/scripts/validate-knowledge-search-emit.sh
-# model-comparison — attribution telemetry + inert opt-in replay/judge
-# module (epic temperloop#1225, ADR 0026/0027/0028): a stranger's kernel
-# checkout needs the provider allowlist/disclosure-log pairing (and the
-# sibling replay/judge machinery landing under the same subtree later in
-# the epic) to work against their own repo, exactly like the board/build
-# machinery above — nothing here is Travis-personal. Directory-level glob,
-# same shape as `kernel workflows/scripts/board/*` above.
-kernel workflows/scripts/model-comparison/*
 kernel workflows/scripts/validate-provider-disclosure.sh
 # "A check that could not run reports success" gate (temperloop#1476, epic
 # #1409) — a stranger's kernel checkout needs this exactly like the sibling

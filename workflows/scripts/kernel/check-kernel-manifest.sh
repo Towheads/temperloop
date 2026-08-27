@@ -14,6 +14,10 @@
 # ("most specific wins"), so override entries can be listed anywhere in the
 # manifest relative to the broader glob they narrow — no ordering fragility.
 #
+# DUPLICATE-ENTRY LINT (temperloop#1801): the same glob on more than one
+# manifest line (any class) fails — it is the residue a missed two-manifest
+# pre-claim leaves behind (see the manifest's own header).
+#
 # Usage:
 #   workflows/scripts/kernel/check-kernel-manifest.sh
 #   (called by `make test-kernel-manifest`)
@@ -64,6 +68,36 @@ fi
 source "$SCRIPT_DIR/lib.sh"
 
 kernel_lib_load_manifest "$KERNEL_MANIFEST_FILE" || exit 1
+
+# ---------------------------------------------------------------------------
+# Duplicate-entry lint (temperloop#1801): the same glob claimed on more than
+# one manifest line — REGARDLESS of class — is drift residue, typically a
+# subtree pre-claimed once and then re-added inline by a sibling PR that
+# didn't see the pre-claim (the two-manifest pre-claim contract in this
+# manifest's own header and docs/features/feature-manifest.txt's). A
+# duplicate is never load-bearing ("longest pattern wins" ties resolve by
+# incidental parse order), so it always fails. Same comment/blank-line rules
+# as kernel_lib_load_manifest; malformed lines are the loader's job (it
+# already exited above if any exist).
+# ---------------------------------------------------------------------------
+dups="$(awk '
+  {
+    line = $0
+    sub(/#.*/, "", line)
+    gsub(/^[ \t]+|[ \t]+$/, "", line)
+    if (line == "") next
+    sp = index(line, " ")
+    if (sp == 0) next
+    pat = substr(line, sp + 1)
+    if (pat in first) printf "  - %s — lines %d and %d\n", pat, first[pat], NR
+    else first[pat] = NR
+  }
+' "$KERNEL_MANIFEST_FILE")"
+if [[ -n "$dups" ]]; then
+  echo "check-kernel-manifest: DUPLICATE manifest entr(ies) in $KERNEL_MANIFEST_FILE — keep exactly one line per glob:"
+  printf '%s\n' "$dups"
+  exit 1
+fi
 
 # ---------------------------------------------------------------------------
 # Walk every git-tracked path and classify by longest-matching-pattern.

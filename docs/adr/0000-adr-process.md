@@ -92,10 +92,14 @@ generator falls back to the filename stem, title-cased. Drop a new
 `docs/adr/NNNN-....md` file and it appears in the ADRs nav group on the next
 `make docs` run.
 
-**Manifest registration.** Because `docs/adr/*` is documentation product
-(not a single feature's code) and stranger-facing (kernel, not overlay), it
-must be claimed in both governance manifests before or in the same PR that
-adds a file under the directory:
+**Manifest registration.** Registering `docs/adr/*` is one instance of the
+generalised **two-manifest pre-claim contract** (temperloop#1801), stated
+canonically in `docs/features/feature-manifest.txt`'s header: any
+new-subtree pre-claim must add its claim to **both** governance manifests in
+the same change — this section defers to that statement rather than
+restating it. The ADR-specific facts: `docs/adr/*` is documentation product
+(not a single feature's code) and stranger-facing (kernel, not overlay), so
+its two claims are:
 
 - `workflows/scripts/kernel/kernel-manifest.txt` — `kernel docs/adr/*`
 - `docs/features/feature-manifest.txt` — `none docs/adr/*`
