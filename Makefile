@@ -20,7 +20,7 @@ TESTBED_SRC := $(FOUNDATION)/workflows/scripts/testbed
 	test-hooks test-install test-install-links test-install-worktree-guard test-testbed-record \
 	test-prune-branches validate-capture-backstop validate-activation-registry validate-mandatory-step-signal validate-onramp-anchors validate-command-run-emit validate-issue-touch-emit \
 	validate-knowledge-search-emit validate-diagnose-queue-emit \
-	validate-lexicon validate-template-refs test-scan-stub test-vault-hygiene test-tally-findings test-findings-integrity test-env-hygiene-report lint-pr-body-test test-stranger-config \
+	validate-lexicon validate-template-refs test-scan-stub test-vault-hygiene test-tally-findings test-findings-integrity test-model-comparison-stats test-env-hygiene-report lint-pr-body-test test-stranger-config \
 	test-kernel-manifest test-kernel-denylist test-kernel-gitleaks test-kernel-prerename test-kernel-terminology test-pr-leak-guard test-producer-egress docs \
 	test-docs-generator test-conventions-probe test-demo test-proposal-pr guard-install-worktree test-cli-subcommands test-testbed-source \
 	test-testbed-command test-promote-push test-testbed-equivalence test-candidate-session \
@@ -49,6 +49,7 @@ help:
 	@echo "  validate-lexicon        drain-mind tell-lexicon lint"
 	@echo "  validate-template-refs  Message-template reference-integrity + registry-completeness lint"
 	@echo "  test-scan-stub          Session-stub scanner tests"
+	@echo "  test-model-comparison-stats  Comparison-statistics library tests"
 	@echo "  lint-pr-body-test       PR-body issue-linkage lint tests"
 	@echo "  test-stranger-config    Kernel-portability seam integration test"
 	@echo "  test-kernel-manifest    kernel-manifest.txt coverage check"
