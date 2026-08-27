@@ -73,7 +73,11 @@ die() { printf '%s: error: %s\n' "$PROG" "$*" >&2; exit 1; }
 note() { [ -n "$JSON" ] || printf '%s\n' "$*"; }
 
 usage() {
-  sed -n '2,60p' "$0" | sed 's/^# \{0,1\}//'
+  # Print the header comment block STRUCTURALLY: every leading '#' line after
+  # the shebang, stopping at the first non-comment line. A hardcoded line
+  # range goes off by one the moment the header grows or shrinks and leaks a
+  # code line into --help (temperloop #1821 printed `set -euo pipefail`).
+  awk 'NR==1{next} /^#/{sub(/^# ?/,""); print; next} {exit}' "$0"
   exit "${1:-0}"
 }
 
