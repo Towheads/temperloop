@@ -155,5 +155,30 @@ set -e
 [ "$rc" -eq 2 ] || fail "invalid --format did not exit 2 (got: $rc)"
 echo "PASS: CLI usage errors (no args / unknown subcommand / invalid --format exit 2; -h exits 0)"
 
+# =============================================================================
+# 8. an overlay row whose NAME is not a legal shell identifier is rejected
+#    upstream by registry validation: `config list` refuses loudly (exit 1,
+#    diagnostics naming the row and its source file) instead of silently
+#    dropping the row and exiting 0 (temperloop#1825). Fixture uses the real
+#    overlay basename an operator would author.
+# =============================================================================
+BADOV_DIR="$WORK/badname-overlay"
+mkdir -p "$BADOV_DIR"
+printf 'SWEEP-FANOUT-WIDTH\t3\tint\tkernel\tscripts/a.sh\thyphenated name, illegal\tadd\n' \
+  > "$BADOV_DIR/setting-registry.overlay.tsv"
+set +e
+badname_err="$(env -u XDG_CONFIG_HOME -u BUILD_CONFIG_MACHINE -u BUILD_CONFIG_LOCAL \
+  SETTING_REGISTRY_OVERLAY_FILE="$BADOV_DIR/setting-registry.overlay.tsv" \
+  bash "$CONFIG" list --format tsv 2>&1 >/dev/null)"; rc=$?
+set -e
+[ "$rc" -ne 0 ] || fail "an illegal-name overlay row did not make config list exit non-zero"
+grep -q "not a legal shell identifier" <<<"$badname_err" \
+  || fail "config list stderr did not carry the illegal-name diagnostic (got: $badname_err)"
+grep -q "SWEEP-FANOUT-WIDTH" <<<"$badname_err" \
+  || fail "config list stderr did not name the offending row (got: $badname_err)"
+grep -q "setting-registry.overlay.tsv" <<<"$badname_err" \
+  || fail "config list stderr did not name the offending source file (got: $badname_err)"
+echo "PASS: an illegal-name overlay row is rejected upstream — config list exits non-zero and names the row + file"
+
 echo
 echo "ALL PASS: test_config.sh"
