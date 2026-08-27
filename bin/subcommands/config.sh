@@ -206,10 +206,25 @@ EOF
   return 1
 }
 
-if ! setting_registry_validate >/dev/null 2>&1; then
-  echo "config.sh: warning — the setting registry reported malformed rows (run" >&2
-  echo "  workflows/scripts/config/setting-registry-lib.sh's setting_registry_validate" >&2
-  echo "  directly for details) — continuing with a best-effort union" >&2
+# Validate the registry BEFORE the union walk, and print the validator's
+# diagnostics (they name each bad row and its source file) instead of
+# swallowing them. Most malformations stay a best-effort warning — a row with
+# e.g. an unknown type still lists fine — but a row whose NAME is not a legal
+# shell identifier is FATAL: the `${!name}` indirect-expansion sites below
+# (the bulk-source probe and the per-row env check) abort on such a name
+# (bash "invalid variable name"), which is exactly how an illegal row used to
+# be silently dropped while still exiting 0 (temperloop#1825). Reject it
+# upstream, loudly, so those sites never see one. The diagnostic text matched
+# here is the lib's own "not a legal shell identifier" message
+# (setting-registry-lib.sh, _setting_registry_legal_name's callers).
+val_out=""
+if ! val_out="$(setting_registry_validate 2>&1)"; then
+  printf '%s\n' "$val_out" >&2
+  if grep -q 'is not a legal shell identifier' <<<"$val_out"; then
+    echo "config.sh: the setting registry has row(s) whose name is not a legal shell identifier — refusing to list (fix the row(s) named above)" >&2
+    exit 1
+  fi
+  echo "config.sh: warning — the setting registry reported malformed rows (details above) — continuing with a best-effort union" >&2
 fi
 
 rows="$(setting_registry_rows)"

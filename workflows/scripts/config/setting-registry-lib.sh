@@ -121,6 +121,20 @@ _setting_split_row() {
   KR_F7="${r%%$'\t'*}"
 }
 
+# _setting_registry_legal_name <name> -> rc 0 iff <name> is a legal shell
+# identifier ([A-Za-z_][A-Za-z0-9_]*). The registry's consumers expand a row's
+# name indirectly (`${!name}` in bin/subcommands/config.sh — the
+# _config_list_bulk_source probe and the per-row env check); an illegal name
+# aborts that expansion (bash "invalid variable name"), silently dropping
+# rows — so validation rejects it here, upstream, instead. Pure `case`
+# pattern-match (no regex), bash-3.2-portable.
+_setting_registry_legal_name() {
+  case "$1" in
+    ''|[0-9]*|*[!A-Za-z0-9_]*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
 # _setting_registry_in_list <needle> <space-separated list> -> rc 0 if present.
 _setting_registry_in_list() {
   local needle="$1" list="$2" item
@@ -135,7 +149,8 @@ _setting_registry_in_list() {
 # "MALFORMED: <reason>: <line>" line per bad row to stderr and returns
 # non-zero if any row is malformed; otherwise prints nothing and returns 0.
 # Malformed conditions:
-#   - kernel row: field count != 6, OR `type` not in SETTING_REGISTRY_TYPES, OR
+#   - kernel row: field count != 6, OR `name` not a legal shell identifier
+#     ([A-Za-z_][A-Za-z0-9_]*), OR `type` not in SETTING_REGISTRY_TYPES, OR
 #     `layer` not in SETTING_REGISTRY_LAYERS, OR a duplicate (name,
 #     owning-script) PAIR within the kernel table itself. A repeated `name`
 #     alone is NOT an error — a setting whose default genuinely differs between
@@ -143,7 +158,8 @@ _setting_registry_in_list() {
 #     setting-registry.tsv's own header) legitimately gets two rows, one per
 #     owning-script/layer; only an exact (name, owning-script) repeat is a
 #     copy-paste mistake.
-#   - overlay row: field count != 7, OR `type`/`layer` invalid (as above), OR
+#   - overlay row: field count != 7, OR `name` not a legal shell identifier
+#     (as above), OR `type`/`layer` invalid (as above), OR
 #     `op` not in {add, redefault}, OR an `add` row whose name already
 #     exists in the kernel table (collision), OR a `redefault` row whose name
 #     does NOT exist in the kernel table (nothing to redefine).
@@ -172,6 +188,10 @@ setting_registry_validate() {
     type="$KR_F3"
     layer="$KR_F4"
     owning_script="$KR_F5"
+    if ! _setting_registry_legal_name "$name"; then
+      echo "MALFORMED: kernel row name '$name' is not a legal shell identifier ([A-Za-z_][A-Za-z0-9_]*) in $kfile: $row" >&2
+      bad=1
+    fi
     # Uniqueness key is (name, owning-script), not name alone — a setting
     # legitimately gets two rows when its default genuinely differs between
     # two owning scripts (see this function's header comment).
@@ -211,6 +231,10 @@ EOF
         type="$KR_F3"
         layer="$KR_F4"
         op="$KR_F7"
+        if ! _setting_registry_legal_name "$name"; then
+          echo "MALFORMED: overlay row name '$name' is not a legal shell identifier ([A-Za-z_][A-Za-z0-9_]*) in $ofile: $row" >&2
+          bad=1
+        fi
         if ! _setting_registry_in_list "$type" "$SETTING_REGISTRY_TYPES"; then
           echo "MALFORMED: overlay row '$name' has unknown type '$type': $row" >&2
           bad=1

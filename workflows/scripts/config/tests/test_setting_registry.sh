@@ -145,5 +145,53 @@ printf 'SETTING_NOPE\t1\tint\tkernel\tscripts/a.sh\tno such kernel row\tredefaul
   echo "PASS: 7 malformed overlay row ('redefault' has no kernel row to override) is rejected"
 )
 
+# --- 8. malformed: setting names that are not legal shell identifiers -------
+# An operator-authored overlay row whose NAME is not a legal shell identifier
+# ([A-Za-z_][A-Za-z0-9_]*) used to slip through validation and then silently
+# vanish from `temperloop config list` (the `${!name}` indirect-expansion
+# sites in bin/subcommands/config.sh abort on it) — temperloop#1825.
+# Fixture uses the real overlay basename an operator would author.
+BADNAMES_DIR="$TMP/overlay-badnames"
+mkdir -p "$BADNAMES_DIR"
+BADNAMES="$BADNAMES_DIR/setting-registry.overlay.tsv"
+cat >"$BADNAMES" <<'EOF'
+SWEEP-FANOUT-WIDTH	3	int	kernel	scripts/a.sh	hyphenated name, illegal	add
+1SETTING_LEADING_DIGIT	5	int	kernel	scripts/a.sh	leading digit, illegal	add
+EOF
+(
+  export SETTING_REGISTRY_FILE="$KFILE"
+  export SETTING_REGISTRY_OVERLAY_FILE="$BADNAMES"
+  # shellcheck source=/dev/null
+  source "$LIB"
+  if setting_registry_validate >"$TMP/badnames-out.txt" 2>&1; then
+    fail "8: overlay rows with illegal setting names should be rejected (exit non-zero)"
+  fi
+  grep -q "MALFORMED: overlay row name 'SWEEP-FANOUT-WIDTH' is not a legal shell identifier" "$TMP/badnames-out.txt" \
+    || fail "8: expected a MALFORMED diagnostic naming the hyphenated row"
+  grep -q "MALFORMED: overlay row name '1SETTING_LEADING_DIGIT' is not a legal shell identifier" "$TMP/badnames-out.txt" \
+    || fail "8: expected a MALFORMED diagnostic naming the leading-digit row"
+  grep -q "setting-registry.overlay.tsv" "$TMP/badnames-out.txt" \
+    || fail "8: diagnostics should name the offending source file"
+  echo "PASS: 8 overlay rows with illegal setting names (hyphen, leading digit) are rejected loudly"
+)
+
+# --- 9. malformed: kernel row with an illegal setting name -------------------
+BADKNAME="$TMP/bad-kernel-name.tsv"
+printf 'BAD.NAME\t1\tint\tkernel\tscripts/a.sh\tdotted name, illegal\n' >"$BADKNAME"
+(
+  export SETTING_REGISTRY_FILE="$BADKNAME"
+  export SETTING_REGISTRY_OVERLAY_FILE="$TMP/absent-overlay.tsv"
+  # shellcheck source=/dev/null
+  source "$LIB"
+  if setting_registry_validate --kernel-only >"$TMP/badkname-out.txt" 2>&1; then
+    fail "9: a kernel row with an illegal setting name should be rejected"
+  fi
+  grep -q "MALFORMED: kernel row name 'BAD.NAME' is not a legal shell identifier" "$TMP/badkname-out.txt" \
+    || fail "9: expected a MALFORMED diagnostic naming the row"
+  grep -q "bad-kernel-name.tsv" "$TMP/badkname-out.txt" \
+    || fail "9: diagnostic should name the offending source file"
+  echo "PASS: 9 kernel row with an illegal setting name is rejected loudly"
+)
+
 echo "---"
 echo "test_setting_registry: OK"
