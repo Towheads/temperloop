@@ -21,11 +21,15 @@
 # (merged-detect.sh: gh pr view state, falling back to a squash-safe cherry
 # heuristic) independently confirms its PR merged even though the branch tip
 # is NOT an ancestor — the squash/rebase-merge-queue topology the ancestor-only
-# test misses. Deletion still defaults to `git branch -d` (refuses anything not
-# fully merged — the safety floor); `-D` is used ONLY as a fallback for a
-# branch the helper independently confirmed merged, never for an ordinary `-d`
-# failure (e.g. in-use/worktree-bound), so a genuinely-unmerged branch is still
-# refused exactly as before.
+# test misses. Deletion tries `git branch -d` first (the fast path), but -d
+# checks merged-ness against HEAD, not $base — on a checkout whose local
+# default branch is behind origin it refuses a branch already confirmed merged
+# into $base (#1775). So a -d refusal escalates to `-D` ONLY for a branch whose
+# merge into $base is independently confirmed at that moment: its tip is an
+# ancestor of $base (re-verified), or the helper confirmed its PR merged. A
+# branch confirmed by neither is still refused exactly as before — no blanket
+# -D — and the "in use / worktree-bound" skip is printed only when -D itself
+# refuses (which git does only for a genuinely in-use branch).
 #
 #   prune-merged-branches.sh                 # dry-run: list merged local branches
 #   prune-merged-branches.sh --apply         # delete merged local branches
@@ -43,7 +47,7 @@ apply=0
 do_remote=0
 
 usage() {
-  sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,38p' "$0" | sed 's/^# \{0,1\}//'
   exit "${1:-0}"
 }
 
@@ -163,26 +167,41 @@ skipped_local=()
 if [ "${#local_merged[@]}" -gt 0 ]; then
   echo "==> Deleting ${#local_merged[@]} local branch(es) (git branch -d, refuses unmerged)"
   for b in "${local_merged[@]}"; do
-    # -d (not -D) first — git refuses any branch not fully merged; this is the
-    # safety floor and the fast path for the ordinary ancestor-merged case.
+    # -d first — the fast path when the local default branch is current with
+    # $base. But -d checks merged-ness against HEAD (or the branch's upstream),
+    # NOT $base, so on a behind checkout it refuses a branch the classification
+    # above already confirmed merged into $base (#1775).
     # Suppress git's stderr on failure and print our own one-line skip note.
     if git branch -d "$b" 2>/dev/null; then
       deleted_local=$((deleted_local + 1))
       continue
     fi
-    # -d refused (its tip genuinely isn't an ancestor) — escalate to -D ONLY
-    # when the merge-queue-safe helper independently confirmed THIS branch
-    # merged (local_squash, #171/#173): a squash/rebase-merge queue landed the
-    # PR without leaving the tip as an ancestor. Never force-delete a branch
-    # -d refused for any OTHER reason (in-use/worktree-bound, genuinely
-    # unmerged) — the safety floor stays intact.
-    is_squash=0
-    for s in "${local_squash[@]:-}"; do
-      [ "$s" = "$b" ] && { is_squash=1; break; }
-    done
-    if [ "$is_squash" -eq 1 ] && git branch -D "$b" 2>/dev/null; then
+    # -d refused — escalate to -D ONLY when THIS branch's merge into $base is
+    # independently confirmed at this moment (#1775): either its tip is an
+    # ancestor of $base (re-verified here, the behind-checkout case where -d's
+    # HEAD-relative check disagrees with the origin/main classification), or
+    # the merge-queue-safe helper confirmed its PR merged (local_squash,
+    # #171/#173 — a queue squash landed the PR without leaving the tip as an
+    # ancestor). A branch confirmed by neither is never force-deleted — the
+    # safety floor stays intact.
+    confirmed=0
+    if git merge-base --is-ancestor "$b" "$base" 2>/dev/null; then
+      confirmed=1
+    else
+      for s in "${local_squash[@]:-}"; do
+        [ "$s" = "$b" ] && { confirmed=1; break; }
+      done
+    fi
+    if [ "$confirmed" -ne 1 ]; then
+      skipped_local+=("$b")
+      echo "  skipped (not confirmed merged into ${base}): $b"
+      continue
+    fi
+    if git branch -D "$b" 2>/dev/null; then
       deleted_local=$((deleted_local + 1))
     else
+      # Even -D refused — git does that only for a branch genuinely in use
+      # (worktree-bound or checked out), so this diagnosis is now accurate.
       skipped_local+=("$b")
       echo "  skipped (in use / worktree-bound): $b"
     fi
