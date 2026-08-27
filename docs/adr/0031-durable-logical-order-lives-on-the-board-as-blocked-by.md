@@ -38,12 +38,14 @@ plan's `after:` edges, so no ordering ever has two live representations),
 each edge with a rationale comment, a script-backed cycle check before
 every write, and an `edges-considered` marker on the epic that sweep
 admission requires (an empty edge read alone never proves order-freedom).
-Drive-time consumers honor the edges: an item never drives ahead of an
-open blocker, and un-defer requires the blocker closed AND merged to the
-default branch (`worktree.sh deps-merged`) — a parked blocker never
-releases its dependents. The amended invariant is stated once and pointed
-to from every prior statement site (both `triage.md` lines, `assess.md`'s
-recomputed-fresh line, and the ratifying decision note).
+Drive-time consumers honor the edges: `/sweep` defers a blocked pool item
+natively (temperloop#1835, landing with this epic); `/build` honors them
+via `/assess`'s projection of stamped edges into plan `after:` edges (the
+existing toposort); `/next` skips a blocked item advisorily; `/fix`
+enforcement is tracked separately (temperloop#1843). The amended invariant
+is stated once and pointed to from every prior statement site (both
+`triage.md` lines, `assess.md`'s recomputed-fresh line, and the ratifying
+decision note).
 
 ## Consequences
 
