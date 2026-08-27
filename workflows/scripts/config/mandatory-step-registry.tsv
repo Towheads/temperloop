@@ -109,10 +109,20 @@ claude/commands/triage.md	Step 1 Adapter A — the degraded arm when triage-inta
 # ── /sweep Step 3.6A — the end-of-run epic-closing gate (epic #1847) ───────
 # The gate must run even on the "found nothing" run, or a skipped review and
 # a review that genuinely admitted no epics are indistinguishable from
-# outside. The signal is the SAME shape /triage Step 5's telemetry emission
-# row already uses: the executing code (emit-command-run.sh) REFUSES to
-# complete a record whose epics_closed + epics_left_open does not partition
-# epics_reviewed, independently of the pre-existing items_processed
-# partition — so a run that skipped, mis-tallied, or half-drove the gate
-# fails loudly instead of silently under-reporting it.
-claude/commands/sweep.md	Step 3.6A — epic-closing gate (offer/keep-open/pending-decision per fully-drained Operational epic)	Running this review exactly once at the end of every sweep run is **mandatory**	refusal	workflows/scripts/emit-command-run.sh	epics_closed + epics_left_open == epics_reviewed	-	The emitter enforces epics_closed + epics_left_open == epics_reviewed whenever --epics-reviewed is passed (activated on every run, including the zero-epic fast path's 0/0/0), exiting non-zero and naming the arithmetic on a mismatch — the same partition discipline the pre-existing merged+resolved+parked+reported_no_op == items_processed check applies, but as a distinct, independent population (epics, never Phase-2 pooled issues) — so a run that skipped or miscounted the gate cannot silently under-report it either.
+# outside. First shipped as a KIND=refusal row anchored on emit-command-run.sh's
+# epics_closed + epics_left_open == epics_reviewed check — but that check only
+# ACTIVATES when --epics-reviewed is passed, so a future sweep.md edit that
+# quietly dropped the three --epics-* flags would exit 0 in a shape
+# indistinguishable from a doc that never touches the extension at all (the
+# escalation round-2 HIGH finding: a conditionally-armed signal reads as
+# "not applicable", not "broken" — the K.52 class this repo's own mandatory-
+# step birth rule exists to close). Re-anchored on a STATIC guard instead:
+# validate-command-run-emit.sh's content-derived check_epics_reviewed (mirrors
+# its pre-existing check_resolved/check_reported_no_op #1084/#1103 shape)
+# FAILS whenever sweep.md declares the gate (epics_reviewed + Step 3.6A both
+# present) but its emit call omits --epics-reviewed — unconditional on the
+# DOC side, so the caller can never silently defeat it by dropping the flags.
+# The underlying emit-command-run.sh accounting check still runs at runtime
+# (unchanged); this row now backs the declaration with the guard that proves
+# the flags are STILL BEING PASSED, which the runtime check alone could not.
+claude/commands/sweep.md	Step 3.6A — epic-closing gate (offer/keep-open/pending-decision per fully-drained Operational epic)	Running this review exactly once at the end of every sweep run is **mandatory**	guard	workflows/scripts/validate-command-run-emit.sh	a dropped flag would read as not-applicable rather than a broken mandatory step	make validate-command-run-emit	check_epics_reviewed is content-derived off sweep.md declaring the Step 3.6A gate (epics_reviewed + the Step 3.6A anchor) and FAILS if the doc's emit-command-run.sh call omits --epics-reviewed — proven by removing the flag from sweep.md (validate-command-run-emit.sh went red naming the omission) and restoring it (green again). This makes the signal unconditional: a future edit that drops the --epics-* flags is caught by this static guard even though emit-command-run.sh's own epics_closed + epics_left_open == epics_reviewed runtime assertion (still present, unchanged) would never fire on a call that no longer passes them at all.
