@@ -105,3 +105,14 @@ claude/commands/build.md	3-launch / 4a / 4d — the level-composition rosters (l
 # loudly and refuses the two DISPOSITIONS instead. That refusal is the part
 # worth a signal.
 claude/commands/triage.md	Step 1 Adapter A — the degraded arm when triage-intake-exclusion.sh is unavailable or fails	Three obligations, all mandatory:	guard	workflows/scripts/build/tests/test_triage_intake_exclusion.sh	static guard: the degraded arm REFUSES the cull/promote dispositions	make test-build	The degraded arm is the one path no runtime tally inside an AI-executed spec can ever observe: it fires precisely when the classifier that would have emitted the tally is absent. So the signal is a STATIC guard over the spec text, paired with a RUNTIME exercise of the guard's own branch. Cases 13/14 run the spec's resolve-and-guard snippet against an absent and a failing classifier and assert both land on the degraded arm (and against the real one, that it does NOT) — so the guard is proven to discriminate, not merely to exist. Case 15's four assertions then pin each of the three obligations in the prose: the -x test, the NAMED 'SKIPPED … intaken UNFILTERED' report line that keeps a degraded run from reading like a genuine zero, and the refusal to cull or promote a candidate carrying an exclusion label. Deleting the guard, dropping the named line, or softening the disposition refusal to a silent unfiltered intake turns test_triage_intake_exclusion.sh red under make test-build.
+
+# ── /sweep Step 3.6A — the end-of-run epic-closing gate (epic #1847) ───────
+# The gate must run even on the "found nothing" run, or a skipped review and
+# a review that genuinely admitted no epics are indistinguishable from
+# outside. The signal is the SAME shape /triage Step 5's telemetry emission
+# row already uses: the executing code (emit-command-run.sh) REFUSES to
+# complete a record whose epics_closed + epics_left_open does not partition
+# epics_reviewed, independently of the pre-existing items_processed
+# partition — so a run that skipped, mis-tallied, or half-drove the gate
+# fails loudly instead of silently under-reporting it.
+claude/commands/sweep.md	Step 3.6A — epic-closing gate (offer/keep-open/pending-decision per fully-drained Operational epic)	Running this review exactly once at the end of every sweep run is **mandatory**	refusal	workflows/scripts/emit-command-run.sh	epics_closed + epics_left_open == epics_reviewed	-	The emitter enforces epics_closed + epics_left_open == epics_reviewed whenever --epics-reviewed is passed (activated on every run, including the zero-epic fast path's 0/0/0), exiting non-zero and naming the arithmetic on a mismatch — the same partition discipline the pre-existing merged+resolved+parked+reported_no_op == items_processed check applies, but as a distinct, independent population (epics, never Phase-2 pooled issues) — so a run that skipped or miscounted the gate cannot silently under-report it either.

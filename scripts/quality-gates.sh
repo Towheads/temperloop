@@ -296,6 +296,16 @@ KERNEL_GATES=(
   # Same direct-`bash` form as the sibling emitter gates (the kernel Makefile
   # is generator-owned; no new target added here).
   "bash workflows/scripts/tests/test_command_run_emit.sh"
+  # command-run emitter's epics_reviewed/epics_closed/epics_left_open
+  # schema extension (temperloop item "epic-closing-gate", epic #1847) — the
+  # /sweep end-of-run epic-closing gate's tally. Covers: the three fields are
+  # purely additive (absent unless --epics-reviewed is passed), they ride
+  # the SAME emit call as the existing items_processed disposition counts,
+  # and a SEPARATE accounting check (epics_closed + epics_left_open ==
+  # epics_reviewed) fails loudly — independently of the items_processed
+  # check — on a mismatch while still appending the record. Same direct-
+  # `bash` form as the sibling emitter gates.
+  "bash workflows/scripts/tests/test_command_run_emit_epics.sh"
   "make validate-issue-touch-emit"
   # model-usage attribution-stream emit + its CONTENT-LEVEL validator
   # (temperloop#1253, epic #1225, ADR 0026/0028): emit-model-usage.sh is the
