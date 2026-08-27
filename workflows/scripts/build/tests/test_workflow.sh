@@ -4734,7 +4734,9 @@ grep -q "phase: phaseName ?? 'worker'" "$MJS" \
   || fail "#1294: callWorker must take an explicit phase with a flat fallback"
 [ "$(grep -c "phase: enterStage(STAGE_" "$MJS")" -ge 7 ] \
   || fail "#1294: every stage-owning spawn site must pass opts.phase via enterStage() (global phase() state races inside parallel())"
-[ "$(grep -c "phase: stagePhase(STAGE_RECOVER)" "$MJS")" -eq 2 ] \
+# 3 = recover-probe + pr-batch-resume + the temperloop#1819 quota canary (all
+# off-path diagnostics that must never move the stage cursor).
+[ "$(grep -c "phase: stagePhase(STAGE_RECOVER)" "$MJS")" -eq 3 ] \
   || fail "#1294: the off-path recovery spawns must use stagePhase(), which never moves the cursor"
 echo "PASS: #1294 stage-phase guard — one monotonic enterStage() cursor, explicit opts.phase at every spawn, meta.phases deliberately absent"
 
@@ -6276,6 +6278,138 @@ K1219_R="$(k1219_run "$K1219_E2E/fail.proof.sh")"
 [ "$K1219_R" = '"outcome":"ACTIVATION_FAIL"' ] \
   || fail "#1219-e2e: a presence proof whose wiring is ABSENT must report ACTIVATION_FAIL; got $K1219_R"
 echo "PASS: #1219-e2e proof — the generated worktree predicate runs for real, reports the predicate's own exit status, and skips the control on a presence proof"
+
+# ============================================================================
+# TESTS (temperloop#1819): session-quota death → its OWN escalation kind
+# (quota-exhausted), never machinery-denied/SPINE_DENIED and never a bare
+# worker-error 'agent returned null'. Two seams, classified differently:
+#   • agent() THREW with the harness's limit text — matched directly, reset
+#     time extracted from the message;
+#   • agent() returned a bare NULL (no text reaches the script) — classified
+#     by the agent-liveness canary: a classifier denial is per-command (an
+#     innocuous probe still spawns) while a quota death kills EVERY spawn.
+# Discrimination: the same null with a LIVE canary keeps the pre-#1819 kinds
+# (K1819d below + the unchanged #72/#542 cases above).
+# ============================================================================
+
+run_node_case "K1819a worker throw with quota text → quota-exhausted carrying the reset time; no retry, no probe, no canary" "
+$PREAMBLE
+setMachinery('qworker', { outcome: 'CREATED', path: '/tmp/repo.wt/qworker' });
+setWorker('qworker', { __throw: \"You've hit your session limit · resets 5:30pm\" });
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'qworker', branch: 'build/qworker', title: 'Quota worker', kind: 'impl', acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+const result = await mod.default();
+const esc = result.escalations ?? [];
+if ((result.parked ?? []).length !== 0 || esc.length !== 1 || esc[0].kind !== 'quota-exhausted')
+  { console.log(JSON.stringify({ ok: false, reason: 'expected 1 quota-exhausted escalation, got ' + JSON.stringify(result) })); process.exit(0); }
+const p = esc[0].payload;
+if (p.reset_time !== '5:30pm')
+  { console.log(JSON.stringify({ ok: false, reason: 'payload must carry the reset time from the harness message, got ' + JSON.stringify(p) })); process.exit(0); }
+if (p.worktree_left_intact !== true || p.worktree !== '/tmp/repo.wt/qworker')
+  { console.log(JSON.stringify({ ok: false, reason: 'payload must state the worktree was left intact, got ' + JSON.stringify(p) })); process.exit(0); }
+if (p.classified_by !== 'error-text')
+  { console.log(JSON.stringify({ ok: false, reason: 'expected classified_by=error-text, got ' + JSON.stringify(p) })); process.exit(0); }
+// Short-circuit: under an exhausted quota nothing further is spawned — no
+// worker retry, no recover-probe, no canary (the text was decisive).
+const workers = callLog.filter(c => isWorkerCall(c.opts)).length;
+const probes = callLog.filter(c => /^recover-probe:/.test(String(c.opts.label))).length;
+const canaries = callLog.filter(c => /^canary:/.test(String(c.opts.label))).length;
+if (workers !== 1 || probes !== 0 || canaries !== 0)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected 1 worker / 0 probes / 0 canaries, got ' + workers + '/' + probes + '/' + canaries })); process.exit(0); }
+console.log(JSON.stringify({ ok: true }));
+"
+
+run_node_case "K1819b worker bare null + dead canary → quota-exhausted (canary-classified), reset unknown, no retry" "
+$PREAMBLE
+setMachinery('qnull', { outcome: 'CREATED', path: '/tmp/repo.wt/qnull' });
+setMachinery('quota-probe', null);   // the canary itself cannot spawn — quota is dead
+setWorker('qnull', null);            // agent() returned a bare null: no text at all
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'qnull', branch: 'build/qnull', title: 'Quota null', kind: 'impl', acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+const result = await mod.default();
+const esc = result.escalations ?? [];
+if (esc.length !== 1 || esc[0].kind !== 'quota-exhausted')
+  { console.log(JSON.stringify({ ok: false, reason: 'expected 1 quota-exhausted escalation, got ' + JSON.stringify(result) })); process.exit(0); }
+const p = esc[0].payload;
+if (p.classified_by !== 'agent-liveness-canary' || p.reset_time !== null)
+  { console.log(JSON.stringify({ ok: false, reason: 'null shape must be canary-classified with no invented reset time, got ' + JSON.stringify(p) })); process.exit(0); }
+if (p.worktree_left_intact !== true)
+  { console.log(JSON.stringify({ ok: false, reason: 'payload must state the worktree was left intact, got ' + JSON.stringify(p) })); process.exit(0); }
+const workers = callLog.filter(c => isWorkerCall(c.opts)).length;
+if (workers !== 1)
+  { console.log(JSON.stringify({ ok: false, reason: 'no retry against a dead harness — expected 1 worker call, got ' + workers })); process.exit(0); }
+console.log(JSON.stringify({ ok: true }));
+"
+
+run_node_case "K1819c machinery (gate) null + dead canary → quota-exhausted, never machinery-denied (the #1819 incident shape)" "
+$PREAMBLE
+setMachinery('qgate',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/qgate' },
+  { outcome: 'REVIEW_DIFF' },
+  null,   // gate step dies on the session limit → agent() returns null
+);
+setMachinery('quota-probe', null);
+happyWorker('qgate');
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'qgate', branch: 'build/qgate', title: 'Quota gate', kind: 'impl', acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+const result = await mod.default();
+const esc = result.escalations ?? [];
+if (esc.length !== 1 || esc[0].kind !== 'quota-exhausted')
+  { console.log(JSON.stringify({ ok: false, reason: 'expected quota-exhausted (never machinery-denied), got ' + JSON.stringify(result) })); process.exit(0); }
+const p = esc[0].payload;
+if (p.where !== 'machinery:gate')
+  { console.log(JSON.stringify({ ok: false, reason: 'payload.where must name the machinery step, got ' + JSON.stringify(p) })); process.exit(0); }
+if (!p.denied_out || p.denied_out.outcome !== 'SPINE_DENIED')
+  { console.log(JSON.stringify({ ok: false, reason: 'payload.denied_out must carry the normalized sentinel for the audit trail, got ' + JSON.stringify(p) })); process.exit(0); }
+console.log(JSON.stringify({ ok: true }));
+"
+
+run_node_case "K1819d discrimination: the SAME gate null with a LIVE canary keeps machinery-denied — genuine denials retain their meaning" "
+$PREAMBLE
+setMachinery('gdenied',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/gdenied' },
+  { outcome: 'REVIEW_DIFF' },
+  null,   // gate denied by the classifier; the harness itself is fine
+);
+// NO quota-probe override: the canary hits the mock default (non-null) → alive.
+happyWorker('gdenied');
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'gdenied', branch: 'build/gdenied', title: 'Gate denied', kind: 'impl', acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+const result = await mod.default();
+const esc = result.escalations ?? [];
+if (esc.length !== 1 || esc[0].kind !== 'machinery-denied' || esc[0].payload.step !== 'gate')
+  { console.log(JSON.stringify({ ok: false, reason: 'expected machinery-denied step=gate unchanged, got ' + JSON.stringify(result) })); process.exit(0); }
+// The canary DID run and answered alive — that is what kept the kind.
+const canaries = callLog.filter(c => /^canary:/.test(String(c.opts.label))).length;
+if (canaries !== 1)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected exactly 1 canary probe, got ' + canaries })); process.exit(0); }
+console.log(JSON.stringify({ ok: true }));
+"
+
+run_node_case "K1819e spike worker null + dead canary → quota-exhausted, never the bare 'agent returned null (spike worker)'" "
+$PREAMBLE
+setMachinery('quota-probe', null);
+setWorker('qspike', null);
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'qspike', branch: 'build/qspike', title: 'Quota spike', kind: 'spike', acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+const result = await mod.default();
+const esc = result.escalations ?? [];
+if (esc.length !== 1 || esc[0].kind !== 'quota-exhausted')
+  { console.log(JSON.stringify({ ok: false, reason: 'expected quota-exhausted for the spike quota death, got ' + JSON.stringify(result) })); process.exit(0); }
+if (esc[0].payload.where !== 'worker (spike)')
+  { console.log(JSON.stringify({ ok: false, reason: 'payload.where must name the spike worker, got ' + JSON.stringify(esc[0].payload) })); process.exit(0); }
+console.log(JSON.stringify({ ok: true }));
+"
 
 echo ""
 echo "All test_workflow.sh cases passed."
