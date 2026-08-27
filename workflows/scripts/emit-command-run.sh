@@ -91,6 +91,32 @@
 #                     shaped exactly as before (purely additive; no
 #                     schema_version bump per the convention in
 #                     meta/data/raw/README.md).
+#   epics_reviewed    OPTIONAL — /sweep's end-of-run epic-closing gate
+#   epics_closed      (temperloop item "epic-closing-gate", epic #1847): how
+#   epics_left_open   many Operational-epic parents the gate looked at this
+#                     run, how many it actually closed (a real
+#                     board_close_done / gh issue close write), and how many
+#                     it left open (keep-open, unattended, partial, or a
+#                     declined offer). ALL THREE ABSENT from the record
+#                     entirely when the caller doesn't pass `--epics-
+#                     reviewed` — callers OTHER THAN /sweep (triage/fix)
+#                     never touch this schema extension, so this keeps their
+#                     records shaped exactly as before (purely additive; no
+#                     schema_version bump). Every /sweep run itself DOES pass
+#                     all three, even on its zero-epic fast path
+#                     (`--epics-reviewed 0 --epics-closed 0
+#                     --epics-left-open 0`) — the always-carry semantics
+#                     (round 5 escalation, MEDIUM finding): a /sweep record
+#                     missing this extension is itself the "the gate step
+#                     didn't run" signal, distinct from a genuine 0/0/0 (the
+#                     gate ran and found nothing to review). This is a
+#                     DISTINCT partition from
+#                     merged/resolved/parked/reported_no_op above — an epic is
+#                     never one of a run's Phase-2 pooled ISSUES, so it never
+#                     contributes to items_processed; it is its own
+#                     three-way split, enforced by its own accounting check
+#                     below (see THE ONE LOUD FAILURE), the same shape as the
+#                     items_processed partition but independent of it.
 #
 # WARN, DON'T DROP: any INFRASTRUCTURE failure here (jq missing, sink
 # unwritable, disk full, a malformed count) warns to stderr and exits 0. A
@@ -116,8 +142,25 @@
 #     absent-stream ambiguity this whole script exists to close), and
 #   * the script then prints a FAIL line naming the arithmetic and exits **2**.
 #
+# A SECOND, INDEPENDENT accounting check (temperloop item "epic-closing-
+# gate", epic #1847) — /sweep's end-of-run epic-closing gate. WHENEVER
+# `--epics-reviewed` is passed, `epics_closed + epics_left_open` MUST equal
+# `epics_reviewed`: every Operational epic the gate looked at reaches exactly
+# one of "actually closed" or "left open" (keep-open, unattended, partial
+# drain, or a declined offer-close). This mirrors the
+# merged+resolved+parked+reported_no_op == items_processed check above in
+# shape only — it is a SEPARATE partition over a SEPARATE population (epics,
+# never Phase-2 pooled issues), checked independently, and never folded into
+# the items_processed arithmetic. Omitting `--epics-reviewed` entirely (the
+# common case — most callers, and a /sweep run that admitted no epics this
+# run) skips this check outright; a caller that passes `--epics-reviewed 0`
+# still must pass `--epics-closed 0 --epics-left-open 0` (0+0==0 reconciles
+# trivially).
+#
 # Exit codes: 0 = emitted, or warned-and-skipped for an infrastructure reason
 #             2 = record emitted BUT the disposition counts do not reconcile
+#                 (either the items_processed partition, the epics_reviewed
+#                 partition, or both — the FAIL lines name which)
 # A caller that must never see a non-zero (a `|| true` site) keeps working; a
 # caller or CI reading the exit code sees the accounting break loudly.
 #
@@ -136,6 +179,9 @@ resolved=""
 parked=""
 reported_no_op=""
 epic=""
+epics_reviewed=""
+epics_closed=""
+epics_left_open=""
 
 # ARG LOOP — the shift is deliberately TWO steps (temperloop#1342). Bash's
 # `shift 2` FAILS (count out of range) when the flag is the LAST argument, and
@@ -156,6 +202,9 @@ while [ $# -gt 0 ]; do
     --parked) parked="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
     --reported-no-op) reported_no_op="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
     --epic) epic="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+    --epics-reviewed) epics_reviewed="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+    --epics-closed) epics_closed="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+    --epics-left-open) epics_left_open="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
     *)
       printf '%s: WARN unknown argument %s (ignored)\n' "$self" "$1" >&2
       shift
@@ -183,6 +232,18 @@ resolved="${resolved:-0}"
 parked="${parked:-0}"
 reported_no_op="${reported_no_op:-0}"
 
+# epics_reviewed is the ACTIVATION signal for the whole epics_* extension
+# (temperloop item "epic-closing-gate") — remember whether the caller passed
+# it BEFORE defaulting it, since an omitted --epics-reviewed must leave all
+# three fields OUT of the record entirely (purely additive), while a passed
+# `--epics-reviewed 0` still activates the extension (and its accounting
+# check) with a legitimate all-zero record.
+epics_extension_active=0
+[ -n "$epics_reviewed" ] && epics_extension_active=1
+epics_reviewed="${epics_reviewed:-0}"
+epics_closed="${epics_closed:-0}"
+epics_left_open="${epics_left_open:-0}"
+
 # A count that isn't a non-negative integer is an infrastructure-class caller
 # error, not an accounting one: warn and emit nothing (exit 0). Previously jq
 # would fail on the --argjson and produce the generic "failed to build JSON
@@ -202,6 +263,11 @@ check_count --merged          "$merged"          || exit 0
 check_count --resolved        "$resolved"        || exit 0
 check_count --parked          "$parked"          || exit 0
 check_count --reported-no-op  "$reported_no_op"  || exit 0
+if [ "$epics_extension_active" -eq 1 ]; then
+  check_count --epics-reviewed  "$epics_reviewed"  || exit 0
+  check_count --epics-closed    "$epics_closed"    || exit 0
+  check_count --epics-left-open "$epics_left_open" || exit 0
+fi
 
 # Normalise to base-10 so a zero-padded count ("08") is neither read as octal
 # by $(( )) nor emitted as invalid JSON by jq --argjson.
@@ -210,6 +276,9 @@ merged=$((10#$merged))
 resolved=$((10#$resolved))
 parked=$((10#$parked))
 reported_no_op=$((10#$reported_no_op))
+epics_reviewed=$((10#$epics_reviewed))
+epics_closed=$((10#$epics_closed))
+epics_left_open=$((10#$epics_left_open))
 
 # THE ACCOUNTING CHECK (temperloop#1084, extended #1103) — see the header.
 # Computed BEFORE the emit so the failure message is ready, but acted on
@@ -217,6 +286,15 @@ reported_no_op=$((10#$reported_no_op))
 disposition_total=$((merged + resolved + parked + reported_no_op))
 reconciles=1
 [ "$disposition_total" -eq "$items_processed" ] || reconciles=0
+
+# THE EPICS-REVIEWED ACCOUNTING CHECK — a SEPARATE partition, active only
+# when the caller passed --epics-reviewed (see the header note above).
+# epics_closed + epics_left_open MUST equal epics_reviewed.
+epics_reconciles=1
+if [ "$epics_extension_active" -eq 1 ]; then
+  epics_total=$((epics_closed + epics_left_open))
+  [ "$epics_total" -eq "$epics_reviewed" ] || epics_reconciles=0
+fi
 
 ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 month="$(date -u +%Y-%m)"
@@ -244,6 +322,10 @@ record="$(jq -nc \
   --argjson parked "$parked" \
   --argjson reported_no_op "$reported_no_op" \
   --arg epic "$epic" \
+  --argjson epics_extension_active "$epics_extension_active" \
+  --argjson epics_reviewed "$epics_reviewed" \
+  --argjson epics_closed "$epics_closed" \
+  --argjson epics_left_open "$epics_left_open" \
   '{
     ts: $ts,
     session_id: (if $session_id == "" then null else $session_id end),
@@ -255,7 +337,10 @@ record="$(jq -nc \
     parked: $parked,
     reported_no_op: $reported_no_op
   }
-  + (if $epic == "" then {} else {epic: ($epic | tonumber? // $epic)} end)' 2>/dev/null)"
+  + (if $epic == "" then {} else {epic: ($epic | tonumber? // $epic)} end)
+  + (if $epics_extension_active == 1 then
+       {epics_reviewed: $epics_reviewed, epics_closed: $epics_closed, epics_left_open: $epics_left_open}
+     else {} end)' 2>/dev/null)"
 
 if [ -z "$record" ]; then
   printf '%s: WARN failed to build JSON record (command=%s) — no record emitted\n' "$self" "$command" >&2
@@ -269,12 +354,28 @@ fi
 
 printf '%s\n' "$record"
 
-# The record is safely on disk; NOW fail loudly if the dispositions don't add up.
+# The record is safely on disk; NOW fail loudly if the counts don't add up —
+# either partition, independently (see the header's "SECOND, INDEPENDENT
+# accounting check" note).
+loud_fail=0
+
 if [ "$reconciles" -ne 1 ]; then
+  loud_fail=1
   printf '%s: FAIL disposition counts do not reconcile (command=%s): merged(%s) + resolved(%s) + parked(%s) + reported_no_op(%s) = %s, but --items-processed is %s.\n' \
     "$self" "$command" "$merged" "$resolved" "$parked" "$reported_no_op" "$disposition_total" "$items_processed" >&2
   printf '%s: every item a run drives must reach exactly one terminal disposition, so the four counts must partition the total. Either the caller miscounted, or the run produced an outcome this schema cannot express — in which case the fix is a new disposition field here, NOT a fudged total. Canonical shape: meta/data/raw/README.md (command-run stream).\n' \
     "$self" >&2
+fi
+
+if [ "$epics_reconciles" -ne 1 ]; then
+  loud_fail=1
+  printf '%s: FAIL epics_closed + epics_left_open == epics_reviewed does not reconcile (command=%s): epics_closed(%s) + epics_left_open(%s) = %s, but --epics-reviewed is %s.\n' \
+    "$self" "$command" "$epics_closed" "$epics_left_open" "$epics_total" "$epics_reviewed" >&2
+  printf '%s: every epic the closing gate reviewed must reach exactly one of closed / left-open, so the two counts must partition epics_reviewed — the same partition shape as the items_processed check above, but a SEPARATE population (epics, never Phase-2 pooled issues).\n' \
+    "$self" >&2
+fi
+
+if [ "$loud_fail" -eq 1 ]; then
   printf '%s: the record above WAS appended to %s (the mismatch is preserved in the stream, not swallowed).\n' \
     "$self" "$raw_file" >&2
   exit 2

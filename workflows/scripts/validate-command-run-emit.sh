@@ -41,6 +41,19 @@
 #      as `resolved`: any doc that declares `reported-no-op` must pass
 #      `--reported-no-op`, so a future doc that grows this disposition is
 #      caught without editing this script.
+#   5. (temperloop#1847 escalation round 2) the same content-derived shape,
+#      for `/sweep`'s Step 3.6A **epic-closing gate**. Its accounting check —
+#      `epics_closed + epics_left_open == epics_reviewed` in
+#      emit-command-run.sh — only ACTIVATES when the caller passes
+#      `--epics-reviewed`, so a future sweep.md edit that quietly drops the
+#      three `--epics-*` flags would exit 0 in a shape indistinguishable from
+#      a doc that never touches the extension at all: the mandatory-step
+#      declaration would silently rot with a "signal" that was never really
+#      armed (the K.52 class this closes). Content-derived the same way as
+#      `resolved`/`reported-no-op`: any doc whose prose declares the Step
+#      3.6A epic-closing gate (matched on BOTH the `epics_reviewed` field name
+#      and the `Step 3.6A` anchor) must pass `--epics-reviewed` on its emit
+#      call, so the signal is unconditional on the DOC side.
 #
 # This mirrors the validate-capture-backstop.sh shape (same script style, same
 # hard-fail-on-half-present contract, wired into scripts/quality-gates.sh
@@ -150,6 +163,28 @@ check_reported_no_op() {  # $1=label $2=path
   echo "ok    $label declares 'reported-no-op' and passes --reported-no-op"
 }
 
+# --- 5. a doc that declares the Step 3.6A epic-closing gate must pass -------
+# --epics-reviewed. Content-derived (see the header), the same shape as
+# check_resolved/check_reported_no_op above: the trigger is the doc
+# declaring the gate (temperloop#1847 escalation round 2), not this script
+# knowing which docs do. Matched on BOTH `epics_reviewed` and `Step 3.6A` so
+# renaming either alone still leaves the check armed via the other.
+check_epics_reviewed() {  # $1=label $2=path
+  local label="$1" file="$2"
+  [ -f "$file" ] || return 0   # missing-doc case already reported by check_wiring
+  if ! grep -Fq 'epics_reviewed' "$file" || ! grep -Fq 'Step 3.6A' "$file"; then
+    echo "ok    $label declares no Step 3.6A epic-closing gate — --epics-reviewed not required"
+    return
+  fi
+  # The invocation is a `\`-continued block; scan a window after the match.
+  if ! grep -A8 -F 'emit-command-run.sh' "$file" | grep -E -- '--epics-reviewed[[:space:]]' >/dev/null; then
+    echo "FAIL  $label ($file) declares the Step 3.6A epic-closing gate (epics_reviewed) but its emit-command-run.sh call omits --epics-reviewed — the epics_closed + epics_left_open == epics_reviewed accounting check would never activate, and a dropped flag would read as not-applicable rather than a broken mandatory step (temperloop#1847 escalation round 2)"
+    fail=1
+    return
+  fi
+  echo "ok    $label declares the Step 3.6A epic-closing gate and passes --epics-reviewed"
+}
+
 check_wiring "sweep.md"  "$SWEEP_MD"  "sweep"
 check_wiring "triage.md" "$TRIAGE_MD" "triage"
 check_wiring "fix.md"    "$FIX_MD"    "fix"
@@ -161,6 +196,11 @@ check_resolved "fix.md"    "$FIX_MD"
 check_reported_no_op "sweep.md"  "$SWEEP_MD"
 check_reported_no_op "triage.md" "$TRIAGE_MD"
 check_reported_no_op "fix.md"    "$FIX_MD"
+
+# Only sweep.md declares the epic-closing gate today; the function itself
+# stays content-derived (it no-ops on triage.md/fix.md too) so a future doc
+# that grows this same gate is caught without editing this script.
+check_epics_reviewed "sweep.md" "$SWEEP_MD"
 
 echo "---"
 if [ "$fail" -ne 0 ]; then
