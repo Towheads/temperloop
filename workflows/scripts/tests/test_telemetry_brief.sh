@@ -105,6 +105,9 @@ assert_has "$out" "## 1. Attention" "renders Q1 heading"
 assert_has "$out" "asynchronous workflow health:" "Attention carries the asynchronous-workflow-health bullet"
 assert_has "$out" "async workflow health: LIVE" "the Attention source line marks the workflow-health read as LIVE, not a raw stream"
 assert_has "$out" "## 2. Pipeline health & trust" "renders Q2 heading"
+assert_has "$out" "## 2b. Epic funnel health" "renders Q2b heading (epic #1847 class-conditional funnel)"
+assert_has "$out" "Operational epics (drained via /sweep): no data yet — command-runs stream is empty" "Q2b Operational no-data line on an empty lake"
+assert_has "$out" "Foundational epics (assessed → built via /build): no data yet — item-efficiency stream is empty" "Q2b Foundational no-data line on an empty lake"
 assert_has "$out" "## 3. Spend" "renders Q3 heading"
 assert_has "$out" "## 4. Improvement" "renders Q4 heading"
 assert_has "$out" "## 5. Command effectiveness" "renders Q5 heading"
@@ -181,6 +184,13 @@ assert_has "$out" "970 output · 2050 cache-create · 35900 cache-read" "Q3b raw
 assert_has "$out" "worker 11m · CI 5m · merge-group 3m · gate-wait 1m · end-to-end 35m" "Q3b wall-clock medians reconcile — and CI's median is the ONE measured value (5m), never diluted toward 0 by the unmeasured record"
 assert_has "$out" "agents per merged item (7d, median): 1 worker · 3.5 mechanical" "Q3b agent counts by role reconcile"
 assert_has "$out" "per epic #923: 2 item(s) · 9859 units/item · end-to-end 35m/item · levels 0,1" "Q3b rolls up per EPIC as well as per item"
+# Q2b — this fixture's sweep record PREDATES the epic-closing-gate extension
+# (no epics_reviewed field, same record used for Q1/Q5) — the Operational
+# arm must render its no-activity line, never fabricate zeros from a record
+# that never carried the fields at all. The item-efficiency fixture's epic
+# 923 has 2 merged items in-window, so the Foundational arm counts it once.
+assert_has "$out" "Operational epics (drained via /sweep, 7d): no epic-closing-gate activity in window" "Q2b Operational line on a pre-epic-closing-gate sweep record (has(\"epics_reviewed\") correctly excludes it)"
+assert_has "$out" "Foundational epics (assessed → built via /build, 7d): 1 reached a merged item (#923 — see §3b's per-epic rollup for detail)" "Q2b Foundational line counts the distinct built epic from the Q3b fixture"
 assert_has "$out" "read=2" "Q3 ks per-op breakdown (read)"
 assert_has "$out" "search=1" "Q3 ks per-op breakdown (search)"
 # Q4 — 1 merge, 1 pr-open, 1 capture, 1 claim
@@ -195,6 +205,7 @@ assert_has "$out" "source: pipeline-*.jsonl @ $lake" "Q2 names its source stream
 assert_has "$out" "ks read-log (knowledge_store.sh ks__read_log_emit) @ $rlog" "Q3 names the ks read-log emit"
 assert_has "$out" "item-efficiency-*.jsonl @ $lake (emit-item-efficiency.sh, token figures composed from pipeline-spend-report.sh)" "Q3b names its source stream verbatim, and names the profiler it composes"
 assert_has "$out" "issue-touches-*.jsonl @ $lake ∪ claims-*.jsonl @ $lake" "Q4 names the unioned streams"
+assert_has "$out" "source: command-runs-*.jsonl @ $lake (sweep epic-closing-gate fields) · item-efficiency-*.jsonl @ $lake (per-epic merged-item set)" "Q2b names both source streams"
 
 # ── 3. stale streams (records exist, none in window) ────────────────────────
 echo "stale streams:"
@@ -389,6 +400,34 @@ out9c="$(
 assert_rc0 "$rc9c" "exit 0 (explicit TELEMETRY_RAW_DIR pipeline-stream override case)"
 assert_has "$out9c" "pipeline-*.jsonl @ $sandbox_lake_9c" "9c pipeline section names the sandbox lake as its source dir, not the writer's absolute pin"
 assert_has "$out9c" "pipeline drive errors (7d): 1" "9c an explicit TELEMETRY_RAW_DIR still wins for the pipeline stream — the sandbox lake's record was read"
+
+# ── 10. Epic funnel health — class-conditional (epic #1847) ────────────────
+# The DISCRIMINATING case: two /sweep runs' epic-closing-gate fields must
+# AGGREGATE across records (not just echo a single row), and an epic that
+# only ever reached BUILT via /build (never through sweep's closing gate)
+# renders under the Foundational arm. Neither arm's rendering may say
+# "stalled" — plan-note absence on the Operational epics here is the
+# documented healthy state for that class, and the whole point of this
+# section is that reading is never conflated with the Foundational one.
+echo "epic funnel health (epic #1847):"
+funnel_lake="$TMP/funnel-lake"
+mkdir -p "$funnel_lake"
+cat > "$funnel_lake/command-runs-${month}.jsonl" <<EOF
+{"ts":"$now_ts","session_id":"s1","command":"sweep","board":3,"items_processed":2,"merged":2,"resolved":0,"parked":0,"reported_no_op":0,"epics_reviewed":2,"epics_closed":1,"epics_left_open":1}
+{"ts":"$now_ts","session_id":"s2","command":"sweep","board":3,"items_processed":1,"merged":1,"resolved":0,"parked":0,"reported_no_op":0,"epics_reviewed":1,"epics_closed":1,"epics_left_open":0}
+EOF
+cat > "$funnel_lake/item-efficiency-${month}.jsonl" <<EOF
+{"schema_version":"1","ts":"$now_ts","host":"h","session_id":"s1","repo":"o/r","slug":"c","epic":701,"issue":9,"pr":19,"level":0,"phases":{"design":null,"driver_prep":null,"worker":null,"mechanical":null},"agent_counts":{"worker":null,"mechanical":null},"wall_ms":{"worker":null,"ci":null,"merge_group":null,"gate_wait":null,"end_to_end":null},"runs":{"design":[],"driver_prep":[],"build":[]}}
+EOF
+out10="$(run_brief "$funnel_lake" "$TMP/funnel-lake/absent-reads.log" 2>&1)"; rc10=$?
+assert_rc0 "$rc10" "exit 0 on the epic-funnel-health fixture lake"
+assert_has "$out10" "Operational epics (drained via /sweep, 7d): epic-closing gate reviewed 3 · closed 2 · left open 1 — a plan-note-less epic here is the HEALTHY state for this class, never stalled-unassessed" "Q2b Operational aggregates epics_reviewed/closed/left_open across BOTH sweep records (2+1=3, 1+1=2, 1+0=1)"
+assert_has "$out10" "Foundational epics (assessed → built via /build, 7d): 1 reached a merged item (#701 — see §3b's per-epic rollup for detail)" "Q2b Foundational counts the epic that reached built ONLY via /build, never conflated with the Operational sweep aggregate above"
+# The ONLY appearance of "stalled" anywhere in the output is the Operational
+# arm's own disclaiming clause ("never stalled-unassessed") asserted above —
+# confirm it is not ALSO rendered as a bare, unqualified verdict elsewhere.
+assert_not_has "$out10" "epics_left_open here is stalled" "no line renders a left-open Operational epic as stalled outright"
+assert_not_has "$out10" "#701 is stalled" "no line renders the Foundational built epic as stalled"
 
 echo
 echo "test_telemetry_brief: $pass passed, $fail failed"

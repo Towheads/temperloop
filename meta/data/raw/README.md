@@ -82,7 +82,7 @@ run did not do. A `/triage --feedback` run (sweep **plus** queue walk) still
 emits one `"triage"` record for its sweep; giving its queue walk counters of
 its own is a follow-on, not covered here.
 
-Record shape: `{ts, session_id, command, board, items_processed, merged, resolved, parked, reported_no_op, epic?}`
+Record shape: `{ts, session_id, command, board, items_processed, merged, resolved, parked, reported_no_op, epic?, epics_reviewed?, epics_closed?, epics_left_open?}`
 
 | field | type | notes |
 |---|---|---|
@@ -96,6 +96,7 @@ Record shape: `{ts, session_id, command, board, items_processed, merged, resolve
 | `parked` | integer | how many were parked/deferred/escalated |
 | `reported_no_op` | integer, **absent on pre-#1103 records** | how many were a terminal "nothing to do" outcome that is **not** a merge, a verdict-resolve, or a park — `/fix` only, today: an `already-done` target, or an `claimed-elsewhere` target owned by another session. See the absent-means-unknown caveat below |
 | `epic` | number \| string, OPTIONAL | the epic issue number the run drove against (e.g. `/assess --epic N`, or `/build` on a plan note with an `epic:` frontmatter field), from `--epic`. ABSENT from the record entirely (not `null`) when the caller doesn't pass `--epic` — purely additive, no `schema_version` bump |
+| `epics_reviewed` / `epics_closed` / `epics_left_open` | integer, OPTIONAL (epic #1847 "epic-as-metadata for operational work", item "epic-closing-gate") | `/sweep`'s end-of-run epic-closing gate tally: how many **Operational** epic parents the gate reviewed this run, how many it closed, and how many it left open (`epics_closed + epics_left_open == epics_reviewed`, enforced by the emitter). Present as a group only when `--epics-reviewed` was passed at all (the activation signal — a run with no epic-admitted members this cycle omits all three, not `0`s); `--epics-reviewed 0 --epics-closed 0 --epics-left-open 0` is itself a valid, explicit zero-epic record, distinct from the fields being altogether absent. This is the ONLY signal in this stream for an **Operational** epic's funnel stage: its healthy path is epic → members-drained-via-sweep, with no plan-note step, so an Operational epic appearing (or not appearing) here is never evidence of a stalled assessment — see `workflows/scripts/telemetry-brief.sh` § 2b, which reads this group class-conditionally alongside the (Foundational-only, `/build`-emitted) `item-efficiency` per-epic rollup. Purely additive, no `schema_version` bump |
 
 **Invariant: `merged + resolved + parked + reported_no_op == items_processed`.**
 Every item a run drives reaches exactly one terminal disposition, so the four
