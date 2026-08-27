@@ -11,7 +11,12 @@
 #      closed issues included, parent/sub_issues_summary linkage preserved,
 #      zero per-issue calls, zero GraphQL, multi-page merge.
 #   2. cache_refresh_details: delta fetch by updated_at — new/changed issues
-#      cost one comments call each; an unchanged snapshot costs zero.
+#      cost one comments call each; an unchanged snapshot costs zero. The
+#      comments fetch is PAGINATED (per_page=100 + --paginate, temperloop#1820
+#      — the fake gh only answers the paginated form, so an unpaginated
+#      regression fails loudly): a >30 (and >100) comment issue persists its
+#      complete comment list, and a pre-pagination details record (no
+#      commentsPaginated marker) self-heals via exactly one re-fetch.
 #   3. Staleness contract: fresh serves cache (zero calls); stale/dirty
 #      triggers refresh; a live-fetch failure returns rc1 + one stderr
 #      notice + no data; a persist failure falls through to serving the
@@ -69,7 +74,16 @@ PAGE2='[
 FAIL_LIST=0
 FAIL_COMMENTS=0
 MULTI_PAGE=0
+COMMENTS_MULTI_PAGE=0
 
+# Two comment pages (100 + 30 = 130 comments), the way `--paginate` really
+# emits them on an array endpoint: one JSON array per page, concatenated.
+COMMENTS_PAGE1="$(jq -nc '[range(0;100) | {id:., body:("comment " + (.|tostring))}]')"
+COMMENTS_PAGE2="$(jq -nc '[range(100;130) | {id:., body:("comment " + (.|tostring))}]')"
+
+# The comments arm matches ONLY the paginated invocation (?per_page=100 +
+# --paginate); a bare unpaginated `issues/<n>/comments` call falls through to
+# the `return 1` default, so a pagination regression fails this suite loudly.
 _cache_gh() {
   echo "$*" >>"$CALLS"
   case "$*" in
@@ -79,9 +93,14 @@ _cache_gh() {
       [ "$MULTI_PAGE" = "1" ] && printf '%s' "$PAGE2"
       return 0
       ;;
-    *"/comments")
+    *"/comments?per_page=100 --paginate")
       [ "$FAIL_COMMENTS" = "1" ] && return 1
-      echo '[{"id":1,"body":"a comment"}]'
+      if [ "$COMMENTS_MULTI_PAGE" = "1" ]; then
+        printf '%s' "$COMMENTS_PAGE1"
+        printf '%s' "$COMMENTS_PAGE2"
+      else
+        echo '[{"id":1,"body":"a comment"}]'
+      fi
       return 0
       ;;
     *)
@@ -97,10 +116,11 @@ reset() {
   FAIL_LIST=0
   FAIL_COMMENTS=0
   MULTI_PAGE=0
+  COMMENTS_MULTI_PAGE=0
 }
 
 list_calls() { grep -c 'issues?state=all' "$CALLS" 2>/dev/null || true; }
-comment_calls() { grep -c '/comments$' "$CALLS" 2>/dev/null || true; }
+comment_calls() { grep -c '/comments?per_page=100 --paginate$' "$CALLS" 2>/dev/null || true; }
 graphql_calls() { grep -ci 'graphql' "$CALLS" 2>/dev/null || true; }
 stderr_lines() { grep -c 'cache.sh:' "$STDERR_LOG" 2>/dev/null || true; }
 
@@ -155,6 +175,42 @@ d1="$(cache_details_file "$REPO" 1)"
 : >"$CALLS"
 cache_refresh_details "$REPO" >/dev/null 2>>"$STDERR_LOG"
 [ "$(comment_calls)" -eq 0 ] || fail "unchanged issues must cost zero detail calls on re-refresh, got $(comment_calls)"
+[ "$(jq -r '.commentsPaginated' "$d1")" = "true" ] || fail "details record must carry the commentsPaginated marker"
+
+# --- 2b. >30 (and >100) comments persist completely across pages ------------
+# The fake gh serves 130 comments as two --paginate pages (100 + 30); the
+# persisted details file must carry all 130 — an unpaginated fetch would have
+# truncated at GitHub's default page size of 30 (temperloop#1820).
+reset
+COMMENTS_MULTI_PAGE=1
+cache_refresh_snapshot "$REPO" >/dev/null 2>"$STDERR_LOG"
+cache_refresh_details "$REPO" >/dev/null 2>>"$STDERR_LOG"
+d1="$(cache_details_file "$REPO" 1)"
+n_comments="$(jq -r '.comments | length' "$d1")"
+[ "$n_comments" = "130" ] || fail "expected all 130 comments across 2 pages persisted, got $n_comments"
+[ "$(jq -r '.comments[129].id' "$d1")" = "129" ] || fail "page-2 comment (id 129) missing after merge"
+[ "$(jq -r '.commentsPaginated' "$d1")" = "true" ] || fail ">100-comment record must carry the commentsPaginated marker"
+
+# --- 2c. pre-pagination records self-heal (one re-fetch, then sticky) -------
+# Simulate a details file written by the old unpaginated code: updatedAt
+# matches the snapshot row (so the pure updated_at delta would skip it
+# forever — the sticky short-circuit of temperloop#1820) but no
+# commentsPaginated marker and a truncated comment list.
+reset
+cache_refresh_snapshot "$REPO" >/dev/null 2>"$STDERR_LOG"
+d1="$(cache_details_file "$REPO" 1)"
+mkdir -p "$(cache_details_dir "$REPO")"
+jq -nc '{schema_version:1, number:1, updatedAt:"2026-07-01T00:00:00Z", body:"body one",
+         comments:[range(0;30) | {id:., body:"truncated"}]}' >"$d1"
+: >"$CALLS"
+cache_refresh_details "$REPO" >/dev/null 2>>"$STDERR_LOG"
+[ "$(comment_calls)" -eq 2 ] || fail "self-heal: expected re-fetch of the marker-less record (#1) plus the new #2, got $(comment_calls) calls"
+[ "$(jq -r '.commentsPaginated' "$d1")" = "true" ] || fail "self-heal: re-fetched record must now carry the marker"
+[ "$(jq -r '.comments | length' "$d1")" = "1" ] || fail "self-heal: comments not replaced by the fresh paginated fetch"
+# healed -> sticky again: a second refresh costs zero calls
+: >"$CALLS"
+cache_refresh_details "$REPO" >/dev/null 2>>"$STDERR_LOG"
+[ "$(comment_calls)" -eq 0 ] || fail "self-heal must be one-time: healed records cost zero calls on re-refresh, got $(comment_calls)"
 
 # --- 3. staleness contract --------------------------------------------------
 reset

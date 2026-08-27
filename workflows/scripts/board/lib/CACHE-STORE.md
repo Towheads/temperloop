@@ -66,7 +66,13 @@ ${CACHE_STORE_ROOT:-${XDG_CACHE_HOME:-$HOME/.cache}/temperloop}/issues/<owner>-<
     <issue-number>.json  # { "schema_version": 1, "number": <n>,
                         #   "updatedAt": "<snapshot row's updated_at>",
                         #   "body": "<issue body>",
-                        #   "comments": [ <raw REST comment objects> ] }
+                        #   "comments": [ <raw REST comment objects> ],
+                        #   "commentsPaginated": true }
+                        # `commentsPaginated` marks the record as written by
+                        # the paginated comments fetch (complete comment
+                        # list). A record without it predates pagination
+                        # (may be truncated at 30) and is re-fetched once by
+                        # the next cache_refresh_details — see below.
 ```
 
 `<owner>-<repo>` is the repo slug: `owner/repo` with `/` replaced by `-`
@@ -84,6 +90,16 @@ independently versioned; the store-level `schema_version` in `meta.json`
 covers the snapshot file's *presence/location* contract, not its row shape
 (that's GitHub's REST contract, not ours).
 
+**2026-08-27 — additive field, no bump:** `details/<n>.json` gained
+`commentsPaginated: true` (temperloop#1820) when the per-issue comments
+fetch was paginated (`per_page=100` + `--paginate`; the unpaginated call
+silently truncated at GitHub's default page size of 30). Purely additive —
+existing readers keyed on the documented fields are unaffected, so
+`schema_version` stays `1` and no `cache_clear` is needed: a prior-version
+record lacks the marker, which `cache_refresh_details` treats as "needs
+re-fetch" even when its `updatedAt` matches, so a truncated store self-heals
+one issue at a time on the next details refresh.
+
 ## API surface
 
 Path accessors (no I/O, no gh calls):
@@ -100,11 +116,14 @@ Refresh (write side):
   GraphQL. rc 0 persisted; rc 1 the live fetch itself failed (nothing to
   serve); rc 2 the fetch succeeded but the on-disk write failed.
 - `cache_refresh_details <board|owner/repo>` — walks the current snapshot;
-  for each issue whose `details/<n>.json` is missing or whose stored
-  `updatedAt` differs from the snapshot row's `updated_at`, fetches
-  `issues/<n>/comments` (one REST call) and writes the details file (body is
-  copied from the snapshot row — no extra call needed for it). An unchanged
-  issue costs zero calls.
+  for each issue whose `details/<n>.json` is missing, whose stored
+  `updatedAt` differs from the snapshot row's `updated_at`, or which lacks
+  the `commentsPaginated` marker (a pre-pagination, possibly-truncated
+  record — re-fetched once, then sticky again), fetches
+  `issues/<n>/comments` (one paginated REST fetch — `per_page=100` +
+  `--paginate`, same discipline as the bulk list) and writes the details
+  file (body is copied from the snapshot row — no extra call needed for
+  it). An unchanged, complete issue costs zero calls.
 - `cache_refresh <board|owner/repo>` — the above two in sequence.
 
 Staleness + invalidation:

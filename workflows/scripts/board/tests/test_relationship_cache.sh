@@ -122,7 +122,7 @@ _cache_gh() {
   echo "$*" >>"$CACHE_CALLS"
   case "$*" in
     *"issues?state=all"*"--paginate"*) printf '%s' "$BULK_ISSUES" ;;
-    *"/comments") echo '[]' ;;
+    *"/comments?per_page=100 --paginate") echo '[]' ;;
     *) return 1 ;;
   esac
 }

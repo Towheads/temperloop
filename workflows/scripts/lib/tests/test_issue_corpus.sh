@@ -142,9 +142,9 @@ PAGE='[
 _cache_gh() {
   case "$*" in
     *"issues?state=all"*"--paginate"*) printf '%s' "$PAGE"; return 0 ;;
-    *"/comments")
+    *"/comments?per_page=100 --paginate")
       case "$*" in
-        *"issues/1/comments") echo '[{"id":1,"user":{"login":"alice"},"created_at":"2026-07-01T01:00:00Z","body":"a comment"}]' ;;
+        *"issues/1/comments"*) echo '[{"id":1,"user":{"login":"alice"},"created_at":"2026-07-01T01:00:00Z","body":"a comment"}]' ;;
         *) echo '[]' ;;
       esac
       return 0
