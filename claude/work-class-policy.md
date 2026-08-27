@@ -1,7 +1,21 @@
 # Work-class taxonomy: Operational vs Foundational
 
 Every issue/epic processed by the autonomous pipeline driver carries one of two <!-- cite: WC.1 incident:F#567 -->
-**work-class labels**, which determines the driver's autonomy policy for that item.
+**work-class labels**.
+
+**Scope has widened past the driver alone (epic Towheads/temperloop#1847 ("epic-as-metadata for operational work")).**
+The label started as one consumer's private setting — the autonomous pipeline
+driver's own autonomy policy for an item, § Policy table below — and now
+doubles as a **pipeline-wide routing key** that other pipeline stages read to
+make their own structural decisions: `/sweep`'s Operational-epic
+member-admission gate (`workflows/scripts/build/sweep-epic-admission.sh`)
+reads it to decide whether an epic's Ready legs may join the singleton fix
+pool at all, and `/triage`'s Step 4 logical-order stamping
+(docs/adr/0031-durable-logical-order-lives-on-the-board-as-blocked-by.md)
+reads it to decide whether a group's ordering may live as durable board
+`blocked_by` edges (Operational) or must stay plan-resident `after:` edges
+(Foundational). One pair of labels, several independent readers — not a
+driver-private setting any more. <!-- cite: WC.3 guard:workflows/scripts/build/sweep-epic-admission.sh -->
 
 > **Canonical source:** `Decisions/foundation - Autonomous pipeline driver + GitHub decision queue`
 > (vault note, sections "Work-class taxonomy" + "Settled policy details").
@@ -12,12 +26,12 @@ Every issue/epic processed by the autonomous pipeline driver carries one of two 
 
 | Label | What it covers | Driver autonomy policy |
 |---|---|---|
-| `Operational` | Bug fixes, follow-ups, issue splits, bugs found mid-work, venue/artist expansion along an **established axis** | **Fully autonomous** — triage → assess → build → auto-merge once CI green. Does NOT ride the timed objection-window gate. Parks only on a genuine design-fork halt. |
+| `Operational` | Bug fixes, follow-ups, issue splits, bugs found mid-work, venue/artist expansion along an **established axis** | **Fully autonomous** — triage → sweep (auto-merge per chunk once CI green; **modal, never timed, for a correlated set**, `claude/commands/sweep.md` § regime selection, epic #1847). An ordinary chunk of unrelated Ready singletons is provably independent and rides the timed, no-objection-window auto-merge path unchanged. A chunk carrying an **epic-admitted member** (`$SWEEP_ADMIT_OPERATIONAL_EPICS`) is no longer provably independent — two legs of one epic are drawn from a single design — so `gate.sh risk` partitions it, and anything short of a clean/disjoint/independent verdict is offered **modally** instead of timed, per `claude/CLAUDE.md § Merge autonomy & consent`'s "only a clean, disjoint set is timed; a risky set is always modal." Parks only on a genuine design-fork halt (`/build`) or a worker escalation / merge-risk hold (`/sweep`). |
 | `Foundational` | New features, new *kinds* of task, architectural decisions, highly disruptive changes, environment changes | **Prep-then-gate** — driver may decompose and draft a plan, but always routes design decisions + plan approval to the operator's decision queue before building. Operator-led. |
 
 ---
 
-## Precedence when both labels are present: `Foundational` wins
+## Precedence when both labels are present: `Foundational` wins — per item, and per group
 
 Carrying **both** work-class labels is outside the "one of two" authoring intent
 stated above, and no current writer can produce it — `capture.sh` picks exactly
@@ -49,6 +63,30 @@ section states only the router's behaviour when reality diverges from it. It
 composes with the § Default-Operational rule below as two halves of one lookup,
 which is exactly how `pipeline-tick.sh`'s `classify_item` implements it: match
 `Foundational` first, fall through to `Operational` otherwise.
+
+**Extension: per-group, not only per-item (epic #1847).** The rule above
+answers "what does *this issue's own* label pair resolve to." Operational-epic
+member admission (`/sweep` Step 1 item 6, `sweep-epic-admission.sh`) raises the
+same question one level up, over a **group** — an epic plus its native
+sub-issues — rather than a single item's own labels: does *any* member of the
+group carry `Foundational` while the group is being considered for the
+`Operational` row's autonomous-merge treatment? The combined label set across
+the epic and every one of its sub-issues (not only the Ready ones — a closed
+or in-progress sibling's label still counts) is read as `any_foundational_in_group`,
+and **`Foundational` wins anywhere in the group exactly as it wins on a single
+dual-labeled item**: one `Foundational` member is enough to refuse admission
+for every member, including the ones individually labeled `Operational` — the
+group is never split so that some legs drive autonomously while a sibling
+awaits operator judgment. This is the **same fail-safe direction** as the
+per-item rule above (a work class ambiguous at *any* granularity gets human
+judgment, never an autonomous merge), applied at the granularity `/sweep`'s
+admission gate actually operates on — not a new judgment axis. A
+**uniformly-Foundational** group was never an Operational admission
+candidate in the first place and is reported `mixed_class_group:
+false` — the mixed-label anomaly this extension exists to catch is
+specifically a group straddling both labels, refused and surfaced (never
+silently skipped) per `claude/commands/sweep.md` Step 1 item 6's "On `admit:
+false`" branch.
 
 ---
 

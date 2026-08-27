@@ -15,8 +15,11 @@ a design conversation ──► /workshop   intake → coverage walk → review 
                                                                     ▼
                                               board epic (## Contract, design-brief: marker)
                                                                     │
-                                                                    └─► /assess --epic N   (technical: seams, depends-on/after edges, levels → Plans/ note)
-                                                                            └─► /build        (execution lifecycle; claims, merges, closes the epic on last child)
+                                              class-keyed partition (claude/work-class-policy.md)
+                                                                    │
+                                       ┌─ Foundational (or unlabeled) ─► /assess --epic N   (technical: seams, depends-on/after edges, levels → Plans/ note)
+                                       │                                       └─► /build        (execution lifecycle; claims, merges, closes the epic on last child)
+                                       └─ Operational ──────────────────► /sweep            (auto-merge per chunk once CI green; modal for a correlated set, epic #1847)
 ```
 
 `/workshop` is the pipeline's second front door — for **invented** work rather
@@ -144,7 +147,7 @@ Also carry forward, per survivor, a **`needs_clarification`** flag — set true 
 
 Also carry forward, per survivor, a **`work_class`** — either `Operational` or `Foundational` — per `claude/work-class-policy.md`. The deciding question: **does this work follow an established pattern, or does it establish a new one?**
 
-- **Operational (default):** bug fixes, follow-ups, issue splits, defects found mid-work, established-axis expansion. Follows a known, fully-specified pattern — the driver is fully autonomous (triage → assess → build → auto-merge once CI green).
+- **Operational (default):** bug fixes, follow-ups, issue splits, defects found mid-work, established-axis expansion. Follows a known, fully-specified pattern — the driver is fully autonomous (triage → sweep, auto-merge per chunk once CI green; modal, never timed, for a correlated set — `claude/work-class-policy.md` § Policy table).
 - **Foundational:** new features, new kinds of task, architectural decisions, highly disruptive or environment-altering changes. Establishes a new pattern — the driver routes design decisions + plan approval to the operator's decision queue before building.
 
 **Default rule: if in doubt, classify `Operational`.** The misclassification safety net is `/build`'s design-fork halt — an Operational item that turns out to require architectural judgment halts there regardless of its label. That net makes the binary safe to apply early. `Foundational` is the deliberate exception: mark it only when the work clearly changes the system's shape or requires operator judgment up front to determine *what* and *how*.
