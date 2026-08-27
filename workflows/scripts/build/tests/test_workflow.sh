@@ -5560,6 +5560,9 @@ setMachinery('cifix-clean',
   { outcome: 'REVIEW_DIFF', files: ['claude/commands/build.md'] },
   { outcome: 'PUSHED', sha: 'sha-v2', branch: 'build/cifix-clean' },
   { outcome: 'CI_GREEN' },
+  // temperloop#1846: the fix round ran a reviewer, so 3g.5 re-renders the PR
+  // body (pr-body-update solo call) with the merged review evidence.
+  { outcome: 'BODY_UPDATED', pr_number: 700 },
 );
 setWorker('cifix-clean',
   { status: 'done', summary: 'initial', acceptance_results: [{ criterion: 'c', passed: true, evidence: 'e' }], commits: [] },
@@ -5640,6 +5643,135 @@ grep -q 'const fixReview = await runReviewers(item, wt);' "$MJS" \
 grep -q "escalation: 'review-blocking', payload: { findings: fixReview.blocking" "$MJS" \
   || fail "#1450: a blocking CI-fix review must escalate review-blocking before the retry push, exactly like the original 3e pass"
 echo "PASS: #1450 ci-fix re-review guard — the CI_FAILED arm re-runs §3e against the fix commit before pushing it"
+
+# ============================================================================
+# TEST (K1846): a reviewer that ran only in the CI-FIX round reaches the PR
+#   body. Before this item the body suffix was rendered ONCE at 3f from the
+#   original §3e round, while park()'s tally merged every round — so on PR
+#   #1845 shell-reviewer's three findings existed in the journal and in
+#   review.ran, yet the body affirmatively read "ran: docs-reviewer" and
+#   carried only docs-reviewer's section. The 3g.5 re-render must hand pr.sh
+#   `open --update-pr` a body whose §3e line is the ROUND-UNION of reviewers
+#   (never a subset of review.ran) and whose ## Review notes splices EVERY ran
+#   reviewer's findings — a repeat reviewer keeps BOTH blocks, relabeled
+#   `(ci-fix round N)`, never de-duped/last-writer-wins away.
+# ============================================================================
+run_node_case "K1846 two-reviewer body: a CI-fix round's shell-reviewer findings land in the PR body (ran-line union + spliced sections)" "
+$PREAMBLE
+const TAB = String.fromCharCode(9);
+const tsv = '.sh' + TAB + 'shell-reviewer' + TAB + 'claude/agents/reviewers/shell-reviewer.md\\n';
+
+setMachinery('two-rev',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/two-rev' },
+  // Original round: an .md-only diff — docs-reviewer alone.
+  { outcome: 'REVIEW_DIFF', files: ['docs/notes.md'] },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-v1' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'sha-v1', branch: 'build/two-rev' },
+  { outcome: 'PR_OPENED', pr_number: 1846 },
+  { outcome: 'CI_FAILED', failed_run_ids: [1] },
+  // CI-fix round: the fix touches a .sh file too — docs-reviewer AND
+  // shell-reviewer (tsv-routed) both run against the fix diff.
+  { outcome: 'REVIEW_DIFF', files: ['docs/notes.md', 'workflows/scripts/thing.sh'], tsv },
+  { outcome: 'PUSHED', sha: 'sha-v2', branch: 'build/two-rev' },
+  { outcome: 'CI_GREEN' },
+  // 3g.5 re-render (the fix under test): pr.sh open --update-pr.
+  { outcome: 'BODY_UPDATED', pr_number: 1846 },
+);
+setWorker('two-rev',
+  { status: 'done', summary: 'initial', acceptance_results: [{ criterion: 'c', passed: true, evidence: 'e' }], commits: [] },
+  { status: 'done', summary: 'ci fixed', acceptance_results: [], commits: [] },
+);
+setReview('two-rev',
+  '## docs r1\\nprose fine.\\n',
+  '## docs r2\\nprose still fine.\\n',
+  '## shell findings\\n### [MEDIUM] pipe-fed rc capture\\nreal finding text.\\n',
+);
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'two-rev', branch: 'build/two-rev', title: 'Two reviewers', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+let reason = null;
+if ((result.parked ?? []).length !== 1) reason = 'expected 1 parked: ' + JSON.stringify(result);
+else if ((result.escalations ?? []).length !== 0) reason = 'expected 0 escalations: ' + JSON.stringify(result.escalations);
+const rec = (result.parked ?? [])[0];
+if (!reason && (!rec.review || rec.review.ran.length !== 3))
+  reason = 'tally must carry all three ran entries (docs, docs, shell): ' + JSON.stringify(rec && rec.review);
+const upd = callLog.find(c => (c.opts.label||'') === 'pr-body-update:two-rev');
+if (!reason && !upd)
+  reason = 'no pr-body-update call — the CI-fix round reviewer evidence never re-rendered into the PR body (the #1846 drop)';
+if (!reason && !upd.promptFull.includes('--update-pr'))
+  reason = 'body re-render must go through pr.sh open --update-pr (shared assemble_body path): ' + upd.promptFull.slice(0, 300);
+if (!reason && !upd.promptFull.includes('ran: docs-reviewer, shell-reviewer'))
+  reason = 'the re-rendered §3e line must name the ROUND-UNION of ran reviewers, never a subset of review.ran: ' + upd.promptFull.slice(0, 600);
+if (!reason && !upd.promptFull.includes('shell-reviewer (ci-fix round 1)'))
+  reason = 'shell-reviewer findings section missing (or unlabeled) in the re-rendered body: ' + upd.promptFull.slice(0, 600);
+if (!reason && !upd.promptFull.includes('real finding text'))
+  reason = 'shell-reviewer FINDINGS text must be spliced into the body, not just its name';
+if (!reason && !(upd.promptFull.includes('### docs-reviewer') && upd.promptFull.includes('docs-reviewer (ci-fix round 1)')))
+  reason = 'a reviewer that ran in BOTH rounds must keep BOTH sections (no de-dup/last-writer-wins): ' + upd.promptFull.slice(0, 600);
+// The ORIGINAL 3f body (pr-batch) must be unchanged by this fix: round-1 only.
+const prBatch = callLog.find(c => (c.opts.label||'').startsWith('pr-batch:two-rev'));
+if (!reason && prBatch && prBatch.promptFull.includes('shell-reviewer'))
+  reason = '3f body must render only the rounds that have RUN by push time (shell-reviewer had not yet)';
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+# TEST (K1846 no-op): a CI-fix round that routes NO reviewer adds no evidence,
+#   so 3g.5 must SKIP the body update entirely (no pr-body-update call) — the
+#   common path costs nothing and older CI-fix tests' machinery queues stay
+#   valid as-is.
+run_node_case "K1846 no-op: an empty CI-fix review round skips the body re-render" "
+$PREAMBLE
+
+setMachinery('norev-fix',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/norev-fix' },
+  { outcome: 'REVIEW_DIFF', files: ['docs/notes.md'] },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-v1' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'sha-v1', branch: 'build/norev-fix' },
+  { outcome: 'PR_OPENED', pr_number: 1847 },
+  { outcome: 'CI_FAILED', failed_run_ids: [1] },
+  // CI-fix round routes nothing (no files in the fix diff match any axis).
+  { outcome: 'REVIEW_DIFF', files: [] },
+  { outcome: 'PUSHED', sha: 'sha-v2', branch: 'build/norev-fix' },
+  { outcome: 'CI_GREEN' },
+  // Deliberately NO BODY_UPDATED entry: if 3g.5 wrongly fires, the solo-call
+  // fallback returns ERROR and the assertion below catches the spurious call.
+);
+setWorker('norev-fix',
+  { status: 'done', summary: 'initial', acceptance_results: [{ criterion: 'c', passed: true, evidence: 'e' }], commits: [] },
+  { status: 'done', summary: 'ci fixed', acceptance_results: [], commits: [] },
+);
+setReview('norev-fix', '## docs r1\\nfine.\\n');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'norev-fix', branch: 'build/norev-fix', title: 'No-reviewer fix round', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+let reason = null;
+if ((result.parked ?? []).length !== 1) reason = 'expected 1 parked: ' + JSON.stringify(result);
+const upd = callLog.find(c => (c.opts.label||'') === 'pr-body-update:norev-fix');
+if (!reason && upd)
+  reason = 'an evidence-free CI-fix round must not trigger a body re-render (identical suffix → skip)';
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+# --- K1846 static lockstep guard: ONE renderer for both body surfaces --------
+grep -q 'const reviewSummarySuffix = reviewBodySuffix(\[review\]);' "$MJS" \
+  || fail "#1846: 3f's body suffix must render through reviewBodySuffix — the same renderer 3g.5 uses, or the two surfaces drift"
+grep -q 'reviewBodySuffix(\[review, ...fixRounds\])' "$MJS" \
+  || fail "#1846: 3g.5 must merge EVERY review round (original + CI-fix) through reviewBodySuffix before updating the PR body"
+grep -q -- '--update-pr' "$MJS" \
+  || fail "#1846: the 3g.5 re-render must go through pr.sh open --update-pr (the shared assemble_body path), never regex surgery on the live body"
+echo "PASS: #1846 review-evidence re-render guard — one renderer for 3f and 3g.5, re-render via pr.sh open --update-pr"
 
 # --- K1430 static lockstep guards: §3e mandatory/routed pre-push review ------
 # build.md §3e is the SPEC; build-level.mjs's driveItem is the as-built

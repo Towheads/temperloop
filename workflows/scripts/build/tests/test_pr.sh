@@ -853,6 +853,42 @@ out="$(PATH="$TMP/bin-exists:$PATH" bash "$SCRIPT" open \
   || fail "url not parsed from already-exists message (got: $out)"
 echo "PASS: open returns EXISTS{pr_number,url} when gh reports a PR already exists (#544)"
 
+# --- open --update-pr: re-render an existing PR's body via gh pr edit (#1846) -----
+# The .mjs's 3g.5 re-render after a CI-fix re-review round. Must go through the
+# SAME assemble_body path as create (same linkage lines, same surface handling)
+# but invoke `gh pr edit <n> --body` and return BODY_UPDATED — never create.
+mkdir -p "$TMP/bin-edit"
+cat > "$TMP/bin-edit/gh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$@" > "${GH_STUB_ARGS:?}"
+EOF
+chmod +x "$TMP/bin-edit/gh"
+out="$(GH_STUB_ARGS="$TMP/gh-args-edit" PATH="$TMP/bin-edit:$PATH" bash "$SCRIPT" open \
+  --verdict "$TMP/verdict.json" --repo "$REPO" --update-pr 342 \
+  --gh-issue 278 --also-closes 171 \
+  --plan-link "Plans/2026-06-09 foundation - machinery#machinery-pr-open" \
+  --source "epic #253")"
+[ "$(jq -r .outcome <<<"$out")" = "BODY_UPDATED" ] || fail "update-pr outcome (got: $out)"
+[ "$(jq -r .pr_number <<<"$out")" = "342" ] || fail "update-pr pr_number (got: $out)"
+[ "$(sed -n '1p' "$TMP/gh-args-edit")" = "pr" ] || fail "gh not invoked as pr edit (args: $(cat "$TMP/gh-args-edit"))"
+[ "$(sed -n '2p' "$TMP/gh-args-edit")" = "edit" ] || fail "gh not invoked as pr edit (args: $(cat "$TMP/gh-args-edit"))"
+[ "$(sed -n '3p' "$TMP/gh-args-edit")" = "342" ] || fail "gh pr edit not given the PR number"
+grep -qx 'Closes #278' "$TMP/gh-args-edit" || fail "re-assembled body (Closes #278) not passed to gh pr edit"
+grep -qx 'Closes #171' "$TMP/gh-args-edit" || fail "re-assembled body (Closes #171) not passed to gh pr edit"
+# Byte-parity with create: the body handed to gh pr edit must equal --body-only's
+# for the same inputs — the one-shared-code-path guarantee the arm exists for.
+expected_body="$(bash "$SCRIPT" open --verdict "$TMP/verdict.json" --gh-issue 278 --also-closes 171 \
+  --plan-link "Plans/2026-06-09 foundation - machinery#machinery-pr-open" --source "epic #253" --body-only)"
+# gh-args holds: pr / edit / 342 / --body / <body> — the body is everything after --body.
+actual_body="$(awk 'seen{print} $0=="--body"{seen=1}' "$TMP/gh-args-edit")"
+[ "$actual_body" = "$expected_body" ] \
+  || fail "update-pr body diverges from the shared assemble_body (--body-only) path"
+rc=0; bash "$SCRIPT" open --verdict "$TMP/verdict.json" --update-pr 342 >/dev/null 2>&1 || rc=$?
+[ "$rc" -ne 0 ] || fail "update-pr without --repo must die"
+rc=0; bash "$SCRIPT" open --verdict "$TMP/verdict.json" --repo "$REPO" --update-pr abc >/dev/null 2>&1 || rc=$?
+[ "$rc" -ne 0 ] || fail "update-pr with a non-numeric PR number must die"
+echo "PASS: open --update-pr re-renders via gh pr edit → BODY_UPDATED (#1846)"
+
 # --- recover-probe: the staged lost-return side-effect ladder (temperloop#939) ----
 # Drives all four stages against the real fixture, bottom to top, on a branch of
 # its own so the earlier push tests' remote state cannot mask a stage transition.
