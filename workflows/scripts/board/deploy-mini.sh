@@ -9,8 +9,16 @@
 # checkouts drift and a stale one runs an outdated adapter (the #128 silent-no-op).
 #
 # This brings every consumer current, IDEMPOTENTLY and SAFELY:
-#   - only fast-forwards checkouts that are on `main` AND clean — a dirty or
-#     feature-branch checkout (an active session's work) is SKIPPED, never touched;
+#   - resolves each checkout's ROLE via env-reconcile.sh's role registry
+#     (temperloop#1828, CLAUDE.kernel.md § Environment hygiene): only a
+#     CRON/KERNEL-role checkout — structurally nobody's interactive home — is
+#     auto-healed by the steps below. An OPERATOR/CONSUMER-role checkout (or one
+#     in neither registry) gets its drift REPORTED on a printed line and is
+#     never mutated: no HEAD switch, no ff-merge, no branch delete, no worktree
+#     prune;
+#   - only fast-forwards (cron-role) checkouts that are on `main` AND clean — a
+#     dirty or feature-branch checkout (an active session's work) is SKIPPED,
+#     never touched;
 #   - sweeps merged LOCAL branches in each clean-on-main checkout (F#653) so the
 #     local accumulation a build machine leaves behind is cleared automatically,
 #     not when a human remembers `make prune-branches` (remote heads auto-delete via
@@ -36,7 +44,9 @@
 # because the operation is idempotent (the next run reconciles anything missed).
 #
 # Overrides (used by the test): DEPLOY_MINI_CHECKOUTS, DEPLOY_MINI_LOCK,
-# DEPLOY_MINI_SKIP_INSTALL=1.
+# DEPLOY_MINI_SKIP_INSTALL=1. Role membership honors env-reconcile.sh's own
+# ENV_RECONCILE_CRON_CHECKOUTS / ENV_RECONCILE_OPERATOR_CHECKOUTS overrides
+# (the registry is sourced from that script, not duplicated here).
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -80,12 +90,91 @@ board_sh_of() {
   fi
 }
 
-# --- 1. fast-forward each clean-on-main checkout -----------------------------
+# --- checkout roles (temperloop#1828) ----------------------------------------
+# CLAUDE.kernel.md § Environment hygiene: auto-fix is permitted only in
+# checkouts that are structurally nobody's interactive home — the cron/kernel
+# role. An operator/consumer checkout may be another session's active lane, so
+# its drift is REPORTED, never auto-corrected. Roles resolve through
+# env-reconcile.sh's role registry (the kernel's detection substrate), sourced
+# in a subshell so its CRON_CHECKOUTS / OPERATOR_CHECKOUTS arrays — and their
+# ENV_RECONCILE_* overrides — stay the single source of truth rather than a
+# second list here. Operator rows are emitted first so a path somehow present
+# in BOTH registries resolves to the safe (report-only) arm. A checkout in
+# NEITHER registry also defaults to operator: an unknown role cannot be
+# established as safe to mutate. Fail-safe: if env-reconcile.sh is missing or
+# unsourceable the table is empty and everything reports only.
+ENV_RECONCILE="$FOUNDATION/workflows/scripts/build/env-reconcile.sh"
+ROLE_TABLE=""
+if [ -f "$ENV_RECONCILE" ]; then
+  ROLE_TABLE="$(_ENV_RECONCILE_PATH="$ENV_RECONCILE" bash -c '
+    set --                        # sourced arg-parse loop must see an empty $@
+    source "$_ENV_RECONCILE_PATH" >/dev/null 2>&1 || exit 0
+    _i=0
+    while [ "$_i" -lt "${#OPERATOR_CHECKOUTS[@]}" ]; do
+      printf "operator\t%s\n" "${OPERATOR_CHECKOUTS[$_i]}"; _i=$((_i + 1))
+    done
+    _i=0
+    while [ "$_i" -lt "${#CRON_CHECKOUTS[@]}" ]; do
+      printf "cron\t%s\n" "${CRON_CHECKOUTS[$_i]}"; _i=$((_i + 1))
+    done
+  ' 2>/dev/null || true)"
+fi
+
+# canon <path> — physical path for comparison (symlink-stable, e.g. /tmp vs /private/tmp).
+canon() { (cd "$1" 2>/dev/null && pwd -P) || printf '%s' "$1"; }
+
+# role_of <checkout> — "cron" or "operator" (first table match wins; default operator).
+role_of() {
+  local co_canon role path
+  co_canon="$(canon "$1")"
+  while IFS=$'\t' read -r role path; do
+    [ -n "$path" ] || continue
+    if [ "$(canon "$path")" = "$co_canon" ]; then printf '%s' "$role"; return 0; fi
+  done <<<"$ROLE_TABLE"
+  printf 'operator'
+}
+
+# report_operator_drift <checkout> <label> — the report-only arm. Inspects and
+# prints; runs NO mutating operation (no `git switch`, no `git merge`, no
+# branch prune, no worktree prune). The one remote touch is `git fetch`, which
+# updates remote-tracking refs only — never the working tree, HEAD, or a local
+# branch — so behind-ness is measured against a current origin/main; a failed
+# fetch degrades to the on-disk remote-tracking ref (env-reconcile's posture).
+report_operator_drift() {
+  local co="$1" label="$2" drift="" branch behind
+  branch="$(git -C "$co" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+  if [ "$branch" != "main" ]; then drift="on '$branch', not main"; fi
+  if [ -n "$(git -C "$co" status --porcelain 2>/dev/null)" ]; then
+    drift="${drift:+$drift; }dirty tree"
+  fi
+  git -C "$co" fetch --quiet origin 2>/dev/null || true
+  if git -C "$co" rev-parse --verify -q origin/main >/dev/null 2>&1; then
+    behind="$(git -C "$co" rev-list --count HEAD..origin/main 2>/dev/null || echo 0)"
+    if [ "${behind:-0}" -gt 0 ] 2>/dev/null; then
+      drift="${drift:+$drift; }behind origin/main by $behind"
+    fi
+  fi
+  if [ -n "$drift" ]; then
+    printf '  %-26s DRIFT (operator role — report-only): %s\n' "$label" "$drift"
+  else
+    printf '  %-26s current (operator role — report-only)\n' "$label"
+  fi
+}
+
+# --- 1. fast-forward each clean-on-main CRON/KERNEL-role checkout ------------
+# (operator/consumer-role checkouts branch off to the report-only arm — #1828)
 echo "==> deploy-mini"
 for co in "${CHECKOUTS[@]}"; do
   label="$(tilde "$co")"
   if ! git -C "$co" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     printf '  %-26s SKIP (absent / not a git repo)\n' "$label"; continue
+  fi
+  # Role gate (temperloop#1828): everything below this line can mutate the
+  # checkout (HEAD switch, ff-merge, branch prune, worktree prune) — only a
+  # cron/kernel-role checkout may proceed. Anything else is report-only.
+  if [ "$(role_of "$co")" != cron ]; then
+    report_operator_drift "$co" "$label"
+    continue
   fi
   branch="$(git -C "$co" rev-parse --abbrev-ref HEAD 2>/dev/null)"
   if [ "$branch" != "main" ]; then

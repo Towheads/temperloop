@@ -60,8 +60,15 @@ advance() {
 # No BOARD_CACHE_DIR pin any more: it existed only to keep the #341 structure-cache
 # bust off the real machine's cache, and both were removed with the Projects-v2 arm
 # (ADR 0004).
+# ENV_RECONCILE_CRON_CHECKOUTS registers every fixture as CRON/KERNEL role
+# (temperloop#1828): deploy-mini now auto-heals only cron-role checkouts
+# (resolved via env-reconcile.sh's role registry), and an unregistered path
+# defaults to the operator report-only arm — these tests exercise the
+# auto-heal machinery, so their fixtures must carry the cron role. The role
+# split itself is asserted in cases 17/18 below.
 run() {
-  DEPLOY_MINI_CHECKOUTS="$*" DEPLOY_MINI_SKIP_INSTALL=1 DEPLOY_MINI_LOCK="$WORK/run.lock.d" \
+  DEPLOY_MINI_CHECKOUTS="$*" ENV_RECONCILE_CRON_CHECKOUTS="$*" \
+    DEPLOY_MINI_SKIP_INSTALL=1 DEPLOY_MINI_LOCK="$WORK/run.lock.d" \
     bash "$DEPLOY"
 }
 behind() { git -C "$1" rev-list --count "HEAD..@{u}" 2>/dev/null || echo "?"; }
@@ -128,13 +135,13 @@ grep -q "already current" <<<"$out" || fail "idempotent re-run should be 'alread
 
 # --- 7. lock: a lock held by a LIVE owner makes a concurrent invocation no-op -
 mkdir "$WORK/held.lock.d"; echo "$$" >"$WORK/held.lock.d/pid"   # $$ = this test, alive
-out="$(DEPLOY_MINI_CHECKOUTS="$WORK/idem" DEPLOY_MINI_SKIP_INSTALL=1 DEPLOY_MINI_LOCK="$WORK/held.lock.d" bash "$DEPLOY")" && rc=0 || rc=$?
+out="$(DEPLOY_MINI_CHECKOUTS="$WORK/idem" ENV_RECONCILE_CRON_CHECKOUTS="$WORK/idem" DEPLOY_MINI_SKIP_INSTALL=1 DEPLOY_MINI_LOCK="$WORK/held.lock.d" bash "$DEPLOY")" && rc=0 || rc=$?
 [ "$rc" -eq 0 ] || fail "a live-held lock must exit 0 (skip)"
 grep -q "holds the lock" <<<"$out" || fail "a live-held lock should report skipping (got: $out)"
 
 # --- 8. lock: a lock owned by a DEAD PID is stolen and the deploy runs -------
 mkdir "$WORK/dead.lock.d"; echo 999999 >"$WORK/dead.lock.d/pid"   # 999999 > PID_MAX → never alive
-out="$(DEPLOY_MINI_CHECKOUTS="$WORK/idem" DEPLOY_MINI_SKIP_INSTALL=1 DEPLOY_MINI_LOCK="$WORK/dead.lock.d" bash "$DEPLOY")" && rc=0 || rc=$?
+out="$(DEPLOY_MINI_CHECKOUTS="$WORK/idem" ENV_RECONCILE_CRON_CHECKOUTS="$WORK/idem" DEPLOY_MINI_SKIP_INSTALL=1 DEPLOY_MINI_LOCK="$WORK/dead.lock.d" bash "$DEPLOY")" && rc=0 || rc=$?
 [ "$rc" -eq 0 ] || fail "a dead-owner lock should be stolen and run (exit 0)"
 grep -q "holds the lock" <<<"$out" && fail "a dead-owner lock must NOT be treated as held"
 grep -q "already current" <<<"$out" || fail "after stealing a dead lock, deploy should run (got: $out)"
@@ -308,4 +315,72 @@ out="$(PATH="$FAKEBIN:$PATH" run "$WORK/wtfail")" && rc=0 || rc=$?
 grep -q "worktree prune: FAILED (non-fatal)" <<<"$out" || fail "should report the swallowed failure (got: $out)"
 echo "PASS: #168 a worktree.sh prune failure is fail-open — logged, deploy-mini still exits 0"
 
-echo "PASS: deploy-mini ff-pulls clean-on-main checkouts, recovers a checkout stranded on a merged/contained branch back to main (F#1098), skips dirty/UNMERGED-feature/absent/diverged, prunes merged local branches (F#653, keeps unmerged), sweeps merged/orphaned <checkout>.wt/* worktrees fail-open while leaving dirty/unmerged ones intact (#168), verifies the guard (exit non-zero on miss), is idempotent, sources board.sh cleanly on an adapter-changed pull (no removed-symbol calls, ADR 0004), single-instances via a PID-owned lock (live held, dead stolen), and reports cache-enabled boards + store presence (F#988/#1026)"
+# --- 17. temperloop#1828: role split — cron-role healed, operator-role report-only
+# CLAUDE.kernel.md § Environment hygiene: auto-heal only a cron/kernel-role
+# checkout; an operator/consumer checkout's drift is REPORTED, never corrected.
+# One run over two checkouts: cronrole (registered cron via
+# ENV_RECONCILE_CRON_CHECKOUTS) must be ff-pulled; oprole (registered operator
+# via ENV_RECONCILE_OPERATOR_CHECKOUTS) carries every drift kind deploy-mini
+# used to auto-correct — a merged/contained feature branch (the F#1098
+# recovery shape), a dirty tree, behind-ness, a prunable merged local branch,
+# and a merged-shape worktree — and ALL of it must survive untouched, with a
+# printed DRIFT line naming the checkout and what drifted.
+setup_repo cronrole yes; advance cronrole
+setup_repo oprole yes
+bash "$WTSH" create "$WORK/oprole" opwt >/dev/null \
+  || fail "test setup: worktree.sh create (oprole) failed"
+advance oprole
+oplanded="$(GIT -C "$WORK/oprole.seed" rev-parse HEAD)"
+advance oprole
+GIT -C "$WORK/oprole" fetch -q origin main
+GIT -C "$WORK/oprole.wt/opwt" reset -q --hard "$oplanded"   # merged-shape worktree
+GIT -C "$WORK/oprole" branch mergedlocal                     # contained in origin/main → prunable shape
+GIT -C "$WORK/oprole" checkout -q -b feature/merged          # contained in origin/main → F#1098 recovery shape
+echo scratch >"$WORK/oprole/junk.txt"                        # dirty tree
+op_before="$(GIT -C "$WORK/oprole" rev-parse HEAD)"
+out="$(DEPLOY_MINI_CHECKOUTS="$WORK/cronrole $WORK/oprole" \
+       ENV_RECONCILE_CRON_CHECKOUTS="$WORK/cronrole" \
+       ENV_RECONCILE_OPERATOR_CHECKOUTS="$WORK/oprole" \
+       DEPLOY_MINI_SKIP_INSTALL=1 DEPLOY_MINI_LOCK="$WORK/role.lock.d" \
+       bash "$DEPLOY")" || fail "role-split run should exit 0 (got: $out)"
+# cron arm: healed.
+grep -q "pulled →" <<<"$out" || fail "cron-role checkout should be ff-pulled (got: $out)"
+[ "$(behind "$WORK/cronrole")" -eq 0 ] || fail "cron-role checkout must be current after the run"
+# operator arm: NOTHING mutated.
+[ "$(GIT -C "$WORK/oprole" rev-parse HEAD)" = "$op_before" ] \
+  || fail "operator-role checkout HEAD must NOT move"
+[ "$(GIT -C "$WORK/oprole" branch --show-current)" = "feature/merged" ] \
+  || fail "operator-role checkout must NOT be recovered/switched off its branch"
+GIT -C "$WORK/oprole" rev-parse --verify -q mergedlocal >/dev/null \
+  || fail "operator-role merged local branch must NOT be pruned"
+[ -e "$WORK/oprole.wt/opwt" ] || fail "operator-role worktree must NOT be pruned"
+GIT -C "$WORK/oprole" show-ref --verify --quiet refs/heads/build/opwt \
+  || fail "operator-role worktree branch must survive"
+[ -f "$WORK/oprole/junk.txt" ] || fail "operator-role dirty file must survive"
+# ...and the drift is REPORTED on a printed line naming the checkout + drift.
+grep -q "oprole *DRIFT (operator role — report-only)" <<<"$out" \
+  || fail "operator-role drift should be reported with the checkout named (got: $out)"
+grep -q "on 'feature/merged', not main" <<<"$out" || fail "branch drift should be reported (got: $out)"
+grep -q "dirty tree" <<<"$out" || fail "dirty-tree drift should be reported (got: $out)"
+grep -q "behind origin/main by 2" <<<"$out" || fail "behind-ness should be reported (got: $out)"
+echo "PASS: #1828 role split — cron-role checkout auto-healed; operator-role checkout untouched, drift reported"
+
+# --- 18. temperloop#1828: an UNREGISTERED checkout defaults to report-only ----
+# A checkout in neither role registry cannot be established as safe to mutate,
+# so it takes the operator arm (report-only), never the auto-heal arm.
+setup_repo unreg yes; advance unreg
+unreg_before="$(GIT -C "$WORK/unreg" rev-parse HEAD)"
+out="$(DEPLOY_MINI_CHECKOUTS="$WORK/unreg" \
+       ENV_RECONCILE_CRON_CHECKOUTS="$WORK/no-such-cron" \
+       ENV_RECONCILE_OPERATOR_CHECKOUTS="$WORK/no-such-operator" \
+       DEPLOY_MINI_SKIP_INSTALL=1 DEPLOY_MINI_LOCK="$WORK/unreg.lock.d" \
+       bash "$DEPLOY")" || fail "unregistered-checkout run should exit 0 (got: $out)"
+[ "$(GIT -C "$WORK/unreg" rev-parse HEAD)" = "$unreg_before" ] \
+  || fail "an unregistered checkout must NOT be pulled (defaults to report-only)"
+grep -q "pulled →" <<<"$out" && fail "an unregistered checkout must not be auto-healed (got: $out)"
+grep -q "DRIFT (operator role — report-only)" <<<"$out" \
+  || fail "an unregistered checkout's drift should be reported (got: $out)"
+grep -q "behind origin/main by 1" <<<"$out" || fail "behind-ness should be reported (got: $out)"
+echo "PASS: #1828 an unregistered checkout defaults to the operator report-only arm"
+
+echo "PASS: deploy-mini ff-pulls clean-on-main CRON-ROLE checkouts (operator-role and unregistered checkouts get drift reported, never mutated — #1828), recovers a cron-role checkout stranded on a merged/contained branch back to main (F#1098), skips dirty/UNMERGED-feature/absent/diverged, prunes merged local branches (F#653, keeps unmerged), sweeps merged/orphaned <checkout>.wt/* worktrees fail-open while leaving dirty/unmerged ones intact (#168), verifies the guard (exit non-zero on miss), is idempotent, sources board.sh cleanly on an adapter-changed pull (no removed-symbol calls, ADR 0004), single-instances via a PID-owned lock (live held, dead stolen), and reports cache-enabled boards + store presence (F#988/#1026)"
