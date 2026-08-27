@@ -1562,6 +1562,34 @@ function changelogFragmentSection(item) {
   ];
 }
 
+// parentSummarySection — the epic #1847 Produces #7 companion: injects the
+// parent epic's own "group summary" into an admitted epic member's worker
+// prompt, a SELF-CONTAINED section appended once into workerPrompt()'s
+// array, mirroring changelogFragmentSection()'s shape so a sibling edit to
+// workerPrompt() rebases cleanly. Gated on `item.parentSummary` — set ONLY
+// by /sweep's Step 3 items[] construction for a member it admitted via Step
+// 1 item 6 (Operational-epic member admission); a plain singleton, and every
+// /build plan item, never carries the field, so this returns an empty array
+// and the section is silently absent. Unlike principlesSection()'s DEGRADED
+// notice, there is no "missing" case to flag here: an item with no parent
+// epic genuinely has no group summary to inject, so silence is correct, not
+// a degradation.
+function parentSummarySection(item) {
+  if (!item.parentSummary) return [];
+  const epicRef = item.parentEpic ? `#${item.parentEpic}` : 'the parent epic';
+  return [
+    '',
+    '## Parent epic context',
+    `This item is one member of a larger epic (${epicRef}) that drives its members`,
+    "through /sweep's Operational-epic member admission path (temperloop#1847) —",
+    'the epic itself carries no plan-note ceremony, so this is the only place its',
+    "framing reaches you. It is context for WHY this item exists; it does not",
+    "change or extend this item's own Acceptance bullets above.",
+    '',
+    String(item.parentSummary).trim(),
+  ];
+}
+
 function workerPrompt(item, worktreePath, extraSection) {
   const accList = acceptanceList(item);
   const accBullets = accList
@@ -1609,6 +1637,7 @@ function workerPrompt(item, worktreePath, extraSection) {
     `- scope: ${item.scope ?? '(see source)'}`,
     `- source: ${item.source ?? '(none)'}`,
     item.notes ? `- notes: ${item.notes}` : null,
+    ...parentSummarySection(item),
     '',
     '## Acceptance (self-verify each before returning done)',
     accBullets || '  - (none specified)',
