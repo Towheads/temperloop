@@ -4,7 +4,7 @@
   setting is on, an Operational epic with no `Foundational` label anywhere
   in the group drains through `/sweep`, not through `/assess` → `/build` —
   running `/assess --epic <N>` on one now stops with a message naming the
-  sweep path, `docs/features/operational-drain.md`, and the checkout-wide
+  sweep path, `docs/features/sweep.md`, and the checkout-wide
   scope of the setting, rather than silently decomposing an epic two
   mechanisms could then double-drive. The autonomous pipeline driver's own
   `route-foundational` hand-off is exempted (it predates the sweep cutover,

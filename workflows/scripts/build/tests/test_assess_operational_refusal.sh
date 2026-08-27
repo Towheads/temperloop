@@ -29,6 +29,14 @@
 #   8. Precedence: pipeline_drive_invoked wins over an explicit override=false
 #      AND over every other admit-unfavorable field simultaneously — proves
 #      branch 1 is checked first, not merely reachable.
+#   9. (see below) an all-absent input falls back to the pre-guard proceed
+#      default.
+#  10. pipeline_drive_invoked=true with EVERY other field absent (assess.md
+#      Step 1's reordered guard: item 1 detects pipeline-drive-invoked
+#      before item 2's label read even runs, so on this path the read is
+#      never attempted — a skipped read and a failed one look identical
+#      here) -> still proceeds (pipeline-drive-carve-out). Round-4
+#      escalation HIGH finding 1.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -101,6 +109,20 @@ run '{}'
 [ "$REFUSE" = "false" ] || fail "case9: an all-absent input must proceed (safe default is the pre-#1854 behavior), got refuse=$REFUSE"
 [ "$REASON" = "setting-off" ] || fail "case9: expected reason setting-off on an absent setting_enabled, got $REASON"
 echo "PASS: case 9 an all-absent input falls back to the pre-guard default (proceed)"
+
+# --- case 10: pipeline-invoked with a SKIPPED/FAILED label read (the
+# reordered assess.md Step 1: item 1 detects pipeline-drive-invoked BEFORE
+# any read, so on this path setting_enabled/epic_work_class/
+# any_foundational_in_group are never resolved at all — they arrive
+# genuinely absent from the input, not merely false. This is the
+# script-level analog of "a pipeline-invoked run with a FAILING label read
+# must still pass through" (round-4 escalation, HIGH finding 1): a failed
+# read and a skipped read are indistinguishable at this script's input
+# boundary — both mean these fields are never populated. -----------------
+run '{"pipeline_drive_invoked":true}'
+[ "$REFUSE" = "false" ] || fail "case10: pipeline-drive-invoked with no other reads must still proceed, got refuse=$REFUSE"
+[ "$REASON" = "pipeline-drive-carve-out" ] || fail "case10: expected reason pipeline-drive-carve-out, got $REASON"
+echo "PASS: case 10 pipeline-drive-invoked proceeds even when every other read was skipped/failed (the reordered Step 1)"
 
 echo
 echo "PASS: all assess-operational-refusal.sh predicate assertions passed"
