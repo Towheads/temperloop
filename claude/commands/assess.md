@@ -109,7 +109,7 @@ Procedure:
   SWEEP_ADMIT_OPERATIONAL_EPICS=1 — its members drain via `/sweep`, not
   `/assess` → `/build`. This is a CHECKOUT-WIDE setting
   (workflows/scripts/build/build.config.sh / build.config.local.sh), not a
-  personal misconfiguration — see docs/features/sweep.md.
+  personal misconfiguration — see docs/features/operational-drain.md.
 Run `/sweep` instead. If you have a specific reason to decompose this epic
 through /assess anyway, re-run with --override-operational-refusal (logged).
 ```
