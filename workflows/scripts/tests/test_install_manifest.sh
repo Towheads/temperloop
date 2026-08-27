@@ -25,6 +25,11 @@
 #      manifest_has_marker is true only when the tag is present
 #   9. manifest_restore_from_record on a "preexisting" entry whose backup
 #      file is missing refuses (non-zero) rather than deleting the path
+#  10. Malformed .paths (temperloop#1824): a manifest whose .paths is
+#      missing, null, an array, or a string is refused legibly by
+#      manifest_load (non-zero, message naming the problem); a
+#      genuinely-empty {} paths object still loads cleanly (the legitimate
+#      nothing-recorded state)
 #
 # No network. Every test uses a throwaway HOME/XDG_STATE_HOME so nothing
 # touches the real machine state.
@@ -282,6 +287,36 @@ grep -q 'refusing to touch' <<<"$out9" || fail "9: failure message should explai
 [[ "$(cat "$target9")" == "still-live-content" ]] || fail "9: the live path's content must be untouched"
 
 pass "9: restore_from_record refuses to delete a live path when its recorded backup is missing, instead of proceeding destructively"
+
+# ---------------------------------------------------------------------------
+# Test 10: malformed .paths (temperloop#1824) — every shape from the issue's
+# repro table is refused legibly by manifest_load; an empty {} paths object
+# (the legitimate nothing-recorded state) still loads cleanly.
+# ---------------------------------------------------------------------------
+H10="${TMP}/home10"
+mkdir -p "${H10}/.local/state/temperloop"
+manifest10="${H10}/.local/state/temperloop/install-manifest.json"
+
+malformed10=(
+  '{"schema_version":1}'
+  '{"schema_version":1,"paths":null}'
+  '{"schema_version":1,"paths":[]}'
+  '{"schema_version":1,"paths":"oops"}'
+)
+for shape in "${malformed10[@]}"; do
+  printf '%s' "$shape" >"$manifest10"
+  out10="$(run_in_fixture "$H10" 'manifest_load' 2>&1)" && rc10=0 || rc10=$?
+  [[ "$rc10" -ne 0 ]] || fail "10: a manifest with malformed .paths must be refused (shape: $shape, rc=$rc10, out=$out10)"
+  grep -q 'malformed .paths' <<<"$out10" || fail "10: refusal must name the .paths problem (shape: $shape, got: $out10)"
+done
+
+# The genuinely-empty object is the legitimate nothing-recorded state.
+printf '{"schema_version":1,"paths":{}}' >"$manifest10"
+out10e="$(run_in_fixture "$H10" 'manifest_load' 2>&1)" && rc10e=0 || rc10e=$?
+[[ "$rc10e" -eq 0 ]] || fail "10: an empty {} paths object must still load cleanly (rc=$rc10e, out=$out10e)"
+echo "$out10e" | jq -e '.paths == {}' >/dev/null || fail "10: the empty paths object should round-trip"
+
+pass "10: manifest_load refuses a missing/null/array/string .paths legibly and still accepts the empty-object state"
 
 # ---------------------------------------------------------------------------
 echo
