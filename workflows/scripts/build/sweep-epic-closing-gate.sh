@@ -19,10 +19,17 @@
 #   2. whether the `keep-open` label is present on the epic
 #   3. whether this run is attended or unattended (the offer-close vs
 #      left-open-unattended branch)
-#   4. each member's current state: "closed" (merged or verdict-resolved —
-#      a parked member NEVER reaches "closed", by construction: the park
-#      path moves the issue back to Ready and never closes it) or "open"
-#      (still outstanding, whatever the reason)
+#   4. each member's current state: "CLOSED" (merged or verdict-resolved —
+#      a parked member NEVER reaches "CLOSED", by construction: the park
+#      path moves the issue back to Ready and never closes it) or "OPEN"
+#      (still outstanding, whatever the reason). UPPERCASE — this is the
+#      native `gh issue view --json state` casing, matched here VERBATIM
+#      (no normalization), the same convention sweep-blocked-undefer.sh's
+#      own input schema already documents ("state": "OPEN" | "CLOSED").
+#      The caller MUST hand this script the raw gh casing unmodified —
+#      a lowercased "closed"/"open" is never recognized (temperloop#1847
+#      round 3: comparing against lowercase silently zeroed every drain
+#      count, since `gh` never returns lowercase).
 #
 # The caller (sweep.md Step 3.6, or a test fixture standing in for it) runs
 # those reads and hands this script their RESULTS; this script is the pure
@@ -98,7 +105,9 @@
 #       # this run's attended/unattended posture. Default when absent: false
 #       # (the more conservative branch — left-open-unattended never closes
 #       # anything, offer-close does).
-#     "members": [ {"issue": <int>, "state": "open"|"closed"}, ... ]
+#     "members": [ {"issue": <int>, "state": "OPEN"|"CLOSED"}, ... ]
+#       # UPPERCASE, matching `gh issue view --json state` verbatim — see
+#       # item 4 above. A lowercase "open"/"closed" is NOT recognized.
 #   }
 #
 # Output JSON on stdout:
@@ -155,8 +164,8 @@ printf '%s' "$EPIC_JSON" | jq -c '
   | (.attended // false) as $attended
   | (.members // []) as $members
   | ($members | length) as $total
-  | ([$members[] | select(.state == "closed")] | length) as $closed
-  | ([$members[] | select(.state != "closed") | .issue] ) as $open_members
+  | ([$members[] | select(.state == "CLOSED")] | length) as $closed
+  | ([$members[] | select(.state != "CLOSED") | .issue] ) as $open_members
   | ($total > 0 and $closed == $total) as $fully_drained
   | {
       epic: $epic,

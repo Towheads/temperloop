@@ -73,9 +73,14 @@ check_field_compact() { # <desc> <fixture-json> <jq-field> <want> — for array/
   fi
 }
 
-FULLY_DRAINED_MEMBERS='[{"issue":101,"state":"closed"},{"issue":102,"state":"closed"}]'
-PARTIAL_MEMBERS='[{"issue":101,"state":"closed"},{"issue":102,"state":"open"},{"issue":103,"state":"open"}]'
-NONE_CLOSED_MEMBERS='[{"issue":101,"state":"open"},{"issue":102,"state":"open"}]'
+## `gh issue view --json state` returns UPPERCASE ("OPEN"/"CLOSED") — these
+## fixtures deliberately use the REAL gh casing, not a hand-authored
+## lowercase stand-in, so this suite actually discriminates the combinator's
+## casing handling (temperloop#1847 round 3: a prior lowercase-only fixture
+## set stayed green while the combinator silently matched nothing live).
+FULLY_DRAINED_MEMBERS='[{"issue":101,"state":"CLOSED"},{"issue":102,"state":"CLOSED"}]'
+PARTIAL_MEMBERS='[{"issue":101,"state":"CLOSED"},{"issue":102,"state":"OPEN"},{"issue":103,"state":"OPEN"}]'
+NONE_CLOSED_MEMBERS='[{"issue":101,"state":"OPEN"},{"issue":102,"state":"OPEN"}]'
 
 # The fully favorable-to-offer-close baseline every other case flips exactly
 # one field away from.
