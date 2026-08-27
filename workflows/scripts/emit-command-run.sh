@@ -99,11 +99,18 @@
 #                     it left open (keep-open, unattended, partial, or a
 #                     declined offer). ALL THREE ABSENT from the record
 #                     entirely when the caller doesn't pass `--epics-
-#                     reviewed` — most command-run callers (triage/fix, and a
-#                     /sweep run that admitted no epics this run) never touch
-#                     this schema extension, so this keeps their records
-#                     shaped exactly as before (purely additive; no
-#                     schema_version bump). This is a DISTINCT partition from
+#                     reviewed` — callers OTHER THAN /sweep (triage/fix)
+#                     never touch this schema extension, so this keeps their
+#                     records shaped exactly as before (purely additive; no
+#                     schema_version bump). Every /sweep run itself DOES pass
+#                     all three, even on its zero-epic fast path
+#                     (`--epics-reviewed 0 --epics-closed 0
+#                     --epics-left-open 0`) — the always-carry semantics
+#                     (round 5 escalation, MEDIUM finding): a /sweep record
+#                     missing this extension is itself the "the gate step
+#                     didn't run" signal, distinct from a genuine 0/0/0 (the
+#                     gate ran and found nothing to review). This is a
+#                     DISTINCT partition from
 #                     merged/resolved/parked/reported_no_op above — an epic is
 #                     never one of a run's Phase-2 pooled ISSUES, so it never
 #                     contributes to items_processed; it is its own

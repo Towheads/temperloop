@@ -108,8 +108,10 @@ claude/commands/triage.md	Step 1 Adapter A — the degraded arm when triage-inta
 
 # ── /sweep Step 3.6A — the end-of-run epic-closing gate (epic #1847) ───────
 # The gate must run even on the "found nothing" run, or a skipped review and
-# a review that genuinely admitted no epics are indistinguishable from
-# outside. First shipped as a KIND=refusal row anchored on emit-command-run.sh's
+# a review whose population (round 5: item-6 admissions UNION the
+# admission-eligible open-epic query, never admissions alone) was genuinely
+# empty are indistinguishable from outside. First shipped as a KIND=refusal
+# row anchored on emit-command-run.sh's
 # epics_closed + epics_left_open == epics_reviewed check — but that check only
 # ACTIVATES when --epics-reviewed is passed, so a future sweep.md edit that
 # quietly dropped the three --epics-* flags would exit 0 in a shape
