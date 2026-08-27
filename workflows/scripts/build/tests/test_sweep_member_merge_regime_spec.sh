@@ -63,6 +63,29 @@ check_kernel_contract_named() {  # spec text names the kernel merge-autonomy con
     && grep -Fq 'only a clean, disjoint set is timed; a risky set is always modal' "$1"
 }
 
+# --- round-2 escalation checks (three additional findings) -----------------
+
+check_error_never_permissive() {  # ERROR/non-zero-exit/malformed-JSON named alongside RISKY, not ignored
+  grep -Fq 'an error is never the permissive branch' "$1" \
+    && grep -Fq 'ERROR` (any `gh pr view` failure inside the gate)' "$1"
+}
+
+check_error_branch_held() {  # the never-auto-merge branch explicitly covers ERROR/non-zero-exit/malformed JSON, not just RISKY
+  grep -Fq 'a non-zero exit, or unparseable/malformed JSON' "$1" \
+    && grep -Fq 'held conservatively' "$1"
+}
+
+check_recovery_paths_honest() {  # honest recovery language present; the unreachable "future re-offer" claim is gone
+  grep -Fq 'there is no automatic re-offer' "$1" \
+    && ! grep -Fq 'future attended `/sweep` run re-offers it' "$1" \
+    && ! grep -Fq 're-run /sweep attended to approve' "$1"
+}
+
+check_option_cap() {  # AskUserQuestion respects the ≤4-option cap, with a Merge-all/Hold-all/Abort fallback above it
+  grep -Fq '≤4 options total, Step 2' "$1" \
+    && grep -Fq 'exceed the 4-option cap' "$1"
+}
+
 run_all() {  # $1=file path -> prints which checks passed/failed, returns count of failures
   local f="$1" failures=0
   check_member_trigger "$f"        || { echo "  x member-trigger";        failures=$((failures+1)); }
@@ -70,6 +93,10 @@ run_all() {  # $1=file path -> prints which checks passed/failed, returns count 
   check_singleton_unaffected "$f"  || { echo "  x singleton-unaffected";  failures=$((failures+1)); }
   check_risky_never_timed_modal "$f" || { echo "  x risky-never-timed-modal"; failures=$((failures+1)); }
   check_kernel_contract_named "$f" || { echo "  x kernel-contract-named"; failures=$((failures+1)); }
+  check_error_never_permissive "$f" || { echo "  x error-never-permissive"; failures=$((failures+1)); }
+  check_error_branch_held "$f"     || { echo "  x error-branch-held";     failures=$((failures+1)); }
+  check_recovery_paths_honest "$f" || { echo "  x recovery-paths-honest"; failures=$((failures+1)); }
+  check_option_cap "$f"            || { echo "  x option-cap";            failures=$((failures+1)); }
   return "$failures"
 }
 
@@ -78,7 +105,7 @@ echo "== real sweep.md =="
 run_all "$SWEEP_MD"
 real_failures=$?
 [ "$real_failures" -eq 0 ] || fail "$real_failures check(s) failed against the REAL sweep.md — the member-merge-regime feature is not (fully) present"
-echo "PASS: all 5 checks pass against the real sweep.md"
+echo "PASS: all 9 checks pass against the real sweep.md"
 
 # --- 2. DISCRIMINATION — each check independently goes RED when its own
 #        sentence is stripped, proving none of them vacuously pass -----------
@@ -113,6 +140,37 @@ mutate_and_expect_fail "risky-never-timed-modal (timer clause)" \
 mutate_and_expect_fail "kernel-contract-named (invariant quote)" \
   'only a clean, disjoint set is timed; a risky set is always modal' \
   check_kernel_contract_named
+
+mutate_and_expect_fail "error-never-permissive (naming clause)" \
+  'an error is never the permissive branch' \
+  check_error_never_permissive
+
+mutate_and_expect_fail "error-branch-held (conservative-hold clause)" \
+  'held conservatively' \
+  check_error_branch_held
+
+mutate_and_expect_fail "recovery-paths-honest (no-re-offer clause)" \
+  'there is no automatic re-offer' \
+  check_recovery_paths_honest
+
+mutate_and_expect_fail "option-cap (fallback clause)" \
+  'exceed the 4-option cap' \
+  check_option_cap
+
+# --- 2b. recovery-paths-honest must ALSO go RED if the stale, unreachable
+#         "future attended /sweep run re-offers it" claim (round-2 escalation
+#         finding #2) is reintroduced — this is the negative half of that
+#         check (absence, not presence), so prove it discriminates by ADDING
+#         the stale sentence back rather than stripping one -----------------
+reoffer_mutant="$tmp/reoffer_mutant.md"
+{
+  cat "$SWEEP_MD"
+  echo 'a future attended `/sweep` run re-offers it, or re-run /sweep attended to approve'
+} > "$reoffer_mutant"
+if check_recovery_paths_honest "$reoffer_mutant"; then
+  fail "recovery-paths-honest: check still PASSED after reintroducing the stale re-offer claim — not discriminating"
+fi
+echo "PASS: recovery-paths-honest goes RED when the stale re-offer claim is reintroduced"
 
 # --- 3. a mutant that strips ONLY the singleton-unaffected sentence must
 #        still show the OTHER four checks green — proves the checks are
