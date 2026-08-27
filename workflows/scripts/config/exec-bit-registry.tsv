@@ -66,6 +66,18 @@
 # without having to be fixed in the same PR that discovers it, while an
 # already-grandfathered path becoming compliant (or ceasing to be) is
 # enforced to keep the allowlist honest (see that file's own header).
+#
+# THIS FILE IS KERNEL-OWNED (temperloop#1876). A VENDORING CONSUMER reaches it
+# through a compat symlink into its vendored kernel/ subtree and must NEVER
+# hand-edit it — the next subtree pull overwrites the edit. A consumer's OWN
+# directly-executable scripts go in the sibling exec-bit-registry.overlay.tsv,
+# which the gate unions in when present (absent here, in the kernel's own
+# checkout, by design). That split is what lets the gate tell "upstream ships
+# more than I adopted" (a KERNEL row naming content this consumer never
+# adopted — tolerated, and REPORTED as a note, in a tree carrying a repo-root
+# .kernel-pin) apart from "my own ledger has rotted" (an OVERLAY row naming an
+# absent path — still PATH-NOT-FOUND, always). See §overlay in
+# workflows/scripts/validate-exec-bit-registry.sh.
 
 workflows/scripts/validate-activation-registry.sh	top-level validator entrypoint (workflows/scripts/validate-*.sh family) — human-runnable directly, matches its 15 siblings at mode 755
 workflows/scripts/validate-capture-backstop.sh	top-level validator entrypoint (workflows/scripts/validate-*.sh family) — human-runnable directly, matches its 15 siblings at mode 755

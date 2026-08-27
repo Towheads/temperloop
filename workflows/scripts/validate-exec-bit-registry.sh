@@ -32,18 +32,68 @@
 # still carried 755 — restoring it is this item's own red-before/green-after
 # proof.
 #
-# ── The two config files ────────────────────────────────────────────────────
+# ── The config files ────────────────────────────────────────────────────────
 #   exec-bit-registry.tsv              PATH / REASON — one row per script
 #                                       required to carry the executable bit.
 #                                       NEVER EMPTY (see EMPTY-REGISTRY below)
 #                                       and, once a path lands, it can only be
 #                                       kept (see the registry ratchet below).
+#   exec-bit-registry.overlay.tsv      OVERLAY EXTENSION (temperloop#1876) —
+#                                       same two columns, unioned in when
+#                                       present. A VENDORING CONSUMER's home
+#                                       for its OWN directly-executable
+#                                       scripts. Absent in a kernel-only
+#                                       checkout; absence is never an error.
 #   exec-bit-grandfather-allowlist.tsv PATH / REASON for every registered-but-
 #                                       not-yet-compliant path. SHRINK-ONLY
 #                                       RATCHET: a path here can only be
 #                                       REMOVED relative to the ratchet base
 #                                       ref, never added — see §ratchet below.
-#                                       Starting empty is expected.
+#                                       Starting empty is expected. NO overlay
+#                                       twin, deliberately — see §overlay.
+#
+# ── §overlay — the overlay extension, and unadopted upstream rows ───────────
+# In a COMPOSED OVERLAY (foundation, and any downstream consumer) both config
+# files above are compat symlinks into the vendored kernel subtree, so a
+# consumer that owns directly-executable scripts of its own — foundation's
+# claude/hooks/session-start-reconcile.sh and its three siblings — had NOWHERE
+# to register them: editing the vendored copy is forbidden (the next subtree
+# pull overwrites it), and replacing the symlink means owning a stale
+# duplicate of every upstream row. exec-bit-registry.overlay.tsv is that home,
+# the same `<base>.overlay.<ext>` seam check-surface-registry.overlay.tsv
+# (temperloop#1738) and setting-registry.overlay.tsv already use.
+#
+# The ALLOWLIST deliberately gets NO overlay twin, for the same reason
+# validate-check-surface-degenerate-coverage.sh gives for its own: §ratchet is
+# explicit that the allowlist is never a place to add newly-discovered
+# non-compliant debt outside the ratchet, and an overlay allowlist would be
+# exactly that hole. A consumer's non-compliant script gets its bit fixed, or
+# is registered and grandfathered through the ONE ratcheted allowlist.
+#
+# UNADOPTED UPSTREAM ROWS (temperloop#1876). A consumer adopts a SUBSET of the
+# kernel's hooks and scripts by design — foundation's claude/hooks/ union dir
+# carries compat symlinks only for the hooks it actually installed — so a
+# KERNEL-owned registry row naming content the consumer never adopted is
+# EXPECTED, not stale. Such a row is TOLERATED (reported as a `note:` line,
+# never silently dropped — a silent skip is the "gate looks like it passed
+# when it never ran" failure) when BOTH hold:
+#   (a) this repo is a VENDORING CONSUMER — a repo-root `.kernel-pin`, the
+#       same discriminator validate-agent-charter-links.sh, validate-check-
+#       surface-degenerate-coverage.sh and validate-mandatory-step-signal.sh
+#       already use; AND
+#   (b) the row came from a KERNEL-owned source file, NOT the overlay
+#       extension.
+# Condition (b) is the half that stops real rot hiding: a row a consumer wrote
+# ITSELF, naming a file that is not there, IS stale and still FAILS. That is
+# the difference between "upstream ships more than I adopted" and "my own
+# ledger has rotted"; collapsing the two would make `.kernel-pin` a blanket
+# mute. In the KERNEL's own checkout there is no `.kernel-pin`, so (a) is
+# false and every absent path is PATH-NOT-FOUND exactly as before.
+#
+# The tolerance is scoped to EXISTENCE alone. A row whose path DOES exist is
+# checked exactly as before — EXEC-BIT-MISSING, MISSING-REASON,
+# GRANDFATHER-STALE, DUPLICATE-PATH, ALLOWLIST-* and the allowlist ratchet are
+# all untouched by it.
 #
 # ── What this gate checks, per registered path ──────────────────────────────
 #   1. The path exists in the tree (else PATH-NOT-FOUND).
@@ -91,10 +141,16 @@
 # Env overrides (FIXTURE-TEST SEAM, all optional):
 #   EXEC_BIT_REGISTRY_FILE       default: workflows/scripts/config/
 #                                 exec-bit-registry.tsv
+#   EXEC_BIT_REGISTRY_OVERLAY_FILE
+#                                default: workflows/scripts/config/
+#                                 exec-bit-registry.overlay.tsv — absent by
+#                                 default (kernel-only checkout); see §overlay
 #   EXEC_BIT_ALLOWLIST_FILE      default: workflows/scripts/config/
 #                                 exec-bit-grandfather-allowlist.tsv
 #   EXEC_BIT_GIT_REPO_ROOT       default: this repo's root — the repo every
-#                                 `git` ratchet operation runs against
+#                                 `git` ratchet operation runs against, and
+#                                 the root the `.kernel-pin` consumer
+#                                 discriminator (§overlay) is looked for at
 #   EXEC_BIT_ALLOWLIST_BASE_REF  default: EMPTY — auto-resolved (see
 #                                 §ratchet); an explicit value is used
 #                                 verbatim
@@ -113,6 +169,10 @@ DEFAULT_REPO_ROOT="$(cd -P "$SCRIPT_DIR/../.." && pwd)"
 : "${EXEC_BIT_REPO_ROOT:=$DEFAULT_REPO_ROOT}"
 : "${EXEC_BIT_GIT_REPO_ROOT:=$DEFAULT_REPO_ROOT}"
 : "${EXEC_BIT_REGISTRY_FILE:=$SCRIPT_DIR/config/exec-bit-registry.tsv}"
+# OVERLAY EXTENSION (temperloop#1876) — see §overlay in the header. Absent in a
+# kernel-only checkout, which is why the default is "not present" rather than
+# an error. The ALLOWLIST gets no overlay twin, deliberately.
+: "${EXEC_BIT_REGISTRY_OVERLAY_FILE:=$SCRIPT_DIR/config/exec-bit-registry.overlay.tsv}"
 : "${EXEC_BIT_ALLOWLIST_FILE:=$SCRIPT_DIR/config/exec-bit-grandfather-allowlist.tsv}"
 # Empty by default — §ratchet auto-resolves at ratchet time. An
 # operator-set value is honored VERBATIM (never re-resolved).
@@ -138,10 +198,18 @@ _exb_resolve_path() {
 }
 
 EXEC_BIT_REGISTRY_FILE="$(_exb_resolve_path "$EXEC_BIT_REGISTRY_FILE")"
+EXEC_BIT_REGISTRY_OVERLAY_FILE="$(_exb_resolve_path "$EXEC_BIT_REGISTRY_OVERLAY_FILE")"
 EXEC_BIT_ALLOWLIST_FILE="$(_exb_resolve_path "$EXEC_BIT_ALLOWLIST_FILE")"
 
 [[ -f "$EXEC_BIT_REGISTRY_FILE" ]] || _exb_cannot_evaluate "registry file not found: $EXEC_BIT_REGISTRY_FILE"
 [[ -r "$EXEC_BIT_REGISTRY_FILE" ]] || _exb_cannot_evaluate "registry file exists but is not readable: $EXEC_BIT_REGISTRY_FILE"
+
+# An absent overlay extension is the kernel-only default; an UNREADABLE one is
+# not — the same fail-closed split the allowlist gets below. Silently skipping
+# an unreadable overlay would drop every consumer-owned row and read as a pass.
+if [[ -e "$EXEC_BIT_REGISTRY_OVERLAY_FILE" && ! -r "$EXEC_BIT_REGISTRY_OVERLAY_FILE" ]]; then
+  _exb_cannot_evaluate "registry overlay extension exists but is not readable: $EXEC_BIT_REGISTRY_OVERLAY_FILE"
+fi
 
 # An absent allowlist is legal (fully burned down); an UNREADABLE one is not.
 if [[ -e "$EXEC_BIT_ALLOWLIST_FILE" && ! -r "$EXEC_BIT_ALLOWLIST_FILE" ]]; then
@@ -149,7 +217,11 @@ if [[ -e "$EXEC_BIT_ALLOWLIST_FILE" && ! -r "$EXEC_BIT_ALLOWLIST_FILE" ]]; then
 fi
 
 failures=()
+# Declared HERE, not beside the ratchet: `ratchet_lines=()` is initialised
+# after the parse loop, so a note appended during parsing would be wiped.
+unadopted_lines=()
 n_registered=0
+n_overlay_registered=0
 
 # ---------------------------------------------------------------------------
 # Tab-safe TSV line splitting — same rationale as validate-check-surface-
@@ -174,8 +246,36 @@ n_registered=0
 _exb_tsv_file() { # <file> -> \x1f-joined lines on stdout
   awk -F'\t' 'BEGIN{OFS="\x1f"} {$1=$1; print}' "$1"
 }
+# _exb_tsv_files <file...> -> \x1f-joined rows, each PREFIXED with the file it
+# came from. The prefix is what lets a failure name the ACTUAL source: with the
+# overlay extension unioned in, a message hardcoding the kernel path would send
+# someone hunting a bad row in a file that does not contain it. It is also what
+# condition (b) of §overlay keys on. A missing or unreadable file contributes
+# nothing here — both are dispositioned by the explicit guards above, so
+# silence at this point is already decided, not lost.
+_exb_tsv_files() {
+  local _f
+  for _f in "$@"; do
+    [[ -f "$_f" && -r "$_f" ]] || continue
+    awk -F'\t' -v SRC="$_f" 'BEGIN{OFS="\x1f"} {$1=$1; print SRC OFS $0}' "$_f"
+  done
+}
 _exb_tsv_string() { # <string> -> \x1f-joined lines on stdout
   printf '%s' "$1" | awk -F'\t' 'BEGIN{OFS="\x1f"} {$1=$1; print}'
+}
+
+# _exb_row_unadopted_upstream <src> -> rc 0 iff a row from <src> naming a path
+# that is ABSENT here should be TOLERATED rather than failed (temperloop#1876).
+# Transplanted verbatim in shape from _csd_row_unadopted_upstream
+# (validate-check-surface-degenerate-coverage.sh, temperloop#1740) and
+# _mss_row_unadopted_upstream (validate-mandatory-step-signal.sh) — see
+# §overlay above for the two conditions and why (b) is not optional.
+_exb_row_unadopted_upstream() {
+  [[ -f "$EXEC_BIT_GIT_REPO_ROOT/.kernel-pin" ]] || return 1
+  case "$1" in
+    "$EXEC_BIT_REGISTRY_OVERLAY_FILE") return 1 ;;
+  esac
+  return 0
 }
 
 # _exb_mode <resolved-path> -> best-effort octal permission mode string for
@@ -221,18 +321,20 @@ if [[ -f "$EXEC_BIT_ALLOWLIST_FILE" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 2. Parse the registry: PATH<TAB>REASON. Every registered path is checked
-#    for existence, a non-empty REASON, and its current executable bit.
+# 2. Parse the registry (kernel file UNIONED with the overlay extension, each
+#    row tagged with the file it came from): PATH<TAB>REASON. Every registered
+#    path is checked for existence, a non-empty REASON, and its current
+#    executable bit.
 # ---------------------------------------------------------------------------
 seen_paths=""
 current_registry_paths=""
-while IFS=$'\x1f' read -r r_path r_reason || [[ -n "${r_path:-}" ]]; do
+while IFS=$'\x1f' read -r src r_path r_reason || [[ -n "${r_path:-}" ]]; do
   [[ -z "${r_path:-}" ]] && continue
   case "$r_path" in \#*) continue ;; esac
 
   case $'\n'"$seen_paths" in
     *$'\n'"$r_path"$'\n'*)
-      failures+=("DUPLICATE-PATH  $r_path — registered more than once")
+      failures+=("DUPLICATE-PATH  $r_path — registered more than once (this row from $src)")
       continue
       ;;
   esac
@@ -241,15 +343,26 @@ while IFS=$'\x1f' read -r r_path r_reason || [[ -n "${r_path:-}" ]]; do
   current_registry_paths="$current_registry_paths$r_path
 "
   n_registered=$((n_registered + 1))
+  if [[ "$src" == "$EXEC_BIT_REGISTRY_OVERLAY_FILE" ]]; then
+    n_overlay_registered=$((n_overlay_registered + 1))
+  fi
 
   trimmed_reason="$(printf '%s' "${r_reason:-}" | awk '{ gsub(/^[ \t]+|[ \t]+$/, ""); print }')"
   if [[ -z "$trimmed_reason" ]]; then
-    failures+=("MISSING-REASON  $r_path — every registry entry requires a non-empty REASON")
+    failures+=("MISSING-REASON  $r_path — every registry entry requires a non-empty REASON (row from $src)")
   fi
 
   resolved="$(_exb_resolve_path "$r_path")"
   if [[ ! -e "$resolved" ]]; then
-    failures+=("PATH-NOT-FOUND  $r_path — does not exist in the tree at $resolved")
+    # §overlay: a KERNEL-owned row naming content a VENDORING CONSUMER never
+    # adopted is expected, not stale — tolerate it, but REPORT it. An
+    # overlay-authored row, or any row in the kernel's own checkout, still
+    # fails: that is the half that stops real ledger rot hiding.
+    if _exb_row_unadopted_upstream "$src"; then
+      unadopted_lines+=("note: registry row $r_path names a script this repo did not adopt — an upstream row for unadopted content, skipped (temperloop#1876)")
+      continue
+    fi
+    failures+=("PATH-NOT-FOUND  $r_path — does not exist in the tree at $resolved (row from $src). If this checkout is a VENDORING CONSUMER that adopted only a SUBSET of the kernel's scripts/hooks, an upstream row naming unadopted content is legitimate: it is tolerated automatically once the repo root carries a .kernel-pin (temperloop#1876). Do NOT symlink kernel content into this tree to satisfy the row — adopting content you do not run is the wrong remedy (see temperloop#1840). If the path is genuinely YOURS and has moved or gone, fix or drop its row in $src.")
     continue
   fi
 
@@ -270,7 +383,7 @@ while IFS=$'\x1f' read -r r_path r_reason || [[ -n "${r_path:-}" ]]; do
       failures+=("EXEC-BIT-MISSING  $r_path — registered as requiring the executable bit but mode is $mode (want an owner/group/other execute bit set)")
     fi
   fi
-done < <(_exb_tsv_file "$EXEC_BIT_REGISTRY_FILE")
+done < <(_exb_tsv_files "$EXEC_BIT_REGISTRY_FILE" "$EXEC_BIT_REGISTRY_OVERLAY_FILE")
 
 # ---------------------------------------------------------------------------
 # 2b. EMPTY-REGISTRY: a registry with zero parsed paths is a vacuous pass —
@@ -291,7 +404,7 @@ if [[ -n "${allowlist_paths:-}" ]]; then
     [[ -z "$a_path" ]] && continue
     case $'\n'"${current_registry_paths:-}" in
       *$'\n'"$a_path"$'\n'*) ;;
-      *) failures+=("ALLOWLIST-UNREGISTERED  $a_path — listed on the grandfather allowlist but not present in $EXEC_BIT_REGISTRY_FILE; register it first") ;;
+      *) failures+=("ALLOWLIST-UNREGISTERED  $a_path — listed on the grandfather allowlist but not present in $EXEC_BIT_REGISTRY_FILE (nor in the overlay extension $EXEC_BIT_REGISTRY_OVERLAY_FILE, if present); register it first") ;;
     esac
   done <<<"$allowlist_paths"
 fi
@@ -386,8 +499,16 @@ n_allowlisted=0
 if [[ -n "${allowlist_paths:-}" ]]; then
   n_allowlisted="$(printf '%s' "$allowlist_paths" | grep -c . || true)"
 fi
-echo "Checked $n_registered registered path(s); $n_allowlisted path(s) on the grandfather allowlist ($EXEC_BIT_ALLOWLIST_FILE)"
+if [[ -f "$EXEC_BIT_REGISTRY_OVERLAY_FILE" ]]; then
+  overlay_note=" (of which $n_overlay_registered from the overlay extension $EXEC_BIT_REGISTRY_OVERLAY_FILE)"
+else
+  overlay_note=" (no overlay extension present at $EXEC_BIT_REGISTRY_OVERLAY_FILE)"
+fi
+echo "Checked $n_registered registered path(s)$overlay_note; $n_allowlisted path(s) on the grandfather allowlist ($EXEC_BIT_ALLOWLIST_FILE)"
 printf '%s\n' "${ratchet_lines[@]}"
+if (( ${#unadopted_lines[@]} > 0 )); then
+  printf '%s\n' "${unadopted_lines[@]}"
+fi
 if (( ${#failures[@]} > 0 )); then
   printf '%s\n' "${failures[@]}"
   echo "---"
