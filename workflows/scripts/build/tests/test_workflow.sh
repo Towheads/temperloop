@@ -2640,6 +2640,65 @@ grep -q 'Changelog: none — <reason>' "$K1530_BUILD_MD" \
 echo "PASS: #1530 changelog-fragment guard — workerPrompt embeds the add-a-fragment instruction (README pointer + recorded opt-out); build.md §3c in lockstep"
 
 # ============================================================================
+# TEST (K1847): a /sweep-admitted epic member's worker prompt carries the
+#   parent epic's group summary (Produces #7, epic #1847) — a distinct
+#   "## Parent epic context" section rendered from `item.parentSummary` /
+#   `item.parentEpic` — while a PLAIN SINGLETON item, carrying neither field,
+#   gets no such section at all. One buildLevel() call drives both items so
+#   the assertion is a same-run contrast, not two separately-plausible runs.
+# ============================================================================
+run_node_case "K1847 prevention: workerPrompt carries the parent epic's group summary for a member item, and omits it for a singleton" "
+$PREAMBLE
+
+happyMachinery('member-item', 910, 'shaMember');
+happyWorker('member-item');
+happyMachinery('singleton-item', 911, 'shaSingle');
+happyWorker('singleton-item');
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'member-item', branch: 'build/member-item', title: 'Member item', kind: 'code', acceptance: ['c'],
+    parentSummary: 'This epic materializes the ratified design brief for operational work.',
+    parentEpic: 1847 },
+  { slug: 'singleton-item', branch: 'build/singleton-item', title: 'Singleton item', kind: 'code', acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+await mod.default();
+const member = callLog.find(c => (c.opts.label||'') === 'worker:member-item');
+const singleton = callLog.find(c => (c.opts.label||'') === 'worker:singleton-item');
+let reason = null;
+if (!member) reason = 'no worker call logged for member-item';
+else if (!singleton) reason = 'no worker call logged for singleton-item';
+else if (!member.promptFull.includes('## Parent epic context')) reason = 'member worker prompt missing the Parent epic context section';
+else if (!member.promptFull.includes('temperloop#1847')) reason = 'member worker prompt must name temperloop#1847';
+else if (!member.promptFull.includes('#1847')) reason = 'member worker prompt must name the parent epic issue number from item.parentEpic';
+else if (!member.promptFull.includes('This epic materializes the ratified design brief for operational work.')) reason = 'member worker prompt missing the injected group-summary text verbatim';
+else if (singleton.promptFull.includes('## Parent epic context')) reason = 'singleton worker prompt must NOT carry a Parent epic context section';
+else if (singleton.promptFull.includes('ratified design brief')) reason = 'singleton worker prompt leaked the OTHER item\\'s group-summary text';
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+# --- K1847 static lockstep guard: parentSummarySection() exists, is spliced
+# into workerPrompt()'s array, and is gated on item.parentSummary (never
+# ungated — an ungated section would leak into every singleton's prompt). ---
+grep -q 'function parentSummarySection' "$MJS" \
+  || fail "#1847: parentSummarySection() missing — workerPrompt must embed the parent-epic group summary as its own self-contained, gated section"
+grep -q '## Parent epic context' "$MJS" \
+  || fail "#1847: workerPrompt() must embed the '## Parent epic context' section"
+grep -q '\.\.\.parentSummarySection(item)' "$MJS" \
+  || fail "#1847: workerPrompt()'s returned array must splice in parentSummarySection(item) — a defined-but-unused function never reaches the worker"
+grep -q "if (!item.parentSummary) return \[\];" "$MJS" \
+  || fail "#1847: parentSummarySection() must be gated on item.parentSummary — ungated would leak the section into every singleton's prompt"
+K1847_SWEEP_MD="$REPO_ROOT/claude/commands/sweep.md"
+[ -f "$K1847_SWEEP_MD" ] \
+  || fail "#1847: claude/commands/sweep.md is missing — the prose half of this contract pair cannot be verified"
+grep -q 'parentSummary' "$K1847_SWEEP_MD" \
+  || fail "#1847: sweep.md's Step-3 items[] schema must name parentSummary (lockstep with build-level.mjs)"
+grep -q 'group_summary' "$K1847_SWEEP_MD" \
+  || fail "#1847: sweep.md Step 1 item 6 must derive group_summary from the epic's own body for admitted members to carry forward"
+grep -q 'secret-seam scrutiny' "$K1847_SWEEP_MD" \
+  || fail "#1847: sweep.md Step 2 must carry the ported member secret-seam scrutiny (foundation#716) for admitted epic members"
+echo "PASS: #1847 member-scrutiny guard — workerPrompt carries the parent epic's group summary for an admitted member and omits it for a singleton; sweep.md's Phase-1 secret-seam scrutiny and Step-3 parentSummary threading are in lockstep"
+
+# ============================================================================
 # TEST (K993): the backgrounded-gate stall is detected MECHANICALLY and
 # auto-resumed — worker returned NO verdict AND its worktree is dirty with ZERO
 # commits (the #982/#983 shape). The probe reports RECOVER_DIRTY; driveItem must
