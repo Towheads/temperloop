@@ -122,6 +122,24 @@ check-in claude/commands/check-in.md
 check-in claude/decision-queue-contract.md
 check-in workflows/scripts/tests/test_checkin_status_trailing_newline.sh
 
+# ── operational-drain — Operational epics drain via /sweep; epic-as-metadata ─
+# (epic #1847 "epic-as-metadata for operational work"). Exact-path claims
+# narrow the broad build-machinery `workflows/scripts/build/*` glob (longest
+# pattern wins) for the scripts
+# that exist solely to implement this capability's admission / refusal /
+# closing-gate seams; the cross-command spec edits stay with their own
+# command slugs above.
+operational-drain workflows/scripts/build/sweep-epic-admission.sh
+operational-drain workflows/scripts/build/tests/test_sweep_epic_admission.sh
+operational-drain workflows/scripts/build/assess-operational-refusal.sh
+operational-drain workflows/scripts/build/tests/test_assess_operational_refusal.sh
+operational-drain workflows/scripts/build/sweep-epic-closing-gate.sh
+operational-drain workflows/scripts/build/tests/test_sweep_epic_closing_gate.sh
+operational-drain workflows/scripts/build/sweep-epic-review-population.sh
+operational-drain workflows/scripts/build/tests/test_sweep_epic_review_population.sh
+operational-drain workflows/scripts/build/tests/test_sweep_admit_operational_epics_sync.sh
+operational-drain workflows/scripts/build/tests/test_assess_sweep_claim_race.sh
+
 # ── tidy — nightly drain: stub scan, findings, hygiene probes, capture/backstop ───
 tidy claude/commands/tidy.md
 tidy workflows/scripts/drain/*
