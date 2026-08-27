@@ -30,10 +30,10 @@ fail() { printf 'FAIL: %b\n' "$1" >&2; exit 1; }
 
 # Keep the issue-touches emit (F#916/#919, capture.sh's own
 # issue_touch_log_emit) off the REAL raw lake (ISSUE_TOUCHES_RAW_DIR_DEFAULT
-# points at $HOME/dev/foundation/meta/data/raw — the actual checkout, not this
-# worktree) for every case below that reaches a successful `gh issue create` —
-# same rationale as test_claim.sh's CLAIMS_LOG_DIR override for claim.sh's
-# sibling claims-log emit.
+# resolves checkout-relative since temperloop#1822 — the git toplevel this test
+# runs in, i.e. the real checkout's meta/data/raw) for every case below that
+# reaches a successful `gh issue create` — same rationale as test_claim.sh's
+# CLAIMS_LOG_DIR override for claim.sh's sibling claims-log emit.
 ISSUE_TOUCHES_LOG_DIR="$(mktemp -d "${TMPDIR:-/tmp}/capture-touches-XXXXXX")"
 export ISSUE_TOUCHES_RAW_DIR="$ISSUE_TOUCHES_LOG_DIR"
 
