@@ -155,7 +155,7 @@ Also carry forward, per **group whose members are ALL classified `Operational`**
 
 - **Logical only, never merge-safety.** A pair belongs in `logical_order` only when one member's *meaning* genuinely cannot be worked before another's lands (a consumer of a schema the other member defines) — never because they "touch the same file" or would conflict if merged out of order. That physical judgment stays entirely out of triage's scope, exactly as the "Logical, not technical" principle already states for grouping; `logical_order` does not create a second, weaker door onto it.
 - **Sparse by default.** Most groups carry `logical_order: []` — an empty list is the normal, expected case for a set of independent parallel fixes, not a gap to fill in. Only genuinely sequential meaning belongs here.
-- **Advisory, bounded by mechanism at Step 4.** This carried-forward judgment is not yet a board write — Step 4's materialization sub-step (item 9) is what turns it into edges, and it does so only after a script-backed cycle check per pair and only on a group whose epic + every member still reads `Operational` at write time.
+- **Advisory, bounded by mechanism at Step 4.** This carried-forward judgment is not yet a board write — Step 4's materialization sub-step (item 9) is what turns it into edges, and it does so only after a script-backed cycle check per pair (9d) and a live work-class re-check (9c) confirming the epic + every member still reads `Operational` at write time — see item 9's own text for the resolution mechanism when they don't.
 
 ## Step 3 — Sanity-check pass (read-only, advisory)
 
@@ -165,7 +165,7 @@ Spawn `Agent { subagent_type: "requirements-auditor" }` with the proposed groups
 - Groupings that are actually a **physical** edge masquerading as a logical group (should be one epic's `/assess` edge, or separate epics — not one group).
 - Candidates that are really **decisions** (should route off-board) or are **invalid / out of scope** (should cull).
 - A group with only one real survivor (should be a singleton, no epic).
-- **Member-class consistency: a group whose members carry mixed `work_class` values.** Per `claude/work-class-policy.md`'s per-group extension (docs/adr/0030, epic Towheads/temperloop#1847), a single `Foundational` member routes the **whole** group onto the assess→plan→build ceremony path — so a group birthed here with some members `Operational` and others `Foundational` is not a valid split, it is a **per-member misclassification** surfacing at the worst possible time (after materialization, when a downstream consumer keys on the group's uniformity). Flag every such group **at birth**, before Step 4 stamps any label or attempts the logical-order edge-stamping sub-step (item 9) — the operator reclassifies consistently at the Step 4 gate.
+- **Member-class consistency: a group whose members carry mixed `work_class` values.** Per `claude/work-class-policy.md`'s per-group extension (docs/adr/0030, epic Towheads/temperloop#1847), a single `Foundational` member routes the **whole** group onto the assess→plan→build ceremony path — so a group birthed here with some members `Operational` and others `Foundational` is not a valid split, it is a **per-member misclassification** surfacing at the worst possible time (after materialization, when a downstream consumer keys on the group's uniformity). Flag every such group **at birth**, before Step 4 stamps any label or attempts the logical-order edge-stamping sub-step (item 9) — this flag never itself resolves the group; the operator reclassifies out-of-band, and item 9's 9c re-check (which never trusts this Step-3 judgment as still current) is what actually catches an unresolved or newly-drifted group at write time.
 
 Read-only and advisory. Apply clear wins; surface contested suggestions via `AskUserQuestion` before Step 4. **Graceful skip:** resolve availability through the MECHANICAL PROBE, never by eye (temperloop#1462) — source `workflows/scripts/lib/agent_declared.sh` and read `agent_declared_state requirements-auditor`, which prints `installed`, `source-only`, or `absent` (ADR 0029). `installed` is the spawn gate. If it is anything else, note the skip in the Step 5 summary (as the sanity pass) and continue, letting the STATE pick the form of the canonical two-form degradation line (`claude/message-schema.md` § Degradation notice) rather than guessing it: bare `skipped — requirements-auditor unavailable`, or — since `requirements-auditor` ships as source at `claude/agents/requirements-auditor.md` — the remedy-bearing `skipped — requirements-auditor available as source; run workflows/scripts/install/project-agents.sh to enable` when the source exists but the agent isn't installed.
 
@@ -249,7 +249,7 @@ All board bash blocks below `source "$BOARD_LIB"` first (Step 0.3); let `repo="$
    fi
    ```
    `board_close_done "$BOARD" <n>` (`workflows/scripts/board/lib/board.sh`, temperloop#1217/#1337) is the primary path — it closes the issue unconditionally (from open, already-closed, or already-Done state), strips the `fnd:status:*` label, and clears the claim stamp in one guaranteed call; there is no separate `gh issue close` to make and no `or`-branch here that a reader could skip. The `else` arm is a graceful degrade for a consuming checkout whose vendored `board.sh` predates the helper (command specs install as one machine-global symlink while `BOARD_LIB` resolves per-repo — see Step 0.3), not an equally-valid alternative — and it is reached ONLY when the helper is absent, never when it is present and fails (which is why this is an `if`/`else`, not a one-line `A && B || C` chain: the chain's fallback would also fire on a *failed* call, silently re-closing through a path that strips neither label). A **non-zero return from `board_close_done` is warn-and-continue, naming the issue** — the same contract `/fix` Step 6.3 and `/build` 4d already state for their own Done writes — with `reconcile.sh --status` / `--labels --apply` as the backstop; never retry it through a bare `gh issue close`. Write the decision-route vault stubs the same way: post the note link as the reason comment, then run the same guarded Done write.
-9. **Stamp durable logical order on Operational-group members** (docs/adr/0031, epic Towheads/temperloop#1847 — the amended invariant is stated once in § Operating principles above). **Scope: Operational groups only.** Skip this item entirely for a singleton (nothing to order), a group carrying any `Foundational`-classified member (its ordering stays plan-resident `after:` edges, per `/assess`'s side of the invariant), and a mixed-class group the Step 3 auditor flagged and the operator has not yet reclassified. For every remaining group, drive its carried-forward `logical_order` (Step 2) — sparse or empty is normal.
+9. **Stamp durable logical order on Operational-group members** (docs/adr/0031, epic Towheads/temperloop#1847 — the amended invariant is stated once in § Operating principles above). **Scope: Operational groups only.** Skip this item entirely for a singleton (nothing to order), a group carrying any `Foundational`-classified member (its ordering stays plan-resident `after:` edges, per `/assess`'s side of the invariant), and a mixed-class group the Step 3 auditor flagged and the operator has not yet reclassified — enforced mechanically at write time by 9c below, which never trusts Step 2/3's carried-forward classification as still current. For every remaining group, drive its carried-forward `logical_order` (Step 2) — sparse or empty is normal.
 
    **9a — Resolve both guard scripts once**, the same dual-path shape 8a's `$CULL_GUARD` resolution uses:
    ```bash
@@ -265,12 +265,27 @@ All board bash blocks below `source "$BOARD_LIB"` first (Step 0.3); let `repo="$
    elif [ ! -x "$CYCLE_CHECK" ]; then
      echo "edge-stamping skipped — cycle-check.sh unavailable — refusing to write unguarded edges, no edges-considered marker posted"
    else
-     : # proceed to 9c/9d for this group
+     : # proceed to 9c for this group
    fi
    ```
    Both branches are checked **before any write**, and both degrade identically: skip the whole sub-step for this run, name why on one line, and — the load-bearing consequence — **post no `edges-considered` marker**. A marker asserts "this group's order was genuinely considered"; posting one over a run that never actually reached the writer or the cycle check would be a false all-clear that `/sweep`'s admission gate (which requires the marker, a later item) would trust. Do **not** substitute a raw `gh api repos/.../dependencies/blocked_by` POST for a missing `board_blocked_by_add` — that bypasses the one seam this helper exists to be, exactly the raw-REST shortcut the kernel's board-adapter rule forbids.
 
-   **9c — Per pair, cycle-check first, write only on `SAFE`.** For each `(<blocked>, <blocker>)` in the group's `logical_order`:
+   **9c — Re-check work-class live, immediately before writing, per group.** The scope test at the top of this item ("epic + every member still reads `Operational` at write time") is enforced HERE, mechanically — never assumed from Step 2/3's carried-forward `work_class`, which can be stale by the time this sub-step runs (the operator relabeled a member after Step 3's flag, or a later `/triage` run is revisiting an epic that grew a new member since). Same idempotent-check pattern as item 4's work-class stamp:
+   ```bash
+   drifted=
+   for n in <epic> <member1> <member2> …; do
+     classes="$(gh issue view "$n" -R "$repo" --json labels --jq '.labels[].name')"
+     case "$classes" in
+       *Operational*) : ;;                    # confirmed current
+       *) drifted="$drifted #$n(now: ${classes:-none})" ;;
+     esac
+   done
+   ```
+   If `$drifted` is non-empty, **skip the whole group** — no 9d writes, no rationale comments, and no 9e marker (a marker asserts the order was genuinely considered *under the current classification*; a group caught mid-drift was not). Report it in the Step-5 summary as a **drift skip**, named separately both from a 9b-unavailable skip (mechanism absent for the whole run) and from a Step-3-flagged mixed-class group that never reached this far: `#<epic> drifted — $drifted`.
+
+   **Resolution mechanism — stated once here so § Operating principles, Step 3, and this item agree.** The Step 3 auditor only **flags** a mixed-class group (Step 3, "Member-class consistency") — it never itself resolves one, and neither does the Step 4 approval gate (Step 3.5's Apply-all / Pick-a-subset / Cancel `AskUserQuestion`), which approves *which groups' writes proceed this run*, not *what any member's class is*. The **only** resolution is the operator relabeling the offending issue(s) out-of-band (`gh issue edit <n> -R "$repo" --remove-label Foundational --add-label Operational`, or the reverse) — there is no in-flow reclassification action. A flagged or drift-skipped group simply re-enters cleanly on a later `/triage` run once its labels agree.
+
+   **9d — Per pair, cycle-check first, write only on `SAFE`.** For each `(<blocked>, <blocker>)` in the group's `logical_order`:
    ```bash
    verdict="$("$CYCLE_CHECK" --board "$BOARD" <blocked> <blocker>)"
    case "$verdict" in
@@ -289,12 +304,23 @@ All board bash blocks below `source "$BOARD_LIB"` first (Step 0.3); let `repo="$
    ```
    `SAFE` is the only verdict that proceeds — `CYCLE` and `UNREADABLE` both refuse (cycle-check.sh's own contract: never read "not CYCLE" as safe). A refused pair is named and dropped, never retried blind; it surfaces in the Step-5 summary. The rationale comment lands *after* a successful edge write — the edge is the durable fact, the comment explains it, and (unlike the needs-clarification flow, where a lost question would be unrecoverable) a failed comment here just leaves a valid, briefly-unexplained edge, not a lost obligation. `board_blocked_by_add`'s own idempotency (a duplicate add 422s, per its header) means a re-run against an already-stamped pair reports `write-failed` harmlessly — the pair isn't re-added, and it isn't lost either.
 
-   **9d — One comment per group, on the epic, after every pair has been attempted — even when `logical_order` was empty or everything refused.** The comment does two jobs at once: it carries the marker `/sweep`'s admission gate will require, and it is this sub-step's routing note for a human reader.
+   **9e — One comment per group, on the epic, after every pair has been attempted — even when `logical_order` was empty or everything refused.** The comment does two jobs at once: it carries the marker `/sweep`'s admission gate will require, and it is this sub-step's routing note for a human reader. **Idempotent — probe before posting, and never a silent unguarded write:**
    ```bash
-   gh issue comment <epic> -R "$repo" --body "<!-- triage:edges-considered -->
+   new_body="<!-- triage:edges-considered -->
    Logical order considered for this Operational group (docs/adr/0031): ${stamped:-none} stamped; ${refused:-none} refused as unsafe. Merge-safety ordering is NOT computed here — it stays derive-at-drive-time (claude/commands/triage.md § Operating principles)."
+   existing="$(gh issue view <epic> -R "$repo" --json comments \
+     --jq '[.comments[] | select(.body | contains("<!-- triage:edges-considered -->"))][-1].body // empty')"
+   if [ "$existing" = "$new_body" ]; then
+     echo "edge-stamping marker unchanged on epic #<epic> — skip re-post (stamped/refused set identical to the last marker)"
+     marker_unchanged="$marker_unchanged #<epic>"
+   elif gh issue comment <epic> -R "$repo" --body "$new_body"; then
+     marker_posted="$marker_posted #<epic>"
+   else
+     echo "edge-stamping marker post FAILED on epic #<epic> — re-run to retry; this group's order is NOT recorded as considered and /sweep's admission gate will treat it as never touched"
+     marker_failed="$marker_failed #<epic>"
+   fi
    ```
-   Posting it on the empty/all-refused case too is the whole point of the marker: docs/adr/0031 states "an empty edge read alone never proves order-freedom" — the marker is what lets a later consumer tell "triage considered this group's order and genuinely found none" apart from "triage never ran this sub-step at all," a distinction a bare `board_blocked_by_open` read cannot make by itself.
+   Posting on the empty/all-refused case too is the whole point of the marker: docs/adr/0031 states "an empty edge read alone never proves order-freedom" — the marker is what lets a later consumer tell "triage considered this group's order and genuinely found none" apart from "triage never ran this sub-step at all," a distinction a bare `board_blocked_by_open` read cannot make by itself. The presence/equality probe is what makes a re-triage of a grown epic safe: an unchanged `stamped`/`refused` set re-posts nothing, and a genuinely changed one (the group grew a member, a previously-`CYCLE`-refused pair is now `SAFE`) posts a fresh marker reflecting the new state rather than piling up duplicate comments. **A failed post is never folded into `marker_posted`** — it is a load-bearing distinction: an empty edge read alone never proves order-freedom, so a group whose marker-post failed must read as *not yet considered*, not as *considered and clean*, or `/sweep`'s admission gate would silently wave it through. `marker_failed` surfaces by name in the Step-5 summary (below) precisely so it is never confused with a successful `marker_posted` count.
 
 ## Step 4.9 — Emit the run telemetry record
 
@@ -333,7 +359,7 @@ Resolve the script bare repo-relative — if absent from a non-vendoring checkou
 - Spikes labelled: P  (#s)
 - Work-class: O Operational, F Foundational  (#s each; all survivors labelled)
 - Kernel candidates: K  (#s → kernel-candidate label; "n/a — no kernel/overlay split" if Step 2.8 didn't run; "n/a — in-kernel checkout" if this IS the kernel repo, `CLAUDE.overlay.md` absent, where the stamp no-ops)
-- Logical-order edges (Step 4 item 9, docs/adr/0031): L stamped (#blocked←#blocker …), R refused as unsafe (#blocked←#blocker(reason) …); edges-considered marker posted on G Operational-group epics. "n/a — board_blocked_by_add/cycle-check.sh unavailable this run" on the 9b degraded arm (no marker posted); "none — no Operational groups this run" when there was nothing to consider.
+- Logical-order edges (Step 4 item 9, docs/adr/0031): L stamped (#blocked←#blocker …), R refused as unsafe (#blocked←#blocker(reason) …); edges-considered marker posted on G Operational-group epics, U unchanged (re-post skipped, stamped/refused set identical — #s), F marker-post FAILED on #s (re-run to retry — treat as NOT considered, never counted in G), Z groups skipped on a live work-class drift at 9c (#epic drifted — #n(now: <class>) … for each). "n/a — board_blocked_by_add/cycle-check.sh unavailable this run" on the 9b degraded arm (no marker posted); "none — no Operational groups this run" when there was nothing to consider.
 - "Seq: n/a — retired by design (ADR 0006)"
 - Sanity pass: applied K notes  (or "skipped — agent unavailable")
 ```
