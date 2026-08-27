@@ -250,15 +250,25 @@ cache_refresh_snapshot() {
 # Delta-fetch details (body + comments) for every issue in the CURRENT
 # snapshot whose updated_at has advanced past its own cached details copy —
 # an issue with no details file yet, or whose stored updatedAt differs from
-# the snapshot's, gets ONE `issues/<n>/comments` REST call (body is already
+# the snapshot's, gets ONE paginated `issues/<n>/comments` REST fetch
+# (per_page=100 + --paginate, the same pagination discipline as the bulk
+# list fetch above — an unpaginated call silently truncates at GitHub's
+# default page size of 30, corrupting the durable corpus; body is already
 # present in the snapshot row, so it costs nothing extra to copy in). An
 # unchanged issue costs ZERO calls. Requires a snapshot to already exist
 # (run cache_refresh_snapshot, or cache_refresh, first).
+#
+# Self-heal for pre-pagination records: every details file this code writes
+# carries `commentsPaginated: true`, and the delta short-circuit below only
+# skips a record that BOTH matches the snapshot's updated_at AND carries
+# that marker. A record written by the old unpaginated code lacks the
+# marker, so it gets exactly one re-fetch (now paginated, so complete) the
+# next time this runs, after which it is sticky again.
 #   rc 0 = every needed detail fetched cleanly; rc 1 = at least one failed
 #          (that issue's stale/absent details file is simply left as-is —
 #          never partially written, never corrupted)
 cache_refresh_details() {
-  local arg="$1" repo dir snap line n updated_at details_file cur_updated comments body tmp rc=0
+  local arg="$1" repo dir snap line n updated_at details_file comments body tmp rc=0
   repo="$(_cache_resolve_repo "$arg")" || return 1
   dir="$(cache_repo_dir "$arg")" || return 1
   snap="$dir/snapshot.jsonl"
@@ -274,23 +284,33 @@ cache_refresh_details() {
     [ -n "$n" ] || continue
     updated_at="$(printf '%s' "$line" | jq -r '.updated_at // ""' 2>/dev/null)"
     details_file="$dir/details/${n}.json"
-    cur_updated=""
-    if [ -f "$details_file" ]; then
-      cur_updated="$(jq -r '.updatedAt // ""' "$details_file" 2>/dev/null)"
-    fi
-    if [ -n "$cur_updated" ] && [ "$cur_updated" = "$updated_at" ]; then
+    # Skip only a record that is BOTH up to date (updatedAt matches the
+    # snapshot row) AND marked complete (commentsPaginated:true — stamped
+    # by the paginated fetch below). A pre-pagination record has no marker,
+    # so it falls through to a one-time re-fetch here even when its
+    # updatedAt matches (the self-heal described in the header).
+    if [ -f "$details_file" ] &&
+      jq -e --arg u "$updated_at" \
+        '($u != "") and (.updatedAt == $u) and (.commentsPaginated == true)' \
+        "$details_file" >/dev/null 2>&1; then
       continue
     fi
-    if ! comments="$(_cache_gh api "repos/$repo/issues/$n/comments" 2>/dev/null)"; then
+    # Paginated like the bulk list fetch above: `--paginate` emits one JSON
+    # array per page; `jq -s 'add'` concatenates however many came back.
+    if ! comments="$(_cache_gh api "repos/$repo/issues/$n/comments?per_page=100" --paginate 2>/dev/null)"; then
       rc=1
       continue
     fi
     [ -n "$comments" ] || comments="[]"
+    if ! comments="$(printf '%s' "$comments" | jq -s -c 'add // []' 2>/dev/null)" || [ -z "$comments" ]; then
+      rc=1
+      continue
+    fi
     body="$(printf '%s' "$line" | jq -c '.body // ""' 2>/dev/null)"
     tmp="$dir/details/.tmp.$$.${n}"
     if jq -nc --argjson n "$n" --arg u "$updated_at" --argjson body "$body" \
          --argjson comments "$comments" --argjson sv "$CACHE_STORE_SCHEMA_VERSION" \
-         '{schema_version:$sv, number:$n, updatedAt:$u, body:$body, comments:$comments}' \
+         '{schema_version:$sv, number:$n, updatedAt:$u, body:$body, comments:$comments, commentsPaginated:true}' \
          >"$tmp" 2>/dev/null; then
       mv "$tmp" "$details_file"
     else

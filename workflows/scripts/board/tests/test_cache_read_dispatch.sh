@@ -93,7 +93,7 @@ source "$LIB_DIR/cache.sh"
 
 board_calls() { grep -c '^gh ' "$BOARD_CALLS" 2>/dev/null || true; }
 list_calls()  { grep -c 'issues?state=all' "$CACHE_CALLS" 2>/dev/null || true; }
-comment_calls() { grep -c '/comments$' "$CACHE_CALLS" 2>/dev/null || true; }
+comment_calls() { grep -c '/comments?per_page=100 --paginate$' "$CACHE_CALLS" 2>/dev/null || true; }
 reset_calls() { : >"$BOARD_CALLS"; : >"$CACHE_CALLS"; : >"$STDERR_LOG"; }
 
 # --- fixture: the SAME three issues for both arms ---------------------------
@@ -128,7 +128,7 @@ _cache_gh() {
   echo "$*" >>"$CACHE_CALLS"
   case "$*" in
     *"issues?state=all"*"--paginate"*) printf '%s' "$CACHE_ISSUES" ;;
-    *"/comments") echo '[]' ;;
+    *"/comments?per_page=100 --paginate") echo '[]' ;;
     *) return 1 ;;
   esac
 }

@@ -98,9 +98,9 @@ GH_RAW="$(printf '%s' "$EXPECTED_MATCH" | jq -c '. + [{"number":5,"title":"Token
 _cache_gh() {
   case "$*" in
     *"issues?state=all"*"--paginate"*) printf '%s' "$PAGE"; return 0 ;;
-    *"/comments")
+    *"/comments?per_page=100 --paginate")
       case "$*" in
-        *"issues/3/comments") echo '[{"id":1,"user":{"login":"bob"},"created_at":"2026-07-01T01:00:00Z","body":"Retro-for-epic: #7"}]' ;;
+        *"issues/3/comments"*) echo '[{"id":1,"user":{"login":"bob"},"created_at":"2026-07-01T01:00:00Z","body":"Retro-for-epic: #7"}]' ;;
         *) echo '[]' ;;
       esac
       return 0
