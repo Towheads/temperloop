@@ -192,5 +192,27 @@ jq -e '.outcome=="ARMED" and .auto_merge==true and .queue_state==""' >/dev/null 
 unset GH_ARM
 pass "6: auto-merge-armed PR confirmed (no isInMergeQueue query); --json outcome ARMED"
 
+# =============================================================================
+# Case 7 (temperloop #1821 regression): --help prints the header doc ONLY —
+#   the exit-status lines included, and NO code line. The old hardcoded sed
+#   line range (2,60p) went off by one against the header comment block and
+#   leaked `set -euo pipefail` into the usage text; the structural bound
+#   (print comment lines until the first non-comment line) cannot, no matter
+#   how the header grows or shrinks.
+# =============================================================================
+help_out="$(bash "$SCRIPT" --help)" || fail "7: --help exited non-zero"
+grep -q '^Exit status: 0 iff the PR was created' <<<"$help_out" \
+  || fail "7: --help missing the exit-status lines: $help_out"
+if grep -q 'set -euo pipefail' <<<"$help_out"; then
+  fail "7: --help leaks a code line (set -euo pipefail)"
+fi
+# Structural assertion: --help ends exactly at the header's last comment line
+# (the tail of the exit-status sentence), so no post-header code line of ANY
+# kind — not just today's `set -euo pipefail` — can trail the usage text.
+last_line="$(tail -1 <<<"$help_out")"
+[ "$last_line" = "already merged); non-zero with a clear stderr message on any failure." ] \
+  || fail "7: --help does not end at the header's last comment line: '$last_line'"
+pass "7: --help prints exit-status lines and leaks no code line"
+
 echo
 echo "PASS: all pr-enqueue tests passed"
