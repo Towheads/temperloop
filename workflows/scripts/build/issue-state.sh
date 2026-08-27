@@ -149,6 +149,13 @@ export GH_CALL_CONTEXT="${GH_CALL_CONTEXT:-issue-state}"
 # shellcheck source=workflows/scripts/build/lib/pr-linkage.sh
 . "$HERE/lib/pr-linkage.sh"
 
+# Board adapter lib — sourced for board_own_stamp/board_host_label ONLY (the
+# single owner of the `<host>:<sess8>`/`<host>:manual` claim-stamp format,
+# temperloop#1220/#1823 — never re-derive it at a call site). Pure function/
+# constant definitions; no top-level side effects.
+# shellcheck source=workflows/scripts/board/lib/board.sh
+. "$HERE/../board/lib/board.sh"
+
 # ── resolve's own label-constant set (subset-lint target) ───────────────────
 # Every literal/setting this script reads to classify an issue's labels. The
 # subset-lint (tests/test_issue_state_label_subset.sh) greps THIS block
@@ -425,19 +432,18 @@ cmd_resolve() {
   # ── claim state (fnd:host/session:<host>:<session> label — issues-only
   # backend convention, workflows/scripts/board/ISSUES-ONLY-BACKEND.md
   # § The label vocabulary) ──────────────────────────────────────────────
-  local host_session cur_host cur_stamp claimed by_me
+  local host_session cur_stamp claimed by_me
   host_session="$(jq -r '
     [(.labels // [])[]?.name | select(startswith("fnd:host/session:"))][0] // empty
     | sub("^fnd:host/session:"; "")' <<<"$issue_json")"
-  cur_host="${SUBSET_HOST_LABEL:-$(hostname -s 2>/dev/null || echo unknown)}"
-  cur_stamp=""
-  if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
-    cur_stamp="${cur_host}:${CLAUDE_CODE_SESSION_ID:0:8}"
-  fi
+  # Own stamp via the board.sh owner (temperloop#1823) — always non-empty:
+  # `<host>:<sess8>`, or `<host>:manual` with no session id in the environment,
+  # so a claim a manual (session-id-less) run made still reads by_me=true.
+  cur_stamp="$(board_own_stamp)"
   claimed=false; by_me=false
   if [ -n "$host_session" ]; then
     claimed=true
-    if [ -n "$cur_stamp" ] && [ "$host_session" = "$cur_stamp" ]; then
+    if [ "$host_session" = "$cur_stamp" ]; then
       by_me=true
     fi
   fi
