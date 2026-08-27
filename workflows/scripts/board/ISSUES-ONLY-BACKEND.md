@@ -390,6 +390,76 @@ everything here was already backend-agnostic before this split touched it:
 All three functions gate on candidate items only (never the whole board) —
 same caveat as every per-issue REST accessor in this file.
 
+### Durable-logical vs computed-merge-safety edges (docs/adr/0031, epic #1847)
+
+The `blocked_by` edges above are GitHub-native and always live — but not every
+edge in the pipeline is meant to live *there*. Two kinds coexist, and mixing
+them up (storing one where the other belongs) is exactly the bug this split
+guards against:
+
+- **Durable-logical order** — a **meaning-level** fact ("the schema item
+  precedes its consumers") that does not churn run to run. `/triage`'s Step 4
+  materialization sub-step stamps this kind, for an **Operational** group's
+  members only, as native `blocked_by` edges on the board — the one
+  deliberate exception to the older "edges never live on the board"
+  invariant, which docs/adr/0031 formally narrows rather than removes.
+- **Computed merge-safety order** — a **re-derivable physical** fact (which
+  PR must land before another to rebase cleanly) that genuinely does churn,
+  and stays **plan-resident**, never stored durably: `/assess` recomputes
+  `depends-on`/`after:` edges and dependency levels fresh into each `Plans/`
+  note every run, and a **Foundational** group's ordering lives there
+  instead of as a board edge, so no ordering ever has two live
+  representations.
+
+The read side is unchanged either way: `board_blocked_by_open` doesn't care
+*why* an edge was stamped, only that it exists and is open — a
+drive-time consumer (`/sweep`'s pool-build defers on it, `/next` skips a
+blocked item advisorily) honors both kinds identically. The distinction
+matters only at **write** time, and only to `/triage`, which is the sole
+writer of the durable-logical kind.
+
+### The `edges-considered` marker
+
+Reading an **empty** `blocked_by` set is ambiguous on its own — it means
+either "this group is genuinely unordered" or "this group's order was never
+evaluated." `/triage` Step 4 item 9 resolves that ambiguity by posting an
+HTML-comment marker, `<!-- triage:edges-considered -->`, on an Operational
+group's epic as an issue comment once it has actually run the group's
+members through the script-backed cycle check and stamped (or refused) every
+edge — so the marker asserts "this group's order was genuinely considered,"
+never merely "no edges exist." A run that degrades before reaching the
+writer or the cycle check (a missing `board_blocked_by_add` helper, a
+missing `cycle-check.sh`) posts **no** marker for that group, by design —
+a marker posted over a run that never actually considered the group's order
+would be a false all-clear.
+
+`/sweep`'s Operational-epic member-admission gate (`workflows/scripts/build/sweep-epic-admission.sh`,
+epic #1847) is the marker's consumer: it treats the marker's presence as a
+precondition for admitting an epic's Ready legs into the sweep pool at all —
+an epic whose order was never considered cannot safely have its members
+driven independently and merged out of order. An epic missing the marker
+(never triaged through the edge-stamping sub-step, or degraded on a prior
+run) is simply not yet admission-eligible via that arm; a later `/triage`
+pass that successfully stamps + posts the marker makes it eligible on a
+subsequent `/sweep` run.
+
+### The `keep-open` label
+
+`/sweep`'s epic-closing gate (`workflows/scripts/build/sweep-epic-closing-gate.sh`,
+epic #1847) considers closing an Operational epic once every one of its
+members has drained (merged or resolved) — but an epic can legitimately need
+to stay open past that point (the operator is still using it to track
+follow-on work, for example). `keep-open` is the escape hatch: a plain
+GitHub repo label, provisioned idempotently by `/sweep` before its per-epic
+closing loop runs (`_board_issues_ensure_label`, the same probe-and-create
+idiom the work-class labels below already use), that an operator (or a prior
+run) applies to an epic to opt it out of auto-close. The closing gate reads
+it as one branch of its precedence order — present → **report only** (never
+offered for close, and no board write of any kind), naming who to ask
+(the epic's most recent assignee, comment author, or issue author) so a
+human can decide whether to remove the label and let a future run close it,
+or leave it in place indefinitely.
+
 ## Close→Done cascade (foundation #800)
 
 On a Projects-v2 board, GH #340's "close→Done" automation is a real, async

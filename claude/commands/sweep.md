@@ -6,10 +6,15 @@ argument-hint: "[--board <N>] [--dry-run] [--unattended]"
 You are running the **sweep** command. Goal: drive every **Ready singleton** on a board — an issue triage marked Ready but left **ungrouped** (it is *neither* a sub-issue of an epic *nor* an epic parent) — from open to merged, in **chunks of up to `$SWEEP_FANOUT_WIDTH` concurrent issues**. This is the singleton-path peer to `/build`: `/build` drains the *epic'd* work (via a plan note); `sweep` drains the *lone* Ready issues. Together they clear the whole Ready pool with no overlap — the "neither a sub-issue of an epic nor an epic parent" filter is the seam between them.
 
 ```
-                 ┌─ epic'd survivors ─► /assess --epic N ─► /build
-/triage  Ready ──┤
-                 └─ singletons       ─────────────────────────► /sweep   ◄── you are here
+                 ┌─ epic'd survivors ─┬─ Foundational ─► /assess --epic N ─► /build
+/triage  Ready ──┤                    └─ Operational  ─► /sweep   (SWEEP_ADMIT_OPERATIONAL_EPICS, epic #1847)
+                 └─ singletons ─────────────────────────► /sweep   ◄── you are here
 ```
+
+The `Foundational` / `Operational` split above the singleton row is the **class-keyed partition**
+(`claude/work-class-policy.md`): a triaged epic's own work-class label, not its epic-vs-singleton
+shape alone, decides whether its Ready legs need the `/assess`→plan→`/build` ceremony or can join
+`sweep`'s chunked pool directly — Step 1 item 6 below is where that admission actually happens.
 
 Because the singletons skip `/assess`, they have **no pre-execution contract-clarification stage**. So `sweep` adds one: **Phase 1**, an upfront question sweep (the singleton path's missing `/assess`-equivalent) that resolves ambiguity *before* any fix worker runs.
 
