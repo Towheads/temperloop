@@ -393,6 +393,62 @@ else
   echo "- knowledge-search warm→cold fallbacks (${lookback}d): $nf (each = one session degraded to the slow search path)"
 fi
 
+# ── 2b. Epic funnel health — class-conditional (epic #1847) ─────────────────
+# The funnel-health read is CLASS-CONDITIONAL, per epic #1847 "epic-as-
+# metadata for operational work" Produces #9: a Foundational epic's healthy
+# path stays epic -> plan (assessed) -> built; an Operational epic's healthy
+# path is epic -> members-drained-via-sweep, with NO plan-note step at all —
+# so plan-note absence on an Operational epic must never read as
+# stalled-unassessed. NO NEW STREAM: both reads below are existing records
+# already in the lake.
+#   Operational signal — command-runs `command:"sweep"` records that carry
+#     the epics_reviewed/epics_closed/epics_left_open fields (the
+#     epic-closing-gate extension, emit-command-run.sh). These fields are
+#     ONLY ever emitted by /sweep's end-of-run closing gate, which — per the
+#     Foundational-wins mutual-exclusion guard (epic #1847 Produces #5) —
+#     only ever reviews Operational epics. Their presence here is itself the
+#     class signal; no label read is needed.
+#   Foundational signal — item-efficiency's per-epic set of MERGED items
+#     (already the source for the Q3b "per epic" rollup below). /build is
+#     the sole emitter of that stream, and Operational-epic members are
+#     driven via /sweep, never /build (same mutual exclusion), so an epic
+#     appearing here is structurally a Foundational (ceremony-path) epic.
+echo
+echo "## 2b. Epic funnel health — class-conditional (epic #1847)"
+echo "source: command-runs-*.jsonl @ $cmd_run_dir (sweep epic-closing-gate fields) · item-efficiency-*.jsonl @ $item_eff_dir (per-epic merged-item set)"
+if [ -z "$cmd_files" ]; then
+  echo "- Operational epics (drained via /sweep): no data yet — command-runs stream is empty ($cmd_run_dir/command-runs-*.jsonl)"
+else
+  sweep_epic_recs="$(printf '%s' "$cmd_runs" | jq '[ .[] | select(.command == "sweep" and has("epics_reviewed")) ]')"
+  n_sweep="$(printf '%s' "$sweep_epic_recs" | jq 'length')"
+  if [ "$n_sweep" -eq 0 ]; then
+    echo "- Operational epics (drained via /sweep, ${lookback}d): no epic-closing-gate activity in window — no Operational epics admitted this window (or the admission setting is off)"
+  else
+    ereviewed="$(printf '%s' "$sweep_epic_recs" | jq '[ .[].epics_reviewed ] | add // 0')"
+    eclosed="$(printf '%s' "$sweep_epic_recs" | jq '[ .[].epics_closed ] | add // 0')"
+    eleft="$(printf '%s' "$sweep_epic_recs" | jq '[ .[].epics_left_open ] | add // 0')"
+    echo "- Operational epics (drained via /sweep, ${lookback}d): epic-closing gate reviewed $ereviewed · closed $eclosed · left open $eleft — a plan-note-less epic here is the HEALTHY state for this class, never stalled-unassessed"
+  fi
+fi
+ie2b_files="$(stream_files "$item_eff_dir" "item-efficiency")"
+if [ -z "$ie2b_files" ]; then
+  echo "- Foundational epics (assessed → built via /build): no data yet — item-efficiency stream is empty ($item_eff_dir/item-efficiency-*.jsonl)"
+else
+  ie2b_recs="$(window_records "$item_eff_dir" "item-efficiency")"
+  n_ie2b="$(printf '%s' "$ie2b_recs" | jq 'length')"
+  if [ "$n_ie2b" -eq 0 ]; then
+    stale_note "item-efficiency" "$item_eff_dir" "$(stream_max_ts "$item_eff_dir" "item-efficiency")"
+  else
+    n_built_epics="$(printf '%s' "$ie2b_recs" | jq '[ .[] | select(.epic != null) | .epic ] | unique | length')"
+    built_epics_list="$(printf '%s' "$ie2b_recs" | jq -r '[ .[] | select(.epic != null) | .epic ] | unique | map("#\(.)") | join(", ")')"
+    if [ "$n_built_epics" -eq 0 ]; then
+      echo "- Foundational epics (assessed → built via /build, ${lookback}d): 0 reached a merged item this window (a plan mid-review or mid-build shows no line here without being unhealthy — check the plan note's own status directly)"
+    else
+      echo "- Foundational epics (assessed → built via /build, ${lookback}d): $n_built_epics reached a merged item ($built_epics_list — see §3b's per-epic rollup for detail)"
+    fi
+  fi
+fi
+
 # ── 3. Spend ─────────────────────────────────────────────────────────────────
 echo
 echo "## 3. Spend — kernel-observable cost"
