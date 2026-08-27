@@ -1852,10 +1852,20 @@ async function callWorker(item, wt, extraSection, label, phaseName) {
       model: item.model || undefined, // "" or undefined → inherit session model
       schema: WORKER_VERDICT_SCHEMA,
     });
-    return { verdict: v ?? null, error: v == null ? 'agent returned null' : null };
+    // `nullReturn` (temperloop#1819): true only for the bare-null shape, where
+    // NO error text exists — the caller's quota classification then falls back
+    // to the agent-liveness canary instead of text matching.
+    return { verdict: v ?? null, error: v == null ? 'agent returned null' : null, nullReturn: v == null };
   } catch (err) {
-    return { verdict: null, error: String((err && err.message) || err) };
+    return { verdict: null, error: String((err && err.message) || err), nullReturn: false };
   }
+}
+
+// workerQuotaDeath — the worker-path quota classifier (temperloop#1819): the
+// thrown-text shape matches directly; the bare-null shape asks the canary.
+async function workerQuotaDeath(w) {
+  if (quotaDeath(w.error)) return true;
+  return w.nullReturn === true && !(await harnessCanSpawnAgents());
 }
 
 // probeSideEffects — run the staged pr.sh recover-probe (its own header owns the
@@ -2046,11 +2056,13 @@ async function recoverLostReturn(item, wt, openCmd) {
       phase: stagePhase(STAGE_RECOVER), // off-path recovery — own group, cursor untouched
     });
     if (rb.denied) {
-      return {
-        kind: 'escalate',
-        escKind: 'machinery-denied',
-        payload: { step: batchDeniedStep(rb, 'pr-batch-resume'), steps: rb.steps, out: rb.out },
-      };
+      // temperloop#1819: quota death vs genuine denial — see deniedOrQuota.
+      const esc = await deniedOrQuota(item.slug, {
+        step: batchDeniedStep(rb, 'pr-batch-resume'),
+        steps: rb.steps,
+        out: rb.out,
+      }, wt);
+      return { kind: 'escalate', escKind: esc.escalation.kind, payload: esc.escalation.payload };
     }
     const resumeTimeout = timedOutStep(rb.results);
     if (resumeTimeout) {
@@ -2388,6 +2400,134 @@ function machineryDenied(out) {
 }
 
 // -----------------------------------------------------------------------------
+// Session-quota death classification (temperloop#1819).
+// -----------------------------------------------------------------------------
+// A step or worker that dies because the SESSION hit its usage limit ("You've
+// hit your session limit · resets 5:30pm") used to collapse into the two
+// pre-existing kinds — `machinery-denied`/SPINE_DENIED (whose documented cure
+// is rewriting the command for the auto-mode classifier) and `worker-error`
+// "agent returned null" (whose cure is re-driving with sharper instructions).
+// BOTH cures are wrong for a quota death: the command was never the problem
+// and the work is usually INTACT in the worktree (the #1819 incident's item
+// held three clean commits and a finished verification surface — re-driving
+// would have discarded a finished item). So a quota death gets its OWN kind,
+// `quota-exhausted`, whose disposition is wait-for-reset then RESUME.
+//
+// The death reaches this script through TWO shapes, classified differently:
+//   • agent() THREW and the error text carries the harness's limit message —
+//     quotaDeath(text) matches it directly and extracts the reset time.
+//   • agent() returned a bare NULL (the #1819 incident's shape) — no text
+//     reaches this script at all (the truth lives only in the harness's own
+//     <failures> block, a channel the orchestrator reads, not this script).
+//     The one in-process discriminator left is BEHAVIORAL: a classifier
+//     denial is per-command (an innocuous probe still spawns), while a quota
+//     death kills EVERY spawn. harnessCanSpawnAgents() runs that probe — a
+//     cheap canary agent, re-run per bare-null with only its DEAD verdict
+//     memoized (see its own comment) — and a failed canary reclassifies the
+//     null as quota-exhausted. A canary that spawns fine leaves the pre-#1819
+//     kinds untouched, so genuine denials/skips keep their meanings.
+const QUOTA_KIND = 'quota-exhausted';
+const QUOTA_DEATH_RE =
+  /\b(?:hit|reached|exceeded)\s+(?:your|the)\s+(?:session|usage|weekly|monthly|5-?hour|rate)\s+limit\b/i;
+
+// quotaDeath — null when `text` is not the harness's quota-death message;
+// otherwise { reset: <string|null> } with the reset time when the message
+// carries one ("… · resets 5:30pm" → "5:30pm").
+function quotaDeath(text) {
+  const s = String(text ?? '');
+  if (!QUOTA_DEATH_RE.test(s)) return null;
+  const m = s.match(/\bresets?\b[\s·:,–—-]*([^\n]+)/i);
+  return { reset: m ? m[1].trim() : null };
+}
+
+// harnessCanSpawnAgents — the null-shape discriminator above. Memoization is
+// deliberately ASYMMETRIC (temperloop#1819 attempt-2 review finding 1): only a
+// DEAD verdict is sticky. The quota is monotone within one exhaustion window —
+// once every spawn dies, they keep dying — so one dead probe answers for the
+// whole level's burst of deaths. (A window that resets mid-level could make the
+// cached "dead" stale for a later item; that item still escalates with its work
+// intact — exactly what the wait-then-resume disposition handles — so the dead
+// cache stays.) An ALIVE verdict is NOT cached: "alive at probe time" says
+// nothing about a spawn that dies LATER in the same level, and a memoized alive
+// would misroute that later quota death back into machinery-denied/worker-error
+// — the destructive mis-cure this whole classifier exists to prevent. So every
+// bare-null re-probes; concurrent callers still share one in-flight probe (the
+// promise is the cache entry until it resolves alive). Fails OPEN: an
+// inconclusive canary (a non-quota throw) reads as "alive" so the pre-#1819
+// kinds stand rather than inventing a quota verdict from a probe that merely
+// misbehaved.
+let agentLivenessCheck = null;
+function harnessCanSpawnAgents() {
+  if (!agentLivenessCheck) {
+    agentLivenessCheck = (async () => {
+      try {
+        const out = await agent(
+          'Liveness probe: do nothing except return the JSON object {"ok": true} via StructuredOutput.',
+          {
+            label: 'canary:quota-probe',
+            // Off-path diagnostic (temperloop#1294) — own group, cursor untouched.
+            phase: stagePhase(STAGE_RECOVER),
+            model: input.machinerySoloModel || 'haiku',
+            schema: { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'] },
+          },
+        );
+        return out != null;
+      } catch (err) {
+        return !quotaDeath(String((err && err.message) || err));
+      }
+    })().then((alive) => {
+      // Alive → drop the cache so the NEXT bare-null probes afresh; dead →
+      // leave the resolved promise in place (the sticky verdict).
+      if (alive) agentLivenessCheck = null;
+      return alive;
+    });
+  }
+  return agentLivenessCheck;
+}
+
+// quotaEscalation — the quota-exhausted escalation record. `worktree_left_intact`
+// is load-bearing (issue #1819 acceptance): it is what tells the disposer this
+// is a recover-vs-re-drive decision — the escalation cleaned up NOTHING, so
+// whatever the item had built is still in the worktree.
+function quotaEscalation(slug, where, { errorText = null, worktree = null, extra = null } = {}) {
+  const qd = errorText ? quotaDeath(errorText) : null;
+  return escalate(slug, QUOTA_KIND, {
+    where,
+    classified_by: errorText ? 'error-text' : 'agent-liveness-canary',
+    reset_time: qd ? qd.reset : null,
+    error: errorText,
+    worktree,
+    worktree_left_intact: true,
+    retryable: true,
+    reason:
+      'the harness session-usage quota ran out mid-run (temperloop#1819) — an ENVIRONMENTAL death, ' +
+      'not a classifier refusal (machinery-denied) and not a content failure (worker-error): ' +
+      'nothing was cleaned up, so any work the item had produced is still in the worktree' +
+      (qd && qd.reset
+        ? `; the quota resets ${qd.reset}`
+        : '; no reset time was reported — check quota-gate.sh / ~/.claude/rate-limits.json') +
+      '. Wait for the reset, then inspect the worktree (pr.sh recover-probe) and RESUME what landed ' +
+      'rather than re-driving from scratch.',
+    ...(extra ?? {}),
+  });
+}
+
+// deniedOrQuota — every site that mints a `machinery-denied` escalation routes
+// through this instead: a SPINE_DENIED whose real cause is the quota death
+// (the canary cannot spawn either) becomes quota-exhausted; a genuine denial
+// keeps the byte-identical machinery-denied escalation it always produced.
+async function deniedOrQuota(slug, payload, worktree) {
+  if (!(await harnessCanSpawnAgents())) {
+    const step = typeof payload.step === 'string' ? payload.step : 'batch';
+    return quotaEscalation(slug, `machinery:${step}`, {
+      worktree,
+      extra: { denied_out: payload.out ?? null, ...(payload.sha !== undefined ? { sha: payload.sha } : {}) },
+    });
+  }
+  return escalate(slug, 'machinery-denied', payload);
+}
+
+// -----------------------------------------------------------------------------
 // §3e — the mandatory/routed pre-push review (temperloop#1430).
 // -----------------------------------------------------------------------------
 // build.md §3e's routing rules, run for REAL inside this driver — see that
@@ -2560,7 +2700,8 @@ async function runReviewers(item, wt) {
     phase: enterStage(STAGE_REVIEW),
   });
   if (machineryDenied(diffOut)) {
-    return { escalation: escalate(item.slug, 'machinery-denied', { step: 'review-diff', out: diffOut }) };
+    // temperloop#1819: quota death vs genuine denial — see deniedOrQuota.
+    return { escalation: await deniedOrQuota(item.slug, { step: 'review-diff', out: diffOut }, wt) };
   }
   if (diffOut.outcome !== 'REVIEW_DIFF') {
     return { escalation: escalate(item.slug, 'review-diff-error', { diffOut }) };
@@ -2885,7 +3026,8 @@ async function runActivationGate(item, wt) {
       timeoutOutcome: 'ACTIVATION_TIMEOUT',
     });
     if (machineryDenied(ctl)) {
-      return escalate(item.slug, 'machinery-denied', { step: 'activation-control', out: ctl });
+      // temperloop#1819: quota death vs genuine denial — see deniedOrQuota.
+      return await deniedOrQuota(item.slug, { step: 'activation-control', out: ctl }, wt);
     }
     if (ctl.outcome === 'STEP_TIMEOUT') {
       return (await disposeStepTimeout(item, wt, ctl, 'activation-control', { adoptable: false })).escalation;
@@ -2923,7 +3065,8 @@ async function runActivationGate(item, wt) {
     timeoutOutcome: 'ACTIVATION_TIMEOUT',
   });
   if (machineryDenied(out)) {
-    return escalate(item.slug, 'machinery-denied', { step: 'activation', out });
+    // temperloop#1819: quota death vs genuine denial — see deniedOrQuota.
+    return await deniedOrQuota(item.slug, { step: 'activation', out }, wt);
   }
   if (out.outcome === 'STEP_TIMEOUT') {
     return (await disposeStepTimeout(item, wt, out, 'activation', { adoptable: false })).escalation;
@@ -3059,11 +3202,15 @@ async function driveItem(item) {
     phase: enterStage(STAGE_CLAIM), // 3a claim + 3b-0 deps-merged + 3b worktree
   });
   if (prelude.denied) {
-    return escalate(item.slug, 'machinery-denied', {
+    // temperloop#1819: deniedOrQuota — a quota death (canary cannot spawn) is
+    // its own kind; a genuine denial keeps machinery-denied unchanged. The
+    // worktree may not exist yet (the prelude is what creates it) — the
+    // deterministic path is still named so the disposer knows where to look.
+    return await deniedOrQuota(item.slug, {
       step: batchDeniedStep(prelude, 'prelude'),
       steps: prelude.steps,
       out: prelude.out,
-    });
+    }, worktreePath);
   }
   // temperloop#1071 — a prelude step that outlived the liveness ceiling. Probed
   // with NO worktree path on purpose: the prelude is what CREATES the worktree,
@@ -3089,8 +3236,10 @@ async function driveItem(item) {
   // claim-first contract (temperloop#650).
   if (item.kind === 'spike') {
     log(`[${item.slug}] spike — read-only verdict fork (no PR)`);
-    const verdict = await agent(
-      workerPrompt(
+    let verdict;
+    try {
+      verdict = await agent(
+        workerPrompt(
         item,
         worktreePath,
         '## Spike (read-only)\nProduce a verdict note + routed follow-up issue. ' +
@@ -3106,8 +3255,24 @@ async function driveItem(item) {
         model: item.model || undefined, // "" or undefined → inherit session model
         schema: WORKER_VERDICT_SCHEMA,
       },
-    );
+      );
+    } catch (err) {
+      // temperloop#1819 — a thrown quota-death message classifies directly;
+      // any other throw keeps its pre-#1819 path (the parallel() catch-all
+      // converts it to a worker-error escalation, unchanged).
+      const msg = String((err && err.message) || err);
+      if (quotaDeath(msg)) {
+        return quotaEscalation(item.slug, 'worker (spike)', { errorText: msg, worktree: null });
+      }
+      throw err;
+    }
     if (verdict == null) {
+      // temperloop#1819 — the bare-null shape carries no text; ask the canary
+      // whether the harness can spawn agents at all before calling this a
+      // content failure. A spike has no worktree (read-only), so `worktree: null`.
+      if (!(await harnessCanSpawnAgents())) {
+        return quotaEscalation(item.slug, 'worker (spike)', { worktree: null });
+      }
       // agent() returned null — user skip or terminal API error. Spikes are
       // read-only so no retry applies; escalate immediately.
       return escalate(item.slug, 'worker-error', { retryable: true, reason: 'agent returned null (spike worker)' });
@@ -3156,6 +3321,16 @@ async function driveItem(item) {
   let w = await callWorker(item, wt, verdictSection, `worker:${item.slug}`, enterStage(STAGE_BUILD));
   let verdict = w.verdict;
   if (verdict == null) {
+    // temperloop#1819 — classify a session-quota death FIRST, before the probe
+    // and the retry: under an exhausted quota every further spawn (the probe,
+    // the retry, its probe) dies the same death, and the work already in the
+    // worktree is exactly what the quota-exhausted disposition preserves.
+    if (await workerQuotaDeath(w)) {
+      return quotaEscalation(item.slug, 'worker', {
+        errorText: w.nullReturn ? null : w.error,
+        worktree: wt,
+      });
+    }
     // No verdict — either agent() returned null (user skip, transient 5xx, or the
     // #1219 background-stall) or it THREW (StructuredOutput absent / retry cap
     // blown). Neither tells us anything about the WORK, so before doing anything
@@ -3188,6 +3363,14 @@ async function driveItem(item) {
       w = await callWorker(item, wt, withCure(verdictSection, probe.dirtyFiles), `worker:${item.slug}#retry`, enterStage(STAGE_BUILD));
       verdict = w.verdict;
       if (verdict == null) {
+        // temperloop#1819 — the RETRY can be the spawn that crosses the quota
+        // boundary; classify it before spending another probe on a dead harness.
+        if (await workerQuotaDeath(w)) {
+          return quotaEscalation(item.slug, 'worker (retry)', {
+            errorText: w.nullReturn ? null : w.error,
+            worktree: wt,
+          });
+        }
         // The retry may itself have built and lost its return — probe again.
         probe = await probeSideEffects(item, wt);
         if (probe.landed) recovery = probe;
@@ -3441,7 +3624,10 @@ async function driveItem(item) {
       timeoutOutcome: 'GATE_TIMEOUT',
     });
     if (machineryDenied(gateOut)) {
-      return escalate(item.slug, 'machinery-denied', { step: 'gate', out: gateOut });
+      // temperloop#1819: the #1819 incident's own machinery shape — a gate
+      // step killed by the session limit read as SPINE_DENIED. deniedOrQuota
+      // re-classifies it via the canary; a genuine denial is unchanged.
+      return await deniedOrQuota(item.slug, { step: 'gate', out: gateOut }, wt);
     }
     // temperloop#1071 — the gate slice outlived the workflow liveness ceiling.
     // Distinct from GATE_TIMEOUT (the Bash tool's own timeout, which #1021 gave
@@ -3647,11 +3833,12 @@ async function driveItem(item) {
     phase: enterStage(STAGE_PR), // 3f rebase + scan + push + pr-open
   });
   if (prb.denied) {
-    return escalate(item.slug, 'machinery-denied', {
+    // temperloop#1819: quota death vs genuine denial — see deniedOrQuota.
+    return await deniedOrQuota(item.slug, {
       step: batchDeniedStep(prb, 'pr-batch'),
       steps: prb.steps,
       out: prb.out,
-    });
+    }, wt);
   }
 
   // temperloop#1071 — a pr-batch step that outlived the liveness ceiling. THIS is
@@ -3964,10 +4151,14 @@ async function ciPollLoop(item, ownerRepo, pr, initialSha, wt) {
         phase: enterStage(STAGE_CI), // 3g merge-state probe + CI poll slices
       });
       if (batch.denied) {
-        return {
-          escalation: 'machinery-denied',
-          payload: { step: 'ci-batch', steps: batch.steps, out: batch.out, sha },
-        };
+        // temperloop#1819: quota death vs genuine denial — see deniedOrQuota.
+        const esc = await deniedOrQuota(item.slug, {
+          step: 'ci-batch',
+          steps: batch.steps,
+          out: batch.out,
+          sha,
+        }, wt);
+        return { escalation: esc.escalation.kind, payload: esc.escalation.payload };
       }
       // temperloop#1071 — a ci-batch step that outlived the liveness ceiling.
       // `adoptable:false` is load-bearing here: the probe still runs (its stage is
@@ -4120,7 +4311,9 @@ async function ciPollLoop(item, ownerRepo, pr, initialSha, wt) {
         { label: `push-retry:${item.slug}`, slug: item.slug, phase: enterStage(STAGE_CI) },
       );
       if (machineryDenied(fpush)) {
-        return { escalation: 'machinery-denied', payload: { step: 'push-retry', out: fpush, sha } };
+        // temperloop#1819: quota death vs genuine denial — see deniedOrQuota.
+        const esc = await deniedOrQuota(item.slug, { step: 'push-retry', out: fpush, sha }, wt);
+        return { escalation: esc.escalation.kind, payload: esc.escalation.payload };
       }
       // temperloop#1071 — the force-push outlived the liveness ceiling. It is the
       // single most dangerous step to guess about (a re-issue could push a second
@@ -4334,9 +4527,20 @@ async function buildLevel() {
   // hit item.acceptance.map on a string and the item was silently dropped.)
   const results = await parallel(
     activeItems.map((item) => () =>
-      driveItem(item).catch((err) =>
-        escalate(item.slug, 'worker-error', { error: String((err && err.stack) || err) }),
-      ),
+      driveItem(item).catch((err) => {
+        // temperloop#1819: a throw whose message carries the harness's
+        // session-limit text is a quota death, not a content failure — it gets
+        // its own kind here too, so no thrown shape can collapse back into
+        // worker-error. Anything else keeps the #437 conversion unchanged.
+        const msg = String((err && err.message) || err);
+        if (quotaDeath(msg)) {
+          return quotaEscalation(item.slug, 'mid-item throw', {
+            errorText: msg,
+            worktree: `${input.repoRoot}.wt/${item.slug}`,
+          });
+        }
+        return escalate(item.slug, 'worker-error', { error: String((err && err.stack) || err) });
+      }),
     ),
   );
 
