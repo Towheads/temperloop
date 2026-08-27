@@ -8,6 +8,7 @@
   scope of the setting, rather than silently decomposing an epic two
   mechanisms could then double-drive. The autonomous pipeline driver's own
   `route-foundational` hand-off is exempted (it predates the sweep cutover,
-  #1848), and a new `--override-operational-refusal` flag lets an operator
+  #1848 "pipeline-drive sweep-cutover rewiring"), and a new
+  `--override-operational-refusal` flag lets an operator
   explicitly proceed anyway — the override is always logged, both as a
   comment on the epic and as a bullet in the written plan note.
