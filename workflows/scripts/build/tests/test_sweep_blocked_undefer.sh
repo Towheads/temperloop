@@ -25,6 +25,15 @@
 #      merged PR with a merged ancestor SHA is present (parked wins over
 #      every other signal — the explicit precondition-order proof).
 #   7. --help / -h / no-args activation proof.
+#   8. a CLOSED blocker whose `gh pr list --search` lookup ERRORED
+#      (linked_prs_query_error=true, empty linked_merged_prs) ->
+#      conservatively defers (prs-query-error-conservatively-deferred), NOT
+#      the ambiguity case's release — proves a failed lookup is never read
+#      as "genuinely no linked merged PR" (temperloop escalation, HIGH
+#      finding). Also proves precedence: an OPEN blocker with the error flag
+#      set still reports blocker-open (state check wins), and a parked
+#      blocker with the error flag set still reports
+#      parked-blocker-never-releases (parked wins).
 
 set -euo pipefail
 
@@ -107,6 +116,31 @@ cat > "$PARKED" <<'JSON'
 JSON
 check_field "parked disposition wins over closed+merged+ancestor -> un_defer=false" "$PARKED" '.un_defer' "false"
 check_field "...reason=parked-blocker-never-releases" "$PARKED" '.reason' "parked-blocker-never-releases"
+
+# ── 8: gh pr list --search lookup ERRORED — never the ambiguity release ──
+echo "--- 8: CLOSED + linked_prs_query_error=true -> conservative defer, NOT the ambiguity release ---"
+QERR="$TMP/query-error.json"
+cat > "$QERR" <<'JSON'
+{"blocker_number": 106, "state": "CLOSED", "linked_merged_prs": [], "linked_prs_query_error": true}
+JSON
+check_field "closed + query-error -> un_defer=false (never true, unlike the genuine ambiguity case)" "$QERR" '.un_defer' "false"
+check_field "...reason=prs-query-error-conservatively-deferred" "$QERR" '.reason' "prs-query-error-conservatively-deferred"
+
+echo "--- 8b: query-error flag set but blocker still OPEN -> state check wins (blocker-open) ---"
+QERR_OPEN="$TMP/query-error-open.json"
+cat > "$QERR_OPEN" <<'JSON'
+{"blocker_number": 107, "state": "OPEN", "linked_merged_prs": [], "linked_prs_query_error": true}
+JSON
+check_field "open + query-error -> un_defer=false" "$QERR_OPEN" '.un_defer' "false"
+check_field "...reason=blocker-open (state check evaluated before the query-error check)" "$QERR_OPEN" '.reason' "blocker-open"
+
+echo "--- 8c: query-error flag set but blocker's own sweep_disposition is parked -> parked wins ---"
+QERR_PARKED="$TMP/query-error-parked.json"
+cat > "$QERR_PARKED" <<'JSON'
+{"blocker_number": 108, "state": "CLOSED", "linked_merged_prs": [], "linked_prs_query_error": true, "sweep_disposition": "parked"}
+JSON
+check_field "closed + query-error + parked -> un_defer=false" "$QERR_PARKED" '.un_defer' "false"
+check_field "...reason=parked-blocker-never-releases (parked evaluated before the query-error check)" "$QERR_PARKED" '.reason' "parked-blocker-never-releases"
 
 echo "--- --help / -h / no-args activation proof ---"
 bash "$CLI" --help >/dev/null 2>&1 && ok "--help exits 0" || bad "--help exits 0" "non-zero exit"
