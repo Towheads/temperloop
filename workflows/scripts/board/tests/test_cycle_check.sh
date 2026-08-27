@@ -124,11 +124,20 @@ run_check 10 5
 [ "$OUT" = "CYCLE 10 5 path=5->7->10" ] || fail "case 4: a transitive cycle must be refused with the full chain, got: [$OUT]"
 
 # ── Case 5 — a self-blocker is refused without any read ─────────────────
-GH_CALLED=0
-_board_gh() { GH_CALLED=1; echo '[]'; }
+# run_check's `OUT="$(cycle_check_main)"` runs cycle_check_main in a command-
+# substitution SUBSHELL, so a plain shell-variable flip inside the _board_gh
+# override (e.g. GH_CALLED=1) never propagates back to this shell — the
+# assertion would pass vacuously even if a read DID happen. Assert via an
+# out-of-band marker FILE instead, whose existence survives the subshell.
+GH_CALL_MARKER="$(mktemp -u)"
+_board_gh() { : >"$GH_CALL_MARKER"; echo '[]'; }
 run_check 10 10
 [ "$OUT" = "CYCLE 10 10 path=10->10 (self-blocker)" ] || fail "case 5: a self-blocker must be refused, got: [$OUT]"
-[ "$GH_CALLED" = 0 ] || fail "case 5: a self-blocker must be caught before any board read"
+if [ -e "$GH_CALL_MARKER" ]; then
+  rm -f "$GH_CALL_MARKER"
+  fail "case 5: a self-blocker must be caught before any board read"
+fi
+rm -f "$GH_CALL_MARKER" 2>/dev/null || true
 
 # ── Case 6 — an unrelated sibling chain never false-positives ───────────
 # 5 depends on 3, unrelated to 10. "10 blocked_by 5" must stay SAFE.
@@ -188,7 +197,7 @@ edge_set "5 6
 7 8
 8 9"
 run_check 10 5
-CYCLE_CHECK_MAX_NODES="${CYCLE_CHECK_MAX_NODES:-500}"
+CYCLE_CHECK_MAX_NODES=500  # restore the script default; ${VAR:-500} is a no-op here since VAR is already set (to 3)
 case "$OUT" in
   UNREADABLE\ 10\ 5\ reason=graph-too-large*) ;;
   *) fail "case 10: a graph past CYCLE_CHECK_MAX_NODES must report UNREADABLE, got: [$OUT]" ;;
@@ -240,6 +249,7 @@ if [ -f "$SPEC" ]; then
     fail "case 12: the edge-stamping sub-step doesn't guard on board_blocked_by_add's presence — it would crash 'command not found' on a stale adapter instead of degrading"
   grep -F 'no edges-considered marker posted' "$SPEC" >/dev/null ||
     fail "case 12: the stale-adapter degradation doesn't say the marker is withheld — a false all-clear could reach sweep's admission gate"
+  # shellcheck disable=SC2016  # literal Markdown backticks in a fixed-string grep -F
   grep -F 'raw `gh api repos/.../dependencies/blocked_by` POST' "$SPEC" >/dev/null ||
     fail "case 12: the spec no longer states the raw-REST-fallback prohibition explicitly"
   echo "PASS: test_cycle_check.sh (spec conformance)"

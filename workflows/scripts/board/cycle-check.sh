@@ -27,7 +27,7 @@
 #   SAFE <issue> <blocker>
 #     no path from <blocker> back to <issue> was found — the edge may be
 #     written.
-#   CYCLE <issue> <blocker> path=<blocker>-> ... ->[<issue>]
+#   CYCLE <issue> <blocker> path=<blocker>-> ... -><issue>
 #     writing the edge would close a loop; `path=` names the existing chain
 #     of blocked_by edges that already runs from <blocker> to <issue>.
 #   UNREADABLE <issue> <blocker> reason=<why>
@@ -148,14 +148,18 @@ cycle_check_main() {
 if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
   while [ $# -gt 0 ]; do
     case "$1" in
-      --board) PROJECT_NUMBER="$(board_resolve_name "${2:?--board needs a value}")" || exit 2; shift 2 ;;
+      --board)
+        [ $# -ge 2 ] || { echo "usage: cycle-check.sh [--board 3|4|5|6|7|<name>] <issue-number> <blocker-number>" >&2; exit 2; }
+        PROJECT_NUMBER="$(board_resolve_name "$2")" || exit 2
+        shift 2
+        ;;
       --) shift; break ;;
       -*) echo "unknown arg: $1" >&2; exit 2 ;;
       *) break ;;
     esac
   done
   if [ "$#" -ne 2 ]; then
-    echo "usage: cycle-check.sh <issue-number> <blocker-number> [--board 3|4|5|6|7|<name>]" >&2
+    echo "usage: cycle-check.sh [--board 3|4|5|6|7|<name>] <issue-number> <blocker-number>" >&2
     exit 2
   fi
   CYCLE_CHECK_ISSUE="${1#\#}"
