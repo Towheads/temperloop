@@ -3,7 +3,7 @@
 Every issue/epic processed by the autonomous pipeline driver carries one of two <!-- cite: WC.1 incident:F#567 -->
 **work-class labels**.
 
-**Scope has widened past the driver alone (epic Towheads/temperloop#1847).**
+**Scope has widened past the driver alone (epic Towheads/temperloop#1847 ("epic-as-metadata for operational work")).**
 The label started as one consumer's private setting — the autonomous pipeline
 driver's own autonomy policy for an item, § Policy table below — and now
 doubles as a **pipeline-wide routing key** that other pipeline stages read to
@@ -80,10 +80,9 @@ group is never split so that some legs drive autonomously while a sibling
 awaits operator judgment. This is the **same fail-safe direction** as the
 per-item rule above (a work class ambiguous at *any* granularity gets human
 judgment, never an autonomous merge), applied at the granularity `/sweep`'s
-admission gate actually operates on; it is not a new judgment call, only the
-per-item rule's existing rationale extended to cover a group rather than
-restated for it. A **uniformly-Foundational** group was never an Operational
-admission candidate in the first place and is reported `mixed_class_group:
+admission gate actually operates on — not a new judgment axis. A
+**uniformly-Foundational** group was never an Operational admission
+candidate in the first place and is reported `mixed_class_group:
 false` — the mixed-label anomaly this extension exists to catch is
 specifically a group straddling both labels, refused and surfaced (never
 silently skipped) per `claude/commands/sweep.md` Step 1 item 6's "On `admit:

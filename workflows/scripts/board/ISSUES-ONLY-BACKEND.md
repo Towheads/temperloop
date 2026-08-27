@@ -390,7 +390,7 @@ everything here was already backend-agnostic before this split touched it:
 All three functions gate on candidate items only (never the whole board) —
 same caveat as every per-issue REST accessor in this file.
 
-### Durable-logical vs computed-merge-safety edges (docs/adr/0031, epic #1847)
+### Durable-logical vs computed-merge-safety edges (docs/adr/0031, epic #1847 ("epic-as-metadata for operational work"))
 
 The `blocked_by` edges above are GitHub-native and always live — but not every
 edge in the pipeline is meant to live *there*. Two kinds coexist, and mixing

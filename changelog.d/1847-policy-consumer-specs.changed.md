@@ -1,7 +1,8 @@
 - **`work-class-policy.md` catches up to the Operational-epic sweep-admission
-  machinery `/sweep`/`/triage` already ship** (epic #1847). The policy table's
-  Operational autonomy path is now stated as `triage → sweep` (auto-merge per
-  chunk once CI green; modal, never timed, for a correlated set — e.g. an
+  machinery `/sweep`/`/triage` already ship** (epic #1847 ("epic-as-metadata
+  for operational work")). The policy table's Operational autonomy path is
+  now stated as `triage → sweep` (auto-merge per chunk once CI green;
+  modal, never timed, for a correlated set — e.g. an
   epic-admitted member chunk `gate.sh risk` flags), not the stale
   `triage → assess → build`. The doc now also states explicitly that the
   work-class labels have widened from a driver-private setting into a
