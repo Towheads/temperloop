@@ -14,12 +14,14 @@
 # $(ks_root)/issues/<owner>-<repo>/*.md), the same literal-text answer is
 # already sitting on local disk — a live call is redundant IF that render is
 # fresh. This file makes that substitution: search the rendered corpus first
-# (zero `gh` calls, zero network), and fall back to the exact same live
+# (zero `gh` calls, zero network), and fall back to the same live
 # `gh issue list --search ... in:body` call every caller used before this
 # item, whenever the corpus is absent or stale-beyond-limit. The fallback
-# path is not a degraded mode — it is bit-for-bit what every call site did
-# prior to this item, so a cold/never-rendered repo behaves exactly as
-# before.
+# path is not a degraded mode — it makes the same live call every call site
+# made prior to this item, then post-filters the hits against the LITERAL
+# marker (GitHub search is tokenized; see _issue_marker_probe_gh), so a
+# cold/never-rendered repo answers with the same precision the corpus path
+# gives.
 #
 # BOUNDARY: lives BESIDE issue-corpus.sh and cache.sh, never sources
 # board.sh, and (mirroring both siblings) takes an EXPLICIT "owner/repo"
@@ -191,7 +193,16 @@ _issue_marker_probe_corpus() {
 }
 
 # <owner/repo> <marker> -> JSON array on stdout, via the live gh fallback —
-# bit-for-bit the same call every caller made before this item existed.
+# the same `gh issue list --search "<marker> in:body"` call every caller made
+# before this item existed, PLUS a literal-marker post-filter. GitHub's
+# search is TOKENIZED, not literal: a `--search "Retro-for-epic: #1847
+# in:body"` query happily returns an issue whose body carries only
+# "Retro-for-epic: #1849" (shared tokens, different marker — the #1875
+# false-positive shape), and an unverified hit here makes an
+# idempotency-guarded caller silently skip a creation it should have made.
+# So each search hit's body is re-verified against the LITERAL marker with
+# the exact same `grep -F -- "$marker"` check the corpus path applies
+# (_issue_marker_probe_corpus), keeping the two paths' precision identical.
 _issue_marker_probe_gh() {
   local repo="$1" marker="$2" raw rc=0
   raw="$(_issue_marker_probe_gh_cmd issue list -R "$repo" --search "$marker in:body" --state all --json number,title,body 2>/dev/null)" || rc=$?
@@ -199,7 +210,18 @@ _issue_marker_probe_gh() {
     printf 'issue-marker-probe: gh search failed for %s (rate limit, auth, or network?)\n' "$repo" >&2
     return 1
   fi
-  printf '%s' "${raw:-[]}"
+  raw="${raw:-[]}"
+
+  # Post-filter: keep only hits whose BODY contains the literal marker.
+  local filtered='[]' row body
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    body="$(printf '%s' "$row" | jq -r '.body // ""')"
+    if printf '%s' "$body" | grep -F -- "$marker" >/dev/null; then
+      filtered="$(printf '%s' "$filtered" | jq -c --argjson r "$row" '. + [$r]')"
+    fi
+  done < <(printf '%s' "$raw" | jq -c '.[]' 2>/dev/null)
+  printf '%s' "$filtered"
 }
 
 # <owner/repo> <marker-string> -> JSON array on stdout (see the output
