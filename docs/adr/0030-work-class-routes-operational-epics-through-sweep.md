@@ -23,9 +23,7 @@ ceremony genuinely serves.
 
 epic: Towheads/temperloop#1847 — materialized from the ratified brief
 `Designs/temperloop - epic-as-metadata for operational work` (private
-knowledge store), which carries the full deliberation: the premise gate's
-null-hypothesis alternatives (auto-approve, demotion valve, and their
-union), the six-lens review findings, and the operator-ratified residuals.
+knowledge store), which carries fuller deliberation not reproduced here.
 
 ## Decision
 
@@ -43,7 +41,8 @@ and `/sweep` excludes any epic with a live plan note. Consent on attended
 runs is informed named-set consent (the pool report carries each admitted
 member's acceptance text) plus modal merges for correlated member sets;
 the autonomous pipeline tiers are explicitly not cut over by this
-decision (separate, soak-gated follow-up — temperloop#1848).
+decision (separate, soak-gated follow-up — temperloop#1848,
+"pipeline-drive sweep-cutover rewiring").
 
 ## Consequences
 

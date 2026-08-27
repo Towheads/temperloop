@@ -123,8 +123,9 @@ check-in claude/decision-queue-contract.md
 check-in workflows/scripts/tests/test_checkin_status_trailing_newline.sh
 
 # ── operational-drain — Operational epics drain via /sweep; epic-as-metadata ─
-# (epic #1847). Exact-path claims narrow the broad build-machinery
-# `workflows/scripts/build/*` glob (longest pattern wins) for the scripts
+# (epic #1847 "epic-as-metadata for operational work"). Exact-path claims
+# narrow the broad build-machinery `workflows/scripts/build/*` glob (longest
+# pattern wins) for the scripts
 # that exist solely to implement this capability's admission / refusal /
 # closing-gate seams; the cross-command spec edits stay with their own
 # command slugs above.

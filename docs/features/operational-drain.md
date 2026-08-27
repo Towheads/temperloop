@@ -8,18 +8,12 @@ slug: operational-drain
 ## Problem
 
 Epic membership used to be an execution router: any issue with a parent
-epic took the assess → plan → build ceremony path, and only ungrouped
-singletons drained through `/sweep`. Triage's group-by-meaning step
-therefore rerouted related *operational* fixes onto the heavyweight path —
-plan authoring, an operator approval round-trip, per-epic question gates —
-purely because a parent issue existed, even though
-`claude/work-class-policy.md` already classifies Operational
-(established-pattern) work as fully autonomous. An 86-plan-note probe
-(2026-08) found 29% of triage-born epics produced structurally trivial
-plans (one level, zero edges), and most of the rest shallow structure —
-while designed (`/workshop`-born) epics show the deep multi-level
-structure the plan ceremony genuinely serves. The ceremony cost was being
-paid where it bought nothing.
+epic took the assess → plan → build ceremony path, so triage's
+group-by-meaning step rerouted related *operational* fixes onto plan
+ceremony that bought them nothing — the evidence and full rationale live
+in docs/adr/0030. This page covers what that ADR does not: the mechanics
+of how an Operational epic's members drain and what the epic parent
+becomes.
 
 ## How it works
 
@@ -44,8 +38,9 @@ closing gate — never an execution router. The pieces:
 - **Mutual-exclusion guard, both sides**
   (`workflows/scripts/build/assess-operational-refusal.sh`): `/assess`
   refuses to decompose an Operational epic while the setting is on
-  (pipeline-drive-invoked runs are carved out until the #1848 router
-  cutover; an explicit operator override is always logged), and `/sweep`
+  (pipeline-drive-invoked runs are carved out until the router cutover —
+  #1848 "pipeline-drive sweep-cutover rewiring"; an explicit operator
+  override is always logged), and `/sweep`
   excludes plan-note-owned epics. **Claim-first is the last belt** closing
   the check-then-act window between the two probes.
 - **Durable logical order**: `/triage` stamps genuine meaning-level
@@ -115,7 +110,7 @@ is the acceptance proof).
 - Deferred, deliberately not cut over by this feature: the autonomous
   pipeline tiers still route Operational epics through the ceremony path
   (temperloop#1848), and retro's acceptance read for sweep-driven members
-  is temperloop#1849.
+  is temperloop#1849 (retro reads sweep-driven member acceptance).
 
 ## Resource impact
 
