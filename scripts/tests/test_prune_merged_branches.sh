@@ -161,6 +161,89 @@ else
   fail "squash-merged local branch should have been pruned — output:"$'\n'"$out2"
 fi
 
+# ---------------------------------------------------------------------------
+# Behind-checkout scenario (#1775): the local default branch is BEHIND
+# origin/main. A branch merged into origin/main is then NOT an ancestor of
+# HEAD, so `git branch -d` (which checks against HEAD, not $base) refuses it
+# even though the script classified it merged-into-origin/main. Pre-fix the
+# script under-deleted AND mislabeled the refusal "in use / worktree-bound";
+# post-fix the ancestry-vs-$base re-check escalates to -D and deletes it.
+# An unmerged branch in the same fixture must still be refused (no blanket -D).
+# ---------------------------------------------------------------------------
+build_fixture_behind() {
+  local tmp work
+  tmp="$(mktemp -d)"
+  work="$tmp/work"
+  git init -q --bare "$tmp/origin.git"
+  git clone -q "$tmp/origin.git" "$work" 2>/dev/null
+  git -C "$work" config user.email test@test
+  git -C "$work" config user.name Test
+  git -C "$work" commit -q --allow-empty -m init
+  git -C "$work" branch -M main
+  git -C "$work" push -q origin main
+
+  # behind-merged: merged into main and pushed — then local main is reset back
+  # BEHIND origin/main, so behind-merged is an ancestor of origin/main but NOT
+  # of the local HEAD.
+  git -C "$work" checkout -q -b behind-merged
+  git -C "$work" commit -q --allow-empty -m behind
+  git -C "$work" checkout -q main
+  git -C "$work" merge -q --no-ff behind-merged -m "merge behind-merged"
+  git -C "$work" push -q origin main
+  git -C "$work" reset -q --hard HEAD~1
+
+  # behind-unmerged: never merged anywhere — must survive untouched. Real
+  # content (not --allow-empty): an empty commit's empty patch-id would
+  # spuriously cherry-match the empty 'behind' commit on origin/main inside
+  # merged-detect's squash heuristic, which is a fixture artifact, not the
+  # under-test behavior.
+  git -C "$work" checkout -q -b behind-unmerged
+  printf 'unmerged content\n' > "$work/unmerged.txt"
+  git -C "$work" add unmerged.txt
+  git -C "$work" commit -q -m "behind-unmerged: add unmerged.txt"
+  git -C "$work" checkout -q main
+
+  echo "$work"
+}
+
+work3="$(build_fixture_behind)"
+
+# Fixture sanity: local main is behind origin/main and the branch is an
+# ancestor of origin/main but not of HEAD — the exact disagreement under test.
+if git -C "$work3" merge-base --is-ancestor behind-merged origin/main \
+   && ! git -C "$work3" merge-base --is-ancestor behind-merged main; then
+  pass "behind fixture sanity: branch merged into origin/main but not local main"
+else
+  fail "behind fixture sanity: fixture does not reproduce the behind-checkout shape"
+fi
+
+out3="$(cd "$work3" && bash "$SCRIPT" --apply 2>&1)"; rc3=$?
+if [ "$rc3" -eq 0 ]; then pass "behind scenario: exit 0"
+else fail "behind scenario: expected exit 0, got $rc3 — output:"$'\n'"$out3"; fi
+
+# THE #1775 REGRESSION: the origin/main-classified branch is actually deleted
+# even though the local default branch is behind origin.
+if ! git -C "$work3" rev-parse --verify -q behind-merged >/dev/null 2>&1; then
+  pass "behind-merged deleted despite local main being behind origin (#1775)"
+else
+  fail "behind-merged should have been deleted — output:"$'\n'"$out3"
+fi
+
+# The misleading-diagnosis half: no 'in use / worktree-bound' claim for a
+# branch that was never worktree-bound.
+if ! grep -q "skipped (in use / worktree-bound)" <<<"$out3"; then
+  pass "no misleading 'in use / worktree-bound' skip on the behind checkout"
+else
+  fail "misleading worktree-bound skip printed — output:"$'\n'"$out3"
+fi
+
+# No blanket -D: the genuinely unmerged branch survives.
+if git -C "$work3" rev-parse --verify -q behind-unmerged >/dev/null 2>&1; then
+  pass "behind-unmerged kept — deletion still refused for unconfirmed branches"
+else
+  fail "behind-unmerged must never be deleted"
+fi
+
 echo "  ---"
 echo "  PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ]
