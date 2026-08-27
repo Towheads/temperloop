@@ -27,6 +27,13 @@
 #      stale-beyond-limit (case 7, corpus files present but cache_dirty'd
 #      stale) -- and propagates a live-fallback failure as rc 1 with no
 #      fabricated output (case 8).
+#   3. Precision (temperloop#1875): GitHub search is tokenized, so the fake
+#      gh seam replays a SUPERSET of the ground truth -- the true match plus
+#      issue #5, a token-match-only hit whose body lacks the literal marker
+#      (the #1849/#1847 false-positive shape). The fallback path must
+#      post-filter it out with the same grep -F literal-body check the
+#      corpus path applies (case 3b; cases 3/4/7's diffs against the
+#      ground truth double as the corpus/fallback precision-parity proof).
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -81,6 +88,13 @@ PAGE='[
 # so the "ground truth" can never drift from the data both code paths read.
 EXPECTED_MATCH="$(printf '%s' "$PAGE" | jq -c '[.[] | select(.number==1) | {number,title,body}]')"
 
+# What the live gh search RETURNS is a superset of the ground truth: GitHub's
+# search is tokenized, so a `--search "Retro-for-epic: #7 in:body"` query also
+# returns issue #5, whose body carries only "Retro-for-epic: #9" — shared
+# tokens, different marker (the temperloop#1875 / #1849-vs-#1847
+# false-positive shape). The fallback path must post-filter it out.
+GH_RAW="$(printf '%s' "$EXPECTED_MATCH" | jq -c '. + [{"number":5,"title":"Tokenized near-miss","body":"Retro-for-epic: #9\n\nshares search tokens with the marker but lacks the literal marker"}]')"
+
 _cache_gh() {
   case "$*" in
     *"issues?state=all"*"--paginate"*) printf '%s' "$PAGE"; return 0 ;;
@@ -96,9 +110,10 @@ _cache_gh() {
 }
 # shellcheck disable=SC2317,SC2329
 
-# Fake live-fallback seam: replays EXPECTED_MATCH for the real marker search,
-# fails for anything else. Overridden AFTER sourcing issue-marker-probe.sh
-# (source order matters for a function-redefinition seam, same as _cache_gh).
+# Fake live-fallback seam: replays GH_RAW (ground truth + the tokenized
+# false-positive issue #5) for the real marker search, fails for anything
+# else. Overridden AFTER sourcing issue-marker-probe.sh (source order matters
+# for a function-redefinition seam, same as _cache_gh).
 GH_FAIL=0
 _issue_marker_probe_gh_cmd() {
   printf 'CALL: %s\n' "$*" >> "$FAKE_GH_LOG"
@@ -106,7 +121,7 @@ _issue_marker_probe_gh_cmd() {
     return 1
   fi
   case "$*" in
-    *"--search"*"in:body"*) printf '%s' "$EXPECTED_MATCH"; return 0 ;;
+    *"--search"*"in:body"*) printf '%s' "$GH_RAW"; return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -147,6 +162,14 @@ out3="$(issue_marker_probe "$REPO" "$MARKER")"
 diff <(printf '%s' "$out3" | jq -Sc '.') <(printf '%s' "$EXPECTED_MATCH" | jq -Sc '.') >/dev/null \
   || fail "3: fallback output should equal the ground truth match (got: $out3)"
 echo "PASS: 3 absent corpus falls back to gh cleanly, returning the expected match"
+
+# --- 3b. tokenized false positive is post-filtered out of the gh fallback ----
+# The fake gh seam returned issue #5 (body shares search tokens with the
+# marker but lacks the LITERAL marker — the #1849/#1847 false-positive
+# shape); the fallback path must have grep -F-verified it away.
+printf '%s' "$out3" | jq -e '[.[] | select(.number==5)] | length == 0' >/dev/null \
+  || fail "3b: a token-match-only search hit (body lacks the literal marker) must be excluded from the fallback result (got: $out3)"
+echo "PASS: 3b a tokenized search hit whose body lacks the literal marker is excluded by the gh-fallback post-filter"
 
 # --- 4. build the corpus, then re-probe: corpus path used, IDENTICAL output --
 cache_refresh "$REPO" >/dev/null 2>&1
