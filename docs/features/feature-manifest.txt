@@ -148,6 +148,12 @@ telemetry workflows/scripts/validate-issue-touch-emit.sh
 telemetry workflows/scripts/validate-knowledge-search-emit.sh
 telemetry workflows/scripts/telemetry-brief.sh
 telemetry workflows/scripts/tests/test_command_run_emit.sh
+# test_command_run_emit_epics.sh (temperloop item "epic-closing-gate", epic
+# #1847) is the dedicated fixture suite for the epics_reviewed/epics_closed/
+# epics_left_open schema extension on emit-command-run.sh, claimed two lines
+# up — same sibling-test-file convention as test_command_run_emit.sh
+# immediately above.
+telemetry workflows/scripts/tests/test_command_run_emit_epics.sh
 telemetry workflows/scripts/tests/test_telemetry_brief.sh
 
 # ── async-workflow-health — the red-asynchronous-workflow alarm ────────────
