@@ -107,8 +107,13 @@ if [ -f "$BUILD_MIRROR" ] && ! grep -q 'board_host_label' "$BUILD_MIRROR"; then
 fi
 
 # --- 2: every documented call site actually calls the helper --------------
+# board_own_stamp (lib/board.sh) wraps board_host_label as the single owner of
+# the full `<host>:<sess8>` claim-stamp format (temperloop#1220/#1823), so a
+# site that routes through IT reaches the shared host chain too — either name
+# satisfies this lint (release.sh moved to board_own_stamp in #1823).
 for f in claim.sh release.sh capture.sh reconcile.sh; do
-  grep -q 'board_host_label' "$BOARD_DIR/$f" || fail "$f does not call board_host_label"
+  grep -qE 'board_host_label|board_own_stamp' "$BOARD_DIR/$f" \
+    || fail "$f calls neither board_host_label nor board_own_stamp"
 done
 
 # --- load the helper for the behavioral tests below ------------------------

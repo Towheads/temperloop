@@ -318,9 +318,12 @@ cmd_claim_item() {
   [ -z "$epic" ] || validate_num "--epic" "$epic"
   repo="$(board_repo "$board")"
 
+  # our_host/our_sess feed claim.sh's environment below; the stamp itself comes
+  # from the board.sh owner (board_own_stamp, temperloop#1220/#1823) — never
+  # re-derived here — so the pre-check compares the exact string claim.sh writes.
   our_host="$(board_host_label)"
   our_sess="${CLAUDE_CODE_SESSION_ID:-}"
-  if [ -n "$our_sess" ]; then our_stamp="${our_host}:${our_sess:0:8}"; else our_stamp="${our_host}:manual"; fi
+  our_stamp="$(board_own_stamp)"
 
   # Contention pre-check — resolve the ONE item live (single-item, never the
   # whole board), read its Status + Host/Session stamp.
@@ -495,7 +498,7 @@ cmd_file_retro() {
 #   PARK_FOREIGN  — In Progress under a DIFFERENT session's stamp, untouched
 #   PARK_SKIPPED  — closed, or not In Progress (nothing to park)
 cmd_park_epic() {
-  local board="" epic="" repo our_host our_sess our_stamp
+  local board="" epic="" repo our_stamp
   while [ $# -gt 0 ]; do
     case "$1" in
       --board) [ $# -ge 2 ] || usage; board="$2"; shift ;;
@@ -508,9 +511,8 @@ cmd_park_epic() {
   validate_num "--epic" "$epic"
   repo="$(board_repo "$board")"
 
-  our_host="$(board_host_label)"
-  our_sess="${CLAUDE_CODE_SESSION_ID:-}"
-  if [ -n "$our_sess" ]; then our_stamp="${our_host}:${our_sess:0:8}"; else our_stamp="${our_host}:manual"; fi
+  # Own stamp via the board.sh owner (temperloop#1220/#1823) — never re-derived.
+  our_stamp="$(board_own_stamp)"
 
   local state
   state="$(_board_gh api "repos/$repo/issues/$epic" --jq '.state' 2>/dev/null)" \

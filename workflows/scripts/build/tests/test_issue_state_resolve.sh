@@ -162,6 +162,20 @@ OUT="$(SUBSET_HOST_LABEL=thishost CLAUDE_CODE_SESSION_ID=aaaaaaaa-1111-2222-3333
 [ "$(jq -r '.route' <<<"$OUT")" != "claimed-elsewhere" ] && ok "route != claimed-elsewhere (got $(jq -r '.route' <<<"$OUT"))" || bad "t5b.route" "wrongly claimed-elsewhere"
 [ "$(jq -r '.claim.by_me' <<<"$OUT")" = "true" ] && ok "claim.by_me=true" || bad "t5b.by_me" "got $(jq -r '.claim.by_me' <<<"$OUT")"
 
+# ── 5c: a :manual claim read back by the SAME session-id-less run -> by_me
+# (temperloop#1823 regression: the hand-rolled derivation left cur_stamp empty
+# with no $CLAUDE_CODE_SESSION_ID, so a manual run's own `<host>:manual` claim
+# read by_me=false / claimed-elsewhere. board_own_stamp handles the :manual arm.)
+echo "--- test 5c: claimed under this run's own <host>:manual stamp -> not claimed-elsewhere ---"
+FX="$TMP/t5c"; seed "$FX"
+cat > "$FX/issue-116.json" <<'JSON'
+{"state":"OPEN","labels":[{"name":"fnd:status:in-progress"},{"name":"fnd:host/session:thishost:manual"}],"assignees":[]}
+JSON
+OUT="$(SUBSET_HOST_LABEL=thishost CLAUDE_CODE_SESSION_ID= \
+  bash "$CLI" resolve acme/widgets 116 --dry-run --fixture "$FX")"
+[ "$(jq -r '.route' <<<"$OUT")" != "claimed-elsewhere" ] && ok "route != claimed-elsewhere (got $(jq -r '.route' <<<"$OUT"))" || bad "t5c.route" "wrongly claimed-elsewhere"
+[ "$(jq -r '.claim.by_me' <<<"$OUT")" = "true" ] && ok "claim.by_me=true (manual stamp)" || bad "t5c.by_me" "got $(jq -r '.claim.by_me' <<<"$OUT")"
+
 # ── test 6: labeled needs-clarification -> question-first ───────────────
 echo "--- test 6: labeled needs-clarification -> question-first ---"
 FX="$TMP/t6"; seed "$FX"
