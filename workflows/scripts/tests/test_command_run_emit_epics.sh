@@ -29,8 +29,10 @@ set -uo pipefail
 HERE="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd -P "$HERE/../../.." && pwd)"
 EMIT="$REPO/workflows/scripts/emit-command-run.sh"
+SWEEP_MD="$REPO/claude/commands/sweep.md"
 
 [ -f "$EMIT" ] || { echo "FATAL: emit-command-run.sh not found at $EMIT" >&2; exit 1; }
+[ -f "$SWEEP_MD" ] || { echo "FATAL: sweep.md not found at $SWEEP_MD" >&2; exit 1; }
 command -v jq >/dev/null 2>&1 || { echo "FATAL: jq required for this test" >&2; exit 1; }
 
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/command-run-emit-epics-test.XXXXXX")"
@@ -128,6 +130,22 @@ check "...stderr names the offending flag" \
   bash -c "grep -Fq -- '--epics-reviewed must be a non-negative integer' <<<\"\$1\"" _ "$EMIT_ERR"
 check_eq "...and no record was emitted at all (a malformed count is an infra error, not an accounting one)" \
   "0" "$(lake_lines l6)"
+
+echo "── 7. round-6 escalation HIGH: a failed close write must not render as 'Offered, declined' ──"
+check "sweep.md names the close-write-failed outcome, distinct from declined" \
+  grep -Fq 'close-write-failed' "$SWEEP_MD"
+check "sweep.md's report carries the seventh row shape for a failed close write" \
+  grep -Fq 'close approved but write failed this run' "$SWEEP_MD"
+check "sweep.md states the misattribution rationale (recurring write breakage != operator declining)" \
+  grep -Fq 'never misattributed as the operator repeatedly declining' "$SWEEP_MD"
+check "sweep.md keeps the tally arithmetic-only (write-failed still tallies under epics_left_open)" \
+  grep -Fq 'the tally is arithmetic-only and does not distinguish the two' "$SWEEP_MD"
+
+echo "── 8. round-6 escalation LOW: epic_open's data source is named explicitly ──"
+check "sweep.md names board_item_list as the open-only slice epic_open relies on" \
+  grep -Fq "board's ACTIVE (open) slice" "$SWEEP_MD"
+check "sweep.md states epic_open is true for every candidate arm (b)'s query returns" \
+  grep -Fq '`epic_open` is true for every candidate this query returns' "$SWEEP_MD"
 
 echo
 if [ "$fail" -gt 0 ]; then
