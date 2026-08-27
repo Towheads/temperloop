@@ -147,6 +147,11 @@ milestone_list() {
   done <<<"$all"
   [ -n "$active_out" ]   && printf '── active ──\n%s' "$active_out"
   [ -n "$inactive_out" ] && printf '── inactive ──\n%s' "$inactive_out"
+  # A successful, complete listing is success regardless of which groups were
+  # non-empty — without this, an all-active board makes the trailing
+  # `[ -n "$inactive_out" ] && printf` evaluate false and the function return 1
+  # (temperloop#1826).
+  return 0
 }
 
 # True if $1 is an exact match for any of the remaining args.

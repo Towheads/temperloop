@@ -154,6 +154,48 @@ grep -Eq '○ v2' <<<"$OUT" || fail "list: v2 should be shown as inactive\n$OUT"
 grep -q "v2.*active" <<<"$OUT" && fail "list: v2 (no marker) must NOT be flagged active\n$OUT"
 echo "PASS: milestone_list flags active milestones and shows inactive ones plainly"
 
+# --- milestone_list: exits 0 on a successful listing in all three truth-table
+# --- cases (temperloop#1826 — the trailing `[ -n "$inactive_out" ] && printf`
+# --- made the all-active case return 1) ------------------------------------------
+
+# All-active: the case that fires the bug. Exit 0, and output unchanged (an
+# active section, no inactive section).
+MILESTONES_JSON='[
+  {"title":"Production Live","number":7,"description":"Ship.\n<!-- triage:active -->"},
+  {"title":"hardening","number":9,"description":"<!-- triage:active -->"}
+]'
+RC=0; OUT="$(milestone_list 3)" || RC=$?
+[ "$RC" -eq 0 ] || fail "list(all-active): expected exit 0, got $RC\n$OUT"
+grep -q '── active ──' <<<"$OUT"   || fail "list(all-active): expected the active section\n$OUT"
+grep -q '── inactive ──' <<<"$OUT" && fail "list(all-active): must not print an inactive section\n$OUT"
+grep -q "Production Live.*active" <<<"$OUT" || fail "list(all-active): Production Live should be flagged active\n$OUT"
+grep -q "hardening.*active" <<<"$OUT"       || fail "list(all-active): hardening should be flagged active\n$OUT"
+echo "PASS: milestone_list exits 0 when every open milestone is active"
+
+# Mixed: exit 0, both sections present.
+MILESTONES_JSON='[
+  {"title":"Production Live","number":7,"description":"Ship.\n<!-- triage:active -->"},
+  {"title":"v2","number":8,"description":"Future work."}
+]'
+RC=0; OUT="$(milestone_list 3)" || RC=$?
+[ "$RC" -eq 0 ] || fail "list(mixed): expected exit 0, got $RC\n$OUT"
+grep -q '── active ──' <<<"$OUT"   || fail "list(mixed): expected the active section\n$OUT"
+grep -q '── inactive ──' <<<"$OUT" || fail "list(mixed): expected the inactive section\n$OUT"
+echo "PASS: milestone_list exits 0 on a mixed active/inactive listing"
+
+# All-inactive: exit 0, only the inactive section.
+MILESTONES_JSON='[
+  {"title":"v2","number":8,"description":"Future work."},
+  {"title":"backlog","number":10,"description":""}
+]'
+RC=0; OUT="$(milestone_list 3)" || RC=$?
+[ "$RC" -eq 0 ] || fail "list(all-inactive): expected exit 0, got $RC\n$OUT"
+grep -q '── active ──' <<<"$OUT"   && fail "list(all-inactive): must not print an active section\n$OUT"
+grep -q '── inactive ──' <<<"$OUT" || fail "list(all-inactive): expected the inactive section\n$OUT"
+grep -Eq '○ v2' <<<"$OUT"      || fail "list(all-inactive): v2 should be listed inactive\n$OUT"
+grep -Eq '○ backlog' <<<"$OUT" || fail "list(all-inactive): backlog should be listed inactive\n$OUT"
+echo "PASS: milestone_list exits 0 when every open milestone is inactive"
+
 # --- park is gone: the subcommand no longer dispatches --------------------------
 if milestone_main park 601 "Production Live" --board 3 >/dev/null 2>&1; then
   fail "park: the removed subcommand must not succeed"
