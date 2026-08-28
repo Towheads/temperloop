@@ -1634,6 +1634,154 @@ count
 rm -f "$CANARY"
 ok "L2 the canary is genuinely capable of firing (so L1 is a measurement, not a tautology)"
 
+# ═══════════════════════════════════════════════════════════════════════════
+# SECTION R — --retry-stage: a timed-out leg is recoverable (temperloop#1693)
+# ═══════════════════════════════════════════════════════════════════════════
+# An integration-error leg matched neither retry arm before this flag, so it
+# fell through to legs_done and was PERMANENTLY unrecoverable against its state
+# dir. On the #1656 A/A run that cost 10 of 28 records a leg — and with it the
+# whole record, since a timed-out leg carries no token envelope and the report
+# pairs only outcomes present in BOTH arms. 18 paired outcomes against a floor
+# of 20, so the run returned `inconclusive` on sample size for a reason
+# unrelated to what it set out to measure.
+#
+# The stub sleeps past a deliberately tiny REPLAY_CANDIDATE_TIMEOUT_SECS, so
+# these are REAL candidate-timeout records produced by the real wall in
+# replay.sh — not hand-written state files asserting the shape we hope for.
+TO_STUB="$WORK/stub-timeout.sh"
+cat >"$TO_STUB" <<STUBEOF
+#!/usr/bin/env bash
+set -u
+printf 'timeout-stub %s\n' "\$1" >>"$CAND_LOG"
+sleep 5
+STUBEOF
+chmod +x "$TO_STUB"
+
+CORPUS_TO="$WORK/corpus-timeout.jsonl"
+{ mk_corpus_line 601 eligible "$BASE"
+  mk_corpus_line 602 eligible "$BASE"; } >"$CORPUS_TO"
+TO_OUT="$WORK/out-timeout"; TO_STATE="$WORK/state-timeout"
+mkdir -p "$TO_OUT" "$TO_STATE"
+
+: >"$CAND_LOG"
+DRIVE_ARGS=(--corpus-file "$CORPUS_TO" --repo-root "$REPO" --out-dir "$TO_OUT" --state-dir "$TO_STATE"
+            --baseline-runner "bash $BASE_STUB" --candidate-runner "bash $TO_STUB"
+            --judge-runner "bash $JUDGE_STUB" --confirm)
+drive "" REPLAY_CANDIDATE_TIMEOUT_SECS=1
+
+# R1 — the setup is genuinely candidate-timeout, not some other failure.
+count
+to_ie="$(grep -l '"candidate-timeout"' "$TO_STATE"/legs/*/*.state.json 2>/dev/null | wc -l | tr -d ' ')"
+[ "$to_ie" = "2" ] \
+  || fail "R1: expected 2 candidate-timeout leg states on disk, got $to_ie: $(cat "$TO_STATE"/legs/candidate/*.state.json 2>/dev/null)"
+[ "$(jq -r '.legs.integration_error_n' <<<"$OUT")" = "2" ] \
+  || fail "R1: expected 2 integration-error legs, got: $(jq -c .legs <<<"$OUT")"
+ok "R1 the fixture produces REAL candidate-timeout records from replay.sh own wall, not hand-written state"
+
+# R2 — --retry-failed ALONE still refuses them. This is today's protection,
+#      and the flag must not quietly broaden it.
+count
+: >"$CAND_LOG"
+DRIVE_ARGS=(--corpus-file "$CORPUS_TO" --repo-root "$REPO" --out-dir "$TO_OUT" --state-dir "$TO_STATE"
+            --baseline-runner "bash $BASE_STUB" --candidate-runner "bash $TO_STUB"
+            --judge-runner "bash $JUDGE_STUB" --retry-failed --confirm)
+drive "" REPLAY_CANDIDATE_TIMEOUT_SECS=1
+[ "$(grep -c 'timeout-stub' "$CAND_LOG" 2>/dev/null || true)" = "0" ] \
+  || fail "R2: --retry-failed alone must NOT re-drive an integration-error leg, but it ran $(grep -c 'timeout-stub' "$CAND_LOG") leg(s)"
+[ "$(jq -r '.legs.resumed_n' <<<"$OUT")" -ge 2 ] \
+  || fail "R2: the timed-out legs must be resumed, not re-spent: $(jq -c .legs <<<"$OUT")"
+ok "R2 --retry-failed alone still refuses an integration-error leg — the conservative default is untouched"
+
+# R3 — --retry-stage candidate-timeout DOES re-drive them, and re-drives ONLY
+#      them: the already-scored baseline partner keeps its terminal state.
+count
+: >"$CAND_LOG"
+DRIVE_ARGS=(--corpus-file "$CORPUS_TO" --repo-root "$REPO" --out-dir "$TO_OUT" --state-dir "$TO_STATE"
+            --baseline-runner "bash $BASE_STUB" --candidate-runner "bash $TO_STUB"
+            --judge-runner "bash $JUDGE_STUB" --retry-stage candidate-timeout --confirm)
+drive "" REPLAY_CANDIDATE_TIMEOUT_SECS=1
+# Both stubs append to the same log, keyed by what they write, so one file
+# measures BOTH halves of the claim: the timed-out legs re-ran, the scored
+# partner did not.
+[ "$(grep -c 'timeout-stub' "$CAND_LOG" 2>/dev/null || true)" = "2" ] \
+  || fail "R3: --retry-stage candidate-timeout must re-drive both timed-out legs, got $(grep -c 'timeout-stub' "$CAND_LOG"): $(cat "$CAND_LOG")"
+[ "$(grep -c 'recorded-baseline-model' "$CAND_LOG" 2>/dev/null || true)" = "0" ] \
+  || fail "R3: the already-scored BASELINE partner must not be re-spent, but it ran $(grep -c 'recorded-baseline-model' "$CAND_LOG") leg(s): $(cat "$CAND_LOG")"
+ok "R3 --retry-stage candidate-timeout re-drives exactly the timed-out legs, and never their already-scored partner"
+
+# R4 — the recovery is real: with a wall the stub can finish under, the same
+#      state dir reaches a SCORED leg. Without this the flag would only be
+#      proved to re-run something, not to recover the run paired-N.
+count
+: >"$CAND_LOG"
+DRIVE_ARGS=(--corpus-file "$CORPUS_TO" --repo-root "$REPO" --out-dir "$TO_OUT" --state-dir "$TO_STATE"
+            --baseline-runner "bash $BASE_STUB" --candidate-runner "bash $CAND_STUB"
+            --judge-runner "bash $JUDGE_STUB" --retry-stage candidate-timeout --confirm)
+drive "" REPLAY_CANDIDATE_TIMEOUT_SECS=120
+[ "$(jq -r '.legs.scored_n' <<<"$OUT")" -ge 2 ] \
+  || fail "R4: re-driving at a longer wall must reach SCORED legs, got: $(jq -c .legs <<<"$OUT")"
+[ "$(jq -r '.legs.integration_error_n' <<<"$OUT")" = "0" ] \
+  || fail "R4: no integration-error leg should remain after a successful re-drive: $(jq -c .legs <<<"$OUT")"
+ok "R4 re-driving at a longer wall RECOVERS the leg to scored — the paired outcome is restored, not merely re-attempted"
+
+# R5 — an unrecognised stage is REFUSED, never accepted-and-ignored. A silent
+#      no-op reads exactly like "there was nothing to retry", which is the
+#      failure this validation exists to make impossible.
+count
+bad_rc=0
+env BUILD_QUOTA_CACHE="$NOCACHE" MODEL_USAGE_RAW_DIR="$LAKE" \
+  bash "$SUT" run --corpus-file "$CORPUS_TO" --repo-root "$REPO" \
+  --out-dir "$TO_OUT" --state-dir "$TO_STATE" --retry-stage candidate-timout \
+  >/dev/null 2>"$WORK/badstage.err" || bad_rc=$?
+[ "$bad_rc" -eq 2 ] || fail "R5: an unknown --retry-stage must exit 2, got $bad_rc"
+grep 'is not an integration-error stage' "$WORK/badstage.err" >/dev/null \
+  || fail "R5: the refusal must name the problem: $(cat "$WORK/badstage.err")"
+grep 'candidate-timeout' "$WORK/badstage.err" >/dev/null \
+  || fail "R5: the refusal must list the known stages so the typo is fixable from the message"
+ok "R5 an unknown --retry-stage exits 2 and lists the valid stages, rather than silently retrying nothing"
+
+# R6 — MUTATION PROOF. Neuter the stage gate and R3 must go red: the re-drive
+#      is that gate, not some pre-existing resume behaviour.
+count
+# Mirrored into a full tree (mk_mirror), NOT copied to a bare path: batch.sh
+# resolves replay.sh relative to its own location, so a mutant sitting alone in
+# $WORK cannot run at all — it exits CANNOT_EVALUATE with "replay.sh not found"
+# and re-drives 0 legs for a reason that has nothing to do with the gate. That
+# is exactly how this proof read as PASSING before the guards below were added.
+MUT_R="$WORK/mut-retry-stage"; mk_mirror "$MUT_R"
+MUT_R_SUT="$MUT_R/workflows/scripts/model-comparison/batch.sh"
+unlink_and_copy "$MUT_R_SUT"
+# mutate_file dies unless the old text matches EXACTLY once, so a refactor that
+# moves this gate fails the suite loudly instead of quietly voiding the proof.
+mutate_file "$MUT_R_SUT" \
+  '            *" $prev_stage "*) [ -n "$prev_stage" ] && retryable=1 ;;' \
+  '            *" $prev_stage "*) : ;;'
+
+MUT_STATE="$WORK/state-timeout-mut"; MUT_OUT="$WORK/out-timeout-mut"
+rm -rf "$MUT_STATE" "$MUT_OUT"; mkdir -p "$MUT_STATE" "$MUT_OUT"
+# Build the timed-out state with the UNMUTATED driver, so the only difference
+# at the retry step is the gate itself.
+: >"$CAND_LOG"
+DRIVE_ARGS=(--corpus-file "$CORPUS_TO" --repo-root "$REPO" --out-dir "$MUT_OUT" --state-dir "$MUT_STATE"
+            --baseline-runner "bash $BASE_STUB" --candidate-runner "bash $TO_STUB"
+            --judge-runner "bash $JUDGE_STUB" --confirm)
+drive "" REPLAY_CANDIDATE_TIMEOUT_SECS=1
+[ "$(grep -c 'candidate-timeout' "$MUT_STATE"/legs/*/*.state.json 2>/dev/null | grep -vc ':0$' || true)" != "0" ] \
+  || fail "R6: the mutant fixture has no candidate-timeout legs to retry, so the proof would be vacuous"
+
+: >"$CAND_LOG"
+DRIVE_ARGS=(--corpus-file "$CORPUS_TO" --repo-root "$REPO" --out-dir "$MUT_OUT" --state-dir "$MUT_STATE"
+            --baseline-runner "bash $BASE_STUB" --candidate-runner "bash $TO_STUB"
+            --judge-runner "bash $JUDGE_STUB" --retry-stage candidate-timeout --confirm)
+drive "$MUT_R_SUT" REPLAY_CANDIDATE_TIMEOUT_SECS=1
+# The mutant must have RUN — reached its own summary — not died resolving a
+# path. Without this the proof cannot tell "chose not to retry" from "crashed".
+printf '%s' "$OUT" | jq -e '.outcome and (.outcome != "CANNOT_EVALUATE")' >/dev/null 2>&1 \
+  || fail "R6: the mutant did not run to a summary (rc=$RC, outcome=$(printf '%s' "$OUT" | jq -r '.outcome // "unparseable"')) — its 0 re-drives measure a failure to start, not the gate"
+[ "$(grep -c 'timeout-stub' "$CAND_LOG" 2>/dev/null || true)" = "0" ] \
+  || fail "R6: the mutation proof did not fire — a batch with the stage gate neutered still re-drove $(grep -c 'timeout-stub' "$CAND_LOG") leg(s), so R3 proves nothing"
+ok "R6 MUTATION PROOF: a driver that RAN to its own summary with the stage gate neutered re-drives nothing — R3 measures that gate"
+
 echo
 echo "test_replay_batch.sh: $pass/$total checks passed"
 [ "$pass" -eq "$total" ] || exit 1
