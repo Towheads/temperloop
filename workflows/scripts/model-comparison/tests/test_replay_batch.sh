@@ -1634,6 +1634,78 @@ count
 rm -f "$CANARY"
 ok "L2 the canary is genuinely capable of firing (so L1 is a measurement, not a tautology)"
 
+# ═══════════════════════════════════════════════════════════════════════════
+# SECTION W — leg state writes are ATOMIC, torn files are named (#1764)
+# ═══════════════════════════════════════════════════════════════════════════
+# The five leg-state writes used a plain `>` redirect: truncate first, write
+# second. An interrupt in between leaves a TORN file, and the resume path read
+# no `.state` from it and dropped the leg into its generic failure arm --
+# counted `legs_failed`, reason "no reason recorded", never re-driven. For a leg
+# that may have SCORED, with a real record already in the arm file and real
+# money already spent. The #1656 run survived exactly this: 49 of 49 state files
+# happened to be valid JSON after an ENOSPC mid-write, which is luck.
+ATOM_OUT="$WORK/out-atomic"; ATOM_STATE="$WORK/state-atomic"
+mkdir -p "$ATOM_OUT" "$ATOM_STATE"
+: >"$CAND_LOG"
+DRIVE_ARGS=(--corpus-file "$CORPUS_A" --repo-root "$REPO" --out-dir "$ATOM_OUT" --state-dir "$ATOM_STATE"
+            --baseline-runner "bash $BASE_STUB" --candidate-runner "bash $CAND_STUB"
+            --judge-runner "bash $JUDGE_STUB" --confirm)
+drive ""
+
+count
+# W1 — THE ACCEPTANCE CHECK: every state file on disk parses. Asserted over the
+# whole state dir rather than a sampled one, because a partial write is exactly
+# the thing that would hide in the file nobody happened to look at.
+w_total=0; w_bad=0
+for f in "$ATOM_STATE"/legs/*/*.state.json; do
+  [ -f "$f" ] || continue
+  w_total=$(( w_total + 1 ))
+  jq -e 'type == "object" and (.state | type) == "string"' <"$f" >/dev/null 2>&1 || w_bad=$(( w_bad + 1 ))
+done
+[ "$w_total" -gt 0 ] || fail "W1: no leg state files were written, so this proves nothing"
+[ "$w_bad" -eq 0 ] || fail "W1: $w_bad of $w_total leg state files do not parse as an object carrying a string .state"
+ok "W1 every one of the $w_total leg state files on disk is whole and carries a readable state"
+
+count
+# W2 — no temp file is left behind. bd_write_state writes into the SAME
+# directory as its target (a rename across filesystems is not atomic), so a
+# leaked temp would sit right beside the real state files.
+w_tmp="$(find "$ATOM_STATE" -name '.state.*' 2>/dev/null | wc -l | tr -d ' ')"
+[ "$w_tmp" = "0" ] || fail "W2: $w_tmp temp state file(s) left behind in the state dir: $(find "$ATOM_STATE" -name '.state.*' | head -3)"
+ok "W2 the atomic write leaves no temp file behind in the state dir"
+
+count
+# W3 — A TORN FILE IS NAMED, not swallowed. Truncate a SCORED leg's state and
+# resume: the leg must be reported under its own reason saying the outcome is
+# unknown, and must NOT carry the generic "no reason recorded".
+TORN="$(find "$ATOM_STATE"/legs/candidate -name '*.state.json' | head -1)"
+[ -n "$TORN" ] || fail "W3: no candidate leg state file to tear"
+[ "$(jq -r '.state' <"$TORN")" = "scored" ] || fail "W3: the fixture leg is not scored, so tearing it proves nothing: $(cat "$TORN")"
+printf '{"state":"sco' >"$TORN"     # a prefix, exactly what a truncate-then-write interrupt leaves
+: >"$CAND_LOG"
+drive ""
+torn_reason="$(jq -r '.failures // [] | map(select(.reason | test("torn or damaged"))) | length' <<<"$OUT")"
+[ "$torn_reason" -ge 1 ] \
+  || fail "W3: a torn state file must be reported under its own reason, got: $(jq -c '.failures' <<<"$OUT")"
+[ "$(jq -r '.failures // [] | map(select(.reason == "no reason recorded")) | length' <<<"$OUT")" = "0" ] \
+  || fail "W3: a torn state file must NOT be reported as a generic failure with no reason"
+ok "W3 a torn state file is reported as UNKNOWN with its own reason, never as a generic failure"
+
+count
+# W4 — …and it is not re-spent by default, but IS recoverable on an explicit
+# ask. The leg may have been billed already, so the default protects; the
+# operator asking is what makes the spend a decision.
+[ "$(grep -c 'recorded-candidate-model' "$CAND_LOG" 2>/dev/null || true)" = "0" ] \
+  || fail "W4: a torn leg must NOT be blindly re-spent on a plain resume"
+: >"$CAND_LOG"
+DRIVE_ARGS=(--corpus-file "$CORPUS_A" --repo-root "$REPO" --out-dir "$ATOM_OUT" --state-dir "$ATOM_STATE"
+            --baseline-runner "bash $BASE_STUB" --candidate-runner "bash $CAND_STUB"
+            --judge-runner "bash $JUDGE_STUB" --retry-failed --confirm)
+drive ""
+[ "$(grep -c 'recorded-candidate-model' "$CAND_LOG" 2>/dev/null || true)" -ge 1 ] \
+  || fail "W4: --retry-failed must re-drive a torn leg — otherwise it is stranded forever"
+ok "W4 a torn leg is not re-spent by default, and --retry-failed recovers it as a deliberate choice"
+
 echo
 echo "test_replay_batch.sh: $pass/$total checks passed"
 [ "$pass" -eq "$total" ] || exit 1
