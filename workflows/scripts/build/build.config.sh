@@ -1224,12 +1224,31 @@ fi
 # literal is what `preflight` uses when the host carries FEWER than
 # REPLAY_PREFLIGHT_DERIVE_MIN_N observed replay-candidate records — a host
 # with enough of them derives the figure from those records instead and says
-# so. The first live batch measured n=14 at a mean of 699,963 weighted units
-# (range 309,700..1,476,744, a 4.8x spread), i.e. this literal is ~1.49x LOW
-# against real outturn; it is deliberately NOT retuned to that mean, because
-# a second hand-transcribed n=14 constant would rot exactly the way the n=1
-# one did. The derivation is the fix; this stays the honest unmeasured-host
-# fallback.
+# so. It is deliberately NOT retuned to any measured mean, because a second
+# hand-transcribed constant would rot exactly the way the n=1 one did. The
+# derivation is the fix; this stays the honest unmeasured-host fallback.
+#
+# HOW LOW IS IT, REALLY (temperloop#1604)? Deliberately not answered with a
+# number here — that is the rot this block already warns about, and a figure
+# transcribed into config prose is stale the moment the next batch runs. The
+# live answer is published on EVERY preflight, by the gate itself:
+#
+#     replay.sh preflight --corpus-file <corpus> | jq .observed_replay_cost
+#
+# …which reports this host's own records_n, mean, p50, p90 and spread, and
+# `tokens_per_replay_basis` states which figure is in force and why. As a
+# calibration datum rather than a value to copy: the #1656 run put it around
+# 2.2x low on a 59-record basis, having read ~1.5x low at n=14 — the gap
+# WIDENS as the corpus grows, which is the argument against chasing it with
+# a constant.
+#
+# The drift is also caught automatically after the fact. batch.sh publishes a
+# `spend_reconciliation` block comparing the projected figure the gate
+# authorized against what the run actually cost, and raises `drift_alert` past
+# MODEL_COMPARISON_SPEND_DRIFT_ALERT_PCT in either direction. So a stale
+# estimate surfaces from the pipeline rather than from someone summing the
+# lake by hand — the second of temperloop#1604's two fix directions, and the
+# one compatible with not hand-transcribing a new constant.
 : "${REPLAY_PREFLIGHT_TOKENS_PER_REPLAY:=470000}"
 # The minimum number of OBSERVED replay-candidate model-usage records
 # (workflows/scripts/emit-model-usage.sh's raw lake, seat "replay-candidate",
