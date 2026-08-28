@@ -368,6 +368,20 @@ KERNEL_GATES=(
   # test-candidate-session` so the activation-registry proof
   # (`grep -q 'test-candidate-session' scripts/quality-gates.sh`) matches.
   "make test-candidate-session"
+  # model-comparison: the provider RUNNER gate (temperloop#1743, epic #1225,
+  # ADR 0028). _CS_PROVIDER_TABLE registers a key var for openai/google/gemini,
+  # but the live spawn is hardcoded to `${CLAUDE_BIN:-claude}`, which speaks
+  # Anthropic's API alone — so before this gate a non-default provider passed
+  # preflight, made replay.sh write a disclosure-log entry attesting a
+  # cross-vendor send, and then ran the Claude CLI anyway. That is a FALSE
+  # ATTESTATION in the log whose entire job is truthful provider-exposure
+  # record-keeping, which is why the refusal is a GATE and not a warning.
+  # Registered SEPARATELY from test-candidate-session immediately above
+  # because the two suites need opposite seam states: that one sets
+  # CANDIDATE_PROVIDER_TEST_SEAM=1 so #1252's containment properties stay
+  # reachable, this one must run with the seam OFF to observe the gate at all.
+  # Direct `bash` form, matching the validate-provider-disclosure.sh pair.
+  "bash workflows/scripts/model-comparison/tests/test_provider_runner_gate.sh"
   # check-in.md Part 2 Status-line trailing-newline safety (temperloop#853,
   # the agent-plane half of foundation#1308 — the store-seam half, ks_append's
   # own fresh-line-on-append guarantee, is covered by test_knowledge_store.sh

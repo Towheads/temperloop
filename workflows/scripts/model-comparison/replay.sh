@@ -1754,8 +1754,15 @@ cmd_execute() {
     return 1
   fi
   # (b) the provider-key health check — a runtime gate, never a silent no-op.
+  #     The execution mode selects whether the RUNNER gate applies too
+  #     (temperloop#1743): a `--candidate-runner` IS a runner and never reaches
+  #     a vendor, so only the live path takes the strict gate. Derived from the
+  #     same $runner/$live pair the spawn below dispatches on, so the gate can
+  #     never disagree with the path actually taken.
+  local pf_exec="live"
+  [ -n "$runner" ] && pf_exec="recorded"
   local pf_out pf_rc=0
-  pf_out="$(bash "$CANDIDATE_SESSION_SH" preflight --provider "$provider" 2>&1)" || pf_rc=$?
+  pf_out="$(bash "$CANDIDATE_SESSION_SH" preflight --provider "$provider" --execution "$pf_exec" 2>&1)" || pf_rc=$?
   if [ "$pf_rc" -ne 0 ]; then
     execute_cannot_evaluate "candidate-session.sh preflight refused provider '$provider': $pf_out"
     return 1
