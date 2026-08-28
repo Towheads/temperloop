@@ -1332,6 +1332,24 @@ fi
 # panel. OFF by default — with it 0, judge-rotate refuses immediately and
 # `judge`/`judge-batch`'s own behaviour is byte-identical to the
 # pre-rotation module.
+# How many times ONE record's judge call may be attempted before the row is
+# recorded UNAVAILABLE (temperloop#1605). 1 disables retrying entirely.
+#
+# Scoped narrowly on purpose: a retry is only taken when the judge DID reply and
+# the reply was unusable — truncated, unparseable, schema-invalid, or empty. A
+# structural failure (no envelope, no usable modelUsage block) is not retried,
+# because re-running cannot fix it and the attempt costs real spend.
+#
+# The motivating case (#1262, candidate arm, PR 1437): the judge returned a
+# reply that BEGINS as the contracted JSON object and is cut mid-string. One
+# lost judgment out of 56 flipped the whole batch to BATCH_DEGRADED. The judge
+# pass is already resumable by arm-file sha, so a single-row retry was always
+# the cheap recovery — there was simply no path to ask for it.
+#
+# 2 (one retry) rather than more: a truncation is usually transient, and a
+# reply that fails twice is more likely a prompt/rubric problem that another
+# attempt will not fix. Raise it if a run shows repeated single-attempt losses.
+: "${MODEL_COMPARISON_JUDGE_MAX_ATTEMPTS:=2}"
 : "${MODEL_COMPARISON_JUDGE_ROTATION_ENABLED:=0}"
 # The minimum number of rotation members that must reach JUDGED before a
 # per-judge variance figure is reported at all — passed to stats.sh as
@@ -1422,7 +1440,7 @@ export BUILD_QUOTA_PAUSE_PCT BUILD_QUOTA_CACHE BUILD_QUOTA_WAIT_BUFFER \
        REPLAY_CANDIDATE_TIMEOUT_SECS REPLAY_SCORE_GATE_RELPATH REPLAY_SCORE_GATE_TIMEOUT_SECS \
        REPLAY_SCORE_DIFF_EXCERPT_MAX_BYTES \
        MODEL_COMPARISON_JUDGE_MODEL MODEL_COMPARISON_JUDGE_TIMEOUT_SECS \
-       MODEL_COMPARISON_JUDGE_ROTATION_ENABLED MODEL_COMPARISON_JUDGE_ROTATION_MIN_JUDGES \
+       MODEL_COMPARISON_JUDGE_MAX_ATTEMPTS MODEL_COMPARISON_JUDGE_ROTATION_ENABLED MODEL_COMPARISON_JUDGE_ROTATION_MIN_JUDGES \
        MODEL_COMPARISON_REPORT_RECORDS_DIR \
        MODEL_COMPARISON_BATCH_MAX_CONSECUTIVE_STAGE_ERRORS \
        MODEL_COMPARISON_SPEND_DRIFT_ALERT_PCT
