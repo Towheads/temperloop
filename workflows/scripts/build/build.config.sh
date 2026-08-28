@@ -1261,14 +1261,30 @@ fi
 # REPLAY_PREFLIGHT_TOKENS_PER_REPLAY = 37,600,000 weighted units at defaults,
 # with the same ~1.33x headroom the predecessor carried.
 #
-# STATED PLAINLY: at the observed token mix this is a REAL-TERMS LOOSENING of
-# roughly 5.4x versus the old literal 8,000,000 read as raw tokens. That is
-# deliberate and is not a quota being quietly widened — the old value was
-# never an independent budget or an external quota; it was itself derived
-# from batch cap x per-replay under a per-replay constant now known to be 3.1x
-# low, so carrying its literal into the new unit would have been carrying an
-# arithmetic accident. Holding the old real-terms strictness would put the
-# ceiling near 1.5M weighted units, below even the cost of the SMALLEST
+# STATED PLAINLY: at the observed token mix this ceiling is a REAL-TERMS
+# LOOSENING of roughly 34x versus the old literal 8,000,000 read as RAW tokens.
+# The arithmetic, so it can be checked rather than trusted (temperloop#1710):
+#
+#   measured replay (below): raw 2,506,371 -> cost-weighted 466,530
+#                            => weighted/raw ratio 0.1861
+#   old ceiling in the NEW unit:  8,000,000 raw x 0.1861  = ~1,489,000 weighted
+#   this ceiling:                                           50,000,000 weighted
+#   loosening:                    50,000,000 / 1,489,000   = ~33.6x
+#
+# This block previously said "roughly 5.4x" here. That figure is 8,000,000 /
+# 1,489,000 — the loosening of merely REINTERPRETING the old numeral in the new
+# unit, NOT the loosening of the value actually set on the line below. It sat
+# six lines above the 1.5M figure it contradicts, in the paragraph that exists
+# precisely to state the loosening plainly, and at the exact moment the number
+# is load-bearing for an operator's decision. Understating a spend-ceiling
+# relaxation ~6x is the wrong direction to be wrong in.
+#
+# The loosening is deliberate and is not a quota being quietly widened — the old
+# value was never an independent budget or an external quota; it was itself
+# derived from batch cap x per-replay under a per-replay constant now known to
+# be 3.1x low, so carrying its literal into the new unit would have been
+# carrying an arithmetic accident. Holding the old real-terms strictness would
+# put the ceiling near 1.5M weighted units, below even the cost of the SMALLEST
 # statistically meaningful comparison (MODEL_COMPARISON_MIN_SAMPLE_N paired
 # outcomes = 2x that many executed replays ~ 18,800,000 weighted units), i.e.
 # a gate that stops every batch it could ever be asked about. An operator who
