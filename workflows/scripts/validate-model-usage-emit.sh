@@ -288,7 +288,14 @@ committed_providers="$(pa_committed_list 2>/dev/null || true)"
 # temperloop#1098). `read -r -d ''` populates the variable from the SAME
 # here-doc with no `$( … )` in sight, so the hazard never applies.
 read -r -d '' PY_BATCH_SCRIPT <<'PYEOF' || true
-import json, sys
+import json, re, sys
+
+# A vendor model id: lowercase alphanumeric segments joined by - . _ or /, with
+# AT LEAST ONE separator. The separator requirement is what keeps a bare word
+# ("unknown", "model", a prose fragment) out, without enumerating anything
+# vendor-specific — which is the property temperloop#1756 needed and the old
+# family enum could not provide.
+_MODEL_ID_RE = re.compile(r"^[a-z0-9]+(?:[./_-][a-z0-9]+)+$")
 
 def reject_nonfinite(x):
     raise ValueError("non-finite JSON constant: " + x)
@@ -355,11 +362,49 @@ def validate_line(line):
     # revs too often to enumerate exhaustively. Real ids observed in this
     # repo's own build.config.sh: claude-sonnet-5, claude-opus-4-8,
     # claude-haiku-4-5.
-    KNOWN_FAMILIES = ("opus", "sonnet", "haiku")
-    segments = model.split("-")
-    if segments[0] != "claude" or not any(seg in KNOWN_FAMILIES for seg in segments[1:]):
-        return ("FAIL MODEL-ENUM: model '" + model + "' does not name a known Claude "
-                 "family (" + "/".join(KNOWN_FAMILIES) + ") — want a claude-<family>-... id")
+    # CONTENT-LEVEL model-id check (temperloop#1756).
+    #
+    # This was a hand-kept family enum — ("opus", "sonnet", "haiku") behind a
+    # required `claude-` prefix — on the premise that "the family token is the
+    # stable, enumerable part of a Claude model id". The premise did not hold:
+    #
+    #   * THE FAMILIES REV TOO. `claude-fable-5` is a real, current model this
+    #     repo has replayed with, and the enum hard-FAILED all 14 of its
+    #     records. The check was stricter than reality, so its failure mode was
+    #     rejecting good data — and the reflex it trains ("the enum is stale,
+    #     just add the family") is exactly wrong the day an id really is
+    #     malformed.
+    #   * A `claude-` PREFIX CANNOT SURVIVE THIS MODULE'S PURPOSE. Epic #1225
+    #     exists to compare candidate models including non-Anthropic ones, and
+    #     #1743 adds the runner. No cross-vendor id can satisfy
+    #     segments[0] == "claude", so this enum would reject the attribution
+    #     records of every comparison the harness was built to run.
+    #   * AN ENUMERATION CANNOT BE DERIVED FROM CONFIG EITHER — worth recording,
+    #     since that was the fix #1756 originally proposed. `claude-fable-5`
+    #     appears in NO model setting: it was selected at RUN TIME via
+    #     --candidate-model. Runtime candidate selection IS the harness, so an
+    #     accepted-set built from configured defaults would reject exactly the
+    #     comparisons that matter.
+    #
+    # The check is therefore STRUCTURAL, and keeps its teeth where they belong:
+    # an id must LOOK like a vendor model id, so garbled, empty, prose and
+    # uppercase values still fail. What it deliberately no longer does is
+    # assert WHICH vendor's models may appear — a guarantee incompatible with
+    # the module it guards.
+    #
+    # The `unknown` sentinel gets its own verdict rather than being swallowed
+    # into a malformed-id failure: it has a different owner and a different fix
+    # (temperloop#1643, the emitter/validator disagreement over honest
+    # degradation).
+    if model == "unknown":
+        return ("FAIL MODEL-UNRESOLVED: model is the literal 'unknown' sentinel — the emitter could "
+                "not resolve which model actually ran. That is an emitter/validator disagreement "
+                "about honest degradation, not a malformed id (temperloop#1643)")
+    if not _MODEL_ID_RE.match(model):
+        return ("FAIL MODEL-SHAPE: model '" + model + "' does not look like a vendor model id — "
+                "want lowercase alphanumeric segments joined by - . _ or / (e.g. claude-opus-4-8, "
+                "claude-fable-5, gpt-4.1-mini). Deliberately vendor-agnostic: this harness compares "
+                "models across vendors (temperloop#1756)")
 
     usage_source = rec["usage_source"]
     if usage_source not in ("cli-envelope", "unavailable"):
