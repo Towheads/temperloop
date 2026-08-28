@@ -179,6 +179,26 @@ NOCACHE="$WORK/no-such-quota-cache.json"
 # `ceiling_exceeded` won the stop_reason race over the expected
 # `quota_paused`. CI stayed green only because its lake is empty.
 EMPTY_LAKE="$WORK/empty-lake"; mkdir -p "$EMPTY_LAKE"
+
+# EXPORTED, not only set inside run_pf (temperloop#1642). Most cases in this
+# file invoke the SUT DIRECTLY with their own `env` assignments rather than
+# through run_pf, and `env VAR=v cmd` ADDS to the inherited environment — so
+# without this export those cases read the REAL checkout's meta/data/raw and
+# their verdicts move with how much replay work the host has done.
+#
+# That is not hypothetical. Case 13 asserts `stop_reason: quota_paused` against
+# a fixture ceiling of 1,000,000, and on a host with 59 real replay records the
+# derived per-replay figure is 1,046,509 — so `ceiling_exceeded` wins the
+# precedence and the case fails. It failed for months on exactly the machines
+# that use this module, while CI stayed green because meta/data/raw is
+# gitignored. A suite whose verdict depends on whose laptop it runs on is not a
+# measurement, and the failure it produces reads as a preflight logic bug rather
+# than a fixture-isolation one — so it costs a fresh investigation every time.
+#
+# run_pf keeps setting it too: belt and braces, and it documents the intent at
+# the call site for anyone reading just that function.
+export MODEL_USAGE_RAW_DIR="$EMPTY_LAKE"
+
 run_pf() {
   local quota="$NOCACHE"
   while [ "${1:-}" = "--quota" ]; do
@@ -192,12 +212,28 @@ run_pf() {
   ( export BUILD_QUOTA_CACHE="$quota" MODEL_USAGE_RAW_DIR="$EMPTY_LAKE"; "$@" )
 }
 
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # SECTION A — eligible-N counting
 # ═══════════════════════════════════════════════════════════════════════════
 
 CORPUS_A="$WORK/corpus-a.jsonl"
 mk_corpus "$CORPUS_A" eligible eligible flagged-eligible rejected rejected
+
+# ── THE ISOLATION GUARD ────────────────────────────────────────────────────
+# Asserted BEFORE any case runs, because every assertion below inherits its
+# correctness from this being true. If the export above is ever dropped or
+# shadowed, this fails immediately and names the cause — rather than surfacing
+# as an unrelated-looking assertion failure somewhere in section E.
+count
+_iso="$(bash "$SUT" preflight --corpus-file "$CORPUS_A" 2>/dev/null | jq -r '.observed_replay_cost.lake_dir // ""')"
+[ "$_iso" = "$EMPTY_LAKE" ] \
+  || fail "ISOLATION: this suite must read its OWN empty lake, but preflight read '$_iso' — every verdict below would then depend on how much replay work this host has done (temperloop#1642)"
+_iso_mode="$(bash "$SUT" preflight --corpus-file "$CORPUS_A" 2>/dev/null | jq -r '.tokens_per_replay_mode // ""')"
+[ "$_iso_mode" = "configured-literal" ] \
+  || fail "ISOLATION: with an empty lake the per-replay figure must be the configured literal, got mode '$_iso_mode' — the suite has drifted into the derived arm, which test_replay_preflight_derive.sh owns"
+ok "ISOLATION the suite reads its own empty lake, so no verdict below depends on this host's replay history"
 
 # ---------------------------------------------------------------------------
 # 1. eligible_n counts BOTH eligible and flagged-eligible, excluding
@@ -398,6 +434,31 @@ out13="$(run_pf --quota "$QUOTA_PAUSE" env REPLAY_PREFLIGHT_BATCH_CAP=10 \
 [ "$(jq -r .stop <<<"$out13")" = "true" ] || fail "13: expected stop true, got: $out13"
 [ "$(jq -r .stop_reason <<<"$out13")" = "quota_paused" ] || fail "13: expected stop_reason quota_paused, got: $out13"
 ok "13 quota-gate.sh reporting pause STOPS the batch even when well under the token ceiling"
+
+# ---------------------------------------------------------------------------
+# 13b. PRECEDENCE, asserted deliberately (temperloop#1642). Case 13 pins
+#      quota_paused, and it only holds while the CEILING is not also exceeded —
+#      `ceiling_exceeded` wins when both apply. That was implicit, and it is
+#      exactly how case 13 broke: on a host with real replay history the
+#      derived per-replay figure rose above the fixture ceiling, `ceiling_exceeded`
+#      took precedence, and the failure read as a preflight logic bug rather
+#      than as case 13 having silently changed which condition it was testing.
+#      Pinning the ordering here means a future change to it fails on its own
+#      terms instead of surfacing as a confusing quota failure.
+# ---------------------------------------------------------------------------
+count
+rc=0
+out13b="$(env BUILD_QUOTA_CACHE="$QUOTA_PAUSE" REPLAY_PREFLIGHT_BATCH_CAP=10 \
+  REPLAY_PREFLIGHT_TOKENS_PER_REPLAY=1000000 REPLAY_PREFLIGHT_CEILING_TOKENS=1 \
+  MODEL_COMPARISON_MIN_SAMPLE_N=1 bash "$SUT" preflight --corpus-file "$CORPUS_B")" || rc=$?
+[ "$rc" -ne 0 ] || fail "13b: expected non-zero exit when BOTH the ceiling and the quota gate would stop"
+[ "$(jq -r .quota.action <<<"$out13b")" = "pause" ] \
+  || fail "13b: the quota gate must still REPORT pause, so this is genuinely the both-apply case: $out13b"
+[ "$(jq -r .ceiling_exceeded <<<"$out13b")" = "true" ] \
+  || fail "13b: the ceiling must also be exceeded, or this is not the both-apply case: $out13b"
+[ "$(jq -r .stop_reason <<<"$out13b")" = "ceiling_exceeded" ] \
+  || fail "13b: with BOTH applying, ceiling_exceeded must win precedence over quota_paused, got: $(jq -r .stop_reason <<<"$out13b")"
+ok "13b when the ceiling AND the quota gate both stop the batch, ceiling_exceeded wins precedence — pinned rather than implicit"
 
 # ---------------------------------------------------------------------------
 # 14. quota-gate reports healthy remaining quota -> proceed (stop:false).
