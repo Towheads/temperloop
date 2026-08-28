@@ -1300,6 +1300,169 @@ count
 rm -f "$CANARY"
 ok "L2 the canary is functional — L1 is a measurement, not a tautology"
 
+# ═══════════════════════════════════════════════════════════════════════════
+# SECTION Q — the QUALITY axis (temperloop#1609) and its two bases (#1744)
+# ═══════════════════════════════════════════════════════════════════════════
+# Built from the REAL judge scores of the temperloop#1656 A/A validation run,
+# not from invented numbers. That run put the SAME model in both arms with
+# zero provider config, so the true quality difference is ZERO BY
+# CONSTRUCTION and any winner the report mints from it is a false positive.
+# It is the one input where the right answer is known independently of the
+# code under test, which is what makes it worth carrying as a fixture.
+#
+# It also reproduces the #1744 basis split exactly: 18 outcomes judged in BOTH
+# arms, plus 5 judged only in the baseline and 4 only in the candidate (legs
+# lost to REPLAY_CANDIDATE_TIMEOUT_SECS). Those 9 unpaired rows are why the
+# paired and unpaired relative deltas come out 3.4 points apart.
+AA="$WORK/aa-quality"
+mkrepo "$AA"
+AA_B="$AA/.temperloop/model-comparison/baseline.jsonl"
+AA_C="$AA/.temperloop/model-comparison/candidate.jsonl"
+: >"$AA_B"; : >"$AA_C"
+
+# pr:baseline_q:candidate_q — the 18 outcomes judged in both arms.
+for t in 1332:55:59 1336:55:53 1340:77:72 1341:64:70 1359:61:67 1489:60:71 \
+         1507:48:50 1519:52:56 1532:80:66 1547:44:56 1548:56:44 1550:80:60 \
+         1569:41:2 1573:60:57 1581:58:54 1583:62:52 1637:60:60 1638:64:60; do
+  pr="${t%%:*}"; rest="${t#*:}"; bq="${rest%%:*}"; cq="${rest#*:}"
+  record "$pr" claude-opus-5 5000 100 pass true JUDGED "$bq" 2026-08-20 scored >>"$AA_B"
+  record "$pr" claude-opus-5 5000 100 pass true JUDGED "$cq" 2026-08-20 scored >>"$AA_C"
+done
+# Judged in the BASELINE arm only — the candidate leg timed out.
+for t in 1329:56 1508:50 1551:55 1636:55 1653:60; do
+  record "${t%%:*}" claude-opus-5 5000 100 pass true JUDGED "${t#*:}" 2026-08-20 scored >>"$AA_B"
+done
+# Judged in the CANDIDATE arm only.
+for t in 1437:62 1522:63 1572:62 1574:60; do
+  record "${t%%:*}" claude-opus-5 5000 100 pass true JUDGED "${t#*:}" 2026-08-20 scored >>"$AA_C"
+done
+lake "$AA" pipeline-drive-safe retro-judge
+run "$AA"
+AA_OUT="$WORK/aa-quality.json"
+cp "$RUN_OUT" "$AA_OUT"
+
+count
+[ "$RUN_RC" -eq 0 ] || fail "Q1: the producer must exit 0 on the A/A quality fixture, got $RUN_RC"
+[ "$(jqf "$AA_OUT" '.quality_comparison.paired.n')" = "18" ] \
+  || fail "Q1: expected 18 outcomes judged in both arms, got $(jqf "$AA_OUT" '.quality_comparison.paired.n')"
+ok "Q1 the quality axis pairs on judged-in-BOTH-arms rows only (18 of 23 and 22)"
+
+count
+# THE ONE THAT MATTERS. True effect is zero by construction; a winner here is
+# a false positive. This is the quality-axis counterpart of the cost-axis
+# floor proof in section D.
+[ "$(jqf "$AA_OUT" '.quality_comparison.mints_no_winner')" = "true" ] \
+  || fail "Q2: the quality axis must not mint a winner (temperloop#1609 ships stats only; #1606 moves the mint)"
+[ "$(jqf "$AA_OUT" '.winner // "absent"')" = "absent" ] \
+  || fail "Q2: a winner was minted on a known-zero A/A run: $(jqf "$AA_OUT" '.winner')"
+ok "Q2 no winner is minted from the quality axis on a known-zero A/A run"
+
+count
+# #1744: the two bases disagree here, and the report must SAY so rather than
+# publish whichever it happened to compute.
+[ "$(jqf "$AA_OUT" '.quality_comparison.basis_agreement.bases_disagree')" = "true" ] \
+  || fail "Q3: the paired and unpaired bases differ by 3.4 points and must be disclosed as disagreeing"
+q_paired="$(jqf "$AA_OUT" '.quality_comparison.paired.relative_delta_pct')"
+q_unpaired="$(jqf "$AA_OUT" '.quality_comparison.unpaired.relative_delta_pct')"
+[ "$q_paired" = "-6.3" ] || fail "Q3: paired relative delta expected -6.3, got $q_paired"
+[ "$q_unpaired" = "-2.9" ] || fail "Q3: unpaired relative delta expected -2.9, got $q_unpaired"
+ok "Q3 both quality bases are published, labelled, and their disagreement disclosed (-6.3% paired vs -2.9% unpaired)"
+
+count
+# Only ONE of the two bases straddles the 5% bar. That is the whole reason
+# #1744 exists, so pin it: publishing the unpaired figure alone would report a
+# pass on a run whose paired reading breaches.
+awk -v p="$q_paired" -v u="$q_unpaired" 'BEGIN{
+  pa=(p<0?-p:p); ua=(u<0?-u:u);
+  exit !(pa > 5 && ua < 5)
+}' || fail "Q4: the fixture no longer straddles the 5% bar across bases, so it cannot prove the disclosure matters"
+ok "Q4 the fixture straddles the 5% bar across bases — paired breaches it, unpaired does not"
+
+count
+# Every quality statistic must be CONSUMED from stats.sh, exactly as section H
+# asserts for the cost axis: independently re-run the library over the report
+# own published delta array and demand the same numbers back.
+q_deltas="$(jq -c '.quality_comparison.deltas' "$AA_OUT")"
+q_ind="$(bash "$SCRIPTS_DIR/model-comparison/stats.sh" verdict --deltas "$q_deltas" --min-sample 1 2>/dev/null)"
+q_sd_ind="$(jq -r '.stddev' <<<"$q_ind")"
+q_sd_rep="$(jqf "$AA_OUT" '.quality_comparison.minimum_detectable_effect.observed_stddev')"
+[ "$q_sd_ind" = "$q_sd_rep" ] \
+  || fail "Q5: the published quality stddev ($q_sd_rep) is not stats.sh own ($q_sd_ind) — it is being recomputed somewhere"
+q_mde_ind="$(bash "$SCRIPTS_DIR/model-comparison/stats.sh" mde --n 18 --stddev "$q_sd_ind" 2>/dev/null | jq -r '.mde')"
+q_mde_rep="$(jqf "$AA_OUT" '.quality_comparison.minimum_detectable_effect.mde')"
+[ "$q_mde_ind" = "$q_mde_rep" ] \
+  || fail "Q5: the published quality MDE ($q_mde_rep) is not stats.sh own ($q_mde_ind)"
+ok "Q5 the quality CI/MDE are byte-identical to an independent stats.sh call over the published deltas"
+
+count
+# The power projection must be INVERTED from the MDE beside it, never a second
+# derivation — so it is always at the same power and confidence.
+q_needed="$(jqf "$AA_OUT" '.quality_comparison.power_projection.pairs_needed')"
+q_pct="$(jqf "$AA_OUT" '.quality_comparison.power_projection.target_effect_pct')"
+q_bmean="$(jqf "$AA_OUT" '.quality_comparison.paired.baseline_mean')"
+# Re-derive the target from the published MEAN and PERCENTAGE, not from the
+# published target_effect_points: that field is rounded for a human reader
+# (2.99 renders as 3), while the producer projects from the unrounded value.
+# The +/-1 tolerance is that same rounding, and is deliberately tight enough
+# that a genuinely different formula still fails.
+awk -v mde="$q_mde_rep" -v sd="$q_sd_rep" -v n=18 -v bmean="$q_bmean" -v pct="$q_pct" -v got="$q_needed" 'BEGIN{
+  tgt = bmean * pct / 100;
+  k = mde * sqrt(n) / sd;
+  exact = (k * sd / tgt) ^ 2;
+  want = int(exact); if (exact > want) want++;      # ceil
+  d = got - want; if (d < 0) d = -d;
+  exit !(d <= 1)
+}' || fail "Q6: pairs_needed ($q_needed) is not the inversion of the published MDE at a ${q_pct}% bar on a ${q_bmean}-point baseline mean"
+[ "$q_needed" -gt 18 ] \
+  || fail "Q6: the fixture must be UNDER-powered for its own bar, or the projection proves nothing"
+ok "Q6 the power projection inverts the published MDE, and reports this run under-powered for a ${q_pct}% bar ($q_needed pairs needed, 18 observed)"
+
+count
+# A record scored in both arms but judged in only one must contribute NO
+# quality delta — never a substituted zero, which would be a real judgment the
+# run never obtained. The 9 unpaired rows above are exactly that case.
+[ "$(jqf "$AA_OUT" '.quality_comparison.deltas | length')" = "18" ] \
+  || fail "Q7: the delta array must hold exactly the 18 paired outcomes"
+[ "$(jqf "$AA_OUT" '.quality_comparison.unpaired.baseline_judged_n')" = "23" ] \
+  || fail "Q7: expected 23 baseline-judged rows"
+[ "$(jqf "$AA_OUT" '.quality_comparison.unpaired.candidate_judged_n')" = "22" ] \
+  || fail "Q7: expected 22 candidate-judged rows"
+ok "Q7 a row judged in only one arm contributes no delta rather than a substituted zero"
+
+count
+# Q8 — AN ARM THAT JUDGED NOTHING. A batch whose candidate legs are every one
+# an integration-error record produces exactly this: baseline rows judged,
+# candidate rows carrying no judge block at all. The relative-delta bindings
+# guard the DENOMINATOR (the baseline mean), which is not enough — the
+# numerator can be null too, and `null - 70` aborts the whole derivation,
+# taking the entire report down with it rather than reporting one axis as
+# unavailable. Caught in CI by test_replay_batch.sh J1, pinned here at the
+# producer where the defect actually lives.
+NOJ="$WORK/no-judged-candidate"
+mkrepo "$NOJ"
+record 700 claude-opus-4-8 5000 100 pass true JUDGED 70 2026-08-20 scored \
+  >"$NOJ/.temperloop/model-comparison/baseline.jsonl"
+record 700 claude-sonnet-5 4200 100 pass true none 0 2026-08-20 scored \
+  >"$NOJ/.temperloop/model-comparison/candidate.jsonl"
+lake "$NOJ" pipeline-drive-safe retro-judge
+run "$NOJ"
+NOJ_OUT="$WORK/no-judged-candidate.json"; cp "$RUN_OUT" "$NOJ_OUT"
+[ "$RUN_RC" -eq 0 ] \
+  || fail "Q8: an arm with zero judged rows must not take the report down, got rc=$RUN_RC: $(head -c 300 "$NOJ_OUT")"
+jq -e 'type == "object" and has("schema_version")' "$NOJ_OUT" >/dev/null 2>&1 \
+  || fail "Q8: the producer skipped instead of reporting: $(head -c 300 "$NOJ_OUT")"
+[ "$(jqf "$NOJ_OUT" '.quality_comparison.paired.n')" = "0" ] \
+  || fail "Q8: expected 0 paired quality outcomes, got $(jqf "$NOJ_OUT" '.quality_comparison.paired.n')"
+[ "$(jqf "$NOJ_OUT" '.quality_comparison.unpaired.candidate_mean')" = "null" ] \
+  || fail "Q8: an arm that judged nothing must report a null mean, never a substituted 0"
+[ "$(jqf "$NOJ_OUT" '.quality_comparison.statistics_unavailable_reason')" != "null" ] \
+  || fail "Q8: the quality axis must say WHY it has no statistics, not fall silent"
+# The COST axis is untouched by a quality-side absence — the two must degrade
+# independently, or one missing judge takes the whole comparison with it.
+[ "$(jqf "$NOJ_OUT" '.comparison.paired_outcomes_n')" = "1" ] \
+  || fail "Q8: the cost axis must still pair normally when the quality axis cannot: $(jqf "$NOJ_OUT" '.comparison.paired_outcomes_n')"
+ok "Q8 an arm that judged nothing degrades the quality axis alone — named reason, null means, cost axis intact"
+
 echo
 echo "test_comparison_report.sh: $pass/$total checks passed"
 [ "$pass" -eq "$total" ] || exit 1
