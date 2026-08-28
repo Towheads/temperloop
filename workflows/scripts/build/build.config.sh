@@ -1248,6 +1248,35 @@ fi
 # that deliberately wants the configured constant, e.g. a fresh SPEND_WEIGHT_*
 # retune epoch whose historical records are no longer comparable).
 : "${REPLAY_PREFLIGHT_DERIVE_MIN_N:=5}"
+# Model-id patterns the pre-flight derive basis treats as NON-REAL and excludes
+# (temperloop#1657). Space-separated shell glob patterns, matched against a
+# model-usage record's `model` field.
+#
+# Why this exists: `replay.sh preflight` derives its per-replay cost basis from
+# this host's own observed replay-candidate records, which is the whole point of
+# temperloop#1555 — but a STUBBED replay emits a real attribution record too, so
+# fixture output lands in the same lake as live spend. On the host that surfaced
+# this, 18 of 32 basis records were `recorded-stub-model` carrying an identical
+# hardcoded 4,487-unit token block, deflating the derived estimate 2.27x — to
+# 308,757 against a real-record mean of 699,963. That is FURTHER from the truth
+# than the 470,000 literal the derive path was built to replace, and unlike the
+# literal it publishes a "DERIVED from this host's own observed records"
+# provenance string that reads as a measurement.
+#
+# A DENYLIST rather than an allowlist, deliberately: an allowlist of known-real
+# model ids would need updating for every new candidate model, and the
+# cross-vendor comparison this harness exists to enable will name models no
+# kernel list can anticipate — excluding a real one would silently skew the
+# basis. Failing to exclude a NEW fixture sentinel is the cheaper error, and it
+# is visible: the pre-flight publishes excluded_stub_records_n beside the
+# estimate.
+#
+# The writer-side half — a stubbed run not reaching the production lake at all
+# — is temperloop#1747, and is NOT fixed by this setting.
+# To DISABLE the exclusion, set a pattern that matches nothing (e.g.
+# `__none__`) — not the empty string. This file assigns with `:=`, which treats
+# an empty value as unset and restores the default above.
+: "${REPLAY_PREFLIGHT_STUB_MODEL_PATTERNS:=recorded-* stub-* *-stub-model *-stub}"
 # Per-comparison (i.e. per preflight invocation's planned batch) ceiling, in
 # COST-WEIGHTED TOKEN UNITS. A projected batch whose estimated cost exceeds
 # this STOPS at preflight — never partway through a later execution step.
@@ -1417,7 +1446,7 @@ export BUILD_QUOTA_PAUSE_PCT BUILD_QUOTA_CACHE BUILD_QUOTA_WAIT_BUFFER \
        REPLAY_CORPUS_LIMIT REPLAY_CORPUS_SAMPLE_MULTIPLIER REPLAY_NAMED_PATH_EXTENSIONS \
        REPLAY_PUSH_DISABLE_SENTINEL \
        REPLAY_PREFLIGHT_BATCH_CAP REPLAY_PREFLIGHT_TOKENS_PER_REPLAY \
-       REPLAY_PREFLIGHT_DERIVE_MIN_N \
+       REPLAY_PREFLIGHT_DERIVE_MIN_N REPLAY_PREFLIGHT_STUB_MODEL_PATTERNS \
        REPLAY_PREFLIGHT_CEILING_TOKENS REPLAY_PREFLIGHT_ASSUMED_STDDEV_TOKENS \
        REPLAY_CANDIDATE_TIMEOUT_SECS REPLAY_SCORE_GATE_RELPATH REPLAY_SCORE_GATE_TIMEOUT_SECS \
        REPLAY_SCORE_DIFF_EXCERPT_MAX_BYTES \
