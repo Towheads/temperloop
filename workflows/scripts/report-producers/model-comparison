@@ -532,6 +532,35 @@ jq -n \
   | (if $positions_present | not then null
      elif $counterbalanced | not then false
      else ($order_comparable | not) end) as $comparison_is_clean
+  # ── IS THE DECOMPOSITION OUTLIER-DRIVEN? (temperloop#1741) ────────────
+  # arm_effect and order_effect are two MEANS, and a mean over cost deltas is
+  # heavy-tailed: on the #1656 A/A run the top two of 18 pairs carried it. That
+  # run reported arm 6,596 against order 330,525 -- a reassuring 50x, read as
+  # "position is doing the work, not the model". Remove those two records and it
+  # INVERTS to arm 131,144 against order 47,696. The tidy near-zero arm effect
+  # was COINCIDENTAL CANCELLATION, not a demonstration, and nothing in the
+  # report said so.
+  #
+  # So the same decomposition is recomputed with the largest-|delta| record
+  # dropped from EACH order group, and published beside the headline. It
+  # withholds nothing and gates nothing -- the clean/not-clean verdict is
+  # unchanged -- but a reader can see at a glance whether the finding survives
+  # its own two most extreme records.
+  | (($dA | map(fabs) | max? // 0)) as $dA_max
+  | (($dB | map(fabs) | max? // 0)) as $dB_max
+  | ([$dA[] | select((. | fabs) != $dA_max)]) as $dA_trim
+  | ([$dB[] | select((. | fabs) != $dB_max)]) as $dB_trim
+  | (if ($dA_trim | length) > 0 then (($dA_trim | add) / ($dA_trim | length)) else null end) as $mA_trim
+  | (if ($dB_trim | length) > 0 then (($dB_trim | add) / ($dB_trim | length)) else null end) as $mB_trim
+  | (if $mA_trim != null and $mB_trim != null then ((($mA_trim + $mB_trim) / 2) | round1) else null end) as $arm_effect_trim
+  | (if $mA_trim != null and $mB_trim != null then ((($mA_trim - $mB_trim) / 2) | round1) else null end) as $order_effect_trim
+  | (if $order_effect_trim == null then null
+     elif ($order_effect_trim | fabs) == 0 then false
+     elif ($arm_effect_trim | fabs) == 0 then true
+     else (($order_effect_trim | fabs) >= ($order_ratio * ($arm_effect_trim | fabs))) end) as $order_comparable_trim
+  | (if $order_comparable == null or $order_comparable_trim == null then null
+     else ($order_comparable != $order_comparable_trim) end) as $order_verdict_flips
+
   | (($base + $cand)
      | map(select(.candidate.outcome == "scored" and wu != null))
      | map(.candidate.model // "unknown") | unique) as $scored_models
@@ -558,7 +587,22 @@ jq -n \
         arm_effect: $arm_effect,
         order_effect: $order_effect,
         comparable_ratio: $order_ratio,
-        comparable_rule: "the order effect counts as COMPARABLE IN MAGNITUDE to the arm effect when |order_effect| >= \($order_ratio) x |arm_effect| (or when the arm effect is zero and the order effect is not). The threshold is published here so a reader can re-apply it to the two figures above by hand rather than take this verdict on trust.",
+        comparable_rule: "the order effect counts as COMPARABLE IN MAGNITUDE to the arm effect when |order_effect| >= \($order_ratio) x |arm_effect| (or when the arm effect is zero and the order effect is not). The threshold is published here so a reader can re-apply it to the two figures above by hand rather than take this verdict on trust. NOTE that both sides of that ratio are MEANS over a heavy-tailed distribution, so the ratio itself is outlier-sensitive: a near-zero arm effect can be coincidental cancellation rather than evidence of no arm effect. `robustness` below recomputes the same decomposition without the most extreme record in each order group, so this ratio is never read as more stable than it is (temperloop#1741).",
+        robustness: {
+          basis: "the SAME estimator, recomputed with the largest-|delta| record dropped from each order group. Published as a DISCLOSURE, not a gate: it withholds nothing and changes no verdict. Its job is to show whether the headline decomposition survives its own two most extreme records — on the temperloop#1656 A/A run it did not, inverting from arm 6,596 / order 330,525 to arm 131,144 / order 47,696.",
+          arm_effect_trimmed: $arm_effect_trim,
+          order_effect_trimmed: $order_effect_trim,
+          dropped_per_group: (if ($dA | length) > 0 and ($dB | length) > 0 then 1 else 0 end),
+          verdict_flips: $order_verdict_flips,
+          statement:
+            (if $order_verdict_flips == null then
+               "not computable: both order groups need records for the decomposition to be recomputed at all"
+             elif $order_verdict_flips then
+               "THE ORDER-EFFECT FINDING DOES NOT SURVIVE ITS OWN OUTLIERS: dropping the single largest-|delta| record from each order group flips the comparable/not-comparable verdict (headline arm \($arm_effect) / order \($order_effect); trimmed arm \($arm_effect_trim) / order \($order_effect_trim)). Two records are deciding it. Treat the headline ratio as an artifact of this corpus draw rather than a property of the two arms."
+             else
+               "the order-effect finding SURVIVES its own outliers: dropping the largest-|delta| record from each order group leaves the comparable/not-comparable verdict unchanged (trimmed arm \($arm_effect_trim) / order \($order_effect_trim))."
+             end)
+        },
         order_effect_comparable_to_arm_effect: $order_comparable,
         comparison_is_clean: $comparison_is_clean,
         statement:
