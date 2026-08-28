@@ -4,6 +4,29 @@
 # model-usage attribution stream (temperloop#1253, epic #1225, ADR 0026:
 # docs/adr/0026-attribution-telemetry-coexists-with-transcript-cost.md).
 #
+# WHAT A GREEN RUN OF THIS GATE MEANS IN CI (temperloop#1511) — read this
+# before drawing a conclusion from it.
+#
+# `meta/data/raw/*` is gitignored, so CI ALWAYS sees an empty lake and ALWAYS
+# takes the legal-empty early return. Checks 2-5 below — the strict parse, the
+# field shapes, the model/provider enums, the no-cross-repo-identifier rule,
+# i.e. the CONTENT rules this script is named for — therefore NEVER execute
+# against a live record in CI. Their CI coverage comes from the fixtures in
+# workflows/scripts/tests/test_model_usage_emit.sh, and from nothing else.
+#
+# That is the INTENDED design, not a gap awaiting closure. A committed sample
+# lake would be fixture data by definition, so it would relocate fixture
+# coverage into a second file without validating a live record either — it buys
+# the appearance of live coverage, not the substance. Live records ARE validated,
+# by an operator running this gate on a host that has actually done replay work.
+#
+# What was genuinely missing was saying so at the moment the inference is
+# available. The empty-lake path now emits a `note` naming exactly which checks
+# did not run and where their coverage comes from, so a green CI run cannot be
+# read as evidence about live record content. If you are extending this file,
+# keep that note accurate: it is the only thing standing between this gate's
+# name and a wrong conclusion.
+#
 # GATE SCOPE — read this before extending it. This validator owns RECORD
 # SCHEMA VALIDATION ONLY, at CONTENT level, not merely presence:
 #
@@ -259,6 +282,21 @@ fi
 # check of the wiring itself and must still run even when the lake is empty.
 if [ "${#files[@]}" -eq 0 ]; then
   echo "ok    no model-usage-*.jsonl records found — legal on a fresh/quiet lake"
+  # NAME WHAT DID NOT RUN (temperloop#1511). The line above is true and was
+  # always printed, but it says what was NOT FOUND, not what was therefore NOT
+  # CHECKED — and this script is called validate-model-usage-EMIT, so a green
+  # run invites the inference that the content rules were exercised.
+  #
+  # In CI they never are. `meta/data/raw/*` is gitignored, so CI always sees an
+  # empty lake and always takes this early return. Every content rule below --
+  # the part that gives this script its name -- is covered in CI by the fixtures
+  # in workflows/scripts/tests/test_model_usage_emit.sh, and by nothing else.
+  #
+  # That is the INTENDED design, not a gap to close: a committed sample lake
+  # would be fixture data too, so it would move fixture coverage into a second
+  # file without validating a live record either. What was missing was saying
+  # so at the moment the inference is available -- which is here.
+  echo "note  the CONTENT-level checks did NOT run: strict JSON parse, field shapes, model/provider enums, and the no-cross-repo-identifier rule need records, and there were none. In CI there never are (meta/data/raw is gitignored), so their coverage comes from the fixtures in workflows/scripts/tests/test_model_usage_emit.sh — never from live records. A green run here means the presence-lint and spawn-site coverage passed; it is not evidence about live record content (temperloop#1511)"
 else
 
 # ---------------------------------------------------------------------------

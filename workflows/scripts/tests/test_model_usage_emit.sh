@@ -1300,4 +1300,29 @@ if [ "$fail" -gt 0 ]; then
   printf 'test_model_usage_emit: FAILED %d of %d\n' "$fail" "$((pass + fail))"
   exit 1
 fi
+echo "── 28. temperloop#1511: an empty lake SAYS which checks did not run ──"
+# The legal-empty early return was honest about what it did not FIND, but silent
+# about what it therefore did not CHECK — and this script is called
+# validate-model-usage-EMIT, so a green run invited the inference that the
+# content rules had been exercised against live records. In CI they never are:
+# meta/data/raw is gitignored, so CI always takes this path.
+EMPTY_1511="$TMP/empty-lake-1511"; mkdir -p "$EMPTY_1511"
+out1511="$(MODEL_USAGE_RAW_DIR="$EMPTY_1511" bash "$LINT" 2>&1)"
+check "an empty lake still passes" bash -c \
+  "MODEL_USAGE_RAW_DIR='$EMPTY_1511' bash '$LINT' >/dev/null 2>&1"
+check "...and NAMES the content checks that did not run" bash -c \
+  "grep -F 'CONTENT-level checks did NOT run' <<<\"\$1\" >/dev/null" _ "$out1511"
+check "...and says where their coverage actually comes from" bash -c \
+  "grep -F 'test_model_usage_emit.sh' <<<\"\$1\" >/dev/null" _ "$out1511"
+check "...and says a green run is not evidence about live record content" bash -c \
+  "grep -F 'not evidence about live record content' <<<\"\$1\" >/dev/null" _ "$out1511"
+
+# DISCRIMINATION: the note must NOT appear when records WERE present, or it
+# would be boilerplate rather than a statement about this run.
+NONEMPTY_1511="$TMP/nonempty-lake-1511"; mkdir -p "$NONEMPTY_1511"
+printf '%s\n' '{"schema_version":"1","ts":"2026-08-08T12:00:00Z","session_id":null,"repo":null,"seat":"x","model":"claude-sonnet-5","provider":"anthropic","usage_source":"cli-envelope","tokens":{"input":1,"output":1,"cache_read":0,"cache_creation":0},"weighted_units":6,"duration_ms":null,"outcome_ref":"issue:1"}' >"$NONEMPTY_1511/model-usage-2026-08.jsonl"
+out1511b="$(MODEL_USAGE_RAW_DIR="$NONEMPTY_1511" bash "$LINT" 2>&1)"
+check "the did-not-run note is ABSENT when records were present" bash -c \
+  "! grep -F 'CONTENT-level checks did NOT run' <<<\"\$1\" >/dev/null" _ "$out1511b"
+
 printf 'test_model_usage_emit: OK — all %d checks passed\n' "$pass"
