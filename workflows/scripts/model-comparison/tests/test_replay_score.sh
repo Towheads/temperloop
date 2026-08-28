@@ -1410,6 +1410,41 @@ count
 rm -f "$CANARY"
 ok "K2 the canary is functional — K1 is a measurement, not a tautology"
 
+# ═══════════════════════════════════════════════════════════════════════════
+# SECTION T — score.sh leaves no scratch dir behind (temperloop#1724)
+# ═══════════════════════════════════════════════════════════════════════════
+# `scratch` is used as `x="$(scratch n.jsonl)"`, and a command substitution is a
+# SUBSHELL. The lazy `_SCORE_TMPDIR=...` assignment therefore ran in the
+# subshell and never reached the parent: the EXIT trap -- correctly installed,
+# which is why this was invisible -- removed nothing, and every call made
+# ANOTHER dir. One run of THIS suite leaked 174; 171,591 had accumulated on the
+# host, taking inode use to 56%.
+#
+# Measured over the whole suite rather than one call, because the leak is per
+# scratch call and a single-invocation check would understate it ~9x.
+count
+T_DIR="${TMPDIR:-/tmp}"
+t_before="$(find "$T_DIR" -maxdepth 1 -name 'replay-score.*' 2>/dev/null | wc -l | tr -d ' ')"
+run_exec good --record "$RECORD" --repo-root "$REPO" --worktree "$(mk_wt)" \
+  --candidate-runner "bash $STUB" >/dev/null 2>&1 || true
+run_exec good --record "$RECORD" --repo-root "$REPO" --worktree "$(mk_wt)" \
+  --candidate-runner "bash $STUB" >/dev/null 2>&1 || true
+t_after="$(find "$T_DIR" -maxdepth 1 -name 'replay-score.*' 2>/dev/null | wc -l | tr -d ' ')"
+[ "$t_after" = "$t_before" ] \
+  || fail "T1: two scored replays leaked $(( t_after - t_before )) replay-score scratch dir(s) under $T_DIR — the scratch dir is being created in a subshell again (temperloop#1724)"
+ok "T1 two scored replays leave ZERO replay-score scratch dirs behind"
+
+count
+# The guard that keeps T1 from passing for the wrong reason: `scratch` must NOT
+# create the dir itself. If it regains that ability the subshell bug returns and
+# T1 goes quiet again, because each subshell would clean up its own dir only
+# when it happens to be the last one.
+grep -F '_score_ensure_tmpdir' "$MC_DIR/score.sh" >/dev/null \
+  || fail "T2: score.sh has no _score_ensure_tmpdir — the parent-shell creation seam is gone"
+awk '/^scratch\(\) \{/,/^\}/' "$MC_DIR/score.sh" | grep -F 'mktemp' >/dev/null \
+  && fail "T2: scratch() creates the dir again — inside a \$( ) that assignment never reaches the parent (temperloop#1724)"
+ok "T2 scratch() only READS the scratch dir; creation lives in the parent shell where the assignment survives"
+
 echo
 echo "test_replay_score.sh: $pass/$total checks passed"
 [ "$pass" -eq "$total" ] || exit 1
