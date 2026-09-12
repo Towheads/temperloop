@@ -28,6 +28,18 @@
 # is a deliberate simplification: the report's job is "which items will
 # never un-defer from this edge set", not a graph-theory decomposition.
 #
+# THIN WRAPPER (L0-a, epic #1910): the walk itself is
+# workflows/scripts/lib/graph.sh's `levels` subcommand (the same Kahn's-
+# algorithm level partition plan.sh's toposort now shares). This script's
+# own job is translating {"item","blocked_by"} pairs into the shared
+# edge-list shape (from=blocked_by, to=item — the blocker must precede the
+# item it blocks) and flattening graph.sh's level-partitioned answer back
+# into this command's own flat `order`/`cyclic` grammar: graph.sh's partial
+# `levels` (whatever resolved before a cycle stalled the walk, in the CYCLE
+# case) concatenate into `order` in the same level-by-level sequence Kahn's
+# algorithm produced them, and its `cycle` remainder becomes `cyclic`
+# unchanged.
+#
 # No live reads at all — pure graph combinatorics over the edges the caller
 # supplies (already filtered to intra-pool blocker relationships via
 # board_blocked_by_open). Independently testable with synthetic fixtures.
@@ -83,25 +95,26 @@ fi
 
 command -v jq >/dev/null 2>&1 || { echo "sweep-pool-cycle-detect.sh: jq required" >&2; exit 1; }
 
-printf '%s' "$EDGES_JSON" | jq -c '
-  (.edges // []) as $edges
-  | ( [$edges[].item] + [$edges[].blocked_by] | unique) as $nodes
-  | { remaining: $nodes, edges: $edges, order: [] }
-  | until(
-      ( .remaining | length ) == 0
-      or
-      ( [ .remaining[] as $n
-          | select( ([ .edges[] | select(.item == $n) ] | length) == 0 )
-          | $n
-        ] | length ) == 0
-      ;
-      ( [ .remaining[] as $n
-          | select( ([ .edges[] | select(.item == $n) ] | length) == 0 )
-          | $n
-        ] ) as $removable
-      | .order += ($removable | sort)
-      | .remaining -= $removable
-      | .edges |= map(select( (.blocked_by as $b | ($removable | index($b))) == null ))
-    )
-  | { order, cyclic: (.remaining | sort) }
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+GRAPH_SH="$SCRIPT_DIR/../lib/graph.sh"
+
+# {"item":X,"blocked_by":Y} -> the shared edge-list shape's {"from":Y,"to":X}
+# (Y, the blocker, must precede X, the item it blocks) — graph.sh's `levels`
+# in-degree-0 convention.
+EDGES_INPUT="$(printf '%s' "$EDGES_JSON" | jq -c '
+  { edges: [ (.edges // [])[] | {from: (.blocked_by|tostring), to: (.item|tostring), type: "blocked_by"} ] }
+')"
+
+GRAPH_OUT="$(printf '%s' "$EDGES_INPUT" | bash "$GRAPH_SH" levels - || true)"
+
+printf '%s' "$GRAPH_OUT" | jq -c '
+  # Flatten graph.sh'"'"'s level partition (success: .levels; a stalled walk:
+  # .levels holds whatever resolved before the CYCLE) into one flat `order`,
+  # each level already sorted by graph.sh, concatenated in level sequence —
+  # the exact `order` this command has always produced. The item/blocked_by
+  # ids were stringified to build the edge list; cast back to numbers here
+  # since every fixture and caller of this script deals in issue numbers.
+  (.levels // []) as $levels
+  | { order: ($levels | flatten | map(tonumber)),
+      cyclic: ((.cycle // []) | map(tonumber) | sort) }
 '
