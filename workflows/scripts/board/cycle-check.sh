@@ -72,6 +72,11 @@ SCRIPT_DIR="$(cd -P "$(dirname "$src")" && pwd)"
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/lib/board.sh"
 
+# The shared graph-traversal library (L0-a, epic #1910): the actual "does
+# the candidate edge close a loop" determination is graph.sh's `cycle`
+# subcommand — see cycle_check_main's own note below for what stays local.
+GRAPH_SH="$SCRIPT_DIR/../lib/graph.sh"
+
 # Module-level state, set by the execute-guard (direct run) or by a sourcing
 # test before it calls cycle_check_main. Mirrors claim-guard.sh's shape.
 PROJECT_NUMBER=3
@@ -86,8 +91,24 @@ CYCLE_CHECK_MAX_NODES="${CYCLE_CHECK_MAX_NODES:-500}"
 # Deliberately NO associative arrays and NO array-slice expansions
 # (`${a[@]:off}`) — this file must run under bash 3.2 (macOS's shipped
 # /bin/bash; see test_claim_guard.sh's own note on the same constraint), so
-# the BFS frontier is two plain, index-walked arrays (queue + qpath) rather
-# than a parent map.
+# the BFS frontier is one plain, index-walked array (queue) rather than a
+# parent map.
+#
+# THIN WRAPPER (L0-a, epic #1910): the live, per-node `board_blocked_by_open`
+# discovery below CANNOT move into graph.sh — a static edge-list library has
+# no network access, and the graph here is only known by walking it one node
+# at a time, so the fetch scheduling, the UNREADABLE-on-read-failure guard,
+# and the CYCLE_CHECK_MAX_NODES cap all stay local, exactly as before. What
+# DOES move: this loop no longer decides for itself whether the candidate
+# edge closes a loop. Each discovered {n, its own blocker} pair is folded
+# into a growing edge-list (from=n, to=blocker — the same "walk outward
+# along blocked_by" direction the BFS always used) and, after every node's
+# fetch, graph.sh's `cycle` subcommand answers "is <issue> reachable from
+# <blocker> over the edges discovered so far" and hands back the path —
+# never a boolean, so the CYCLE line's grammar is unchanged. Calling it once
+# per node (rather than once at the end) preserves the original's early-stop
+# behavior: the walk still stops the moment a hit is possible, not after
+# needlessly exhausting the rest of the graph.
 cycle_check_main() {
   local issue="$CYCLE_CHECK_ISSUE" blocker="$CYCLE_CHECK_BLOCKER"
 
@@ -98,15 +119,15 @@ cycle_check_main() {
     return 0
   fi
 
-  local -a queue qpath
+  local -a queue
   queue=("$blocker")
-  qpath=("$blocker")
   local visited=" $blocker "
-  local nodes=0 head=0 n path open m
+  local nodes=0 head=0 n open m edges path
+
+  edges='{"edges":[]}'
 
   while [ "$head" -lt "${#queue[@]}" ]; do
     n="${queue[$head]}"
-    path="${qpath[$head]}"
     head=$((head + 1))
     nodes=$((nodes + 1))
     if [ "$nodes" -gt "$CYCLE_CHECK_MAX_NODES" ]; then
@@ -119,22 +140,24 @@ cycle_check_main() {
       printf 'UNREADABLE %s %s reason=blocked_by-read-failed(#%s)\n' "$issue" "$blocker" "$n"
       return 0
     fi
-    [ -n "$open" ] || continue
-    while IFS= read -r m; do
-      [ -n "$m" ] || continue
-      if [ "$m" = "$issue" ]; then
-        printf 'CYCLE %s %s path=%s->%s\n' "$issue" "$blocker" "$path" "$m"
-        return 0
-      fi
-      case "$visited" in
-        *" $m "*) ;;  # already queued/visited this run — skip, keeps the walk finite on a diamond graph
-        *)
-          visited="$visited$m "
-          queue+=("$m")
-          qpath+=("$path->$m")
-          ;;
-      esac
-    done <<<"$open"
+    if [ -n "$open" ]; then
+      while IFS= read -r m; do
+        [ -n "$m" ] || continue
+        edges="$(jq -c --arg f "$n" --arg t "$m" '.edges += [{from:$f,to:$t,type:"blocked_by"}]' <<<"$edges")"
+        case "$visited" in
+          *" $m "*) ;;  # already queued/visited this run — skip, keeps the walk finite on a diamond graph
+          *)
+            visited="$visited$m "
+            queue+=("$m")
+            ;;
+        esac
+      done <<<"$open"
+    fi
+    path="$(printf '%s' "$edges" | bash "$GRAPH_SH" cycle - --from "$blocker" --to "$issue" | jq -r '.path | join("->")')"
+    if [ -n "$path" ]; then
+      printf 'CYCLE %s %s path=%s\n' "$issue" "$blocker" "$path"
+      return 0
+    fi
   done
 
   printf 'SAFE %s %s\n' "$issue" "$blocker"

@@ -114,6 +114,15 @@ build-machinery claude/workflows/build-level.mjs
 build-machinery workflows/scripts/build/*
 build-machinery workflows/scripts/validate-activation-registry.sh
 build-machinery workflows/scripts/tests/test_plan_approval_drain.sh
+# graph.sh (L0-a, epic #1910 "graph of record"): the shared graph-traversal
+# library plan.sh's toposort, cycle-check.sh (board-adapter), and
+# sweep-pool-cycle-detect.sh all call — claimed here rather than under
+# board-adapter since two of its three callers, and its originating epic,
+# are build-machinery; workflows/scripts/lib/* carries no catch-all glob
+# (unlike kernel-manifest.txt's), so new lib/ files need their own line here,
+# same as token_sum.sh's pair of lines just above.
+build-machinery workflows/scripts/lib/graph.sh
+build-machinery workflows/scripts/lib/tests/test_graph.sh
 
 # ── merge-gate — PR enqueue, CI poll, batched merge gate, protected main ────
 merge-gate docs/managed-merge-queue.md

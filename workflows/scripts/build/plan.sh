@@ -622,83 +622,73 @@ cmd_validate() {
 }
 
 # --- toposort ----------------------------------------------------------------
-# Kahn's algorithm over the union of depends-on + after edges. Level 0 = items
-# with in-degree 0 (no depends-on and no after). Emits the {"levels":…} object
-# on success; on a cycle, prints {"outcome":"CYCLE","cycle":[…]} and exits 1.
-# `compute_levels` is the shared core (also used by validate's acyclic check):
-# it prints the levels JSON on stdout and returns non-zero on a cycle.
+# Level 0 = items with in-degree 0 (no depends-on and no after) over the union
+# of both edge sets. Emits the {"levels":…,"order":…} object on success; on a
+# cycle, prints {"outcome":"CYCLE","cycle":[…]} and returns non-zero.
+# `compute_levels` is the shared core (also used by validate's acyclic check).
+#
+# THIN WRAPPER (L0-a, epic #1910): the walk itself is graph.sh's `levels`
+# subcommand (Kahn's algorithm over the shared edge-list JSON shape) — this
+# function's own job is converting plan records into that shape (from=
+# prerequisite, to=dependent, one edge per depends-on/after reference) and
+# re-rendering graph.sh's answer in this command's historical output grammar
+# (an "order" field graph.sh doesn't itself produce, and a leaner two-key
+# {"outcome","cycle"} object on a cycle rather than graph.sh's own three-key
+# one — the caller-facing grammar is unchanged either way).
 compute_levels() {
   local records="$1"
-  printf '%s\n' "$records" | awk '
-    BEGIN { SEP=sprintf("%c",31); FS=SEP }
-    function field(rec, key,    n,a,i,p) {
-      n=split(rec,a,SEP)
-      for(i=2;i<=n;i++){ p=index(a[i],"="); if(substr(a[i],1,p-1)==key) return substr(a[i],p+1) }
-      return ""
-    }
-    function addedge(from,to) {  # from must precede to
-      if (!((from SUBSEP to) in seen_edge)) {
-        seen_edge[from SUBSEP to]=1
-        adj[from]=adj[from] (adj[from]==""?"":SUBSEP) to
-        indeg[to]++
-      }
-    }
-    {
-      rec=$0
-      slug=$1
-      nodes[slug]=1
-      order[++ncount]=slug
-      if (indeg[slug]=="") indeg[slug]=0
-      # collect edges; parse deferred until all nodes known
-      deps[slug]=field(rec,"dependson")
-      afts[slug]=field(rec,"after")
-    }
-    END {
-      # build edges (predecessor -> slug)
-      for (s in nodes) {
-        split_list(deps[s], s)
-        split_list(afts[s], s)
-      }
-      # Kahn by levels
-      level=0; remaining=ncount
-      while (remaining>0) {
-        cnt=0
-        # collect current zero-indegree (preserve authoring order)
-        for (i=1;i<=ncount;i++){ s=order[i]; if(s in nodes && indeg[s]==0 && !(s in done)) cur[++cnt]=s }
-        if (cnt==0) break   # cycle
-        out=""
-        for (i=1;i<=cnt;i++){ s=cur[i]; out=out (out==""?"":",") "\"" s "\"" }
-        levels[level]="[" out "]"
-        for (i=1;i<=cnt;i++){
-          s=cur[i]; done[s]=1; remaining--
-          n=split(adj[s],succ,SUBSEP)
-          for(j=1;j<=n;j++){ if(succ[j]!="") indeg[succ[j]]-- }
-        }
-        delete cur
-        level++
-      }
-      if (remaining>0) {
-        # cycle: report the still-stuck nodes
-        c=""
-        for (i=1;i<=ncount;i++){ s=order[i]; if(!(s in done)){ c=c (c==""?"":",") "\"" s "\"" } }
-        print "{\"outcome\":\"CYCLE\",\"cycle\":[" c "]}"
-        exit 3
-      }
-      lv=""
-      for (i=0;i<level;i++){ lv=lv (lv==""?"":",") levels[i] }
-      ord=""
-      for (i=1;i<=ncount;i++){ ord=ord (ord==""?"":",") "\"" order[i] "\"" }
-      print "{\"levels\":[" lv "],\"order\":[" ord "]}"
-    }
-    function split_list(raw, to,    tmp,n,arr,i,t) {
-      tmp=raw; gsub(/,/," ",tmp)
-      n=split(tmp,arr," ")
-      for(i=1;i<=n;i++){ t=arr[i]; if(t!="" && (t in nodes)) addedge(t,to) }
-    }
-  '
-  local rc=$?
-  [ "$rc" -eq 3 ] && return 1
-  return "$rc"
+  local rec slug dep aft tok
+  local -a slugs=()
+  local -a edge_lines=()
+
+  while IFS= read -r rec; do
+    [ -n "$rec" ] || continue
+    slugs+=("$(rec_slug "$rec")")
+  done <<<"$records"
+
+  local slug_list=" ${slugs[*]} "
+
+  while IFS= read -r rec; do
+    [ -n "$rec" ] || continue
+    slug="$(rec_slug "$rec")"
+    dep="$(rec_field "$rec" dependson)"
+    aft="$(rec_field "$rec" after)"
+    for tok in $(split_list "$dep"); do
+      case "$slug_list" in
+        *" $tok "*) edge_lines+=("$(jq -cn --arg f "$tok" --arg t "$slug" '{from:$f,to:$t,type:"depends-on"}')") ;;
+      esac
+    done
+    for tok in $(split_list "$aft"); do
+      case "$slug_list" in
+        *" $tok "*) edge_lines+=("$(jq -cn --arg f "$tok" --arg t "$slug" '{from:$f,to:$t,type:"after"}')") ;;
+      esac
+    done
+  done <<<"$records"
+
+  local nodes_json edges_json input graph_out rc=0
+  if [ "${#slugs[@]}" -eq 0 ]; then
+    nodes_json="[]"
+  else
+    nodes_json="$(printf '%s\n' "${slugs[@]}" | jq -R . | jq -cs .)"
+  fi
+  if [ "${#edge_lines[@]}" -eq 0 ]; then
+    edges_json="[]"
+  else
+    edges_json="$(printf '%s\n' "${edge_lines[@]}" | jq -cs .)"
+  fi
+  input="$(jq -cn --argjson nodes "$nodes_json" --argjson edges "$edges_json" '{nodes:$nodes, edges:$edges}')"
+
+  graph_out="$(printf '%s' "$input" | bash "$PLAN_LIB_DIR/graph.sh" levels -)" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    # Re-order the stuck remainder into this plan's own authored order
+    # (graph.sh reports it alphabetically; the historical awk Kahn reported
+    # it in file order) and drop graph.sh's extra partial-`levels` field —
+    # this command's cycle grammar has always been the leaner two-key form.
+    jq -cn --argjson order "$nodes_json" --argjson cyc "$(jq -c '.cycle' <<<"$graph_out")" \
+      '{outcome:"CYCLE", cycle: ($order | map(select(. as $s | $cyc | index($s) != null)))}'
+    return 1
+  fi
+  jq -c --argjson order "$nodes_json" '. + {order: $order}' <<<"$graph_out"
 }
 
 cmd_toposort() {

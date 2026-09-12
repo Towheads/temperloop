@@ -620,6 +620,15 @@ KERNEL_GATES=(
   # `.message.role`). Same direct-`bash` form as the command-declared gate
   # above (kernel Makefile is generator-owned; no new target added here).
   "bash workflows/scripts/lib/tests/test_token_sum.sh"
+  # graph.sh (L0-a, epic #1910, "graph of record"): the ONE shared graph-
+  # traversal library (`levels` Kahn's-algorithm partition, `cycle` targeted
+  # BFS reachability, `reachable` plain BFS) plan.sh's toposort, cycle-check.sh,
+  # and sweep-pool-cycle-detect.sh now call instead of each carrying its own
+  # walk. Covers a diamond, a genuine cycle, a self-loop, isolated nodes, an
+  # empty graph, `cycle`'s path-returning BFS, `reachable`'s plain BFS, and
+  # CLI usage-error activation. Same direct-`bash` form as the sibling lib
+  # gates above (kernel Makefile is generator-owned; no new target added here).
+  "bash workflows/scripts/lib/tests/test_graph.sh"
   # cannot-evaluate.sh (temperloop#1475, epic #1409): the ONE shared
   # "cannot evaluate" idiom hoisted out of five independently reinvented
   # `*_cannot_evaluate()` functions in workflows/scripts/model-comparison/
