@@ -825,6 +825,23 @@ KERNEL_GATES=(
   # pair above.
   "bash workflows/scripts/config/check-ontology-registry.sh"
   "bash workflows/scripts/config/tests/test_check_ontology_registry.sh"
+  # Join-key registry (temperloop#1910, epic "Graph of record", L3): the ONE
+  # registry (workflows/scripts/config/join-keys.tsv) declaring every join
+  # key the lake consumers use, backed by a shell loader
+  # (join-keys-lib.sh) and a Python loader (join_keys.py) — the only two
+  # places a session id or other join key is normalized. check-join-keys.sh
+  # lints the registry's structure, confirms both loaders actually define
+  # every named function, and confirms pr-linkage.sh reads its `Closes #N`
+  # pattern through the shared loader rather than restating the regex
+  # inline. test_join_keys.sh is the cross-language AGREEMENT test: every
+  # fixture in join-keys-fixtures.json is run through both loaders and
+  # asserted byte-identical, including the absent-versus-zero discipline on
+  # run_id/pr_number (temperloop#1084's "absent is never zero" pattern,
+  # generalized here). Same direct-`bash` form as the reviewer-routing gate
+  # above.
+  "bash workflows/scripts/config/check-join-keys.sh"
+  "bash workflows/scripts/config/tests/test_check_join_keys.sh"
+  "bash workflows/scripts/config/tests/test_join_keys.sh"
   # Feature-docs coverage gate (temperloop#132, docs-site epic #131): the
   # documentation counterpart to test-kernel-manifest. Live validator walks
   # every git-tracked path against docs/features/feature-manifest.txt

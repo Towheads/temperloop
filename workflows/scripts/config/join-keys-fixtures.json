@@ -1,0 +1,43 @@
+[
+  {"fn": "session_full", "args": ["4D8B1D3E-1234-4A5B-9C3D-0A1B2C3D4E5F"], "status": "ok", "value": "4d8b1d3e-1234-4a5b-9c3d-0a1b2c3d4e5f"},
+  {"fn": "session_full", "args": ["4d8b1d3e-1234-4a5b-9c3d-0a1b2c3d4e5f"], "status": "ok", "value": "4d8b1d3e-1234-4a5b-9c3d-0a1b2c3d4e5f"},
+  {"fn": "session_full", "args": [""], "status": "absent", "value": ""},
+  {"fn": "session_full", "args": ["null"], "status": "absent", "value": ""},
+  {"fn": "session_full", "args": ["not-a-uuid"], "status": "invalid", "value": ""},
+  {"fn": "session_full", "args": ["4d8b1d3e-1234-4a5b-9c3d"], "status": "invalid", "value": ""},
+
+  {"fn": "session8", "args": ["4d8b1d3e-1234-4a5b-9c3d-0a1b2c3d4e5f"], "status": "ok", "value": "4d8b1d3e"},
+  {"fn": "session8", "args": [""], "status": "absent", "value": ""},
+  {"fn": "session8", "args": ["not-a-uuid"], "status": "invalid", "value": ""},
+
+  {"fn": "host_session_stamp", "args": ["mini", "4d8b1d3e-1234-4a5b-9c3d-0a1b2c3d4e5f"], "status": "ok", "value": "mini:4d8b1d3e"},
+  {"fn": "host_session_stamp", "args": ["", "4d8b1d3e-1234-4a5b-9c3d-0a1b2c3d4e5f"], "status": "absent", "value": ""},
+  {"fn": "host_session_stamp", "args": ["mini", ""], "status": "absent", "value": ""},
+  {"fn": "host_session_stamp", "args": ["mini", "not-a-uuid"], "status": "invalid", "value": ""},
+
+  {"fn": "run_id", "args": ["12345"], "status": "ok", "value": "12345"},
+  {"fn": "run_id", "args": ["0"], "status": "ok", "value": "0"},
+  {"fn": "run_id", "args": [""], "status": "absent", "value": ""},
+  {"fn": "run_id", "args": ["null"], "status": "absent", "value": ""},
+  {"fn": "run_id", "args": ["007"], "status": "invalid", "value": ""},
+  {"fn": "run_id", "args": ["abc"], "status": "invalid", "value": ""},
+  {"fn": "run_id", "args": ["-5"], "status": "invalid", "value": ""},
+
+  {"fn": "pr_number", "args": ["1913"], "status": "ok", "value": "1913"},
+  {"fn": "pr_number", "args": ["0"], "status": "ok", "value": "0"},
+  {"fn": "pr_number", "args": [""], "status": "absent", "value": ""},
+  {"fn": "pr_number", "args": ["null"], "status": "absent", "value": ""},
+  {"fn": "pr_number", "args": ["#1913"], "status": "invalid", "value": ""},
+
+  {"fn": "message_id", "args": ["msg_01Ab"], "status": "ok", "value": "msg_01Ab"},
+  {"fn": "message_id", "args": ["  msg_01Ab  "], "status": "ok", "value": "msg_01Ab"},
+  {"fn": "message_id", "args": [""], "status": "absent", "value": ""},
+  {"fn": "message_id", "args": ["   "], "status": "absent", "value": ""},
+
+  {"fn": "plan_stem", "args": ["Plans/temperloop - graph of record.md"], "status": "ok", "value": "temperloop - graph of record"},
+  {"fn": "plan_stem", "args": ["foo/bar/baz.md"], "status": "ok", "value": "baz"},
+  {"fn": "plan_stem", "args": ["already-a-stem"], "status": "ok", "value": "already-a-stem"},
+  {"fn": "plan_stem", "args": [""], "status": "absent", "value": ""},
+
+  {"fn": "closes_pattern", "args": ["1910"], "status": "ok", "value": "(?i)(close[sd]?|fix(e[sd])?|resolve[sd]?)[[:space:]]+#1910\\b"}
+]

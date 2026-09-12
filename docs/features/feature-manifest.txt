@@ -560,6 +560,17 @@ quality-gates workflows/scripts/config/ontology-registry.tsv
 quality-gates workflows/scripts/config/ontology-grandfather-allowlist.tsv
 quality-gates workflows/scripts/config/check-ontology-registry.sh
 quality-gates workflows/scripts/config/tests/test_check_ontology_registry.sh
+# Join-key registry (temperloop#1910, epic "Graph of record", L3) — already
+# covered by the `quality-gates workflows/scripts/config/*` glob above,
+# listed explicitly for discoverability alongside contributor-manifest.tsv
+# immediately above.
+quality-gates workflows/scripts/config/join-keys.tsv
+quality-gates workflows/scripts/config/join-keys-lib.sh
+quality-gates workflows/scripts/config/join_keys.py
+quality-gates workflows/scripts/config/join-keys-fixtures.json
+quality-gates workflows/scripts/config/check-join-keys.sh
+quality-gates workflows/scripts/config/tests/test_check_join_keys.sh
+quality-gates workflows/scripts/config/tests/test_join_keys.sh
 # Two-tier prose-budget gate (temperloop#719/#725, item prose-budget-gate;
 # ADR 0015): validate-prose-budget.sh joins the checks gate set above,
 # consuming count-prose.sh's report rather than re-counting anything itself.
