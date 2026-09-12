@@ -41,6 +41,12 @@
 #  19. No resolvable default-branch base -> non-zero, so the caller runs the
 #      FULL set rather than narrowing on the working-tree half alone.
 #  20. A non-git directory -> non-zero (never an empty, silently-narrowing set).
+#
+# temperloop#1931 added GENERIC new-surface globs to gate-paths.tsv so a
+# brand-new check-*/validate-*/test_* script selects the check-surface and
+# exec-bit registry validators before it is even registered:
+#  21. A depth-0 and a nested brand-new candidate-shaped path each select all
+#      four registry-validator gates against the REAL gate-paths.tsv.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -354,5 +360,36 @@ if ( cd "$NOTREPO" && gate_selection_local_changed "$NOTREPO" >/dev/null 2>"$TMP
   fail "20: a non-repo directory must not report a changed set"
 fi
 echo "PASS: 20 a non-git directory fails instead of reporting an empty (= narrowing) changed set"
+
+# --- 21. the REAL gate-paths.tsv: depth-0 new-surface scripts select the
+# check-surface and exec-bit registry validators (temperloop#1931) ----------
+# The generic new-surface globs #1931 added are only useful if they also
+# match a DEPTH-0 candidate (`workflows/scripts/validate-zzz.sh`), not just a
+# nested one — `**/` needs an explicit depth-0 twin under this matcher (see
+# gate-paths.tsv's own header note). Prove it against the REAL map, not a
+# synthetic fixture, with a mix of depth-0 and nested new-surface paths.
+REPO_ROOT="$(cd "$HERE/../../../.." && pwd)"
+REAL_MAP="$REPO_ROOT/workflows/scripts/config/gate-paths.tsv"
+[ -f "$REAL_MAP" ] || fail "21: real gate-paths.tsv not found at $REAL_MAP"
+REAL_GATES='bash workflows/scripts/validate-check-surface-degenerate-coverage.sh
+bash workflows/scripts/tests/test_check_surface_degenerate_coverage.sh
+bash workflows/scripts/validate-exec-bit-registry.sh
+bash workflows/scripts/tests/test_exec_bit_registry.sh'
+for new_path in \
+  workflows/scripts/validate-zzz.sh \
+  workflows/scripts/tests/test_zzz.sh \
+  workflows/scripts/config/check-zzz.sh
+do
+  reset_env
+  QUALITY_GATES_SCOPE=diff
+  GATE_SELECTION_MAP_FILE="$REAL_MAP"
+  GATE_SELECTION_ALL_GATES="$REAL_GATES"
+  GATE_SELECTION_CHANGED="$new_path"
+  gate_selection_resolve
+  [ "$GATE_SELECTION_MODE" = "diff" ] || fail "21 ($new_path): expected a diff-scoped run against the real map (got $GATE_SELECTION_MODE / $GATE_SELECTION_REASON)"
+  [ "$GATE_SELECTION_SELECTED" = "$REAL_GATES" ] || fail "21 ($new_path): a brand-new candidate-shaped script must select all four check-surface/exec-bit registry-validator gates, got:
+$GATE_SELECTION_SELECTED"
+done
+echo "PASS: 21 a brand-new check-*/validate-*/test_* script (depth-0 and nested) selects the check-surface and exec-bit registry validators against the real gate-paths.tsv"
 
 echo "OK — gate-selection.sh: all cases passed"
