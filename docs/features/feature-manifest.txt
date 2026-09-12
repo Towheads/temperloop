@@ -540,6 +540,14 @@ quality-gates workflows/scripts/tests/test_count_prose.sh
 quality-gates workflows/scripts/config/contributor-manifest.tsv
 quality-gates workflows/scripts/config/check-contributor-manifest.sh
 quality-gates workflows/scripts/config/tests/test_check_contributor_manifest.sh
+# Ontology registry + its checker (ADR 0032, epic temperloop#1910 L0-b): the
+# tracker/plan vocabulary source of truth and the gate that holds the tree
+# and the four contract docs to it. Already covered by the `quality-gates
+# workflows/scripts/config/*` glob above, listed explicitly for discoverability.
+quality-gates workflows/scripts/config/ontology-registry.tsv
+quality-gates workflows/scripts/config/ontology-grandfather-allowlist.tsv
+quality-gates workflows/scripts/config/check-ontology-registry.sh
+quality-gates workflows/scripts/config/tests/test_check_ontology_registry.sh
 # Two-tier prose-budget gate (temperloop#719/#725, item prose-budget-gate;
 # ADR 0015): validate-prose-budget.sh joins the checks gate set above,
 # consuming count-prose.sh's report rather than re-counting anything itself.

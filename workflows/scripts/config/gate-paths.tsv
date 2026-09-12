@@ -128,9 +128,12 @@ make test-stranger-config	ALWAYS
 #     (registry <-> shell equality plus an unregistered-setting sweep over
 #     every *.sh), validate-activation-registry.sh (every declared `files:`
 #     surface still EXISTS in the tree — a deletion anywhere can red it, which
-#     its former Plans-archive/** row could not see), and check-gate-paths.sh
+#     its former Plans-archive/** row could not see), check-gate-paths.sh
 #     (every gate has exactly one row in THIS file — the lint the whole
-#     scoping scheme's honesty rests on, so it may never be scoped out).
+#     scoping scheme's honesty rests on, so it may never be scoped out), and
+#     check-ontology-registry.sh (ADR 0032: a whole-tree scan for `fnd:`
+#     label tokens and plan sentinels the ontology registry does not list —
+#     a new token can land in ANY file, so no glob can scope it honestly).
 #
 # THE COST OF THE FLOOR IS THE POINT, NOT AN OVERSIGHT: these now run on every
 # scoped run, PR-scoped (temperloop#1024) and worker-scoped (temperloop#957)
@@ -150,6 +153,7 @@ bash workflows/scripts/validate-prose-budget.sh	ALWAYS
 bash workflows/scripts/config/check-contributor-manifest.sh	ALWAYS
 bash workflows/scripts/config/check-setting-registry.sh	ALWAYS
 bash workflows/scripts/config/check-gate-paths.sh	ALWAYS
+bash workflows/scripts/config/check-ontology-registry.sh	ALWAYS
 
 # ── Board / build toolkits ──────────────────────────────────────────────────
 make test-board	workflows/scripts/board/**
@@ -263,6 +267,7 @@ bash workflows/scripts/config/check-setting-prose.sh	claude/** workflows/scripts
 bash workflows/scripts/config/tests/test_check_setting_prose.sh	workflows/scripts/config/**
 bash workflows/scripts/config/check-reviewer-routing.sh	workflows/scripts/config/reviewer-routing.tsv claude/commands/build.md claude/agents/** workflows/scripts/config/check-reviewer-routing.sh
 bash workflows/scripts/config/tests/test_check_reviewer_routing.sh	workflows/scripts/config/**
+bash workflows/scripts/config/tests/test_check_ontology_registry.sh	workflows/scripts/config/** workflows/scripts/build/issue-state.sh workflows/scripts/board/ISSUES-ONLY-BACKEND.md claude/plan-schema.md claude/decision-queue-contract.md claude/work-class-policy.md
 bash workflows/scripts/count-prose.sh	claude/** CLAUDE.md README.md workflows/scripts/count-prose.sh workflows/scripts/install-claude-md.sh workflows/scripts/config/** workflows/scripts/build/build.config.sh
 bash workflows/scripts/tests/test_count_prose.sh	workflows/scripts/count-prose.sh workflows/scripts/install-claude-md.sh workflows/scripts/tests/test_count_prose.sh
 bash workflows/scripts/config/tests/test_check_contributor_manifest.sh	workflows/scripts/config/**

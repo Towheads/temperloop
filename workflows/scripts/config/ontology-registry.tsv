@@ -1,0 +1,139 @@
+# ontology-registry.tsv — the ONE source of truth for the pipeline's tracker
+# and plan vocabularies (ADR 0032, docs/adr/0032-ontology-registry-is-source-
+# of-truth-for-tracker-and-plan-vocabularies.md; epic temperloop#1910 L0-b).
+# Enforced by workflows/scripts/config/check-ontology-registry.sh (a gate in
+# scripts/quality-gates.sh).
+#
+# WHY. The node/edge vocabulary — issue-status labels, plan-note sentinels, PR
+# merge state, the decision baton, the route enum `issue-state.sh resolve`
+# emits — was restated by hand across four contract docs and ~three dozen
+# scripts, each knowing its own slice. Nothing enumerated the full alphabets
+# or the stores that feed them, so a doc could drift from the code it
+# described and a new label or sentinel could appear anywhere in the tree
+# with nothing to notice. The derived state graph (ADR 0033) needs ONE typed
+# vocabulary to build against, not four restatements to reconcile by eye.
+#
+# THE FOUR CONTRACT DOCS point here instead of restating a table:
+#   workflows/scripts/board/ISSUES-ONLY-BACKEND.md  (§ The label vocabulary)
+#   claude/plan-schema.md                           (§ Status sentinels)
+#   claude/decision-queue-contract.md               (§ 1 Assignee-baton)
+#   claude/work-class-policy.md                     (§ Policy table)
+# The checker fails a doc that drops its pointer or grows a table row whose
+# first cell is a registry token (the restatement this file replaces).
+#
+# FORMAT — TAB-separated, exactly four columns:
+#   1. AXIS       one of the axes below (an unknown axis is MALFORMED)
+#   2. TOKEN      the vocabulary item, verbatim — a label, a sentinel, a
+#                 state name, a node/edge type, a store name
+#   3. QUALIFIER  axis-specific, `-` when unused:
+#                   label-field     closed | open   (closed = every value must
+#                                   be a state:issue-status row; open = any
+#                                   per-instance value, e.g. a claim stamp)
+#                   state:plan-sentinel   writable | render-only
+#                   edge            `<From>-><To>` node types
+#                   everything else `-`
+#   4. DETAIL     one-line meaning + the store or script that owns it
+# A (AXIS, TOKEN) pair appears at most once. `#` comments and blank lines are
+# ignored. Every axis listed under REQUIRED AXES in the checker must carry at
+# least one row.
+#
+# WHAT THE CHECKER SCANS (the two token grammars a vocabulary item is written
+# in, and nothing fuzzier — see its header):
+#   * a `fnd:` label token: `fnd:<field>[:<value>...]` with concrete slugs
+#     (placeholders like `fnd:<field>:*` reduce to the bare field mention).
+#     Verdict: the field must be a `label-field` row; a `closed` field's full
+#     token must be a `state:issue-status` row; an `open` field accepts any
+#     value. Any segment starting with the `personal-prefix` token is exempt.
+#   * a plan sentinel: a markdown list checkbox at line start (`- [m] `) or a
+#     backtick-quoted one (`` `[m]` ``). Verdict: a `state:plan-sentinel` row.
+#
+# ADDING A VOCABULARY ITEM: add its row here FIRST (the checker goes red on
+# an unlisted token anywhere in the tracked tree), then use it. Legacy
+# tokens already in the tree at adoption are carried by the shrink-only
+# ontology-grandfather-allowlist.tsv, never by a new row here that pretends
+# they are vocabulary.
+
+# ── node — the typed things the state graph has vertices for ────────────────
+node	Epic	-	a tracker issue that parents sub-issues (native sub-issue edges); source `board`
+node	Issue	-	a tracker issue carrying `fnd:` labels; source `board`
+node	PlanItem	-	one `- [<sentinel>] <title>` row of a knowledge-store plan note (claude/plan-schema.md); source `plan-notes`
+node	PR	-	a pull request the pipeline opened or adopted; source `pr-list`
+node	Worktree	-	a linked git worktree under `<repo>.wt/<slug>`; source `worktrees`
+node	Session	-	one driver session as recorded by the workflow journal (`agent-<id>.jsonl`); source `workflow-journal`
+node	Marker	-	a per-window tmux `@claimed_issue` claim marker (workflows/scripts/board/lib/claim_marker.sh); source `tmux-markers`
+node	Decision	-	a `decision`-labelled tracker issue in the operator's decision queue (claude/decision-queue-contract.md); source `board`
+node	RetroTracker	-	the per-epic process-retro tracker issue `/build` 4d-retro mints (claude/commands/build.md); source `board`
+
+# ── edge — typed relations, QUALIFIER = `<From>-><To>` ──────────────────────
+edge	sub_issue_of	Issue->Epic	GitHub native sub-issue link (`board_sub_issues` / `board_parent_issue`)
+edge	blocked_by	Issue->Issue	GitHub native issue-dependency edge (`board_blocked_by_open`; durable logical order, ADR 0031)
+edge	depends_on	PlanItem->PlanItem	plan-note `depends-on:` merge-safety edge (claude/plan-schema.md)
+edge	after	PlanItem->PlanItem	plan-note `after:` logical-order edge (claude/plan-schema.md)
+edge	closes	PR->Issue	bare `Closes #N` line in a PR body (claude/CLAUDE.kernel.md § Issue linkage)
+edge	claimed_by	Issue->Session	the `fnd:host/session:<host>:<session>` claim stamp (ISSUES-ONLY-BACKEND.md § Claim lock)
+edge	marked_by	Issue->Marker	the tmux `@claimed_issue` window option naming the issue
+edge	gated_on	PlanItem->Decision	a plan item parked on an open decision-queue issue (`gate_check:` / `## Questions`)
+edge	touched_by	Issue->Session	an issue-touch telemetry record (workflows/scripts/validate-issue-touch-emit.sh)
+edge	supersedes	Decision->Decision	a decision note that overturns a prior one (claude/CLAUDE.kernel.md § Decision capture)
+edge	cites	Decision->Issue	a `<!-- cite: ... -->` marker's incident/guard reference (workflows/scripts/config/citation-registry.tsv)
+
+# ── label-field — the `fnd:<field>` namespaces the tracker adapter writes ───
+# General rule: `fnd:<field-slug>:<value-slug>` (ISSUES-ONLY-BACKEND.md).
+label-field	fnd:status	closed	Status single-select; values are the state:issue-status rows below; Done carries NO label (closed issue)
+label-field	fnd:component	open	Component single-select; any slug (round-trips title-cased)
+label-field	fnd:host/session	open	claim stamp `<host>:<session>`, stored verbatim (ISSUES-ONLY-BACKEND.md § Claim lock)
+label-field	fnd:seq	open	Seq ordering hint `<n>` (retired for the claim/edges split, ADR 0006; still read by legacy fixtures)
+
+# ── personal-prefix — a label segment under this prefix is never flagged ────
+personal-prefix	x-	-	one teammate's own-branch experiment (`fnd:x-mine:...`, `fnd:component:x-try`) never forces a shared-registry PR (ADR 0032)
+
+# ── state:issue-status — alphabet 1 of 4: the Status field ──────────────────
+state:issue-status	fnd:status:backlog	-	Backlog — captured, not yet triaged
+state:issue-status	fnd:status:ready	-	Ready — triaged, drivable
+state:issue-status	fnd:status:in-progress	-	In Progress — claimed by a session (carries a `fnd:host/session` stamp)
+state:issue-status	done	-	Done — the issue is CLOSED and carries no `fnd:status:*` label (ISSUES-ONLY-BACKEND.md § Close→Done cascade)
+
+# ── state:plan-sentinel — alphabet 2 of 4: the in-band plan-note states ─────
+state:plan-sentinel	[ ]	writable	untouched
+state:plan-sentinel	[~]	writable	in-progress (worker active, or PR open and CI not green)
+state:plan-sentinel	[m]	writable	merge-pending (PR open, CI green, parked for the level gate)
+state:plan-sentinel	[>]	writable	merging as-you-go (consent recorded, merge issued, awaiting MERGED)
+state:plan-sentinel	[x]	writable	merged (terminal)
+state:plan-sentinel	[v]	writable	verdict-captured (terminal; `kind: spike` only)
+state:plan-sentinel	[-]	writable	skipped (terminal)
+state:plan-sentinel	[?]	render-only	report-only roster marker for a row outside the seven — rendered by plan.sh, never written back (workflows/scripts/build/plan.sh)
+
+# ── state:pr-merge + state:decision-baton — alphabet 3 of 4 ─────────────────
+state:pr-merge	open	-	`gh pr` state OPEN, not queued
+state:pr-merge	queued	-	OPEN with `mergeQueueEntry` / `autoMergeRequest.enabledAt` set (workflows/scripts/board/pr-enqueue.sh)
+state:pr-merge	merged	-	`gh pr` state MERGED
+state:pr-merge	closed	-	`gh pr` state CLOSED without merge
+state:decision-baton	operator-turn	-	assigned to the operator — parked, awaiting a human reply (claude/decision-queue-contract.md § 1)
+state:decision-baton	driver-turn	-	unassigned (or a bot assignee) — workable by the pipeline tick
+
+# ── state:route — alphabet 4 of 4: `issue-state.sh resolve`'s verdict enum ──
+# Checked for EQUALITY against the `"route": "a|b|..."` block in
+# workflows/scripts/build/issue-state.sh's usage text — neither side may
+# drift alone. `state-graph.sh query resume` (ADR 0033) draws from this set.
+state:route	fresh	-	DRIVE — an open, drivable issue with none of the terminal conditions
+state:route	adopt	-	DRIVE — exactly one open linked PR, or funnel-merge-pending
+state:route	ambiguous	-	DRIVE — more than one open PR links to the issue
+state:route	question-first	-	TERMINAL — carries the `needs-clarification` label
+state:route	claimed-elsewhere	-	TERMINAL — In Progress under a different host/session
+state:route	already-done	-	TERMINAL — the issue exists but is not open
+state:route	not-an-issue	-	TERMINAL — the number is a pull request
+state:route	not-found	-	TERMINAL — the number does not exist in the repo
+state:route	probe-failed	-	TERMINAL — the `gh` read failed for a non-404 reason
+
+# ── work-class — the routing-key label pair (claude/work-class-policy.md) ───
+work-class	Operational	-	follows an established pattern; fully autonomous drive
+work-class	Foundational	-	changes the system's shape; prep-then-gate, operator-led (wins when both are present)
+
+# ── source — every store the state graph reads (ADR 0033) ───────────────────
+# A store wired into the graph builder with no row here is a design defect.
+source	board	-	one `board_resolve` through the tracker adapter (workflows/scripts/board/lib/board.sh)
+source	pr-list	-	one `gh pr list --state open` per repo
+source	worktrees	-	`git worktree list` under `<repo>.wt/`
+source	plan-notes	-	approved / in-progress plan notes in the knowledge store (`Plans/`)
+source	workflow-journal	-	the per-agent `agent-<id>.jsonl` journal
+source	tmux-markers	-	the per-window `@claimed_issue` tmux option (recorded `absent` on a host with no tmux, never as "no claims held")

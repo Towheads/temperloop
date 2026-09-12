@@ -161,14 +161,7 @@ nothing in the adapter offers to mask it.
 
 ### The label vocabulary
 
-| Label | Field | Meaning |
-|---|---|---|
-| `fnd:status:backlog` | Status | mirrors Projects' `Backlog` option |
-| `fnd:status:ready` | Status | mirrors Projects' `Ready` option |
-| `fnd:status:in-progress` | Status | mirrors Projects' `In Progress` option |
-| *(none — issue is closed)* | Status | mirrors Projects' `Done` option |
-| `fnd:component:<slug>` | Component | mirrors the board-native `Component` single-select |
-| `fnd:host/session:<host>:<session>` | claim stamp | which machine/session holds the in-progress claim (verbatim, never slugged — see above) |
+The label set (the Status values, Component, the claim stamp) is tabled ONCE, in `workflows/scripts/config/ontology-registry.tsv` (`label-field` + `state:issue-status` rows; ADR 0032) and enforced by `check-ontology-registry.sh` — never restated here.
 
 General rule: a label is `fnd:<field-slug>:<value-slug>`, where `<field-slug>`
 is the field name lowercased with spaces→hyphens (`Status`→`status`,

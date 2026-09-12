@@ -791,6 +791,19 @@ KERNEL_GATES=(
   # form, same check-setting-prose.sh shape, as the two gates above.
   "bash workflows/scripts/config/check-reviewer-routing.sh"
   "bash workflows/scripts/config/tests/test_check_reviewer_routing.sh"
+  # Ontology-registry checker (ADR 0032, epic temperloop#1910 L0-b):
+  # workflows/scripts/config/ontology-registry.tsv is the single source of
+  # truth for the tracker + plan vocabularies (node/edge types, the four state
+  # alphabets, the source axis). The live lint scans every tracked file for
+  # `fnd:` label tokens and plan sentinels and fails on any the registry does
+  # not list (a shrink-only grandfather allowlist absorbs adoption-day legacy
+  # tokens; the `x-` personal prefix is exempt), holds the route alphabet
+  # set-equal to issue-state.sh's published enum, and fails a contract doc
+  # that drops its registry pointer or restates a vocabulary table. Same
+  # direct-`bash` live-check-then-fixture-tests shape as the reviewer-routing
+  # pair above.
+  "bash workflows/scripts/config/check-ontology-registry.sh"
+  "bash workflows/scripts/config/tests/test_check_ontology_registry.sh"
   # Feature-docs coverage gate (temperloop#132, docs-site epic #131): the
   # documentation counterpart to test-kernel-manifest. Live validator walks
   # every git-tracked path against docs/features/feature-manifest.txt
