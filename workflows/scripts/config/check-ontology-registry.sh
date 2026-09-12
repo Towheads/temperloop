@@ -23,7 +23,7 @@
 #      place the resolver publishes its own enum. Neither side may drift alone.
 #   3. TREE SCAN     every git-tracked file is scanned for the TWO token
 #      grammars a vocabulary item is written in (nothing fuzzier — a scan of
-#      every `[.]` would trip on regex classes and array indexes):
+#      every bracketed single character would trip on regex classes and array indexes):
 #        * a `fnd:` label: `fnd:<field>[:<value>...]`, concrete slugs only.
 #          Placeholders (`fnd:<field>:*`, `fnd:status:*`) reduce to the bare
 #          field mention. The field must be a `label-field` row; a `closed`
@@ -304,7 +304,7 @@ while IFS= read -r hit; do
       fi
       ;;
     *)
-      # Either sentinel form: the token is the `[c]` inside the match.
+      # Either sentinel form: the token is the bracketed character inside the match.
       tmp="${match%%]*}"
       c="${tmp##*[}"
       token="[$c]"

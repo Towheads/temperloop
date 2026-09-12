@@ -16,7 +16,7 @@
 #
 # FORMAT — TAB-separated, two columns:
 #   1. TOKEN    the exact token the checker's scan yields — a `fnd:` label
-#               (`fnd:status:foo`) or a sentinel (`[!]`)
+#               (`fnd:<field>:<value>`) or a sentinel (`[<c>]`)
 #   2. REASON   mandatory, non-empty: where it lives and why it is not
 #               vocabulary (name the tracking issue if one exists)
 fnd:status:done	prose naming the label that DELIBERATELY DOES NOT EXIST (Done = closed, no label) — workflows/scripts/board/reconcile.sh header and claude/commands/fix.md; reword to retire this row
