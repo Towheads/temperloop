@@ -308,6 +308,16 @@ const SPINE_OUTCOME_SCHEMA = {
         // tree. Collapsing either into GATE_FAIL is what made an escalation
         // payload indistinguishable from real breakage.
         'GATE_PASS', 'GATE_FAIL', 'GATE_ABSENT', 'GATE_SLICE', 'GATE_TIMEOUT',
+        // The §3e.5 PRE-gate freshness/rebase step (temperloop#1937): brings
+        // the worktree up to current origin/main before the gate runs, so an
+        // origin/main-ratcheted validator never false-fails on rows main
+        // gained after this worktree's base was cut. CURRENT/REBASED are the
+        // two non-blocking outcomes (proceed to the gate); CONFLICT means the
+        // rebase hit a real clash and was aborted (worktree left intact,
+        // escalates `stale-worktree` — the gate never runs); ERROR is a
+        // fail-open (fetch/resolve itself could not run; proceed on the tree
+        // as-is, exactly the pre-#1937 behavior).
+        'FRESHNESS_CURRENT', 'FRESHNESS_REBASED', 'FRESHNESS_CONFLICT', 'FRESHNESS_ERROR', 'FRESHNESS_TIMEOUT',
         // The 3e.6 class-A activation gate (temperloop#1219). ACTIVATION_PASS /
         // ACTIVATION_FAIL are the `proof:` predicate's own exit status against
         // the worker's worktree. The three CONTROL outcomes are the
@@ -377,6 +387,13 @@ const SPINE_OUTCOME_SCHEMA = {
     failed_run_ids: { type: 'array', items: { type: ['number', 'string'] } },
     // free-form detail the executor may pass through (e.g. gate output tail)
     detail: { type: 'string' },
+    // temperloop#1937 pre-gate freshness passthrough — the two SHAs a
+    // FRESHNESS_CURRENT/FRESHNESS_REBASED line names, and the conflict
+    // files + disposition a FRESHNESS_CONFLICT line names.
+    worktree_base: { type: 'string' },
+    main: { type: 'string' },
+    conflict_files: { type: 'array', items: { type: 'string' } },
+    disposition: { type: 'string' },
     // 3e.6 activation-gate passthrough (temperloop#1219): the `proof:`
     // predicate's own exit status, carried into the escalation payload so an
     // operator sees WHY it failed without opening a log.
@@ -3092,6 +3109,125 @@ function activationControlCmd(wt, proof) {
   ].join('\n');
 }
 
+// -----------------------------------------------------------------------------
+// gateFreshnessCmd — the §3e.5 pre-gate freshness step (temperloop#1937).
+// -----------------------------------------------------------------------------
+// build.md §3e.5 runs `scripts/quality-gates.sh` against the worktree, and a
+// handful of its gates (validate-check-surface-degenerate-coverage.sh,
+// validate-exec-bit-registry.sh, validate-mandatory-step-signal.sh) RATCHET
+// against the CURRENT `origin/main` — they diff the worktree's registry rows
+// against main's own, and flag any row main gained that the worktree never
+// touched as REGRESSED. A worktree branched from main hours or days earlier
+// (a long worker run, or a slow level) can be behind by the time the gate
+// runs, so those rows are false positives: real work that landed on main
+// AFTER this branch was cut, misread as this item's own regression. The live
+// incident: the temperloop#1934 fix (a sibling item on this same level) merged
+// while this worktree was mid-build and cost it a full gate round.
+//
+// Fetch origin and bring the worktree up to `origin/main` HERE, strictly
+// before the gate runs, so the gate always measures against a tree that is
+// least as current as main — never behind it. ONE combined shell script
+// (fetch, ancestor-check, conditional rebase): this is always exactly ONE
+// runMachinery call, never a separate check-then-rebase pair, so handling the
+// stale case costs no additional machinery step beyond the check itself.
+//
+// `origin/main` is hardcoded rather than resolved through the
+// default_branch()-style fallback chain reviewDiffCmd/activationControlCmd
+// use (origin/HEAD, else main/master): this step exists specifically to match
+// the exact ratchet target the named §3e.5 validators use — `origin/main`,
+// by their own construction — not a generic default branch. A repo whose
+// protected branch is genuinely not `main` needs a different fix than this
+// one, not a guessed fallback here.
+//
+// Three outcomes:
+//   FRESHNESS_CURRENT  — `git merge-base --is-ancestor origin/main HEAD`
+//     already true (the worktree is at or ahead of main). No rebase is
+//     attempted — the JSON line still names both SHAs for the record.
+//   FRESHNESS_REBASED  — origin/main was ahead; `git rebase origin/main`
+//     replayed the worker's commits onto it cleanly. The JSON line names both
+//     SHAs (`worktree_base` = the worktree's HEAD after the rebase,
+//     `main` = the origin/main tip it was rebased onto).
+//   FRESHNESS_CONFLICT — the rebase hit a real content clash. Conflict files
+//     are read via `git diff --name-only --diff-filter=U` BEFORE the abort
+//     (the merge markers vanish once the rebase is aborted), then
+//     `git rebase --abort` runs so the worktree is left intact on its
+//     PRE-rebase commit — never a half-applied rebase, never a silent
+//     revert, and NEVER pushed as a known-stale branch. The disposition
+//     string names exactly that so a human resolving `stale-worktree` by
+//     hand knows the worktree was not touched.
+//   FRESHNESS_ERROR    — the fetch/resolve step itself could not run (no
+//     network, no `origin/main`). This step's job is to PREVENT a false gate
+//     failure, never to manufacture one of its own — runGateFreshness() below
+//     treats this as fail-OPEN (log and proceed to the gate on the tree as it
+//     stands), exactly the pre-#1937 behavior.
+function gateFreshnessCmd(wt) {
+  return [
+    `cd ${sq(wt)} || { printf '{"outcome":"FRESHNESS_ERROR","detail":"cannot cd to the worktree"}\\n'; exit 0; }`,
+    `git fetch origin main >/dev/null 2>&1 || { printf '{"outcome":"FRESHNESS_ERROR","detail":"git fetch origin main failed"}\\n'; exit 0; }`,
+    `__main="$(git rev-parse origin/main 2>/dev/null)"`,
+    `[ -n "$__main" ] || { printf '{"outcome":"FRESHNESS_ERROR","detail":"cannot resolve origin/main"}\\n'; exit 0; }`,
+    `if git merge-base --is-ancestor origin/main HEAD 2>/dev/null; then`,
+    `  __base="$(git rev-parse HEAD 2>/dev/null)"`,
+    `  printf '{"outcome":"FRESHNESS_CURRENT","worktree_base":"%s","main":"%s"}\\n' "$__base" "$__main"`,
+    `  exit 0`,
+    `fi`,
+    `if out="$(git rebase origin/main 2>&1)"; then`,
+    `  __base="$(git rev-parse HEAD 2>/dev/null)"`,
+    `  printf '{"outcome":"FRESHNESS_REBASED","worktree_base":"%s","main":"%s"}\\n' "$__base" "$__main"`,
+    `else`,
+    `  __conflicts="$(git diff --name-only --diff-filter=U 2>/dev/null | jq -R -s -c 'split("\\n") | map(select(length>0))')"`,
+    `  [ -n "$__conflicts" ] || __conflicts='[]'`,
+    `  git rebase --abort >/dev/null 2>&1 || true`,
+    `  printf '{"outcome":"FRESHNESS_CONFLICT","main":"%s","conflict_files":%s,"disposition":"rebase aborted; worktree left intact on its pre-rebase commit"}\\n' "$__main" "$__conflicts"`,
+    `fi`,
+  ].join('\n');
+}
+
+// runGateFreshness(item, wt) — drives gateFreshnessCmd() as ONE solo machinery
+// call and returns an ESCALATION object to return straight out of driveItem,
+// or null to proceed to §3e.5 unchanged. Mirrors runActivationGate()'s own
+// shape (denied/timeout handled identically) — deliberately the SAME pattern,
+// not a new one.
+async function runGateFreshness(item, wt) {
+  const out = await runMachinery(gateFreshnessCmd(wt), {
+    label: `gate-freshness:${item.slug}`,
+    slug: item.slug,
+    phase: enterStage(STAGE_GATE),
+    timeoutOutcome: 'FRESHNESS_TIMEOUT',
+  });
+  if (machineryDenied(out)) {
+    // temperloop#1819: quota death vs genuine denial — see deniedOrQuota.
+    return await deniedOrQuota(item.slug, { step: 'gate-freshness', out }, wt);
+  }
+  if (out.outcome === 'STEP_TIMEOUT') {
+    return (await disposeStepTimeout(item, wt, out, 'gate-freshness', { adoptable: false })).escalation;
+  }
+  if (out.outcome === 'FRESHNESS_CONFLICT') {
+    // Never `acceptance-gate-failed` — the gate never ran, so a Fail verdict
+    // would be a lie. This is its own kind: the worktree's BASE is stale, not
+    // its work broken. The worktree is intact (see gateFreshnessCmd's own
+    // header) on its pre-rebase commit; the fix is always resolving the
+    // rebase by hand (or re-driving once main settles), never re-reading the
+    // conflict as a code defect.
+    return escalate(item.slug, 'stale-worktree', {
+      main: out.main ?? null,
+      conflict_files: out.conflict_files ?? [],
+      disposition: out.disposition ?? 'rebase aborted; worktree left intact on its pre-rebase commit',
+    });
+  }
+  if (out.outcome === 'FRESHNESS_REBASED') {
+    log(`[${item.slug}] pre-gate freshness — rebased onto origin/main (worktree_base ${String(out.worktree_base ?? '').slice(0, 12)}, main ${String(out.main ?? '').slice(0, 12)}) before running §3e.5`);
+  } else if (out.outcome === 'FRESHNESS_CURRENT') {
+    log(`[${item.slug}] pre-gate freshness — worktree already at or ahead of origin/main (${String(out.main ?? '').slice(0, 12)}); no rebase needed`);
+  } else {
+    // FRESHNESS_ERROR or any unrecognized outcome: fail OPEN. Not evidence
+    // the tree is stale or broken — proceed to the gate on the tree as it
+    // stands, exactly as every run did before this step existed.
+    log(`[${item.slug}] pre-gate freshness — unresolved (${out.outcome ?? 'no outcome'}); proceeding to §3e.5 on the worktree as-is`);
+  }
+  return null;
+}
+
 // runActivationGate(item, wt) — the §3e.6 gate. Returns an ESCALATION object to
 // return straight out of driveItem, or null to proceed to 3f.
 //
@@ -3551,6 +3687,16 @@ async function driveItem(item) {
   // can never drift; with the single round it renders the pre-#1846 shape
   // byte-identically.
   const reviewSummarySuffix = reviewBodySuffix([review]);
+
+  // --- 3e.5-pre. Gate-freshness rebase (temperloop#1937) --------------------
+  // Bring the worktree up to current origin/main BEFORE the acceptance gate
+  // below runs — see runGateFreshness()'s own header for the full rationale
+  // (origin/main-ratcheted validators false-failing on a worktree that went
+  // stale mid-build; the live temperloop#1934 incident this item fixes).
+  // Strictly between §3e review and §3e.5: a conflicting rebase must escalate
+  // BEFORE quality-gates.sh ever runs, never after a wasted gate slice.
+  const freshness = await runGateFreshness(item, wt);
+  if (freshness) return freshness;
 
   // --- 3e.5. Parent-side acceptance gate (quality-gates.sh) ----------------
   // Run the project's static gate SSOT against the worker's work. ABSENT (the

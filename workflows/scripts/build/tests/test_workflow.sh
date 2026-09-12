@@ -32,6 +32,13 @@
 #   - deploy-discovery: ~/.claude/workflows/build-level.mjs resolves (install-claude)
 #   - spike kind: spike items skip push/PR/CI, park with null pr/pushed_sha
 #   - gate-fail: GATE_FAIL → acceptance-gate-failed escalation
+#   - pre-gate freshness rebase (temperloop#1937): a worktree behind
+#     origin/main rebases cleanly and reaches the gate on the rebased tree; a
+#     rebase conflict escalates its own stale-worktree kind (never
+#     acceptance-gate-failed) and the gate never runs; a worktree already at
+#     main takes the byte-identical pre-#1937 path (one freshness check, no
+#     extra rebase spawn); plus a static guard pinning the call order
+#     (freshness step before the gate call in driveItem)
 #   - gate verdict/payload agreement (#1587): the escalation kind, its verdict,
 #     its failure count and its reason all derive from ONE slice ledger, in all
 #     four gate outcomes — no payload field may contradict the kind it ships under
@@ -193,6 +200,16 @@ const reviewMap = new Map();
 // Default (map miss): { mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN' }
 // so existing tests need no changes — only CONFLICTING tests override this.
 const mergeCheckMap = new Map();
+// freshnessMap: slug → [outcome, ...] — consumed in order per slug, its OWN
+// queue (temperloop#1937), mirroring mergeCheckMap's precedent exactly and for
+// the same reason: the pre-gate freshness solo call (`gate-freshness:<slug>`)
+// sits strictly between REVIEW_DIFF and the gate call in EVERY item's real
+// call sequence, so routing it through the shared machineryMap FIFO would
+// consume the queue entry every existing test wrote for something else (the
+// gate call itself, most directly) and desync every step after it. Default
+// (map miss): FRESHNESS_CURRENT, so the hundred-plus existing tests that never
+// call setFreshness() — none of which model a stale worktree — need no changes.
+const freshnessMap = new Map();
 
 function slugFromLabel(label) {
   // Labels from runMachineryBatch (temperloop#942): "prelude:slug",
@@ -254,6 +271,7 @@ globalThis.machineryMap = machineryMap;
 globalThis.workerMap = workerMap;
 globalThis.mergeCheckMap = mergeCheckMap;
 globalThis.reviewMap = reviewMap;
+globalThis.freshnessMap = freshnessMap;
 
 globalThis.agent = async function agent(prompt, opts = {}) {
   callLog.push({ prompt: String(prompt).slice(0, 120), promptFull: String(prompt), opts: { label: opts.label, phase: opts.phase, model: opts.model, agentType: opts.agentType } });
@@ -261,6 +279,13 @@ globalThis.agent = async function agent(prompt, opts = {}) {
   if (isMachineryCall(opts)) {
     const kinds = batchStepKinds(prompt);
     if (!kinds) {
+      // temperloop#1937: the pre-gate freshness step keeps its OWN queue
+      // (freshnessMap, mirroring mergeCheckMap) so it never consumes an entry
+      // from the shared per-slug machineryMap FIFO — see freshnessMap's own
+      // comment for why that sharing would desync every existing test.
+      if (/^gate-freshness:/.test(String(opts.label || ''))) {
+        return nextFromMap(freshnessMap, slug, { outcome: 'FRESHNESS_CURRENT', worktree_base: 'wt-base', main: 'main-tip' });
+      }
       // Solo executor (gate / recover-probe / push-retry) — routed by slug.
       return nextFromMap(machineryMap, slug, { outcome: 'ERROR', error: 'unexpected machinery call for ' + slug });
     }
@@ -333,6 +358,7 @@ globalThis.parallel = async (fns) => Promise.all(fns.map(f => f()));
 globalThis.setMachinery = (slug, ...outcomes) => { machineryMap.set(slug, outcomes); };
 globalThis.setWorker = (slug, ...verdicts) => { workerMap.set(slug, verdicts); };
 globalThis.setMergeCheck = (slug, ...states) => { mergeCheckMap.set(slug, states); };
+globalThis.setFreshness = (slug, ...outcomes) => { freshnessMap.set(slug, outcomes); };
 globalThis.setReview = (slug, ...responses) => { reviewMap.set(slug, responses); };
 // reviewResolutionFailure — the SAME two-marker shape machineryAgent()'s own
 // MACHINERY_RESOLUTION_ERR regex matches (temperloop#1014/#1430): agent()
@@ -1046,6 +1072,134 @@ if ((result.parked ?? []).length !== 0)
 
 console.log(JSON.stringify({ ok: true }));
 "
+
+# ============================================================================
+# TESTS (temperloop#1937): pre-§3e.5 gate-freshness rebase.
+#
+# §3e.5's validate-check-surface-degenerate-coverage.sh / validate-exec-bit-
+# registry.sh / validate-mandatory-step-signal.sh ratchet against origin/main;
+# a worktree that fell behind main mid-build reads rows main gained as its OWN
+# regression. driveItem now runs a pre-gate freshness step (runGateFreshness /
+# gateFreshnessCmd) strictly before the gate that fetches origin and rebases
+# onto origin/main when behind. It keeps its OWN mock queue (freshnessMap,
+# `setFreshness()`) rather than the shared per-slug machineryMap FIFO, so the
+# hundred-plus EXISTING tests above (none of which model a stale worktree)
+# need no changes — see freshnessMap's own comment for why sharing the queue
+# would desync every one of them.
+# ============================================================================
+run_node_case "freshness-rebased (temperloop#1937): worktree behind main rebases cleanly and reaches the gate on the rebased tree" "
+$PREAMBLE
+
+setFreshness('item-fresh-reb', { outcome: 'FRESHNESS_REBASED', worktree_base: 'reb-sha', main: 'main-sha' });
+setMachinery('item-fresh-reb',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/item-fresh-reb' },
+  { outcome: 'REVIEW_DIFF' },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-out' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'sha-out', branch: 'build/item-fresh-reb' },
+  { outcome: 'PR_OPENED', pr_number: 501 },
+  { outcome: 'CI_GREEN' },
+);
+happyWorker('item-fresh-reb');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'item-fresh-reb', branch: 'build/item-fresh-reb', title: 'Freshness Rebased Item', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+
+if ((result.parked ?? []).length !== 1 || (result.escalations ?? []).length !== 0)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected 1 parked / 0 escalations: ' + JSON.stringify(result) })); process.exit(0); }
+if (result.parked[0].pr !== 501)
+  { console.log(JSON.stringify({ ok: false, reason: 'wrong PR parked (gate must have run on the rebased tree): ' + JSON.stringify(result.parked[0]) })); process.exit(0); }
+const freshIdx = callLog.findIndex(c => (c.opts.label||'').startsWith('gate-freshness:item-fresh-reb'));
+const gateIdx = callLog.findIndex(c => (c.opts.label||'') === 'gate:item-fresh-reb');
+if (freshIdx === -1 || gateIdx === -1 || !(freshIdx < gateIdx))
+  { console.log(JSON.stringify({ ok: false, reason: 'freshness call missing or not before the gate call: fresh=' + freshIdx + ' gate=' + gateIdx })); process.exit(0); }
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+run_node_case "freshness-conflict (temperloop#1937): a rebase conflict escalates stale-worktree — never acceptance-gate-failed — and the gate never runs" "
+$PREAMBLE
+
+setFreshness('item-fresh-conf', { outcome: 'FRESHNESS_CONFLICT', main: 'main-sha', conflict_files: ['a.txt', 'b.txt'], disposition: 'rebase aborted; worktree left intact on its pre-rebase commit' });
+setMachinery('item-fresh-conf',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/item-fresh-conf' },
+  { outcome: 'REVIEW_DIFF' },
+  // Deliberately NO gate/pr/CI entries queued: if the driver mistakenly ran
+  // past the conflict it would hit the 'unexpected machinery call' default,
+  // which the assertions below (escalation kind + zero gate calls) catch
+  // either way.
+);
+happyWorker('item-fresh-conf');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'item-fresh-conf', branch: 'build/item-fresh-conf', title: 'Freshness Conflict Item', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+
+if ((result.parked ?? []).length !== 0 || (result.escalations ?? []).length !== 1)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected 0 parked / 1 escalation: ' + JSON.stringify(result) })); process.exit(0); }
+const esc = result.escalations[0];
+if (esc.kind !== 'stale-worktree')
+  { console.log(JSON.stringify({ ok: false, reason: 'escalation kind must be stale-worktree, never acceptance-gate-failed: got ' + esc.kind })); process.exit(0); }
+if (JSON.stringify(esc.payload.conflict_files) !== JSON.stringify(['a.txt','b.txt']))
+  { console.log(JSON.stringify({ ok: false, reason: 'payload must name the conflicting files: ' + JSON.stringify(esc.payload) })); process.exit(0); }
+if (!/aborted/i.test(String(esc.payload.disposition || '')))
+  { console.log(JSON.stringify({ ok: false, reason: 'payload must name the rebase disposition: ' + JSON.stringify(esc.payload) })); process.exit(0); }
+const gateCalls = callLog.filter(c => (c.opts.label||'') === 'gate:item-fresh-conf').length;
+if (gateCalls !== 0)
+  { console.log(JSON.stringify({ ok: false, reason: 'the gate must never run on a conflicting rebase, but it ran ' + gateCalls + ' time(s)' })); process.exit(0); }
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+run_node_case "freshness-current (temperloop#1937): a worktree already at/ahead of main takes the byte-identical pre-#1937 path — one freshness check, no extra rebase spawn" "
+$PREAMBLE
+
+happyMachinery('item-fresh-cur', 601, 'sha-cur');
+happyWorker('item-fresh-cur');
+// No setFreshness() call — the default (FRESHNESS_CURRENT) models the common
+// case every pre-#1937 test above already exercises, unchanged.
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'item-fresh-cur', branch: 'build/item-fresh-cur', title: 'Freshness Current Item', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+
+if ((result.parked ?? []).length !== 1 || (result.escalations ?? []).length !== 0)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected 1 parked / 0 escalations: ' + JSON.stringify(result) })); process.exit(0); }
+// Exactly ONE freshness-labeled call — never a second spawn to re-check or
+// re-rebase once the tree is known current.
+const freshCalls = callLog.filter(c => (c.opts.label||'').startsWith('gate-freshness:item-fresh-cur')).length;
+if (freshCalls !== 1)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected exactly 1 freshness call, got ' + freshCalls })); process.exit(0); }
+// The gate call itself still ran on its own byte-identical slot — the 8-step
+// happyMachinery() sequence needed NO changes for this, the common, case.
+const gateCalls = callLog.filter(c => (c.opts.label||'') === 'gate:item-fresh-cur').length;
+if (gateCalls !== 1)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected exactly 1 gate call, got ' + gateCalls })); process.exit(0); }
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+# Static guard: the freshness step must run BEFORE the §3e.5 gate call in
+# driveItem — mirrors the K1219 ordering guard's shape exactly (grep the two
+# call sites' own line numbers rather than re-deriving order at runtime).
+K1937_FRESH_LINE="$(grep -n 'const freshness = await runGateFreshness(item, wt);' "$MJS" | head -1 | cut -d: -f1)"
+K1937_GATE_LINE="$(grep -n 'gateOut = await runMachinery(gateCmd(gateStartAt, gateSelection), {' "$MJS" | head -1 | cut -d: -f1)"
+[ -n "$K1937_FRESH_LINE" ] || fail "#1937: could not locate the pre-gate freshness call site in driveItem"
+[ -n "$K1937_GATE_LINE" ] || fail "#1937: could not locate the §3e.5 gate call site in driveItem"
+[ "$K1937_FRESH_LINE" -lt "$K1937_GATE_LINE" ] \
+  || fail "#1937: the pre-gate freshness step must run BEFORE the §3e.5 gate call — an origin/main-ratcheted validator would false-fail on a stale worktree otherwise"
+echo "PASS: #1937 ordering guard — the pre-gate freshness step runs strictly before the §3e.5 gate call in driveItem"
 
 # ============================================================================
 # TEST 11b: gate-timeout — 3e.5 gate executor prompt carries the long Bash-tool
@@ -3522,7 +3676,7 @@ echo "PASS: #939 throw guard — callWorker() normalizes a thrown lost return"
 # moving any branching decision out of the .mjs.
 # ============================================================================
 
-run_node_case "K942 spawn count: an L0-shaped 3-item level spends 4 machinery executors per item, not one per command" "
+run_node_case "K942 spawn count: an L0-shaped 3-item level spends 6 machinery executors per item, not one per command" "
 $PREAMBLE
 
 // Board ON + ghIssue → the full L0 shape: claim, worktree, gate, rebase, scan,
@@ -3566,17 +3720,19 @@ const soloCalls = machineryCalls.filter(c => !/^Steps: /m.test(c.promptFull)).le
 const unbatched = machineryStepLog.length + soloCalls;
 
 if (!reason && workerCalls.length !== 3) reason = 'expected 3 worker spawns, got ' + workerCalls.length;
-// 5 machinery executors per item: prelude, review-diff (temperloop#1430), gate, pr-batch, ci-batch.
-if (!reason && machineryCalls.length !== 15) reason = 'expected 15 machinery executors (5/item), got ' + machineryCalls.length + ': ' + JSON.stringify(machineryCalls.map(c => c.opts.label));
-if (!reason && callLog.length !== 18) reason = 'expected 18 total agent spawns for the level, got ' + callLog.length;
+// 6 machinery executors per item: prelude, review-diff (temperloop#1430),
+// gate-freshness (temperloop#1937), gate, pr-batch, ci-batch.
+if (!reason && machineryCalls.length !== 18) reason = 'expected 18 machinery executors (6/item), got ' + machineryCalls.length + ': ' + JSON.stringify(machineryCalls.map(c => c.opts.label));
+if (!reason && callLog.length !== 21) reason = 'expected 21 total agent spawns for the level, got ' + callLog.length;
 // …and that is a real reduction against the un-batched equivalent of this run.
-if (!reason && unbatched !== 36) reason = 'expected the un-batched equivalent to be 36 spawns, got ' + unbatched;
+if (!reason && unbatched !== 39) reason = 'expected the un-batched equivalent to be 39 spawns, got ' + unbatched;
 if (!reason && !(machineryCalls.length < unbatched)) reason = 'batching did not reduce machinery spawns: ' + machineryCalls.length + ' vs ' + unbatched;
 
-// Per item, the executors are exactly these five, in this order.
+// Per item, the executors are exactly these six, in this order — the
+// temperloop#1937 freshness check runs strictly between review and the gate.
 for (const slug of ['a1', 'a2', 'a3']) {
   const labels = machineryCalls.filter(c => (c.opts.label||'').includes(slug)).map(c => c.opts.label);
-  const want = ['prelude:' + slug, 'review-diff:' + slug, 'gate:' + slug, 'pr-batch:' + slug, 'ci-batch:' + slug + '#0'];
+  const want = ['prelude:' + slug, 'review-diff:' + slug, 'gate-freshness:' + slug, 'gate:' + slug, 'pr-batch:' + slug, 'ci-batch:' + slug + '#0'];
   if (!reason && JSON.stringify(labels) !== JSON.stringify(want))
     reason = slug + ' machinery executors wrong: ' + JSON.stringify(labels);
   // Every mechanical step still RAN — batching removed spawns, not work.
@@ -4214,6 +4370,7 @@ globalThis.agent = async (prompt, opts = {}) => {
   if (isWorkerCall(opts)) return { status: 'done', summary: 's', acceptance_results: [], commits: [] };
   if (label.startsWith('prelude:')) return { results: [{ outcome: 'CREATED', path: '/tmp/repo.wt/sl' }] };
   if (label.startsWith('review-diff:')) return { outcome: 'REVIEW_DIFF', files: [] };
+  if (label.startsWith('gate-freshness:')) return { outcome: 'FRESHNESS_CURRENT', worktree_base: 'x', main: 'y' };
   if (label.startsWith('gate:')) return { outcome: 'GATE_PASS' };
   if (label.startsWith('pr-batch:')) return { results: [
     { outcome: 'REBASED', sha: 'x' },
@@ -4249,6 +4406,7 @@ globalThis.agent = async (prompt, opts = {}) => {
   const l = opts.label || '';
   if (l.startsWith('prelude:')) return { results: [{ outcome: 'CREATED', path: '/tmp/repo.wt/c' }] };
   if (l.startsWith('review-diff:')) return { outcome: 'REVIEW_DIFF', files: [] };
+  if (l.startsWith('gate-freshness:')) return { outcome: 'FRESHNESS_CURRENT', worktree_base: 'x', main: 'y' };
   if (l.startsWith('gate:')) return { outcome: 'GATE_PASS' };
   if (l.startsWith('pr-batch:')) return { results: [{ outcome: 'REBASED', sha: 'x' }, { outcome: 'SCAN_CLEAN' }, { outcome: 'PUSHED', sha: 'x' }, { outcome: 'PR_OPENED', pr_number: 9 }] };
   if (l.startsWith('ci-batch:')) return { results: [{ mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN' }, { outcome: 'CI_GREEN' }] };
@@ -4783,6 +4941,7 @@ else {
     [/^prelude:/,      'claim'],
     [/^worker:/,       'build'],
     [/^review-diff:/,  'review'],
+    [/^gate-freshness:/, 'gate'],
     [/^gate:/,         'gate'],
     [/^pr-batch:/,     'PR'],
     [/^ci-batch:/,     'CI'],
