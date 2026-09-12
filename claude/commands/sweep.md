@@ -129,7 +129,7 @@ After Phase 1, the **Phase-2 set** = the fix pool minus every still-flagged issu
 
 **Blocked_by re-check at every chunk boundary (Step 1 item 4).** Before assembling any chunk **after the first**, re-run the un-defer predicate for every item Step 1 deferred (not the pool-level cycle walk's flagged items — a cycle, once surfaced, does not resolve mid-run and is not re-walked per chunk). A blocker can land **within this same run**, in an earlier chunk's merge pass, so a deferral recorded at Step-1 pool-build time can go stale by the time a later chunk forms. An item whose blocker(s) now all un-defer joins the **next** chunk being assembled (pool order among newly-eligible items, hotspot rule applied same as any other item); an item still blocked stays deferred and keeps its Step-4 blocked-frontier entry. This re-check is what makes "re-checked at chunk boundaries" (Step 1 item 4) concrete rather than aspirational — the first chunk's partition uses the Step-1 read as-is (nothing has landed yet to re-check against).
 
-For each chunk, in order, invoke the saved Workflow `build-level.mjs` **once** — a **multi-item level** carrying the whole chunk's `items[]` — via the Workflow tool:
+For each chunk, in order, **immediately before invoking**, print the **Workflow launch line** template (`claude/message-schema.md`) — `caller: sweep`, this chunk's item count and slugs, `round 1` (a chunk invocation is never a 3d-esc continuation) — so a chunk is distinguishable in the transcript from a concurrent `/build`/`/fix` drive on the same repo (temperloop#903, temperloop#1941). Then invoke the saved Workflow `build-level.mjs` **once** — a **multi-item level** carrying the whole chunk's `items[]` — via the Workflow tool:
 
 ```
 // Invoke by scriptPath, NOT name: — the Workflow tool's name: resolves built-ins
@@ -198,6 +198,8 @@ Workflow({ scriptPath: workflowPath, args: {
   verdicts: {}, onlySlugs: []
 } })
 ```
+
+**Immediately after the call returns**, print the **Workflow return line** template (`claude/message-schema.md`) — the launch line's pair.
 
 The workflow claims each of the chunk's issues (3a — claim-first; the chunk is a **multi-claim window**, K#275), creates the deterministic worktrees (3b), runs the **isolated workers concurrently** (3c — the workflow's own within-level `parallel()`), runs the acceptance gate + closing-keyword scan + push-by-SHA + PR open + CI poll per item (3e.5–3g), and **returns one `{parked, escalations}` covering the whole chunk**. The invocation is **synchronous** — wait for it to return; nothing else is driven while a chunk runs.
 
