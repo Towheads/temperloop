@@ -1,5 +1,6 @@
-- **One ontology registry for the tracker and plan vocabularies** (ADR 0032,
-  epic #1910 (graph-of-record ontology work), level 0).
+- **One ontology registry for the tracker and plan vocabularies** —
+  ADR 0032 (ontology registry is source of truth); epic #1910 (graph-of-record
+  ontology work), level 0.
   `workflows/scripts/config/ontology-registry.tsv` is now the single source
   of truth for the node types, edge types, the four state
   alphabets (issue-status `fnd:status:*` labels, plan sentinels, PR merge

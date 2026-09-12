@@ -161,12 +161,14 @@ nothing in the adapter offers to mask it.
 
 ### The label vocabulary
 
-The label set (the Status values, Component, the claim stamp) is tabled ONCE, in `workflows/scripts/config/ontology-registry.tsv` (`label-field` + `state:issue-status` rows; ADR 0032) and enforced by `check-ontology-registry.sh` — never restated here.
+The label set (the Status values, Component, the claim stamp) is tabled ONCE, in `workflows/scripts/config/ontology-registry.tsv` (`label-field` + `state:issue-status` rows; ADR 0032 (ontology registry is source of truth)) and enforced by `check-ontology-registry.sh` — never restated here.
 
 General rule: a label is `fnd:<field-slug>:<value-slug>`, where `<field-slug>`
 is the field name lowercased with spaces→hyphens (`Status`→`status`,
 `Component`→`component`) and `<value-slug>` is the option name slugged the
-same way (`"In Progress"`→`in-progress`). This is generic over any future
+same way (`"In Progress"`→`in-progress`) — so the three Status labels are
+`fnd:status:backlog`, `fnd:status:ready` and `fnd:status:in-progress`, and
+Done is the absence of any of them. This is generic over any future
 single-select-shaped field — no new plumbing needed to add one, just start
 writing `fnd:<new-field-slug>:*` labels.
 
