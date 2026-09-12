@@ -464,6 +464,43 @@ rest_out="$(pf env SPEND_WEIGHT_CACHE_READ="-1" \
   || fail "9m: the real \$SUT no longer guards — mutation leaked outside its \$WORK copy (got: $rest_out)"
 ok "9m MUTATION PROOF: disabling the weights guard makes a negative weight fail OPEN and be applied silently (mutation isolated to a \$WORK copy, test 9 green again against the real \$SUT)"
 
+# ── 10. the ceiling's stated LOOSENING is derived, not transcribed (#1710) ──
+# The block above REPLAY_PREFLIGHT_CEILING_TOKENS tells an operator, in the
+# paragraph that exists to state it plainly, how much the ceiling loosened in
+# real terms. It said "roughly 5.4x" against a true ~33.6x — 5.4x is
+# 8,000,000/1,489,000, the loosening of merely REINTERPRETING the old numeral in
+# the new unit, not of the value actually set. Understating a spend-ceiling
+# relaxation ~6x is the wrong direction to be wrong in, and it was six lines
+# above the figure it contradicts.
+#
+# This recomputes the multiplier from the numbers the block ITSELF supplies —
+# the measured replay's raw and weighted totals, and the old raw literal — so a
+# future SPEND_WEIGHT_* retune or ceiling change that leaves the prose behind
+# fails here instead of misinforming an operator at authorization time.
+count
+CFG="$SCRIPTS_DIR/build/build.config.sh"
+[ -f "$CFG" ] || fail "10: build.config.sh not found at $CFG"
+# The three inputs, read from the file rather than restated here.
+raw_measured="$(grep -oE 'raw total [0-9,]+' "$CFG" | head -1 | tr -dc '0-9')"
+wtd_measured="$(grep -oE 'cost-weighted [0-9,]+' "$CFG" | head -1 | tr -dc '0-9')"
+ceiling_now="$(grep -oE 'REPLAY_PREFLIGHT_CEILING_TOKENS:=[0-9]+' "$CFG" | tr -dc '0-9')"
+stated_x="$(grep -oE 'REAL-TERMS[[:space:]]*$|LOOSENING of roughly [0-9.]+x' "$CFG" | grep -oE '[0-9.]+x' | tr -d 'x' | head -1)"
+[ -n "$raw_measured" ] && [ -n "$wtd_measured" ] && [ -n "$ceiling_now" ] && [ -n "$stated_x" ] \
+  || fail "10: could not read the block's own figures (raw=$raw_measured wtd=$wtd_measured ceiling=$ceiling_now stated=$stated_x) — the prose shape changed and this guard needs updating with it"
+awk -v raw="$raw_measured" -v wtd="$wtd_measured" -v ceil="$ceiling_now" -v stated="$stated_x" 'BEGIN{
+  ratio = wtd / raw;                 # weighted per raw token, at the observed mix
+  old_weighted = 8000000 * ratio;    # the old RAW literal, expressed in the new unit
+  true_x = ceil / old_weighted;
+  # 10% tolerance: the prose rounds, and this guard is for a figure that has
+  # gone STALE, not for the last decimal place.
+  d = (true_x - stated) / true_x; if (d < 0) d = -d;
+  if (d > 0.10) {
+    printf "stated %.1fx but the block own figures give %.1fx (ratio %.4f, old ceiling %.0f weighted)\n", stated, true_x, ratio, old_weighted
+    exit 1
+  }
+}' || fail "10: the ceiling's stated loosening disagrees with the arithmetic the same block publishes (temperloop#1710)"
+ok "10 the ceiling's stated real-terms loosening is consistent with the measured-replay figures the block itself supplies"
+
 echo
 echo "test_replay_preflight_cost_unit.sh: $pass/$total checks passed"
 [ "$pass" -eq "$total" ] || exit 1
