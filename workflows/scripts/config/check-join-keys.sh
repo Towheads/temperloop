@@ -115,7 +115,7 @@ fi
 required_keys="session_full session8 host_session_stamp run_id pr_number message_id plan_stem"
 for rk in $required_keys; do
   found=0
-  for k in "${keys[@]}"; do
+  for k in "${keys[@]+"${keys[@]}"}"; do
     [ "$k" = "$rk" ] && found=1 && break
   done
   if [ "$found" -eq 0 ]; then
@@ -156,15 +156,19 @@ if grep -qE 'close\[sd\]\?\|fix\(e\[sd\]\)\?\|resolve\[sd\]\?' "$JOIN_KEYS_PR_LI
 fi
 
 # --- 4. fixture coverage: every key's function name appears in a fixture --
-if [ ! -s "$JOIN_KEYS_FIXTURES_JSON" ]; then
-  echo "FIXTURES EMPTY: $JOIN_KEYS_FIXTURES_JSON has no content"
+if ! command -v jq >/dev/null 2>&1; then
+  echo "check-join-keys: jq not found — cannot validate fixture coverage" >&2
+  exit 1
+fi
+if ! jq -e 'type=="array" and length>0' "$JOIN_KEYS_FIXTURES_JSON" >/dev/null 2>&1; then
+  echo "FIXTURES EMPTY: $JOIN_KEYS_FIXTURES_JSON is not a non-empty JSON array"
   violations=$((violations + 1))
 else
   for i in "${!keys[@]}"; do
     pair="${loader_fn_pairs[$i]}"
     [ -z "$pair" ] && continue
     py_fn="${pair##*:}"
-    if ! grep -q "\"fn\": \"${py_fn}\"" "$JOIN_KEYS_FIXTURES_JSON"; then
+    if ! jq -e --arg fn "$py_fn" 'any(.[]; .fn == $fn)' "$JOIN_KEYS_FIXTURES_JSON" >/dev/null 2>&1; then
       echo "FIXTURE GAP: key '${keys[$i]}' (function '$py_fn') has no fixture row in $JOIN_KEYS_FIXTURES_JSON"
       violations=$((violations + 1))
     fi

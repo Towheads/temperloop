@@ -23,6 +23,10 @@
 #                     non-UUID-shaped session id, a non-numeric run id);
 #                     nothing is printed on stdout, a reason is printed on
 #                     stderr.
+# Under `set -e`, a bare assignment like `v=$(jk_session_full "$x")` ABORTS
+# the caller on ABSENT/INVALID (the non-zero rc trips the shell's errexit).
+# Call it as `v=$(jk_session_full "$x") || rc=$?` (or inside an `if`) so the
+# three-state contract survives under `set -e`.
 # `jk_apply <fn> [args...]` (the bottom of this file) is a uniform dispatcher
 # used by this registry's own cross-language agreement test
 # (tests/test_join_keys.sh): it prints `STATUS<TAB>VALUE` on stdout (VALUE
@@ -159,7 +163,11 @@ jk_plan_stem() {
   case "$base" in
     *.md) base="${base%.md}" ;;
   esac
-  if [ -z "$base" ]; then
+  # `basename -- "/"` prints "/" (there is no filename component to strip),
+  # while Python's Path("/").name is "" — treat both as ABSENT so the two
+  # loaders agree on this edge case (see the "/" fixture in
+  # join-keys-fixtures.json).
+  if [ -z "$base" ] || [ "$base" = "/" ]; then
     return 2
   fi
   printf '%s' "$base"

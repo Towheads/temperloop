@@ -40,7 +40,16 @@ if ! command -v python3 >/dev/null 2>&1; then
   exit 1
 fi
 
-n_fixtures="$(jq 'length' "$FIXTURES")"
+n_fixtures="$(jq -e 'if type=="array" then length else error("not an array") end' "$FIXTURES")" || {
+  echo "test_join_keys: $FIXTURES is not a JSON array" >&2
+  exit 1
+}
+case "$n_fixtures" in
+  '' | *[!0-9]*)
+    echo "test_join_keys: could not determine a numeric fixture count from $FIXTURES" >&2
+    exit 1
+    ;;
+esac
 if [ "$n_fixtures" -eq 0 ]; then
   echo "test_join_keys: zero fixtures in $FIXTURES" >&2
   exit 1
@@ -62,11 +71,11 @@ while [ "$i" -lt "$n_fixtures" ]; do
   total=$((total + 1))
   label="fixture #$i ($fn ${args[*]:-})"
 
-  shell_out="$(jk_apply "$fn" "${args[@]}")"
+  shell_out="$(jk_apply "$fn" "${args[@]+"${args[@]}"}")"
   shell_status="${shell_out%%$'\t'*}"
   shell_value="${shell_out#*$'\t'}"
 
-  py_out="$(python3 "$PY" apply "$fn" "${args[@]}")"
+  py_out="$(python3 "$PY" apply "$fn" "${args[@]+"${args[@]}"}")"
   py_status="${py_out%%$'\t'*}"
   py_value="${py_out#*$'\t'}"
 

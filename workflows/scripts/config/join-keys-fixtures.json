@@ -38,6 +38,7 @@
   {"fn": "plan_stem", "args": ["foo/bar/baz.md"], "status": "ok", "value": "baz"},
   {"fn": "plan_stem", "args": ["already-a-stem"], "status": "ok", "value": "already-a-stem"},
   {"fn": "plan_stem", "args": [""], "status": "absent", "value": ""},
+  {"fn": "plan_stem", "args": ["/"], "status": "absent", "value": ""},
 
   {"fn": "closes_pattern", "args": ["1910"], "status": "ok", "value": "(?i)(close[sd]?|fix(e[sd])?|resolve[sd]?)[[:space:]]+#1910\\b"}
 ]
