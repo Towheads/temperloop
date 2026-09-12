@@ -299,6 +299,7 @@ bash workflows/scripts/config/tests/test_check_ontology_registry.sh	workflows/sc
 bash workflows/scripts/config/check-join-keys.sh	workflows/scripts/config/join-keys.tsv workflows/scripts/config/join-keys-lib.sh workflows/scripts/config/join_keys.py workflows/scripts/config/join-keys-fixtures.json workflows/scripts/config/check-join-keys.sh workflows/scripts/build/lib/pr-linkage.sh
 bash workflows/scripts/config/tests/test_check_join_keys.sh	workflows/scripts/config/**
 bash workflows/scripts/config/tests/test_join_keys.sh	workflows/scripts/config/**
+bash workflows/scripts/knowledge/tests/test_triples.sh	workflows/scripts/knowledge/** workflows/scripts/config/ontology-registry.tsv workflows/scripts/config/citation-registry.tsv workflows/scripts/config/join-keys-lib.sh docs/adr/**
 bash workflows/scripts/count-prose.sh	claude/** CLAUDE.md README.md workflows/scripts/count-prose.sh workflows/scripts/install-claude-md.sh workflows/scripts/config/** workflows/scripts/build/build.config.sh
 bash workflows/scripts/tests/test_count_prose.sh	workflows/scripts/count-prose.sh workflows/scripts/install-claude-md.sh workflows/scripts/tests/test_count_prose.sh
 bash workflows/scripts/config/tests/test_check_contributor_manifest.sh	workflows/scripts/config/**

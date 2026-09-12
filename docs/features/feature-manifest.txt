@@ -241,6 +241,13 @@ telemetry workflows/scripts/tests/test_item_efficiency.sh
 telemetry .temperloop/report.d/tokens
 telemetry workflows/scripts/report-producers/tokens
 telemetry bin/subcommands/tests/test_tokens_producer.sh
+# Triples extractor (epic temperloop#1910, item triples-extractor): derives
+# {s,p,o,provenance} triples from the ontology/citation registries and the
+# issue-touches/claims lake streams into its own triples-<YYYY-MM>.jsonl
+# stream (meta/data/raw/README.md) — a lake reader+writer like the rest of
+# this feature's emit/query scripts, claimed by the same slug rather than a
+# slug of its own.
+telemetry workflows/scripts/knowledge/*
 
 # ── pipeline-driver — autonomous pipeline tick/drive/cron + work-class policy ───
 pipeline-driver claude/commands/pipeline-drive.md

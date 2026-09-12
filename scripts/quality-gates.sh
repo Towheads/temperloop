@@ -864,6 +864,18 @@ KERNEL_GATES=(
   "bash workflows/scripts/config/check-join-keys.sh"
   "bash workflows/scripts/config/tests/test_check_join_keys.sh"
   "bash workflows/scripts/config/tests/test_join_keys.sh"
+  # Triples extractor (epic temperloop#1910, item triples-extractor, L3 of
+  # the "graph of record" epic): workflows/scripts/knowledge/triples.sh
+  # `build` derives {s,p,o,provenance} triples from the citation registry's
+  # `<!-- cite: ... -->` markers, the issue-touches/claims raw-lake streams
+  # (session ids resolved through join-keys-lib.sh into the same host:sess8
+  # shape the board's own claim stamp uses), and docs/adr/*.md's own
+  # `## Status` supersession chain — every predicate drawn from
+  # ontology-registry.tsv's `edge` axis, a hard error on an unlisted one.
+  # `query` answers `cites` / `touched_by` / `supersedes`. Fixture-only test
+  # (a throwaway TRIPLES_REPO_ROOT/TRIPLES_RAW_DIR tree), zero network, same
+  # direct-`bash` form as the join-keys gate just above.
+  "bash workflows/scripts/knowledge/tests/test_triples.sh"
   # Feature-docs coverage gate (temperloop#132, docs-site epic #131): the
   # documentation counterpart to test-kernel-manifest. Live validator walks
   # every git-tracked path against docs/features/feature-manifest.txt

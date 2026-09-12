@@ -251,6 +251,12 @@ kernel workflows/scripts/config/*
 # The manifest + coverage checker classify THEMSELVES kernel: a stranger's
 # repo needs the coverage gate itself, not just the classifications it holds.
 kernel workflows/scripts/kernel/*
+# Triples extractor (epic temperloop#1910, item triples-extractor): derives
+# {s,p,o,provenance} triples from the ontology/citation registries and the
+# raw lake into triples-<YYYY-MM>.jsonl — generic graph-of-record machinery
+# a stranger's own kernel-only checkout builds and queries against its own
+# registries/lake, no org/vault content of its own.
+kernel workflows/scripts/knowledge/*
 
 # docs generator (F#764, Epic C "docs generated from source in CI"): renders
 # the command reference / plan-note contract / gate list from their own
