@@ -253,8 +253,8 @@
 // two invocations byte-for-byte identically (temperloop#1941 — the /fix and
 // /sweep launch/completion lines used to inherit build's level-scoped wording
 // on runs that drove neither a level nor a dependency edge). The
-// run-IDENTIFYING half
-// (caller, repo, items, issues, round) rides two dynamic surfaces instead:
+// run-IDENTIFYING half (caller, repo, items, issues, round) rides two
+// dynamic surfaces instead:
 // the phase() title — see levelPhaseTitle() near the entry point, emitted
 // ONCE PER STAGE (temperloop#1294) — and, pushed unconditionally rather than
 // left to the opt-in `/workflows` surface, the orchestrator's own Workflow
