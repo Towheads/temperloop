@@ -241,11 +241,34 @@ case "\${JSTUB_MODE:-good}" in
     jq -cn --arg body "\$(mkbody 70)" \
       '{result:\$body, modelUsage:{"claude-opus-4-8":{inputTokens:20,outputTokens:20,cacheReadInputTokens:0,cacheCreationInputTokens:0}}, duration_ms:15, is_error:false}'
     ;;
+  # temperloop#1605: a reply that BEGINS as the contracted object and is cut
+  # mid-string -- the #1262/PR-1437 shape, reproduced rather than described.
+  truncated)
+    jq -cn --arg body "\$(mkbody 67 | cut -c1-60)" \
+      '{result:\$body, modelUsage:{"claude-opus-4-8":{inputTokens:20,outputTokens:20,cacheReadInputTokens:0,cacheCreationInputTokens:0}}, duration_ms:15, is_error:false}'
+    ;;
+  # Truncated on the FIRST call, contracted on every one after -- so a retry
+  # genuinely recovers and the fixture can tell a retry from a re-run.
+  truncated_then_ok)
+    if [ "\$n" -eq 1 ]; then
+      jq -cn --arg body "\$(mkbody 67 | cut -c1-60)" \
+        '{result:\$body, modelUsage:{"claude-opus-4-8":{inputTokens:20,outputTokens:20,cacheReadInputTokens:0,cacheCreationInputTokens:0}}, duration_ms:15, is_error:false}'
+    else
+      jq -cn --arg body "\$(mkbody 67)" \
+        '{result:\$body, modelUsage:{"claude-opus-4-8":{inputTokens:20,outputTokens:20,cacheReadInputTokens:0,cacheCreationInputTokens:0}}, duration_ms:15, is_error:false}'
+    fi
+    ;;
   hang) sleep 30; exit 0 ;;
   *) echo "jstub: unknown JSTUB_MODE \${JSTUB_MODE:-}" >&2; exit 9 ;;
 esac
 STUBEOF
 chmod +x "$JSTUB"
+
+# The stub's own call counter, named here too so a test can reset and read it.
+# The stub interpolates $WORK at heredoc-write time, so this is the SAME path —
+# but it was previously only ever a variable INSIDE the stub, which is why
+# section T's first draft died on an unbound COUNT_FILE.
+COUNT_FILE="$WORK/jstub-calls"
 
 # ── env every judge run gets: the disclosure log, allowlist, and
 #    attribution lake all point INTO $WORK, never at the checkout. ─────────
@@ -1145,6 +1168,92 @@ rm -f "$CANARY"
 ok "I2 the canary is functional — I1 is a measurement, not a tautology"
 
 # ═══════════════════════════════════════════════════════════════════════════
+# SECTION T — a truncated judge reply is DIAGNOSED and RETRIED (temperloop#1605)
+# ═══════════════════════════════════════════════════════════════════════════
+# The motivating case (#1262, candidate arm, PR 1437): the judge returned a
+# reply that BEGINS as the contracted object and is cut mid-string. It was
+# classed `response-unparseable` — the same bucket as a judge that answered in
+# prose — with only a head-300 excerpt, so the operator could not see WHERE
+# parsing failed, and there was no way to ask for another attempt. One lost
+# judgment out of 56 flipped the whole batch to BATCH_DEGRADED.
+
+count
+: >"$COUNT_FILE"
+out="$(run_judge truncated judge --record "$RECORD" --judge-runner "bash $JSTUB")"
+notice="$(jq -r '.judge.degradation_notice // ""' <<<"$out")"
+case "$notice" in
+  response-truncated:*) ;;
+  *) fail "T1: a reply that begins as the contracted object must be classed response-truncated, got: $notice" ;;
+esac
+printf '%s' "$notice" | grep -F 'TAIL:' >/dev/null \
+  || fail "T1: the notice must carry the TAIL — the head of a truncated reply looks perfect, which is why head-only evidence was useless: $notice"
+printf '%s' "$notice" | grep -E '[0-9]+ bytes' >/dev/null \
+  || fail "T1: the notice must state the reply length: $notice"
+[ "$(jq -r '.judge.quality_score' <<<"$out")" = "null" ] \
+  || fail "T1: a truncated reply must never yield a salvaged score — that would fabricate a judgment"
+ok "T1 a truncated reply is named response-truncated (not -unparseable) and carries length + TAIL, never a salvaged score"
+
+count
+# Same input, different shape: a judge that answered in PROSE must still be
+# response-unparseable. Collapsing the two would lose the distinction T1 adds.
+: >"$COUNT_FILE"
+out="$(run_judge unparseable judge --record "$RECORD" --judge-runner "bash $JSTUB")"
+case "$(jq -r '.judge.degradation_notice // ""' <<<"$out")" in
+  response-unparseable:*) ;;
+  *) fail "T2: a prose reply must stay response-unparseable, got: $(jq -r '.judge.degradation_notice' <<<"$out")" ;;
+esac
+ok "T2 a reply that never begins as an object is still response-unparseable — the two failures stay distinguishable"
+
+count
+# THE RECOVERY. Truncated on call 1, contracted on call 2.
+: >"$COUNT_FILE"
+out="$(MODEL_COMPARISON_JUDGE_MAX_ATTEMPTS=2 run_judge truncated_then_ok judge --record "$RECORD" --judge-runner "bash $JSTUB")"
+[ "$(jq -r '.judge.outcome' <<<"$out")" = "JUDGED" ] \
+  || fail "T3: the retry must recover the row, got $(jq -r '.judge.outcome' <<<"$out"): $(jq -r '.judge.degradation_notice // ""' <<<"$out")"
+[ "$(jq -r '.judge.quality_score' <<<"$out")" = "67" ] \
+  || fail "T3: the recovered row must carry the SECOND attempt's score, got $(jq -r '.judge.quality_score' <<<"$out")"
+[ "$(jq -r '.judge.attempts' <<<"$out")" = "2" ] \
+  || fail "T3: a recovered row must say it took 2 attempts, got $(jq -r '.judge.attempts' <<<"$out")"
+[ "$(cat "$COUNT_FILE")" = "2" ] \
+  || fail "T3: expected exactly 2 judge calls, got $(cat "$COUNT_FILE")"
+ok "T3 a truncated reply is retried and RECOVERS — the row is JUDGED, carries the second attempt's score, and says attempts=2"
+
+count
+# The bound is real. At MAX_ATTEMPTS=1 the same stub must fail after ONE call.
+: >"$COUNT_FILE"
+out="$(MODEL_COMPARISON_JUDGE_MAX_ATTEMPTS=1 run_judge truncated_then_ok judge --record "$RECORD" --judge-runner "bash $JSTUB")" || true
+[ "$(jq -r '.judge.outcome' <<<"$out")" = "UNAVAILABLE" ] \
+  || fail "T4: MAX_ATTEMPTS=1 must not retry, got $(jq -r '.judge.outcome' <<<"$out")"
+[ "$(cat "$COUNT_FILE")" = "1" ] \
+  || fail "T4: MAX_ATTEMPTS=1 must spend exactly 1 judge call, got $(cat "$COUNT_FILE")"
+ok "T4 MODEL_COMPARISON_JUDGE_MAX_ATTEMPTS=1 disables the retry and spends exactly one call"
+
+count
+# A STRUCTURAL failure must NEVER be retried: re-running cannot fix a missing
+# envelope, and the attempt costs real spend. This is the half of the split
+# that protects the budget rather than the sample.
+: >"$COUNT_FILE"
+out="$(MODEL_COMPARISON_JUDGE_MAX_ATTEMPTS=3 run_judge badenvelope judge --record "$RECORD" --judge-runner "bash $JSTUB")" || true
+[ "$(cat "$COUNT_FILE")" = "1" ] \
+  || fail "T5: a structural failure must not be retried, but the judge was called $(cat "$COUNT_FILE") times"
+: >"$COUNT_FILE"
+out="$(MODEL_COMPARISON_JUDGE_MAX_ATTEMPTS=3 run_judge nousage judge --record "$RECORD" --judge-runner "bash $JSTUB")" || true
+[ "$(cat "$COUNT_FILE")" = "1" ] \
+  || fail "T5: envelope-usage-missing must not be retried, but the judge was called $(cat "$COUNT_FILE") times"
+ok "T5 a STRUCTURAL failure (bad envelope, missing modelUsage) is never retried — re-running cannot fix it and the attempt costs spend"
+
+count
+# A first-attempt success must be BYTE-IDENTICAL to before this wrapper — no
+# attempts:1 on every row. The rotation suite's golden depends on it, and an
+# always-present 1 is a field a reader has to learn to ignore.
+: >"$COUNT_FILE"
+out="$(MODEL_COMPARISON_JUDGE_MAX_ATTEMPTS=3 run_judge good judge --record "$RECORD" --judge-runner "bash $JSTUB")"
+[ "$(jq -r '.judge | has("attempts")' <<<"$out")" = "false" ] \
+  || fail "T6: a first-attempt row must carry NO attempts field, got $(jq -c '.judge.attempts' <<<"$out")"
+[ "$(cat "$COUNT_FILE")" = "1" ] \
+  || fail "T6: a good reply must be judged in one call, got $(cat "$COUNT_FILE")"
+ok "T6 a first-attempt success is unchanged — no attempts field, so attempts means 'this row was recovered'"
+
 echo
 echo "test_judge.sh: $pass/$total assertions passed"
 [ "$pass" -eq "$total" ] || fail "not all assertions passed"
