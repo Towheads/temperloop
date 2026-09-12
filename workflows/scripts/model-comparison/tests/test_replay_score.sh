@@ -1410,6 +1410,60 @@ count
 rm -f "$CANARY"
 ok "K2 the canary is functional — K1 is a measurement, not a tautology"
 
+# ═══════════════════════════════════════════════════════════════════════════
+# SECTION L — a RECORDED run does not seed the production lake (temperloop#1747)
+# ═══════════════════════════════════════════════════════════════════════════
+# emit-model-usage.sh resolves its output dir from ITS OWN location --
+# `raw_root="$here/../.."` -- NOT from --repo-root. So a stubbed replay with no
+# MODEL_USAGE_RAW_DIR writes into the lake of the checkout the SCRIPT lives in,
+# which is how 36 fixture records reached this repo's own lake on 2026-08-14.
+#
+# That detail is why this test runs against a MIRRORED tree. The first draft
+# asserted on the fixture repo's meta/data/raw and passed against a neutered
+# guard -- because the records were never going there; they were going to the
+# real checkout. It was measuring nothing, and it polluted the real lake to do
+# it. The mirror makes `$here/../..` land inside $WORK, so the assertion is
+# about the place the records would actually be written.
+count
+LMIRROR="$WORK/lake-mirror"
+mkdir -p "$LMIRROR/workflows/scripts/model-comparison"
+for _f in "$SCRIPTS_DIR"/*; do
+  [ "$(basename "$_f")" = "model-comparison" ] && continue
+  ln -s "$_f" "$LMIRROR/workflows/scripts/$(basename "$_f")"
+done
+for _f in "$MC_DIR"/*; do
+  ln -s "$_f" "$LMIRROR/workflows/scripts/model-comparison/$(basename "$_f")"
+done
+LMIRROR_LAKE="$LMIRROR/meta/data/raw"
+
+# Control FIRST: with the lake explicitly named, the mirrored driver DOES
+# emit. Without this, L1 below would pass equally against a change that broke
+# emission outright -- a different and worse bug.
+MIRROR_LAKE_SET="$WORK/mirror-lake-set"; mkdir -p "$MIRROR_LAKE_SET"
+env MODEL_USAGE_RAW_DIR="$MIRROR_LAKE_SET" STUB_MODE=good \
+    PROVIDER_ALLOWLIST_TEST_SEAM=1 PROVIDER_ALLOWLIST_COMMITTED_FILE="$ALLOW" \
+    PROVIDER_ALLOWLIST_LOCAL_FILE="$NOLOCAL" PROVIDER_DISCLOSURE_LOG_FILE="$DLOG" \
+    bash "$LMIRROR/workflows/scripts/model-comparison/replay.sh" execute \
+      --record "$RECORD" --repo-root "$REPO" --worktree "$(mk_wt)" \
+      --candidate-runner "bash $STUB" >/dev/null 2>&1 || true
+[ "$(cat "$MIRROR_LAKE_SET"/model-usage-*.jsonl 2>/dev/null | wc -l | tr -d ' ')" -ge 1 ] \
+  || fail "L1: the control failed — a recorded run with the lake SET emitted nothing, so the unset case proves nothing"
+
+# THE MEASUREMENT: same driver, same stub, lake UNSET.
+rm -rf "$LMIRROR_LAKE"
+env -u MODEL_USAGE_RAW_DIR STUB_MODE=good \
+    PROVIDER_ALLOWLIST_TEST_SEAM=1 PROVIDER_ALLOWLIST_COMMITTED_FILE="$ALLOW" \
+    PROVIDER_ALLOWLIST_LOCAL_FILE="$NOLOCAL" PROVIDER_DISCLOSURE_LOG_FILE="$DLOG" \
+    bash "$LMIRROR/workflows/scripts/model-comparison/replay.sh" execute \
+      --record "$RECORD" --repo-root "$REPO" --worktree "$(mk_wt)" \
+      --candidate-runner "bash $STUB" >/dev/null 2>"$WORK/lakeguard.err" || true
+leaked="$(cat "$LMIRROR_LAKE"/model-usage-*.jsonl 2>/dev/null | wc -l | tr -d ' ')"
+[ "${leaked:-0}" = "0" ] \
+  || fail "L1: a recorded run with MODEL_USAGE_RAW_DIR unset wrote ${leaked} record(s) into the checkout's own lake: $(cat "$LMIRROR_LAKE"/model-usage-*.jsonl 2>/dev/null | head -1)"
+grep -F 'temperloop#1747' "$WORK/lakeguard.err" >/dev/null \
+  || fail "L1: the refusal must be ANNOUNCED — a run that silently stops emitting is indistinguishable from one where emission broke: $(cat "$WORK/lakeguard.err")"
+ok "L1 a recorded run with no explicit lake writes NOTHING into its own checkout's lake, announces the refusal, and still emits when a lake IS named"
+
 echo
 echo "test_replay_score.sh: $pass/$total checks passed"
 [ "$pass" -eq "$total" ] || exit 1
