@@ -101,6 +101,39 @@ while [ "$i" -lt "$n_fixtures" ]; do
   i=$((i + 1))
 done
 
+# --- raw-bytes case: a trailing newline embedded IN the input itself ------
+# The fixture loop above extracts every arg via `jq -r ... | $(...)` — and a
+# `$(...)` command substitution always strips a trailing newline from what
+# it captures, REGARDLESS of what's inside the fixture's JSON string. So the
+# fixture loop structurally cannot exercise "raw input carries its own
+# trailing newline": by the time an arg reaches either loader, jq's own
+# capture has already chomped it. Pin the case here instead, built as a
+# literal bash string (`$'...\n'` concatenation, never a command
+# substitution) so the trailing newline survives into both loaders' actual
+# argv — this is the "small raw-bytes fixture path" test_join_keys.sh needs
+# alongside the JSON-driven loop above (temperloop#1910 round-4 review: the
+# shell loader's own `lc="$(...)"` used to silently strip this same
+# newline, and Python's `$`-anchored regex matched before a trailing "\n" —
+# both loaders now treat it as INVALID; see join_keys.py's session_full and
+# join-keys-lib.sh's jk_session_full).
+raw_newline="4d8b1d3e-1234-4a5b-9c3d-0a1b2c3d4e5f"$'\n'
+total=$((total + 1))
+label="raw-bytes case (session_full with an embedded trailing newline)"
+
+shell_out="$(jk_apply session_full "$raw_newline")"
+shell_status="${shell_out%%$'\t'*}"
+
+py_out="$(python3 "$PY" apply session_full "$raw_newline")"
+py_status="${py_out%%$'\t'*}"
+
+if [ "$shell_status" != "invalid" ] || [ "$py_status" != "invalid" ]; then
+  printf 'FAIL: %s: expected both loaders to report invalid, got shell=%s python=%s\n' \
+    "$label" "$shell_status" "$py_status"
+  fail=1
+else
+  echo "PASS: $label -> invalid/invalid"
+fi
+
 echo
 if [ "$fail" -ne 0 ]; then
   echo "FAIL: one or more of $total fixture(s) disagreed or mismatched expectations" >&2

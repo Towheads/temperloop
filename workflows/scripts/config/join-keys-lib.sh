@@ -65,8 +65,17 @@ _jk_is_absent_literal() {
 jk_session_full() {
   local raw="${1:-}"
   _jk_is_absent_literal "$raw" && return 2
+  # Append a non-letter marker ("#") before the `$(...)` command
+  # substitution, then strip it back off: `$(...)` silently strips a
+  # TRAILING newline from what it captures, so `raw` carrying its own
+  # trailing "\n" (e.g. an un-chomped `jq -r` value handed straight to this
+  # function without going through a $() of its own first) would otherwise
+  # come out clean-looking instead of INVALID -- the mirror of join_keys.py
+  # session_full's match()->fullmatch() fix. "#" is untouched by the
+  # uppercase->lowercase `tr`, so it strips back off exactly.
   local lc
-  lc="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')"
+  lc="$(printf '%s#' "$raw" | tr '[:upper:]' '[:lower:]')"
+  lc="${lc%#}"
   case "$lc" in
     [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f])
       printf '%s' "$lc"
@@ -166,8 +175,11 @@ jk_plan_stem() {
   # `basename -- "/"` prints "/" (there is no filename component to strip),
   # while Python's Path("/").name is "" — treat both as ABSENT so the two
   # loaders agree on this edge case (see the "/" fixture in
-  # join-keys-fixtures.json).
-  if [ -z "$base" ] || [ "$base" = "/" ]; then
+  # join-keys-fixtures.json). Same for `basename -- "."` (prints ".")
+  # against Python's Path(".").name (""); note ".." does NOT need the same
+  # treatment — both `basename -- ".."` and Path("..").name agree on the
+  # literal "..".
+  if [ -z "$base" ] || [ "$base" = "/" ] || [ "$base" = "." ]; then
     return 2
   fi
   printf '%s' "$base"
@@ -176,14 +188,17 @@ jk_plan_stem() {
 # jk_closes_pattern <issue-number> -> the case-insensitive ERE `pr-linkage.sh`
 # tests a PR body against for a bare `Closes #<n>` / `Fixes #<n>` /
 # `Resolves #<n>` reference. THE single home for this pattern — pr-linkage.sh
-# calls this instead of building the regex inline.
+# calls this instead of building the regex inline. `issue` is validated
+# through jk_pr_number (the registry's own validator) rather than only
+# checked for non-emptiness, so a malformed value (e.g. "1|.") can never be
+# spliced unvalidated into the ERE — mirrors join_keys.py's closes_pattern.
 jk_closes_pattern() {
-  local issue="${1:-}"
-  if [ -z "$issue" ]; then
+  local issue="${1:-}" n
+  n="$(jk_pr_number "$issue" 2>/dev/null)" || {
     echo "join-keys: jk_closes_pattern: issue number required" >&2
     return 1
-  fi
-  printf '(?i)(close[sd]?|fix(e[sd])?|resolve[sd]?)[[:space:]]+#%s\\b' "$issue"
+  }
+  printf '(?i)(close[sd]?|fix(e[sd])?|resolve[sd]?)[[:space:]]+#%s\\b' "$n"
 }
 
 # jk_apply <fn> [args...] -> prints "STATUS<TAB>VALUE" for the named jk_*

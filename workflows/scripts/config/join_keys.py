@@ -72,7 +72,15 @@ def session_full(raw: Optional[str]):
     if _is_absent_literal(raw):
         return ABSENT
     lowered = raw.lower()
-    if not _SESSION_UUID_RE.match(lowered):
+    # fullmatch, not match: `$` alone matches at end-of-string OR immediately
+    # before a trailing "\n", so `match()` let "<uuid>\n" through as valid
+    # (the shell loader's own `lc="$(...)"` command substitution silently
+    # strips that same trailing newline instead -- see join-keys-lib.sh's
+    # jk_session_full for the mirrored fix). fullmatch has no such loophole:
+    # a trailing newline is INVALID, per the registry's own NORMALIZE_RULE
+    # ("non-UUID-shaped non-empty input is INVALID, not silently passed
+    # through").
+    if not _SESSION_UUID_RE.fullmatch(lowered):
         raise JoinKeyInvalid(f"not a UUID-shaped session id: {raw!r}")
     return lowered
 
@@ -100,7 +108,10 @@ def _normalize_int(raw: Optional[str], label: str):
         return ABSENT
     if raw == "0":
         return "0"
-    if not raw.isdigit() or raw[0] == "0":
+    # str.isdigit() is Unicode-aware ("١٢٣" / "²" / "１２" all True) while the
+    # shell loader's `*[!0-9]*` glob is ASCII-only -- isascii() closes that
+    # loader-agreement gap (a non-ASCII digit string must be INVALID in both).
+    if not (raw.isascii() and raw.isdigit()) or raw[0] == "0":
         raise JoinKeyInvalid(f"{label}: not a plain integer: {raw!r}")
     return raw
 
@@ -143,10 +154,15 @@ def plan_stem(raw: Optional[str]):
 def closes_pattern(issue: Optional[str]) -> str:
     """The case-insensitive ERE pr-linkage.sh tests a PR body against for a
     bare Closes #<n> / Fixes #<n> / Resolves #<n> reference. THE single home
-    for this pattern."""
-    if not issue:
+    for this pattern. `issue` is validated through pr_number -- the
+    registry's own validator -- rather than only checked for truthiness, so
+    a malformed value (e.g. "1|.") can never be spliced unvalidated into the
+    ERE pr-linkage.sh hands to jq `test()` (a malformed pattern there would
+    silently widen the match to every open PR)."""
+    n = pr_number(issue)
+    if n is ABSENT:
         raise JoinKeyInvalid("closes_pattern: issue number required")
-    return r"(?i)(close[sd]?|fix(e[sd])?|resolve[sd]?)[[:space:]]+#" + issue + r"\b"
+    return r"(?i)(close[sd]?|fix(e[sd])?|resolve[sd]?)[[:space:]]+#" + n + r"\b"
 
 
 _FUNCTIONS = {
@@ -170,7 +186,12 @@ def apply(fn: str, args: list):
         raise JoinKeyInvalid(f"apply: unknown function: {fn}")
     try:
         result = handler(*args)
-    except JoinKeyInvalid:
+    except (JoinKeyInvalid, TypeError):
+        # TypeError covers a wrong-arity call (too few/many args for the
+        # named function) -- the shell loader's own functions never raise on
+        # arity (bash's `${2:-}` just supplies an empty string), so a caller
+        # passing the wrong arg count gets a clean "invalid" from both
+        # loaders instead of a Python-only traceback.
         return ("invalid", "")
     if result is ABSENT:
         return ("absent", "")
@@ -183,7 +204,15 @@ def _main(argv: list) -> int:
         return 2
     fn = argv[1]
     args = argv[2:]
-    status, value = apply(fn, args)
+    try:
+        status, value = apply(fn, args)
+    except JoinKeyInvalid as exc:
+        # apply() raises (rather than returning ("invalid", "")) only for an
+        # unknown function name -- a caller/CLI-usage error, not a data
+        # problem, so it gets a usage-style stderr message and rc 2 instead
+        # of an unhandled traceback.
+        print(f"join_keys.py: {exc}", file=sys.stderr)
+        return 2
     print(f"{status}\t{value}")
     return 0
 
