@@ -369,6 +369,17 @@ kernel workflows/scripts/config/ontology-registry.tsv
 kernel workflows/scripts/config/ontology-grandfather-allowlist.tsv
 kernel workflows/scripts/config/check-ontology-registry.sh
 kernel workflows/scripts/config/tests/test_check_ontology_registry.sh
+# Join-key registry (temperloop#1910, epic "Graph of record", L3) — already
+# covered by the `kernel workflows/scripts/config/*` glob above, listed
+# explicitly here for discoverability alongside the other registry+checker
+# pairs in this same block (contributor-manifest, redundancy-fixtures).
+kernel workflows/scripts/config/join-keys.tsv
+kernel workflows/scripts/config/join-keys-lib.sh
+kernel workflows/scripts/config/join_keys.py
+kernel workflows/scripts/config/join-keys-fixtures.json
+kernel workflows/scripts/config/check-join-keys.sh
+kernel workflows/scripts/config/tests/test_check_join_keys.sh
+kernel workflows/scripts/config/tests/test_join_keys.sh
 kernel workflows/scripts/validate-prose-budget.sh
 kernel workflows/scripts/validate-docs-footer.sh
 kernel workflows/scripts/tests/test_validate_prose_budget.sh

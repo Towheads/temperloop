@@ -216,3 +216,11 @@ workflows/scripts/validate-agent-charter-links.sh	empty	covered	workflows/script
 workflows/scripts/validate-resume-recovery-emit.sh	absent	covered	workflows/scripts/tests/test_resume_recovery_emit.sh	and names the missing script
 workflows/scripts/validate-resume-recovery-emit.sh	unreadable	covered	workflows/scripts/tests/test_resume_recovery_emit.sh	and names the non-executable script
 workflows/scripts/validate-resume-recovery-emit.sh	empty	covered	workflows/scripts/tests/test_resume_recovery_emit.sh	and names the removed wiring
+
+# ── check-join-keys.sh (temperloop#1910) — the join-key registry lint. Same
+#    shape as check-reviewer-routing.sh/check-setting-registry.sh above: its
+#    JOIN_KEYS_TSV seam is pointed at a degenerate path by the shared
+#    backfill suite. ───────────────────────────────────────────────────────
+workflows/scripts/config/check-join-keys.sh	absent	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	check-join-keys.sh [absent]: exits non-zero, never a silent OK
+workflows/scripts/config/check-join-keys.sh	unreadable	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	check-join-keys.sh [unreadable]: exits non-zero, never a silent OK
+workflows/scripts/config/check-join-keys.sh	empty	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	check-join-keys.sh [empty]: exits non-zero, never a silent OK

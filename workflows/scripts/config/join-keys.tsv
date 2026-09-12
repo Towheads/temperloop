@@ -1,0 +1,71 @@
+# join-keys.tsv — the ONE join-key registry (temperloop#1910, epic "Graph of
+# record for work-item state", L3 "the triples extractor"). Declares every
+# cross-stream join key the lake consumers key on, replacing five independent
+# multi-root resolvers with one registry read by one shell loader
+# (join-keys-lib.sh) and one Python loader (join_keys.py) — the ONLY two
+# places a session id (or any other join key below) is normalized. A caller
+# that needs a join key sources/imports one of those two loaders and calls
+# its function; it never re-derives a regex, a substring length, or a
+# case-fold by hand at the call site.
+#
+# WHY A REGISTRY, NOT FIVE RESOLVERS. Before this item, the same "first 8
+# chars, lowercase" / "<host>:<sess8>" / "Closes #N" logic was independently
+# re-derived in `build_cost_attribution.py session_key()`, `raw_lake_union.py`,
+# `plan-note-resolve.sh`, `rollups-resolve.sh` (all four: foundation-owned
+# overlay files, migrated by foundation#1869 — NOT touched by this file) and
+# `pr-linkage.sh`'s own inline `Closes` regex (THIS repo, migrated here). Five
+# independent copies of the same normalization rule drift the moment one of
+# them is touched without the other four — the exact failure this registry
+# closes: a rule lives in exactly one place (this file's NORMALIZE_RULE
+# column, mechanically enforced by the two loaders), and every consumer reads
+# it from there.
+#
+# FORMAT — TAB-separated, five columns, one row per join key:
+#   1. KEY               canonical join-key name (snake_case, stable — this is
+#                         the identifier a caller passes to the loader, e.g.
+#                         `jk_session_full` / `join_keys.session_full`)
+#   2. FORMS              the raw shape(s) this key appears in across the lake
+#                         and the tracker (comma-separated, human-readable)
+#   3. NORMALIZE_RULE     the exact, mechanical transform — precise enough that
+#                         the shell and Python loaders can only implement it
+#                         one way. This is the single source of truth; a rule
+#                         restated at a call site instead of read from the
+#                         loader is exactly the drift this registry exists to
+#                         prevent.
+#   4. ABSENT_SEMANTICS   what "missing" means for this key, and how it is
+#                         distinguished from a legitimate falsy/zero value
+#                         (temperloop#1084's "resolved" field is the general
+#                         precedent this column applies per-key: an absent
+#                         field is UNKNOWN, never coerced to 0/""/false — see
+#                         join-keys-fixtures.json's `run_id`/`pr_number` "0 is
+#                         a real value" cases, which exist specifically to
+#                         prove this column is enforced, not just documented)
+#   5. LOADER_FUNCTIONS   the exact function name in each loader that
+#                         implements this key's normalize rule, `shell:<fn>`
+#                         and `py:<fn>` comma-separated — the citation
+#                         check-join-keys.sh's set-membership pass verifies
+#                         both loaders actually define every named function
+#
+# `#` starts a comment (rest of line, or a whole-line comment). Enforced by
+# workflows/scripts/config/check-join-keys.sh (wired into
+# scripts/quality-gates.sh), which also verifies pr-linkage.sh's `Closes #N`
+# probe calls `closes_pattern` rather than restating the regex inline.
+#
+# Kernel scope only (the stranger test): this registry lists every join key a
+# BARE kernel checkout's own streams and consumers use. A downstream overlay
+# checkout's additional join keys (foundation's cost-attribution/rollup
+# session forms, vault-frontmatter provenance ids) are that overlay's own
+# concern, added the same way an overlay setting-registry extension TSV adds
+# rows alongside this kernel table (see setting-registry-lib.sh's own union
+# convention) — no such extension exists yet; foundation#1869 is the tracked
+# item that will need one if the four overlay resolvers it migrates surface a
+# join key this table does not already cover.
+KEY	FORMS	NORMALIZE_RULE	ABSENT_SEMANTICS	LOADER_FUNCTIONS
+session_full	$CLAUDE_CODE_SESSION_ID (raw); command-runs/session-context/gh-calls raw-lake `session_id` field; the <session-id> SessionStart tag	lowercase; must match the UUID-shape `[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}` (case-insensitive on input, lowercase on output); non-UUID-shaped non-empty input is INVALID, not silently passed through	empty string, JSON null, or the field key absent from the record all mean UNKNOWN — never treated as "no session" in a way that coerces to a valid-looking empty key	shell:jk_session_full,py:session_full
+session8	same raw forms as session_full, truncated	first 8 characters of session_full's normalized (lowercase) output; requires session_full to normalize cleanly first — session8 of an INVALID or ABSENT session_full is itself INVALID/ABSENT, never a truncation of raw unnormalized input	same as session_full (absent input propagates to absent output, never to an 8-char slice of empty string)	shell:jk_session8,py:session8
+host_session_stamp	`fnd:host/session:<host>:<sess8>` board label; claim.sh's board_own_stamp `<host>:<sess8>`	literal `<host>:<sess8>` where sess8 is session8's normalized output and host is `hostname -s`-shaped (no further transform on host — it is opaque); the ':manual' host suffix form (no session id) is a distinct, separately-declared value and is never produced by this function	either input (host or session id) absent means the whole stamp is absent — this function never emits a partial stamp with an empty half	shell:jk_host_session_stamp,py:host_session_stamp
+run_id	GitHub Actions numeric run id (`gate.sh`/`ci-poll.sh` `.id` field on a workflow run)	cast to a base-10 integer with no leading zeros beyond a bare `0`; a non-numeric non-empty string is INVALID	JSON null, the empty string, or the field absent from the record are UNKNOWN — the literal value `0` is a normal, valid run id and MUST normalize to `"0"`, never be folded into "absent" (the temperloop#1084 discipline this registry generalizes: absent ≠ zero)	shell:jk_run_id,py:run_id
+pr_number	GitHub PR number, as parsed from a `Closes #N`/`Fixes #N`/`Resolves #N` body reference or `gh pr list --json number`	cast to a base-10 integer, no leading zeros, no leading `#`	same as run_id — an absent PR reference is UNKNOWN; `0` is never a legal GitHub PR number in practice but the loader still normalizes it as a value rather than silently treating it as absent, so a malformed upstream `0` is visible instead of masked	shell:jk_pr_number,py:pr_number
+message_id	AskUserQuestion / harness message id (opaque string, overlay-stream-scoped today — no bare-kernel stream emits it yet, but the shape is declared here since it is a cross-stream join key candidate)	trimmed of leading/trailing whitespace; used verbatim otherwise — the id is opaque and case-sensitive, never lowercased or reformatted	empty string or field absent means UNKNOWN	shell:jk_message_id,py:message_id
+plan_stem	a `Plans/<stem>.md` note path, or a bare stem already	the filename component with the `.md` extension and any leading directory path stripped (bash `basename … .md` / Python `Path(...).stem`); the stem's own internal spacing/casing is preserved verbatim (plan-note filenames are human-authored titles, not slugs)	empty input is UNKNOWN; there is no legal "zero" plan stem to confuse it with	shell:jk_plan_stem,py:plan_stem
+closes_pattern	the case-insensitive ERE `pr-linkage.sh` tests a PR body against for a bare `Closes #N`/`Fixes #N`/`Resolves #N` reference to issue N	`(?i)(close[sd]?|fix(e[sd])?|resolve[sd]?)[[:space:]]+#<n>\b` where `<n>` is the literal issue number passed in (not itself a join key value — a pattern GENERATOR, kept in this registry because it is the mechanism `pr_number` extraction from a PR body depends on, and duplicating it at the pr-linkage.sh call site is the exact drift this item closes)	N/A — this key takes an issue number as input and always produces a pattern string; there is no absent/invalid input state distinct from "caller passed an empty issue number", which is a caller bug, not a data-absence case	shell:jk_closes_pattern,py:closes_pattern
