@@ -189,3 +189,23 @@ workflows/scripts/validate-mandatory-step-signal.sh	empty	covered	workflows/scri
 workflows/scripts/validate-agent-charter-links.sh	absent	covered	workflows/scripts/tests/test_validate_agent_charter_links.sh	absent agents dir in the KERNEL's own checkout exits 2
 workflows/scripts/validate-agent-charter-links.sh	unreadable	covered	workflows/scripts/tests/test_validate_agent_charter_links.sh	unreadable charter exits non-zero — never reported clean
 workflows/scripts/validate-agent-charter-links.sh	empty	covered	workflows/scripts/tests/test_validate_agent_charter_links.sh	empty agents dir exits 2
+
+# ── validate-resume-recovery-emit.sh (temperloop#1908) — the resume-recovery
+#    stream's own presence-lint. Registered rather than parked `pending`
+#    (that set is shrink-only, and a brand-new surface has nothing at the
+#    ratchet base ref to be grandfathered against): unlike the sibling
+#    presence-lints still sitting `pending` in check-surface-discovery.tsv,
+#    this one's own regression suite (test_resume_recovery_emit.sh §10)
+#    already drives all three degenerate shapes this surface can exhibit —
+#    it just checks two fixed repo-relative paths rather than one env-
+#    overridable seam, so each CASE below maps to the fixture that actually
+#    exercises it: ABSENT is the emit script removed outright; UNREADABLE is
+#    the emit script surviving but losing its executable bit (the
+#    permission-based degenerate state a `-f`/`-x`-only presence-lint can
+#    reach, since it never opens the script's content); EMPTY is build.md's
+#    required invocation line stripped out (the doc's relevant content
+#    emptied, which collapses to the identical `grep -Fq` failure branch an
+#    actually-empty or actually-unreadable build.md would also hit). ────────
+workflows/scripts/validate-resume-recovery-emit.sh	absent	covered	workflows/scripts/tests/test_resume_recovery_emit.sh	and names the missing script
+workflows/scripts/validate-resume-recovery-emit.sh	unreadable	covered	workflows/scripts/tests/test_resume_recovery_emit.sh	and names the non-executable script
+workflows/scripts/validate-resume-recovery-emit.sh	empty	covered	workflows/scripts/tests/test_resume_recovery_emit.sh	and names the removed wiring

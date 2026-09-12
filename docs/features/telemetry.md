@@ -51,6 +51,14 @@ The streams a bare checkout of this repo emits:
   time to give the full touch history for an issue (claims are deliberately
   kept separate from opens/merges/captures rather than folded into the same
   stream).
+- **`resume-recovery`** (`resume-recovery-<YYYY-MM>.jsonl`) — one record per
+  `/build` Step 0.5 resume that recovered or flagged at least one
+  divergence across its four reconciled state stores (worktree, PR/sentinel,
+  claim, journal/board-drift): the plan-note stem, a recovered-count, and one
+  `kind:ref` entry per finding. A `/build` resume is not a drive and never
+  writes a `command-run`, so this is its own stream rather than a
+  `command-run` field. See
+  [`workflows/scripts/emit-resume-recovery.sh`](../../workflows/scripts/emit-resume-recovery.sh).
 - **`pipeline`** (`pipeline-<YYYY-MM>.jsonl`) — one record per autonomous-pipeline
   cron wake, heterogeneous by event type: a `skipped` wake (the schedule
   gate declined it), a `ran` wake (a tick actually executed, with per-board
