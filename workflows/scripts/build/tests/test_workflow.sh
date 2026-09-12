@@ -2707,6 +2707,78 @@ grep -q 'gateRegistrationChecklistSection' "$K1931_BUILD_MD" \
 echo "PASS: #1931 gate-registration-checklist guard — workerPrompt embeds the new-gate-script checklist naming every observed-missed registry; build.md §3c in lockstep"
 
 # ============================================================================
+# TEST (K1934): a class-A item's worker prompt renders its `activation.proof`
+#   VERBATIM as the reachability predicate the orchestrator will run at §3e.6
+#   (the join-key-registry near-miss, epic #1910 — the worker built and wired
+#   `join-keys-lib.sh` while the plan's proof: grepped the producer-chosen
+#   literal `join_keys`, a name the worker never saw). A class-B item and a
+#   PLAIN item carrying no `activation` block at all get NO such section —
+#   the proof line is present only for class A. One buildLevel() call drives
+#   all three items so the assertion is a same-run contrast.
+# ============================================================================
+run_node_case "K1934 prevention: workerPrompt renders a class-A activation.proof verbatim as the reachability predicate; class-B/absent get no such section" "
+$PREAMBLE
+
+happyMachinery('act-a-item', 930, 'shaActA');
+happyWorker('act-a-item');
+happyMachinery('act-b-item', 931, 'shaActB');
+happyWorker('act-b-item');
+happyMachinery('act-none-item', 932, 'shaActNone');
+happyWorker('act-none-item');
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'act-a-item', branch: 'build/act-a-item', title: 'Act A item', kind: 'code', acceptance: ['c'],
+    activation: { class: 'A', proof: 'grep -q JoinKeysRegistry join-keys-lib.sh' } },
+  { slug: 'act-b-item', branch: 'build/act-b-item', title: 'Act B item', kind: 'code', acceptance: ['c'],
+    activation: { class: 'B', watermark: 'v0.36.0' } },
+  { slug: 'act-none-item', branch: 'build/act-none-item', title: 'Act none item', kind: 'code', acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+await mod.default();
+const a = callLog.find(c => (c.opts.label||'') === 'worker:act-a-item');
+const b = callLog.find(c => (c.opts.label||'') === 'worker:act-b-item');
+const n = callLog.find(c => (c.opts.label||'') === 'worker:act-none-item');
+let reason = null;
+if (!a) reason = 'no worker call logged for act-a-item';
+else if (!b) reason = 'no worker call logged for act-b-item';
+else if (!n) reason = 'no worker call logged for act-none-item';
+else if (!a.promptFull.includes('reachability predicate')) reason = 'class-A worker prompt must contain the phrase reachability predicate';
+else if (!a.promptFull.includes('grep -q JoinKeysRegistry join-keys-lib.sh')) reason = 'class-A worker prompt must render item.activation.proof VERBATIM';
+else if (!a.promptFull.includes('temperloop#1934')) reason = 'class-A worker prompt must name temperloop#1934';
+else if (!a.promptFull.includes('with a question naming the conflict')) reason = 'class-A worker prompt must tell the worker to return blocked (never a silent rename) on a genuine conflict';
+else if (b.promptFull.includes('reachability predicate')) reason = 'class-B worker prompt must NOT carry the reachability-predicate section';
+else if (n.promptFull.includes('reachability predicate')) reason = 'no-activation worker prompt must NOT carry the reachability-predicate section';
+else if (b.promptFull.includes('Class-A activation gate')) reason = 'class-B worker prompt must not carry the Class-A activation gate heading';
+else if (n.promptFull.includes('Class-A activation gate')) reason = 'no-activation worker prompt must not carry the Class-A activation gate heading';
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+# --- K1934 static lockstep guards: build.md §3c/Step-3 and workerPrompt() must
+# carry the SAME activation-proof pass-through, so a future edit to either
+# one cannot silently drop the other half. Mirrors the K1931/K1530 lockstep
+# idiom above. ----------------------------------------------------------------
+grep -q 'function activationProofSection' "$MJS" \
+  || fail "#1934: activationProofSection() missing — workerPrompt must embed the class-A reachability predicate as its own self-contained, gated section"
+grep -q '## Class-A activation gate — the reachability predicate you are gated on (temperloop#1934)' "$MJS" \
+  || fail "#1934: workerPrompt() must embed the '## Class-A activation gate' section"
+grep -q "if (activationClass(item) !== 'A') return \[\];" "$MJS" \
+  || fail "#1934: activationProofSection() must be gated on activationClass(item) === 'A' — ungated would leak the section for class-B/C/absent items"
+grep -q '\.\.\.activationProofSection(item)' "$MJS" \
+  || fail "#1934: workerPrompt()'s returned array must splice in activationProofSection(item) — a defined-but-unused function never reaches the worker"
+K1934_BUILD_MD="$REPO_ROOT/claude/commands/build.md"
+[ -f "$K1934_BUILD_MD" ] \
+  || fail "#1934: claude/commands/build.md is missing — the prose half of this contract pair cannot be verified"
+grep -q 'activationProofSection' "$K1934_BUILD_MD" \
+  || fail "#1934: build.md Step 3's activation arg description must name activationProofSection() — the worker-brief pass-through must be documented, not just implemented"
+grep -q 'temperloop#1934' "$K1934_BUILD_MD" \
+  || fail "#1934: build.md Step 3 must name temperloop#1934 alongside the activation-proof pass-through pointer (lockstep with build-level.mjs)"
+K1934_ASSESS_MD="$REPO_ROOT/claude/commands/assess.md"
+[ -f "$K1934_ASSESS_MD" ] \
+  || fail "#1934: claude/commands/assess.md is missing — the activation-authoring doc pointer cannot be verified"
+grep -q "consumer's call-site symbol" "$K1934_ASSESS_MD" \
+  || fail "#1934: assess.md's activation-authoring guidance must prefer a presence proof pinned on the consumer's call-site symbol over a producer filename (the join-key-registry lesson)"
+echo "PASS: #1934 activation-proof guard — workerPrompt embeds the class-A item's activation.proof verbatim as the reachability predicate, present only for class A; build.md Step 3 and assess.md's activation-authoring guidance are in lockstep"
+
+# ============================================================================
 # TEST (K1847): a /sweep-admitted epic member's worker prompt carries the
 #   parent epic's group summary (Produces #7, epic #1847) — a distinct
 #   "## Parent epic context" section rendered from `item.parentSummary` /
