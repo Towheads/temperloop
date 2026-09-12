@@ -1190,11 +1190,152 @@ if (gateCalls !== 1)
 console.log(JSON.stringify({ ok: true }));
 "
 
+run_node_case "freshness-dirty (temperloop#1937 round 2, HIGH): a dirty tree never attempts the rebase — routes to dirty-worktree, never stale-worktree with an empty conflict list" "
+$PREAMBLE
+
+setFreshness('item-fresh-dirty', { outcome: 'FRESHNESS_DIRTY', main: 'main-sha', dirty_paths: [' M worker.txt'] });
+setMachinery('item-fresh-dirty',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/item-fresh-dirty' },
+  { outcome: 'REVIEW_DIFF' },
+  // Deliberately NO gate/pr/CI entries queued — if the driver mistakenly ran
+  // past the dirty check it would hit the 'unexpected machinery call'
+  // default, which the assertions below (escalation kind + zero gate calls)
+  // catch either way.
+);
+happyWorker('item-fresh-dirty');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'item-fresh-dirty', branch: 'build/item-fresh-dirty', title: 'Freshness Dirty Item', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+
+if ((result.parked ?? []).length !== 0 || (result.escalations ?? []).length !== 1)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected 0 parked / 1 escalation: ' + JSON.stringify(result) })); process.exit(0); }
+const esc = result.escalations[0];
+if (esc.kind !== 'dirty-worktree')
+  { console.log(JSON.stringify({ ok: false, reason: 'a dirty tree must escalate dirty-worktree, never stale-worktree: got ' + esc.kind })); process.exit(0); }
+if (esc.kind === 'stale-worktree' && JSON.stringify(esc.payload.conflict_files || []) === '[]')
+  { console.log(JSON.stringify({ ok: false, reason: 'must never be the stale-worktree-with-empty-conflict-list misclassification' })); process.exit(0); }
+const gateCalls = callLog.filter(c => (c.opts.label||'') === 'gate:item-fresh-dirty').length;
+if (gateCalls !== 0)
+  { console.log(JSON.stringify({ ok: false, reason: 'the gate must never run on a dirty tree, but it ran ' + gateCalls + ' time(s)' })); process.exit(0); }
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+run_node_case "freshness-timeout (temperloop#1937 round 2, MEDIUM): the outer Bash-tool timeout probes for and aborts an in-progress rebase, then ALWAYS escalates stale-worktree — never the fail-open FRESHNESS_ERROR path" "
+$PREAMBLE
+
+// Two queued freshnessMap entries, consumed in order by the SAME
+// 'gate-freshness:<slug>' label: the first call is killed by the outer
+// Bash-tool timeout (FRESHNESS_TIMEOUT); runGateFreshness's own timeout arm
+// then issues a SECOND gate-freshness call (the follow-up probe), which finds
+// and aborts an in-progress rebase.
+setFreshness('item-fresh-to',
+  { outcome: 'FRESHNESS_TIMEOUT' },
+  { outcome: 'FRESHNESS_TIMEOUT_PROBE', rebase_in_progress: true, aborted: true },
+);
+setMachinery('item-fresh-to',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/item-fresh-to' },
+  { outcome: 'REVIEW_DIFF' },
+  // No gate/pr/CI entries — the gate must never run.
+);
+happyWorker('item-fresh-to');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'item-fresh-to', branch: 'build/item-fresh-to', title: 'Freshness Timeout Item', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+
+if ((result.parked ?? []).length !== 0 || (result.escalations ?? []).length !== 1)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected 0 parked / 1 escalation: ' + JSON.stringify(result) })); process.exit(0); }
+const esc = result.escalations[0];
+if (esc.kind !== 'stale-worktree')
+  { console.log(JSON.stringify({ ok: false, reason: 'an outer freshness timeout must escalate stale-worktree, never fail open: got ' + esc.kind })); process.exit(0); }
+if (esc.payload.reason !== 'timeout' || esc.payload.rebaseInProgress !== true || esc.payload.aborted !== true)
+  { console.log(JSON.stringify({ ok: false, reason: 'payload must name the timeout reason and the probe verdict: ' + JSON.stringify(esc.payload) })); process.exit(0); }
+const freshCalls = callLog.filter(c => (c.opts.label||'').startsWith('gate-freshness:item-fresh-to')).length;
+if (freshCalls !== 2)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected exactly 2 gate-freshness calls (the timed-out attempt + the follow-up probe), got ' + freshCalls })); process.exit(0); }
+const gateCalls = callLog.filter(c => (c.opts.label||'') === 'gate:item-fresh-to').length;
+if (gateCalls !== 0)
+  { console.log(JSON.stringify({ ok: false, reason: 'the gate must never run after an outer freshness timeout, but it ran ' + gateCalls + ' time(s)' })); process.exit(0); }
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+run_node_case "freshness-error (temperloop#1937): the fetch/resolve step itself failing (FRESHNESS_ERROR) fails OPEN — proceeds to the gate on the tree as-is, exactly the pre-#1937 behavior" "
+$PREAMBLE
+
+setFreshness('item-fresh-err', { outcome: 'FRESHNESS_ERROR', detail: 'git fetch origin main failed' });
+happyMachinery('item-fresh-err', 701, 'sha-err');
+happyWorker('item-fresh-err');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'item-fresh-err', branch: 'build/item-fresh-err', title: 'Freshness Error Item', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+
+if ((result.parked ?? []).length !== 1 || (result.escalations ?? []).length !== 0)
+  { console.log(JSON.stringify({ ok: false, reason: 'FRESHNESS_ERROR must fail OPEN (1 parked / 0 escalations), got: ' + JSON.stringify(result) })); process.exit(0); }
+if (result.parked[0].pr !== 701)
+  { console.log(JSON.stringify({ ok: false, reason: 'wrong PR parked: ' + JSON.stringify(result.parked[0]) })); process.exit(0); }
+const gateCalls = callLog.filter(c => (c.opts.label||'') === 'gate:item-fresh-err').length;
+if (gateCalls !== 1)
+  { console.log(JSON.stringify({ ok: false, reason: 'the gate must still run once on a fail-open FRESHNESS_ERROR, got ' + gateCalls })); process.exit(0); }
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+run_node_case "freshness-step-timeout (temperloop#1937 round 2 coverage gap): the INNER wall-clock watchdog (STEP_TIMEOUT) on the gate-freshness step routes through the existing disposeStepTimeout recover-probe, never fails open, never runs the gate" "
+$PREAMBLE
+
+setFreshness('item-fresh-stto', { outcome: 'STEP_TIMEOUT', step: 'gate-freshness', ceiling_secs: 900, elapsed_secs: 901 });
+setMachinery('item-fresh-stto',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/item-fresh-stto' },
+  { outcome: 'REVIEW_DIFF' },
+  noSideEffects(),
+);
+happyWorker('item-fresh-stto');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'item-fresh-stto', branch: 'build/item-fresh-stto', title: 'Freshness Step-Timeout Item', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+
+if ((result.parked ?? []).length !== 0 || (result.escalations ?? []).length !== 1)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected 0 parked / 1 escalation: ' + JSON.stringify(result) })); process.exit(0); }
+const esc = result.escalations[0];
+if (esc.kind !== 'machinery-step-timeout')
+  { console.log(JSON.stringify({ ok: false, reason: 'an inner STEP_TIMEOUT on gate-freshness must escalate machinery-step-timeout: got ' + esc.kind })); process.exit(0); }
+if (esc.payload.where !== 'gate-freshness')
+  { console.log(JSON.stringify({ ok: false, reason: 'payload must name gate-freshness as the timed-out step: ' + JSON.stringify(esc.payload) })); process.exit(0); }
+if (!callLog.some(c => c.opts.label === 'recover-probe:item-fresh-stto'))
+  { console.log(JSON.stringify({ ok: false, reason: 'disposal must go through the EXISTING pr.sh recover-probe path, never a bespoke one' })); process.exit(0); }
+const gateCalls = callLog.filter(c => (c.opts.label||'') === 'gate:item-fresh-stto').length;
+if (gateCalls !== 0)
+  { console.log(JSON.stringify({ ok: false, reason: 'the gate must never run after a bounded-out freshness step, but it ran ' + gateCalls + ' time(s)' })); process.exit(0); }
+
+console.log(JSON.stringify({ ok: true }));
+"
+
 # Static guard: the freshness step must run BEFORE the §3e.5 gate call in
 # driveItem — mirrors the K1219 ordering guard's shape exactly (grep the two
 # call sites' own line numbers rather than re-deriving order at runtime).
-K1937_FRESH_LINE="$(grep -n 'const freshness = await runGateFreshness(item, wt);' "$MJS" | head -1 | cut -d: -f1)"
-K1937_GATE_LINE="$(grep -n 'gateOut = await runMachinery(gateCmd(gateStartAt, gateSelection), {' "$MJS" | head -1 | cut -d: -f1)"
+# `|| true` inside each substitution (round 2, shell-reviewer MEDIUM): under
+# `set -e`/`pipefail` a grep MISS here is a non-zero exit that would abort the
+# whole script before the `[ -n ]` guard below ever gets to report it
+# legibly — the fallthrough to empty is what lets that guard actually fire.
+K1937_FRESH_LINE="$(grep -n 'const freshness = await runGateFreshness(item, wt);' "$MJS" | head -1 | cut -d: -f1 || true)"
+K1937_GATE_LINE="$(grep -n 'gateOut = await runMachinery(gateCmd(gateStartAt, gateSelection), {' "$MJS" | head -1 | cut -d: -f1 || true)"
 [ -n "$K1937_FRESH_LINE" ] || fail "#1937: could not locate the pre-gate freshness call site in driveItem"
 [ -n "$K1937_GATE_LINE" ] || fail "#1937: could not locate the §3e.5 gate call site in driveItem"
 [ "$K1937_FRESH_LINE" -lt "$K1937_GATE_LINE" ] \
@@ -6407,9 +6548,15 @@ echo "PASS: #1219 boundary guard — \`activation\` crosses the orchestrator->wo
 # after 3f and a Fail costs a re-push onto an already-open PR instead of a
 # loop-back to 3c. A future edit that MOVES the call — rather than removing it —
 # must fail here, unconditionally.
-K1219_GATE_LINE="$(grep -n -- '--- 3e.5. Parent-side acceptance gate' "$MJS" | head -1 | cut -d: -f1)"
-K1219_ACT_LINE="$(grep -n 'const activationEscalation = await runActivationGate' "$MJS" | head -1 | cut -d: -f1)"
-K1219_PR_LINE="$(grep -n -- '--- 3f. Push and open the PR' "$MJS" | head -1 | cut -d: -f1)"
+# round 2 (temperloop#1937 shell-reviewer MEDIUM, applied here too so the two
+# mirrored ordering guards stay identical in shape): under `set -e`/`pipefail`
+# a grep MISS inside this substitution pipeline is a non-zero exit that aborts
+# the whole script before the `[ -n ]` guard below ever gets to report it
+# legibly. `|| true` inside each substitution lets a miss fall through to an
+# EMPTY variable instead, so the `[ -n ]` guard is what actually fires.
+K1219_GATE_LINE="$(grep -n -- '--- 3e.5. Parent-side acceptance gate' "$MJS" | head -1 | cut -d: -f1 || true)"
+K1219_ACT_LINE="$(grep -n 'const activationEscalation = await runActivationGate' "$MJS" | head -1 | cut -d: -f1 || true)"
+K1219_PR_LINE="$(grep -n -- '--- 3f. Push and open the PR' "$MJS" | head -1 | cut -d: -f1 || true)"
 [ -n "$K1219_GATE_LINE" ] || fail "#1219: could not locate the 3e.5 acceptance-gate marker in build-level.mjs"
 [ -n "$K1219_ACT_LINE" ] || fail "#1219: could not locate the §3e.6 activation-gate call site in driveItem"
 [ -n "$K1219_PR_LINE" ] || fail "#1219: could not locate the 3f push/PR marker in build-level.mjs"
