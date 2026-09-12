@@ -139,6 +139,13 @@ workflows/scripts/config/check-reviewer-routing.sh	empty	covered	workflows/scrip
 workflows/scripts/config/check-setting-registry.sh	absent	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	check-setting-registry.sh [absent]: exits non-zero, never a silent OK
 workflows/scripts/config/check-setting-registry.sh	unreadable	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	check-setting-registry.sh [unreadable]: exits non-zero, never a silent OK
 workflows/scripts/config/check-setting-registry.sh	empty	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	check-setting-registry.sh [empty]: exits non-zero, never a silent OK
+# check-ontology-registry.sh (ADR 0032, epic temperloop#1910 L0-b) — its
+# degenerate triple lives in its OWN fixture suite (case 9), not the shared
+# backfill file: the same suite proves every RED arm, so the anchors sit
+# beside the checks they back.
+workflows/scripts/config/check-ontology-registry.sh	absent	covered	workflows/scripts/config/tests/test_check_ontology_registry.sh	check-ontology-registry.sh [absent]: exits non-zero, never a silent OK
+workflows/scripts/config/check-ontology-registry.sh	unreadable	covered	workflows/scripts/config/tests/test_check_ontology_registry.sh	check-ontology-registry.sh [unreadable]: exits non-zero, never a silent OK
+workflows/scripts/config/check-ontology-registry.sh	empty	covered	workflows/scripts/config/tests/test_check_ontology_registry.sh	check-ontology-registry.sh [empty]: exits non-zero, never a silent OK
 workflows/scripts/kernel/check-kernel-manifest.sh	absent	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	check-kernel-manifest.sh [absent]: exits non-zero, never a silent OK
 workflows/scripts/kernel/check-kernel-manifest.sh	unreadable	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	check-kernel-manifest.sh [unreadable]: exits non-zero, never a silent OK
 workflows/scripts/kernel/check-kernel-manifest.sh	empty	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	check-kernel-manifest.sh [empty]: exits non-zero, never a silent OK

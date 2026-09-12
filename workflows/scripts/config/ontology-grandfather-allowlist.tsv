@@ -1,0 +1,22 @@
+# ontology-grandfather-allowlist.tsv — the SHRINK-ONLY ratchet of `fnd:`
+# label / plan-sentinel tokens that were already in the tracked tree when
+# ontology-registry.tsv was adopted and that the registry deliberately does
+# NOT list (ADR 0032, epic temperloop#1910 L0-b). Enforced by
+# workflows/scripts/config/check-ontology-registry.sh, whose ratchet is the
+# same shape as exec-bit-grandfather-allowlist.tsv's: a token present here
+# but absent at the ratchet base ref (origin/main) is ALLOWLIST-GREW and
+# fails the gate; a token removed is a legal shrink.
+#
+# THE LIST ONLY SHRINKS. A NEW label or sentinel goes in the registry, never
+# here — this file is not a second vocabulary, it is visible, payable debt.
+# When a listed token disappears from the tree (the fixture is cleaned up,
+# the prose reworded), DELETE its line in the SAME PR — the gate fails
+# GRANDFATHER-STALE on a listed token the tree no longer contains, and on a
+# listed token the registry now lists (the debt was paid by promotion).
+#
+# FORMAT — TAB-separated, two columns:
+#   1. TOKEN    the exact token the checker's scan yields — a `fnd:` label
+#               (`fnd:<field>:<value>`) or a sentinel (`[<c>]`)
+#   2. REASON   mandatory, non-empty: where it lives and why it is not
+#               vocabulary (name the tracking issue if one exists)
+fnd:status:done	prose naming the label that DELIBERATELY DOES NOT EXIST (Done = closed, no label) — workflows/scripts/board/reconcile.sh header and claude/commands/fix.md; reword to retire this row

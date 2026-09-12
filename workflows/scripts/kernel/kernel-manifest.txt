@@ -360,6 +360,15 @@ kernel workflows/scripts/count-prose.sh
 kernel workflows/scripts/config/contributor-manifest.tsv
 kernel workflows/scripts/config/check-contributor-manifest.sh
 kernel workflows/scripts/config/tests/test_check_contributor_manifest.sh
+# Ontology registry + grandfather allowlist + checker + fixture suite (ADR
+# 0032, epic temperloop#1910 L0-b) — the single source of truth for the
+# tracker/plan vocabularies a stranger's own board adapter and plan notes use.
+# Already covered by the `kernel workflows/scripts/config/*` glob above;
+# listed explicitly for discoverability like the contributor-manifest trio.
+kernel workflows/scripts/config/ontology-registry.tsv
+kernel workflows/scripts/config/ontology-grandfather-allowlist.tsv
+kernel workflows/scripts/config/check-ontology-registry.sh
+kernel workflows/scripts/config/tests/test_check_ontology_registry.sh
 kernel workflows/scripts/validate-prose-budget.sh
 kernel workflows/scripts/validate-docs-footer.sh
 kernel workflows/scripts/tests/test_validate_prose_budget.sh

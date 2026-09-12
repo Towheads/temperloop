@@ -18,12 +18,7 @@ the convention documents what to create.
 
 "Needs the operator" is modeled as `assignee`, not as a Status value (which would
 fight the `Blocked`/`Parked` retirement, foundation#435). Status stays = pipeline
-stage. The baton has two states:
-
-| Assignee state | Meaning | Who acts |
-|---|---|---|
-| Assigned to the operator | Operator's turn — the item is parked, waiting for a human reply | Operator only |
-| Unassigned (or assigned to a bot user) | Driver's turn — the issue is workable by the pipeline-tick | Driver |
+stage. The baton has two states — `operator-turn` (assigned to the operator: parked, only the operator acts) and `driver-turn` (unassigned, or a bot assignee: workable by the pipeline-tick) — tabled ONCE in `workflows/scripts/config/ontology-registry.tsv` (`state:decision-baton` rows; ADR 0032 (ontology registry is source of truth)), never restated here.
 
 **Handing the baton to the operator (parking).** The driver:
 1. Posts a comment describing the question, the offered options, and the expected
