@@ -2640,6 +2640,73 @@ grep -q 'Changelog: none — <reason>' "$K1530_BUILD_MD" \
 echo "PASS: #1530 changelog-fragment guard — workerPrompt embeds the add-a-fragment instruction (README pointer + recorded opt-out); build.md §3c in lockstep"
 
 # ============================================================================
+# TEST (K1931): workerPrompt must tell the worker to register a new/renamed
+#   gate, validator, checker, test, or setting in the relevant registry
+#   BEFORE running its own `--scoped` gate (temperloop#1931). Asserts the
+#   section reaches the worker's actual prompt (not just that the function
+#   exists — that's the static guard below) and names every registry the
+#   issue's observed instance actually missed.
+# ============================================================================
+run_node_case "K1931 prevention: workerPrompt embeds the gate-registration checklist" "
+$PREAMBLE
+
+happyMachinery('gr-item', 900, 'shaGr');
+happyWorker('gr-item');
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'gr-item', branch: 'build/gr-item', title: 'GR item', kind: 'impl', acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+await mod.default();
+const w = callLog.find(c => (c.opts.label||'') === 'worker:gr-item');
+let reason = null;
+if (!w) reason = 'no worker call logged';
+else if (!w.promptFull.includes('New gate script? Register it before running the scoped gate (temperloop#1931)')) reason = 'worker prompt missing the gate-registration checklist section';
+else if (!w.promptFull.includes('check-surface-registry.tsv')) reason = 'worker prompt must name check-surface-registry.tsv';
+else if (!w.promptFull.includes('check-surface-discovery.tsv')) reason = 'worker prompt must name check-surface-discovery.tsv';
+else if (!w.promptFull.includes('check-surface-degenerate-allowlist.tsv')) reason = 'worker prompt must name check-surface-degenerate-allowlist.tsv';
+else if (!w.promptFull.includes('gate-paths.tsv')) reason = 'worker prompt must name gate-paths.tsv';
+else if (!w.promptFull.includes('exec-bit-registry.tsv')) reason = 'worker prompt must name exec-bit-registry.tsv';
+else if (!w.promptFull.includes('kernel-manifest.txt')) reason = 'worker prompt must name kernel-manifest.txt';
+else if (!w.promptFull.includes('docs/features/feature-manifest.txt')) reason = 'worker prompt must name docs/features/feature-manifest.txt';
+else if (!w.promptFull.includes('setting-registry.tsv')) reason = 'worker prompt must name setting-registry.tsv';
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+# --- K1931 static lockstep guards: build.md §3c and workerPrompt() must carry
+# the SAME gate-registration-checklist pointer, so a future edit to either
+# one — or a registry rename that falls out of the list — cannot silently
+# drop or stale-out the other half. Mirrors the K1530 lockstep idiom above,
+# plus a per-registry-name check so a renamed/removed registry in the list
+# is caught even if the section header itself survives. --------------------
+grep -q 'function gateRegistrationChecklistSection' "$MJS" \
+  || fail "#1931: gateRegistrationChecklistSection() missing — workerPrompt must embed the gate-registration checklist as its own self-contained section"
+grep -q '## New gate script? Register it before running the scoped gate (temperloop#1931)' "$MJS" \
+  || fail "#1931: workerPrompt() must embed the '## New gate script?' section"
+for _k1931_registry in \
+  'check-surface-registry.tsv' \
+  'check-surface-discovery.tsv' \
+  'check-surface-degenerate-allowlist.tsv' \
+  'gate-paths.tsv' \
+  'exec-bit-registry.tsv' \
+  'kernel-manifest.txt' \
+  'docs/features/feature-manifest.txt' \
+  'setting-registry.tsv'
+do
+  grep -q -- "$_k1931_registry" "$MJS" \
+    || fail "#1931: workerPrompt()'s gate-registration checklist must name $_k1931_registry — a registry dropped from the list is exactly the silent-miss class temperloop#1931 closes"
+done
+grep -q '\.\.\.gateRegistrationChecklistSection()' "$MJS" \
+  || fail "#1931: workerPrompt()'s returned array must splice in gateRegistrationChecklistSection() — a defined-but-unused function never reaches the worker"
+K1931_BUILD_MD="$REPO_ROOT/claude/commands/build.md"
+[ -f "$K1931_BUILD_MD" ] \
+  || fail "#1931: claude/commands/build.md is missing — the prose half of this contract pair cannot be verified"
+grep -q 'temperloop#1931' "$K1931_BUILD_MD" \
+  || fail "#1931: build.md §3c must name temperloop#1931 alongside the gate-registration-checklist pointer (lockstep with build-level.mjs)"
+grep -q 'gateRegistrationChecklistSection' "$K1931_BUILD_MD" \
+  || fail "#1931: build.md §3c must name gateRegistrationChecklistSection() rather than restate its registry list (pointer, not restatement — ADR 0015 prose ratchet)"
+echo "PASS: #1931 gate-registration-checklist guard — workerPrompt embeds the new-gate-script checklist naming every observed-missed registry; build.md §3c in lockstep"
+
+# ============================================================================
 # TEST (K1847): a /sweep-admitted epic member's worker prompt carries the
 #   parent epic's group summary (Produces #7, epic #1847) — a distinct
 #   "## Parent epic context" section rendered from `item.parentSummary` /

@@ -1016,7 +1016,17 @@ fi
 # asked for, already the minimum this capture-at-source call can cost.
 # Reseeded to build.md's measured size, zero headroom, same convention as
 # every raise since temperloop#956.
-: "${PROSE_BUDGET_TIER2_FILE_CAP:=1181}"
+#
+# RAISED 1181 -> 1182 (2026-09-12, temperloop#1931): §3c grew one new bullet
+# — a single sentence pointing the worker at build-level.mjs's new
+# gateRegistrationChecklistSection() (the "register a new gate script before
+# running --scoped" checklist) rather than restating its registry list here,
+# per this gate's own pointer-not-restatement convention. Measured net +1
+# (the item's own acceptance bar asks for exactly "one sentence"). No
+# subtraction pass ran: a single bullet is already the minimum this pointer
+# can cost. Reseeded to build.md's measured size, zero headroom, same
+# convention as every raise since temperloop#956.
+: "${PROSE_BUDGET_TIER2_FILE_CAP:=1182}"
 
 # ── Pipeline spend profiler (temperloop#958) ───────────────────────────────
 # Settings for `workflows/scripts/pipeline-spend-report.sh` and its
