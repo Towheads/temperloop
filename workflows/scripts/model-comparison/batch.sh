@@ -78,6 +78,27 @@
 # those explicitly. The judge pass is resumable on the same principle, keyed
 # by the sha256 of the arm file it judged.
 #
+# An INTEGRATION-ERROR leg is a third case, and `--retry-stage <stage>` is how
+# it is re-driven (temperloop#1693). `--retry-failed` deliberately does not
+# cover it: an integration error means a record WAS produced, and for
+# `envelope-parse` or `vendor-error` the candidate may already have run and
+# been billed, so a blind retry re-spends. But `candidate-timeout` is a leg
+# that ran and was cut off by OUR OWN configured wall
+# (REPLAY_CANDIDATE_TIMEOUT_SECS) — re-driving it at a longer wall is an
+# informed operator choice, and before this flag there was no way to say so:
+# such a leg was permanently unrecoverable against its state dir.
+#
+# The flag is repeatable and scoped BY STAGE rather than broadening
+# `--retry-failed`, so the operator names exactly the failure class they judged
+# safe and every other class keeps today's protection. A stage name outside
+# replay.sh's vocabulary is REFUSED, never accepted-and-ignored — a silent
+# no-op there is indistinguishable from "nothing needed retrying".
+#
+#     batch.sh run ... --retry-stage candidate-timeout
+#
+# Only the named legs are re-driven. An already-scored PARTNER leg keeps its
+# own terminal state and is not re-spent, because the resume gate is per-leg.
+#
 # A state dir is bound to ONE batch: it records the corpus file's sha256 and
 # the selected outcome refs, and refuses to resume against a different
 # selection rather than silently mixing two batches' records into one arm
@@ -233,7 +254,8 @@
 #           [--judge-provider <name>]
 #           [--repo <owner/repo>] [--gate-relpath <rel>]
 #           [--out-dir <dir>] [--state-dir <dir>]
-#           [--confirm] [--retry-failed] [--preflight-only]
+#           [--confirm] [--retry-failed] [--retry-stage <stage>]...
+#           [--preflight-only]
 #
 #       Runs the pre-flight spend gate, then replays every gate-authorized
 #       corpus record in BOTH arms, judges each arm (when a judge seam is
@@ -368,6 +390,12 @@ BATCH_ARMS_N=2
 # or $RANDOM, which would make the batch un-reproducible.
 BATCH_ARM_ORDER_RULE="counterbalanced-by-record-index-v1"
 BATCH_ARM_ORDER_SEED=0
+# replay.sh's integration-error stage vocabulary, in ONE place: the circuit
+# breaker keys its consecutive-failure streak on these, and `--retry-stage`
+# validates against them. Kept here rather than re-typed at each site so a
+# stage added to replay.sh has exactly one list to appear in.
+BATCH_INTEGRATION_ERROR_STAGES='candidate-spawn candidate-timeout envelope-parse vendor-error envelope-usage-missing unknown'
+
 # shellcheck disable=SC2016  # `$RANDOM` here is PROSE naming what this rule is deliberately NOT drawn from; expanding it would replace the name with a number
 BATCH_ARM_ORDER_EXPRESSION='the baseline arm runs FIRST on a record iff ((record_index + seed) % 2) == 1, over the 1-based selection-order record index; the candidate arm runs first otherwise. Deterministic and reproducible from this rule and seed alone — never wall-clock, never $RANDOM — and it GUARANTEES a half-and-half split at every N rather than achieving one in expectation'
 # The state subdirectory, hung off the records dir so a comparison's
@@ -385,7 +413,8 @@ usage: batch.sh run --corpus-file <path> --repo-root <path>
                     [--baseline-provider <n>] [--candidate-provider <n>] [--judge-provider <n>]
                     [--repo <owner/repo>] [--gate-relpath <rel>]
                     [--out-dir <dir>] [--state-dir <dir>]
-                    [--confirm] [--retry-failed] [--preflight-only]
+                    [--confirm] [--retry-failed] [--retry-stage <stage>]...
+#           [--preflight-only]
        batch.sh schema
 EOF
 }
@@ -562,7 +591,7 @@ cmd_run() {
   local baseline_runner="" candidate_runner="" judge_runner=""
   local baseline_model="" candidate_model="" judge_model=""
   local baseline_provider="" candidate_provider="" judge_provider=""
-  local live=0 confirm=0 preflight_only=0 retry_failed=0
+  local live=0 confirm=0 preflight_only=0 retry_failed=0 retry_stages=""
 
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -584,6 +613,18 @@ cmd_run() {
       --live) live=1; shift ;;
       --confirm) confirm=1; shift ;;
       --retry-failed) retry_failed=1; shift ;;
+      --retry-stage)
+        [ $# -ge 2 ] || { printf 'batch.sh: --retry-stage requires a stage name (one of: %s)\n' "$BATCH_INTEGRATION_ERROR_STAGES" >&2; return 2; }
+        # Validated against replay.sh's own vocabulary, and REFUSED on a
+        # mismatch rather than accepted-and-ignored. An unrecognised stage
+        # name would otherwise re-drive nothing and report a clean resume,
+        # which reads exactly like "there was nothing to retry" — the failure
+        # this flag exists to make impossible.
+        case " $BATCH_INTEGRATION_ERROR_STAGES " in
+          *" $2 "*) : ;;
+          *) printf 'batch.sh: --retry-stage %s is not an integration-error stage this harness emits. Known stages: %s\n' "$2" "$BATCH_INTEGRATION_ERROR_STAGES" >&2; return 2 ;;
+        esac
+        retry_stages="$retry_stages $2"; shift 2 ;;
       --preflight-only) preflight_only=1; shift ;;
       *) printf 'batch.sh run: unknown arg %s\n' "$1" >&2; return 2 ;;
     esac
@@ -882,6 +923,31 @@ cmd_run() {
         # leg the circuit breaker skipped never ran at all. There is nothing to
         # protect, so a plain resume re-drives it.
         [ "$prev_state" = "not-attempted" ] && retryable=1
+        # ── STAGE-SCOPED RETRY (temperloop#1693) ──────────────────────
+        # `--retry-failed`'s conservatism is right for `envelope-parse` or
+        # `vendor-error`, where the candidate may already have run and been
+        # billed. It is WRONG for `candidate-timeout`, which is a leg that
+        # ran and was cut off by OUR OWN configured wall
+        # (REPLAY_CANDIDATE_TIMEOUT_SECS) — re-driving it at a longer wall
+        # is a deliberate, informed operator choice, not a blind re-spend.
+        #
+        # Before this flag there was no way to express that: an
+        # integration-error leg matched neither arm above and fell through
+        # to legs_done, permanently unrecoverable against its state dir. On
+        # the #1656 run that cost 10 of 28 records a leg, and with it the
+        # whole record's paired delta — 18 paired outcomes against a floor
+        # of 20, so the report returned `inconclusive` on sample size for a
+        # reason that had nothing to do with what it was measuring.
+        #
+        # Scoped per STAGE rather than broadening --retry-failed, so the
+        # operator names the failure class they judged safe to re-drive and
+        # every other class keeps today's protection untouched.
+        if [ "$prev_state" = "integration-error" ] && [ -n "$retry_stages" ]; then
+          local prev_stage; prev_stage="$(jq -r '.stage // ""' <"$leg_state" 2>/dev/null)"
+          case " $retry_stages " in
+            *" $prev_stage "*) [ -n "$prev_stage" ] && retryable=1 ;;
+          esac
+        fi
         if [ "$retryable" -eq 0 ]; then
           legs_resumed=$((legs_resumed + 1))
           case "$prev_state" in
