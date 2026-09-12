@@ -128,3 +128,15 @@ claude/commands/triage.md	Step 1 Adapter A — the degraded arm when triage-inta
 # (unchanged); this row now backs the declaration with the guard that proves
 # the flags are STILL BEING PASSED, which the runtime check alone could not.
 claude/commands/sweep.md	Step 3.6A — epic-closing-gate (offer/keep-open/pending-decision per fully-drained Operational epic)	Running this review exactly once at the end of every sweep run is **mandatory**	guard	workflows/scripts/validate-command-run-emit.sh	a dropped flag would read as not-applicable rather than a broken mandatory step	make validate-command-run-emit	check_epics_reviewed is content-derived off sweep.md declaring the Step 3.6A gate (epics_reviewed + the Step 3.6A anchor) and FAILS if the doc's emit-command-run.sh call omits --epics-reviewed — proven by removing the flag from sweep.md (validate-command-run-emit.sh went red naming the omission) and restoring it (green again). This makes the signal unconditional: a future edit that drops the --epics-* flags is caught by this static guard even though emit-command-run.sh's own epics_closed + epics_left_open == epics_reviewed runtime assertion (still present, unchanged) would never fire on a call that no longer passes them at all.
+
+# ── /build Step 0.5 item 5 — the resume-recovery capture-at-source emit (temperloop#1908) ─
+# A telemetry call hanging off an AI-executed prose step is exactly the shape
+# this whole registry exists for: the call can silently vanish from a future
+# edit of build.md with no runtime symptom (a resume that recovered something
+# just... doesn't emit). The signal is a STATIC guard over the spec text
+# itself — validate-resume-recovery-emit.sh, the same shape as the sibling
+# issue-touch-emit row above — proven by removing the call from build.md
+# (the guard went red naming the missing wiring) and restoring it (green
+# again); see workflows/scripts/tests/test_resume_recovery_emit.sh § 10 for
+# the same red/green proof under a fixture rather than the live tree.
+claude/commands/build.md	Step 0.5 item 5 — resume-recovery capture-at-source emit	mandatory whenever this reconcile pass recovered or flagged anything	guard	workflows/scripts/validate-resume-recovery-emit.sh	no longer invokes emit-resume-recovery.sh	make validate-resume-recovery-emit	validate-resume-recovery-emit.sh FAILS when build.md's Step 0.5 item 5 no longer invokes emit-resume-recovery.sh anywhere — proven by removing the call (the guard went red naming the removed wiring, "no longer invokes emit-resume-recovery.sh") and restoring it (green again); test_resume_recovery_emit.sh § 10 exercises this same red/green transition against a disposable fixture copy so the live tree is never tampered with directly.

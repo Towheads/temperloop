@@ -95,6 +95,7 @@ workflows/scripts/validate-model-usage-emit.sh	top-level validator entrypoint (w
 workflows/scripts/validate-onramp-anchors.sh	top-level validator entrypoint (workflows/scripts/validate-*.sh family) — human-runnable directly, matches its 15 siblings at mode 755
 workflows/scripts/validate-prose-budget.sh	top-level validator entrypoint (workflows/scripts/validate-*.sh family) — human-runnable directly, matches its 15 siblings at mode 755
 workflows/scripts/validate-provider-disclosure.sh	top-level validator entrypoint (workflows/scripts/validate-*.sh family) — human-runnable directly, matches its 15 siblings at mode 755
+workflows/scripts/validate-resume-recovery-emit.sh	top-level validator entrypoint (workflows/scripts/validate-*.sh family) — human-runnable directly, matches its 15 siblings at mode 755
 workflows/scripts/validate-template-refs.sh	top-level validator entrypoint (workflows/scripts/validate-*.sh family) — human-runnable directly, matches its 15 siblings at mode 755
 workflows/scripts/config/check-ontology-registry.sh	registry checker its own header names as human-runnable directly (`check-ontology-registry.sh`) when a vocabulary PR goes red locally; committed 755 like every workflows/scripts/config/check-*.sh sibling, registered so a rebase mode-drop is caught (ADR 0032, epic temperloop#1910)
 claude/hooks/build-worktree-guard.sh	PreToolUse guard invoked by ~/.claude/settings.json as a bare absolute path through the ~/.claude/hooks symlink — a dropped bit means rc 126 on every matching tool call and a silently dead guard (temperloop#1836)

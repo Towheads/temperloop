@@ -13,7 +13,7 @@ this kernel checkout emits.
 actually emits: `command-run`, `issue-touches` (plus its `claims` sibling,
 unioned at read time), `pipeline` (plus its pre-rename `funnel-*` month-files,
 also unioned at read time — see that stream below), `knowledge-search-fallback`,
-`gh-calls`, `session-context`, and `item-efficiency`.
+`gh-calls`, `session-context`, `item-efficiency`, and `resume-recovery`.
 A downstream overlay checkout (e.g. the
 composed foundation repo) layers additional, overlay-only telemetry streams
 on top — with their own record shapes, for capabilities this bare kernel
@@ -515,4 +515,52 @@ Example record:
 
 ```json
 {"schema_version":"1","ts":"2026-08-08T14:54:19Z","repo":"acme/widgets","pr":42,"outcome":"QUEUE_STALLED","detail":{"enqueued_secs":900,"merge_group_runs":0},"session_id":"a1b2c3d4-e5f6-7890-abcd-ef1234567890","host":"mini"}
+```
+
+### `resume-recovery` — `resume-recovery-<YYYY-MM>.jsonl`
+
+Emitted by `workflows/scripts/emit-resume-recovery.sh` (temperloop#1908), one
+record per `/build` **Step 0.5** (`claude/commands/build.md`) resume that
+recovered or flagged at least one divergence. This is a **baseline
+instrument** for the graph-of-record work: Step 0.5 cross-checks four state
+stores on every resume (plan-note sentinels, git/remote, the board, the
+workflow journal) — until this stream existed nothing durable recorded how
+often a resume actually finds drift, of what kind, or how often the
+crash-recovery paths (a held speculative worker, a journal `pr:` recovery, a
+self-claim reclaim) fire in practice.
+
+**Its own stream, not a `command-run` field.** `/build` never writes a
+`command-run` record — its plan note IS the run record (see the `command-run`
+section above, "these commands have no plan-note footer of their own (unlike
+/build)") — and a resume is not a drive, so folding this into `command-runs`
+would break that stream's `merged + resolved + parked + reported_no_op ==
+items_processed` disposition-partition invariant, which has no slot for "a
+resume found drift". A resume that recovered and flagged nothing emits no
+record at all — this stream's population is exactly "resumes that found
+something", never a per-resume heartbeat.
+
+Record shape: `{ts, session_id, command, plan, recovered, recovered_count}`
+
+| field | type | notes |
+|---|---|---|
+| `ts` | string | ISO-8601 UTC, `Z` suffix |
+| `session_id` | string \| null | raw, untruncated `$CLAUDE_CODE_SESSION_ID` — same join-key convention as the other streams; `null` when unset |
+| `command` | string | `"build"` — this stream has exactly one caller today |
+| `plan` | string | the plan note's stem (its filename minus the leading `Plans/` path and the trailing `.md`) |
+| `recovered` | array of `{kind, ref}` | one element per Step 0.5 divergence found, in the order given. `kind` is a CLOSED enum — `"worktree"` (item 1, an orphaned/unmapped worktree) \| `"pr"` (item 2, a PR/sentinel mismatch) \| `"claim"` (item 3, a self-claim reclaim) \| `"sentinel-journal"` (item 4, a `pr:`/`pushed_sha:` pointer recovered from the workflow journal) \| `"board-drift"` (item 3, a board/sentinel status or epic mismatch) — the five Step 0.5 checks. `ref` is an opaque caller-supplied pointer (a worktree path, a PR number, an issue/item slug) |
+| `recovered_count` | integer | MUST equal `recovered`'s length (see the invariant below) |
+
+**Invariant: `recovered_count == recovered.length`, and every `kind` must be
+one of the five closed values above.** `emit-resume-recovery.sh` asserts both
+and **exits 2** on either mismatch (after appending the record anyway, so the
+inconsistency is preserved in the stream rather than swallowed) — the same
+loud-invariant convention `emit-command-run.sh`'s disposition-partition check
+uses. Any other failure (a missing required flag, jq absent, an unwritable
+sink) is an infrastructure-class error: warn to stderr, exit 0, no record
+appended — a telemetry emit must never fail or block the resume it hangs off.
+
+Example record:
+
+```json
+{"ts":"2026-09-11T14:07:22Z","session_id":"a1b2c3d4-e5f6-7890-abcd-ef1234567890","command":"build","plan":"2026-05-16 stagefind - sweep follow-up","recovered":[{"kind":"worktree","ref":"temperloop.wt/foo-slug"},{"kind":"pr","ref":"1234"}],"recovered_count":2}
 ```

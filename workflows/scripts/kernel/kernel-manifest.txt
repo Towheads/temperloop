@@ -411,6 +411,12 @@ kernel workflows/scripts/ready-pr-sweep.sh
 kernel workflows/scripts/emit-gh-perf.sh
 kernel workflows/scripts/emit-diagnose-queue.sh
 kernel workflows/scripts/emit-issue-touch.sh
+# /build Step 0.5 resume-recovery raw-lake stream emit (temperloop#1908) — a
+# baseline instrument for the graph-of-record work. Kernel for the same
+# reason emit-issue-touch.sh above is: it derives from build.md's own Step
+# 0.5 reconcile pass every kernel checkout that runs /build has, names no
+# personal path, and hangs off that command doc's own seam.
+kernel workflows/scripts/emit-resume-recovery.sh
 # Per-merged-item efficiency emit (temperloop#943) — kernel for the same
 # reason pipeline-spend-report.sh below is: it derives from harness-owned
 # workflow agent transcripts every Claude Code user has (via that profiler,
@@ -463,6 +469,7 @@ kernel workflows/scripts/validate-command-run-emit.sh
 kernel workflows/scripts/validate-diagnose-queue-emit.sh
 kernel workflows/scripts/validate-feature-docs.sh
 kernel workflows/scripts/validate-issue-touch-emit.sh
+kernel workflows/scripts/validate-resume-recovery-emit.sh
 kernel workflows/scripts/validate-knowledge-search-emit.sh
 kernel workflows/scripts/validate-provider-disclosure.sh
 # "A check that could not run reports success" gate (temperloop#1476, epic

@@ -1003,7 +1003,20 @@ fi
 # bullet into the neighbouring PUSH_REJECTED one — or trimming an unrelated
 # contract line to buy the line back — would delete more contract surface than
 # the ratchet step costs. Reseeded to build.md's measured size, zero headroom.
-: "${PROSE_BUDGET_TIER2_FILE_CAP:=1179}"
+#
+# RAISED 1179 -> 1181 (2026-09-11, temperloop#1908): Step 0.5 item 5 (the
+# reconciliation report) grew one new paragraph — the capture-at-source call
+# to `emit-resume-recovery.sh`, the new resume-recovery raw-lake stream this
+# item ships (a `/build` resume is not a drive and never writes a
+# command-run, so it needed its own stream rather than a command-runs field).
+# Measured net +2 (one prose line plus the markdown paragraph's blank-line
+# separator); every other file this item touches is a new file or a
+# registry/table row, not a build.md edit. No subtraction pass ran: the new
+# paragraph is the one sentence + command line the item's own acceptance bar
+# asked for, already the minimum this capture-at-source call can cost.
+# Reseeded to build.md's measured size, zero headroom, same convention as
+# every raise since temperloop#956.
+: "${PROSE_BUDGET_TIER2_FILE_CAP:=1181}"
 
 # ── Pipeline spend profiler (temperloop#958) ───────────────────────────────
 # Settings for `workflows/scripts/pipeline-spend-report.sh` and its
