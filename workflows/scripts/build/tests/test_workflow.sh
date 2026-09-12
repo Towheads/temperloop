@@ -32,6 +32,13 @@
 #   - deploy-discovery: ~/.claude/workflows/build-level.mjs resolves (install-claude)
 #   - spike kind: spike items skip push/PR/CI, park with null pr/pushed_sha
 #   - gate-fail: GATE_FAIL → acceptance-gate-failed escalation
+#   - pre-gate freshness rebase (temperloop#1937): a worktree behind
+#     origin/main rebases cleanly and reaches the gate on the rebased tree; a
+#     rebase conflict escalates its own stale-worktree kind (never
+#     acceptance-gate-failed) and the gate never runs; a worktree already at
+#     main takes the byte-identical pre-#1937 path (one freshness check, no
+#     extra rebase spawn); plus a static guard pinning the call order
+#     (freshness step before the gate call in driveItem)
 #   - gate verdict/payload agreement (#1587): the escalation kind, its verdict,
 #     its failure count and its reason all derive from ONE slice ledger, in all
 #     four gate outcomes — no payload field may contradict the kind it ships under
@@ -193,6 +200,16 @@ const reviewMap = new Map();
 // Default (map miss): { mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN' }
 // so existing tests need no changes — only CONFLICTING tests override this.
 const mergeCheckMap = new Map();
+// freshnessMap: slug → [outcome, ...] — consumed in order per slug, its OWN
+// queue (temperloop#1937), mirroring mergeCheckMap's precedent exactly and for
+// the same reason: the pre-gate freshness solo call (`gate-freshness:<slug>`)
+// sits strictly between REVIEW_DIFF and the gate call in EVERY item's real
+// call sequence, so routing it through the shared machineryMap FIFO would
+// consume the queue entry every existing test wrote for something else (the
+// gate call itself, most directly) and desync every step after it. Default
+// (map miss): FRESHNESS_CURRENT, so the hundred-plus existing tests that never
+// call setFreshness() — none of which model a stale worktree — need no changes.
+const freshnessMap = new Map();
 
 function slugFromLabel(label) {
   // Labels from runMachineryBatch (temperloop#942): "prelude:slug",
@@ -254,6 +271,7 @@ globalThis.machineryMap = machineryMap;
 globalThis.workerMap = workerMap;
 globalThis.mergeCheckMap = mergeCheckMap;
 globalThis.reviewMap = reviewMap;
+globalThis.freshnessMap = freshnessMap;
 
 globalThis.agent = async function agent(prompt, opts = {}) {
   callLog.push({ prompt: String(prompt).slice(0, 120), promptFull: String(prompt), opts: { label: opts.label, phase: opts.phase, model: opts.model, agentType: opts.agentType } });
@@ -261,6 +279,13 @@ globalThis.agent = async function agent(prompt, opts = {}) {
   if (isMachineryCall(opts)) {
     const kinds = batchStepKinds(prompt);
     if (!kinds) {
+      // temperloop#1937: the pre-gate freshness step keeps its OWN queue
+      // (freshnessMap, mirroring mergeCheckMap) so it never consumes an entry
+      // from the shared per-slug machineryMap FIFO — see freshnessMap's own
+      // comment for why that sharing would desync every existing test.
+      if (/^gate-freshness:/.test(String(opts.label || ''))) {
+        return nextFromMap(freshnessMap, slug, { outcome: 'FRESHNESS_CURRENT', worktree_base: 'wt-base', main: 'main-tip' });
+      }
       // Solo executor (gate / recover-probe / push-retry) — routed by slug.
       return nextFromMap(machineryMap, slug, { outcome: 'ERROR', error: 'unexpected machinery call for ' + slug });
     }
@@ -333,6 +358,7 @@ globalThis.parallel = async (fns) => Promise.all(fns.map(f => f()));
 globalThis.setMachinery = (slug, ...outcomes) => { machineryMap.set(slug, outcomes); };
 globalThis.setWorker = (slug, ...verdicts) => { workerMap.set(slug, verdicts); };
 globalThis.setMergeCheck = (slug, ...states) => { mergeCheckMap.set(slug, states); };
+globalThis.setFreshness = (slug, ...outcomes) => { freshnessMap.set(slug, outcomes); };
 globalThis.setReview = (slug, ...responses) => { reviewMap.set(slug, responses); };
 // reviewResolutionFailure — the SAME two-marker shape machineryAgent()'s own
 // MACHINERY_RESOLUTION_ERR regex matches (temperloop#1014/#1430): agent()
@@ -1046,6 +1072,389 @@ if ((result.parked ?? []).length !== 0)
 
 console.log(JSON.stringify({ ok: true }));
 "
+
+# ============================================================================
+# TESTS (temperloop#1937): pre-§3e.5 gate-freshness rebase.
+#
+# §3e.5's validate-check-surface-degenerate-coverage.sh / validate-exec-bit-
+# registry.sh / validate-mandatory-step-signal.sh ratchet against origin/main;
+# a worktree that fell behind main mid-build reads rows main gained as its OWN
+# regression. driveItem now runs a pre-gate freshness step (runGateFreshness /
+# gateFreshnessCmd) strictly before the gate that fetches origin and rebases
+# onto origin/main when behind. It keeps its OWN mock queue (freshnessMap,
+# `setFreshness()`) rather than the shared per-slug machineryMap FIFO, so the
+# hundred-plus EXISTING tests above (none of which model a stale worktree)
+# need no changes — see freshnessMap's own comment for why sharing the queue
+# would desync every one of them.
+# ============================================================================
+run_node_case "freshness-rebased (temperloop#1937): worktree behind main rebases cleanly and reaches the gate on the rebased tree" "
+$PREAMBLE
+
+setFreshness('item-fresh-reb', { outcome: 'FRESHNESS_REBASED', worktree_base: 'reb-sha', main: 'main-sha' });
+setMachinery('item-fresh-reb',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/item-fresh-reb' },
+  { outcome: 'REVIEW_DIFF' },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-out' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'sha-out', branch: 'build/item-fresh-reb' },
+  { outcome: 'PR_OPENED', pr_number: 501 },
+  { outcome: 'CI_GREEN' },
+);
+happyWorker('item-fresh-reb');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'item-fresh-reb', branch: 'build/item-fresh-reb', title: 'Freshness Rebased Item', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+
+if ((result.parked ?? []).length !== 1 || (result.escalations ?? []).length !== 0)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected 1 parked / 0 escalations: ' + JSON.stringify(result) })); process.exit(0); }
+if (result.parked[0].pr !== 501)
+  { console.log(JSON.stringify({ ok: false, reason: 'wrong PR parked (gate must have run on the rebased tree): ' + JSON.stringify(result.parked[0]) })); process.exit(0); }
+const freshIdx = callLog.findIndex(c => (c.opts.label||'').startsWith('gate-freshness:item-fresh-reb'));
+const gateIdx = callLog.findIndex(c => (c.opts.label||'') === 'gate:item-fresh-reb');
+if (freshIdx === -1 || gateIdx === -1 || !(freshIdx < gateIdx))
+  { console.log(JSON.stringify({ ok: false, reason: 'freshness call missing or not before the gate call: fresh=' + freshIdx + ' gate=' + gateIdx })); process.exit(0); }
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+run_node_case "freshness-conflict (temperloop#1937): a rebase conflict escalates stale-worktree — never acceptance-gate-failed — and the gate never runs" "
+$PREAMBLE
+
+setFreshness('item-fresh-conf', { outcome: 'FRESHNESS_CONFLICT', main: 'main-sha', conflict_files: ['a.txt', 'b.txt'], detail: 'CONFLICT (content): Merge conflict in a.txt', disposition: 'rebase aborted; worktree left intact on its pre-rebase commit' });
+setMachinery('item-fresh-conf',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/item-fresh-conf' },
+  { outcome: 'REVIEW_DIFF' },
+  // Deliberately NO gate/pr/CI entries queued: if the driver mistakenly ran
+  // past the conflict it would hit the 'unexpected machinery call' default,
+  // which the assertions below (escalation kind + zero gate calls) catch
+  // either way.
+);
+happyWorker('item-fresh-conf');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'item-fresh-conf', branch: 'build/item-fresh-conf', title: 'Freshness Conflict Item', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+
+if ((result.parked ?? []).length !== 0 || (result.escalations ?? []).length !== 1)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected 0 parked / 1 escalation: ' + JSON.stringify(result) })); process.exit(0); }
+const esc = result.escalations[0];
+if (esc.kind !== 'stale-worktree')
+  { console.log(JSON.stringify({ ok: false, reason: 'escalation kind must be stale-worktree, never acceptance-gate-failed: got ' + esc.kind })); process.exit(0); }
+if (JSON.stringify(esc.payload.conflict_files) !== JSON.stringify(['a.txt','b.txt']))
+  { console.log(JSON.stringify({ ok: false, reason: 'payload must name the conflicting files: ' + JSON.stringify(esc.payload) })); process.exit(0); }
+if (!/aborted/i.test(String(esc.payload.disposition || '')))
+  { console.log(JSON.stringify({ ok: false, reason: 'payload must name the rebase disposition: ' + JSON.stringify(esc.payload) })); process.exit(0); }
+if (!esc.payload.detail || !/conflict/i.test(String(esc.payload.detail)))
+  { console.log(JSON.stringify({ ok: false, reason: 'round 3: payload must carry git\\'s own rebase output tail as detail: ' + JSON.stringify(esc.payload) })); process.exit(0); }
+const gateCalls = callLog.filter(c => (c.opts.label||'') === 'gate:item-fresh-conf').length;
+if (gateCalls !== 0)
+  { console.log(JSON.stringify({ ok: false, reason: 'the gate must never run on a conflicting rebase, but it ran ' + gateCalls + ' time(s)' })); process.exit(0); }
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+run_node_case "freshness-current (temperloop#1937): a worktree already at/ahead of main takes the byte-identical pre-#1937 path — one freshness check, no extra rebase spawn" "
+$PREAMBLE
+
+happyMachinery('item-fresh-cur', 601, 'sha-cur');
+happyWorker('item-fresh-cur');
+// No setFreshness() call — the default (FRESHNESS_CURRENT) models the common
+// case every pre-#1937 test above already exercises, unchanged.
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'item-fresh-cur', branch: 'build/item-fresh-cur', title: 'Freshness Current Item', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+
+if ((result.parked ?? []).length !== 1 || (result.escalations ?? []).length !== 0)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected 1 parked / 0 escalations: ' + JSON.stringify(result) })); process.exit(0); }
+// Exactly ONE freshness-labeled call — never a second spawn to re-check or
+// re-rebase once the tree is known current.
+const freshCalls = callLog.filter(c => (c.opts.label||'').startsWith('gate-freshness:item-fresh-cur')).length;
+if (freshCalls !== 1)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected exactly 1 freshness call, got ' + freshCalls })); process.exit(0); }
+// The gate call itself still ran on its own byte-identical slot — the 8-step
+// happyMachinery() sequence needed NO changes for this, the common, case.
+const gateCalls = callLog.filter(c => (c.opts.label||'') === 'gate:item-fresh-cur').length;
+if (gateCalls !== 1)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected exactly 1 gate call, got ' + gateCalls })); process.exit(0); }
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+run_node_case "freshness-dirty (temperloop#1937 round 2, HIGH): a dirty tree never attempts the rebase — routes to dirty-worktree, never stale-worktree with an empty conflict list" "
+$PREAMBLE
+
+setFreshness('item-fresh-dirty', { outcome: 'FRESHNESS_DIRTY', main: 'main-sha', dirty_paths: [' M worker.txt'] });
+setMachinery('item-fresh-dirty',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/item-fresh-dirty' },
+  { outcome: 'REVIEW_DIFF' },
+  // Deliberately NO gate/pr/CI entries queued — if the driver mistakenly ran
+  // past the dirty check it would hit the 'unexpected machinery call'
+  // default, which the assertions below (escalation kind + zero gate calls)
+  // catch either way.
+);
+happyWorker('item-fresh-dirty');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'item-fresh-dirty', branch: 'build/item-fresh-dirty', title: 'Freshness Dirty Item', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+
+if ((result.parked ?? []).length !== 0 || (result.escalations ?? []).length !== 1)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected 0 parked / 1 escalation: ' + JSON.stringify(result) })); process.exit(0); }
+const esc = result.escalations[0];
+if (esc.kind !== 'dirty-worktree')
+  { console.log(JSON.stringify({ ok: false, reason: 'a dirty tree must escalate dirty-worktree, never stale-worktree: got ' + esc.kind })); process.exit(0); }
+if (esc.kind === 'stale-worktree' && JSON.stringify(esc.payload.conflict_files || []) === '[]')
+  { console.log(JSON.stringify({ ok: false, reason: 'must never be the stale-worktree-with-empty-conflict-list misclassification' })); process.exit(0); }
+const gateCalls = callLog.filter(c => (c.opts.label||'') === 'gate:item-fresh-dirty').length;
+if (gateCalls !== 0)
+  { console.log(JSON.stringify({ ok: false, reason: 'the gate must never run on a dirty tree, but it ran ' + gateCalls + ' time(s)' })); process.exit(0); }
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+run_node_case "freshness-timeout (temperloop#1937 round 2, MEDIUM): the outer Bash-tool timeout probes for and aborts an in-progress rebase, then ALWAYS escalates stale-worktree — never the fail-open FRESHNESS_ERROR path" "
+$PREAMBLE
+
+// Two queued freshnessMap entries, consumed in order by the SAME
+// 'gate-freshness:<slug>' label: the first call is killed by the outer
+// Bash-tool timeout (FRESHNESS_TIMEOUT); runGateFreshness's own timeout arm
+// then issues a SECOND gate-freshness call (the follow-up probe), which finds
+// and aborts an in-progress rebase.
+setFreshness('item-fresh-to',
+  { outcome: 'FRESHNESS_TIMEOUT' },
+  { outcome: 'FRESHNESS_TIMEOUT_PROBE', rebase_in_progress: true, aborted: true },
+);
+setMachinery('item-fresh-to',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/item-fresh-to' },
+  { outcome: 'REVIEW_DIFF' },
+  // No gate/pr/CI entries — the gate must never run.
+);
+happyWorker('item-fresh-to');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'item-fresh-to', branch: 'build/item-fresh-to', title: 'Freshness Timeout Item', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+
+if ((result.parked ?? []).length !== 0 || (result.escalations ?? []).length !== 1)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected 0 parked / 1 escalation: ' + JSON.stringify(result) })); process.exit(0); }
+const esc = result.escalations[0];
+if (esc.kind !== 'stale-worktree')
+  { console.log(JSON.stringify({ ok: false, reason: 'an outer freshness timeout must escalate stale-worktree, never fail open: got ' + esc.kind })); process.exit(0); }
+if (esc.payload.reason !== 'timeout' || esc.payload.rebase_in_progress !== true || esc.payload.aborted !== true)
+  { console.log(JSON.stringify({ ok: false, reason: 'payload must name the timeout reason and the probe verdict (snake_case): ' + JSON.stringify(esc.payload) })); process.exit(0); }
+const freshCalls = callLog.filter(c => (c.opts.label||'').startsWith('gate-freshness:item-fresh-to')).length;
+if (freshCalls !== 2)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected exactly 2 gate-freshness calls (the timed-out attempt + the follow-up probe), got ' + freshCalls })); process.exit(0); }
+const gateCalls = callLog.filter(c => (c.opts.label||'') === 'gate:item-fresh-to').length;
+if (gateCalls !== 0)
+  { console.log(JSON.stringify({ ok: false, reason: 'the gate must never run after an outer freshness timeout, but it ran ' + gateCalls + ' time(s)' })); process.exit(0); }
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+run_node_case "freshness-error (temperloop#1937): the fetch/resolve step itself failing (FRESHNESS_ERROR) fails OPEN — proceeds to the gate on the tree as-is, exactly the pre-#1937 behavior" "
+$PREAMBLE
+
+setFreshness('item-fresh-err', { outcome: 'FRESHNESS_ERROR', detail: 'git fetch origin main failed' });
+happyMachinery('item-fresh-err', 701, 'sha-err');
+happyWorker('item-fresh-err');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'item-fresh-err', branch: 'build/item-fresh-err', title: 'Freshness Error Item', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+
+if ((result.parked ?? []).length !== 1 || (result.escalations ?? []).length !== 0)
+  { console.log(JSON.stringify({ ok: false, reason: 'FRESHNESS_ERROR must fail OPEN (1 parked / 0 escalations), got: ' + JSON.stringify(result) })); process.exit(0); }
+if (result.parked[0].pr !== 701)
+  { console.log(JSON.stringify({ ok: false, reason: 'wrong PR parked: ' + JSON.stringify(result.parked[0]) })); process.exit(0); }
+const gateCalls = callLog.filter(c => (c.opts.label||'') === 'gate:item-fresh-err').length;
+if (gateCalls !== 1)
+  { console.log(JSON.stringify({ ok: false, reason: 'the gate must still run once on a fail-open FRESHNESS_ERROR, got ' + gateCalls })); process.exit(0); }
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+run_node_case "freshness-step-timeout (temperloop#1937 round 2 coverage gap): the INNER wall-clock watchdog (STEP_TIMEOUT) on the gate-freshness step routes through the existing disposeStepTimeout recover-probe, never fails open, never runs the gate" "
+$PREAMBLE
+
+setFreshness('item-fresh-stto', { outcome: 'STEP_TIMEOUT', step: 'gate-freshness', ceiling_secs: 900, elapsed_secs: 901 });
+setMachinery('item-fresh-stto',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/item-fresh-stto' },
+  { outcome: 'REVIEW_DIFF' },
+  noSideEffects(),
+);
+happyWorker('item-fresh-stto');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'item-fresh-stto', branch: 'build/item-fresh-stto', title: 'Freshness Step-Timeout Item', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+
+if ((result.parked ?? []).length !== 0 || (result.escalations ?? []).length !== 1)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected 0 parked / 1 escalation: ' + JSON.stringify(result) })); process.exit(0); }
+const esc = result.escalations[0];
+if (esc.kind !== 'machinery-step-timeout')
+  { console.log(JSON.stringify({ ok: false, reason: 'an inner STEP_TIMEOUT on gate-freshness must escalate machinery-step-timeout: got ' + esc.kind })); process.exit(0); }
+if (esc.payload.where !== 'gate-freshness')
+  { console.log(JSON.stringify({ ok: false, reason: 'payload must name gate-freshness as the timed-out step: ' + JSON.stringify(esc.payload) })); process.exit(0); }
+if (!callLog.some(c => c.opts.label === 'recover-probe:item-fresh-stto'))
+  { console.log(JSON.stringify({ ok: false, reason: 'disposal must go through the EXISTING pr.sh recover-probe path, never a bespoke one' })); process.exit(0); }
+const gateCalls = callLog.filter(c => (c.opts.label||'') === 'gate:item-fresh-stto').length;
+if (gateCalls !== 0)
+  { console.log(JSON.stringify({ ok: false, reason: 'the gate must never run after a bounded-out freshness step, but it ran ' + gateCalls + ' time(s)' })); process.exit(0); }
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+# ============================================================================
+# ROUND 3 (temperloop#1937): review-blocking findings — no-gate presence gate,
+# non-conflict rebase failures, and the probe-outcome trust boundary.
+# ============================================================================
+run_node_case "freshness-no-gate (temperloop#1937 round 3, HIGH): a project with no vendored quality-gates.sh takes the byte-identical pre-change path — one freshness check, no extra spawn, the gate call independently reports GATE_ABSENT" "
+$PREAMBLE
+
+setFreshness('item-fresh-nogate', { outcome: 'FRESHNESS_NO_GATE' });
+setMachinery('item-fresh-nogate',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/item-fresh-nogate' },
+  { outcome: 'REVIEW_DIFF' },
+  { outcome: 'GATE_ABSENT' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-nogate' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'sha-nogate', branch: 'build/item-fresh-nogate' },
+  { outcome: 'PR_OPENED', pr_number: 801 },
+  { outcome: 'CI_GREEN' },
+);
+happyWorker('item-fresh-nogate');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'item-fresh-nogate', branch: 'build/item-fresh-nogate', title: 'Freshness No-Gate Item', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+
+if ((result.parked ?? []).length !== 1 || (result.escalations ?? []).length !== 0)
+  { console.log(JSON.stringify({ ok: false, reason: 'a no-gate project must fail open all the way to parked: ' + JSON.stringify(result) })); process.exit(0); }
+const freshCalls = callLog.filter(c => (c.opts.label||'').startsWith('gate-freshness:item-fresh-nogate')).length;
+if (freshCalls !== 1)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected exactly 1 freshness call (no extra spawn for a no-gate project), got ' + freshCalls })); process.exit(0); }
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+run_node_case "freshness-rebase-error (temperloop#1937 round 3, MEDIUM): a rebase failure with NO conflicted files is its own not-a-conflict outcome — never misread as FRESHNESS_CONFLICT's empty-list shape — and carries git's output as detail" "
+$PREAMBLE
+
+setFreshness('item-fresh-rberr', { outcome: 'FRESHNESS_REBASE_ERROR', main: 'main-sha', detail: 'error: cannot rebase: Your local changes would be overwritten (pre-rebase hook)', disposition: 'rebase failed for a reason other than a content conflict; rebase aborted, worktree left intact on its pre-rebase commit' });
+setMachinery('item-fresh-rberr',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/item-fresh-rberr' },
+  { outcome: 'REVIEW_DIFF' },
+  // Deliberately no gate/pr/CI entries — the gate must never run.
+);
+happyWorker('item-fresh-rberr');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'item-fresh-rberr', branch: 'build/item-fresh-rberr', title: 'Freshness Rebase-Error Item', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+
+if ((result.parked ?? []).length !== 0 || (result.escalations ?? []).length !== 1)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected 0 parked / 1 escalation: ' + JSON.stringify(result) })); process.exit(0); }
+const esc = result.escalations[0];
+if (esc.kind !== 'stale-worktree')
+  { console.log(JSON.stringify({ ok: false, reason: 'a non-conflict rebase failure must still escalate stale-worktree (the base is still what is wrong): got ' + esc.kind })); process.exit(0); }
+if (JSON.stringify(esc.payload.conflict_files || []) !== '[]')
+  { console.log(JSON.stringify({ ok: false, reason: 'a non-conflict failure must never fabricate conflict files: ' + JSON.stringify(esc.payload) })); process.exit(0); }
+if (!esc.payload.detail || !/pre-rebase hook/.test(String(esc.payload.detail)))
+  { console.log(JSON.stringify({ ok: false, reason: 'payload must carry git\\'s own output as detail: ' + JSON.stringify(esc.payload) })); process.exit(0); }
+if (esc.payload.reason !== 'rebase-failed')
+  { console.log(JSON.stringify({ ok: false, reason: 'payload must name this a non-conflict rebase failure, distinct from a real conflict: ' + JSON.stringify(esc.payload) })); process.exit(0); }
+const gateCalls = callLog.filter(c => (c.opts.label||'') === 'gate:item-fresh-rberr').length;
+if (gateCalls !== 0)
+  { console.log(JSON.stringify({ ok: false, reason: 'the gate must never run on an unresolved rebase failure, but it ran ' + gateCalls + ' time(s)' })); process.exit(0); }
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+run_node_case "freshness-probe-unknown (temperloop#1937 round 3, MEDIUM): when the follow-up timeout-probe ITSELF fails to resolve, the disposition reports the rebase state as UNKNOWN rather than confidently asserting nothing was in progress" "
+$PREAMBLE
+
+// First call: the outer Bash-tool timeout. Second call (the follow-up probe):
+// the probe's OWN outer timeout — FRESHNESS_TIMEOUT_PROBE_ERROR, never
+// FRESHNESS_TIMEOUT_PROBE — so rebase_in_progress/aborted are simply ABSENT
+// from this outcome, not false.
+setFreshness('item-fresh-punk',
+  { outcome: 'FRESHNESS_TIMEOUT' },
+  { outcome: 'FRESHNESS_TIMEOUT_PROBE_ERROR' },
+);
+setMachinery('item-fresh-punk',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/item-fresh-punk' },
+  { outcome: 'REVIEW_DIFF' },
+);
+happyWorker('item-fresh-punk');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'item-fresh-punk', branch: 'build/item-fresh-punk', title: 'Freshness Probe-Unknown Item', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+
+if ((result.parked ?? []).length !== 0 || (result.escalations ?? []).length !== 1)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected 0 parked / 1 escalation: ' + JSON.stringify(result) })); process.exit(0); }
+const esc = result.escalations[0];
+if (esc.kind !== 'stale-worktree')
+  { console.log(JSON.stringify({ ok: false, reason: 'a probe that itself fails to resolve must still escalate stale-worktree: got ' + esc.kind })); process.exit(0); }
+if (esc.payload.rebase_in_progress !== null || esc.payload.aborted !== null)
+  { console.log(JSON.stringify({ ok: false, reason: 'an unresolved probe must report the rebase state as UNKNOWN (null), never confidently false: ' + JSON.stringify(esc.payload) })); process.exit(0); }
+if (!/unknown/i.test(String(esc.payload.disposition || '')))
+  { console.log(JSON.stringify({ ok: false, reason: 'disposition must say the rebase state is unknown, not assert nothing was in progress: ' + JSON.stringify(esc.payload) })); process.exit(0); }
+const gateCalls = callLog.filter(c => (c.opts.label||'') === 'gate:item-fresh-punk').length;
+if (gateCalls !== 0)
+  { console.log(JSON.stringify({ ok: false, reason: 'the gate must never run after an unresolved freshness timeout probe, but it ran ' + gateCalls + ' time(s)' })); process.exit(0); }
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+# Static guard: the freshness step must run BEFORE the §3e.5 gate call in
+# driveItem — mirrors the K1219 ordering guard's shape exactly (grep the two
+# call sites' own line numbers rather than re-deriving order at runtime).
+# `|| true` inside each substitution (round 2, shell-reviewer MEDIUM): under
+# `set -e`/`pipefail` a grep MISS here is a non-zero exit that would abort the
+# whole script before the `[ -n ]` guard below ever gets to report it
+# legibly — the fallthrough to empty is what lets that guard actually fire.
+K1937_FRESH_LINE="$(grep -n 'const freshness = await runGateFreshness(item, wt, qgBin);' "$MJS" | head -1 | cut -d: -f1 || true)"
+K1937_GATE_LINE="$(grep -n 'gateOut = await runMachinery(gateCmd(gateStartAt, gateSelection), {' "$MJS" | head -1 | cut -d: -f1 || true)"
+[ -n "$K1937_FRESH_LINE" ] || fail "#1937: could not locate the pre-gate freshness call site in driveItem"
+[ -n "$K1937_GATE_LINE" ] || fail "#1937: could not locate the §3e.5 gate call site in driveItem"
+[ "$K1937_FRESH_LINE" -lt "$K1937_GATE_LINE" ] \
+  || fail "#1937: the pre-gate freshness step must run BEFORE the §3e.5 gate call — an origin/main-ratcheted validator would false-fail on a stale worktree otherwise"
+echo "PASS: #1937 ordering guard — the pre-gate freshness step runs strictly before the §3e.5 gate call in driveItem"
 
 # ============================================================================
 # TEST 11b: gate-timeout — 3e.5 gate executor prompt carries the long Bash-tool
@@ -3522,7 +3931,7 @@ echo "PASS: #939 throw guard — callWorker() normalizes a thrown lost return"
 # moving any branching decision out of the .mjs.
 # ============================================================================
 
-run_node_case "K942 spawn count: an L0-shaped 3-item level spends 4 machinery executors per item, not one per command" "
+run_node_case "K942 spawn count: an L0-shaped 3-item level spends 6 machinery executors per item, not one per command" "
 $PREAMBLE
 
 // Board ON + ghIssue → the full L0 shape: claim, worktree, gate, rebase, scan,
@@ -3566,17 +3975,19 @@ const soloCalls = machineryCalls.filter(c => !/^Steps: /m.test(c.promptFull)).le
 const unbatched = machineryStepLog.length + soloCalls;
 
 if (!reason && workerCalls.length !== 3) reason = 'expected 3 worker spawns, got ' + workerCalls.length;
-// 5 machinery executors per item: prelude, review-diff (temperloop#1430), gate, pr-batch, ci-batch.
-if (!reason && machineryCalls.length !== 15) reason = 'expected 15 machinery executors (5/item), got ' + machineryCalls.length + ': ' + JSON.stringify(machineryCalls.map(c => c.opts.label));
-if (!reason && callLog.length !== 18) reason = 'expected 18 total agent spawns for the level, got ' + callLog.length;
+// 6 machinery executors per item: prelude, review-diff (temperloop#1430),
+// gate-freshness (temperloop#1937), gate, pr-batch, ci-batch.
+if (!reason && machineryCalls.length !== 18) reason = 'expected 18 machinery executors (6/item), got ' + machineryCalls.length + ': ' + JSON.stringify(machineryCalls.map(c => c.opts.label));
+if (!reason && callLog.length !== 21) reason = 'expected 21 total agent spawns for the level, got ' + callLog.length;
 // …and that is a real reduction against the un-batched equivalent of this run.
-if (!reason && unbatched !== 36) reason = 'expected the un-batched equivalent to be 36 spawns, got ' + unbatched;
+if (!reason && unbatched !== 39) reason = 'expected the un-batched equivalent to be 39 spawns, got ' + unbatched;
 if (!reason && !(machineryCalls.length < unbatched)) reason = 'batching did not reduce machinery spawns: ' + machineryCalls.length + ' vs ' + unbatched;
 
-// Per item, the executors are exactly these five, in this order.
+// Per item, the executors are exactly these six, in this order — the
+// temperloop#1937 freshness check runs strictly between review and the gate.
 for (const slug of ['a1', 'a2', 'a3']) {
   const labels = machineryCalls.filter(c => (c.opts.label||'').includes(slug)).map(c => c.opts.label);
-  const want = ['prelude:' + slug, 'review-diff:' + slug, 'gate:' + slug, 'pr-batch:' + slug, 'ci-batch:' + slug + '#0'];
+  const want = ['prelude:' + slug, 'review-diff:' + slug, 'gate-freshness:' + slug, 'gate:' + slug, 'pr-batch:' + slug, 'ci-batch:' + slug + '#0'];
   if (!reason && JSON.stringify(labels) !== JSON.stringify(want))
     reason = slug + ' machinery executors wrong: ' + JSON.stringify(labels);
   // Every mechanical step still RAN — batching removed spawns, not work.
@@ -4214,6 +4625,7 @@ globalThis.agent = async (prompt, opts = {}) => {
   if (isWorkerCall(opts)) return { status: 'done', summary: 's', acceptance_results: [], commits: [] };
   if (label.startsWith('prelude:')) return { results: [{ outcome: 'CREATED', path: '/tmp/repo.wt/sl' }] };
   if (label.startsWith('review-diff:')) return { outcome: 'REVIEW_DIFF', files: [] };
+  if (label.startsWith('gate-freshness:')) return { outcome: 'FRESHNESS_CURRENT', worktree_base: 'x', main: 'y' };
   if (label.startsWith('gate:')) return { outcome: 'GATE_PASS' };
   if (label.startsWith('pr-batch:')) return { results: [
     { outcome: 'REBASED', sha: 'x' },
@@ -4249,6 +4661,7 @@ globalThis.agent = async (prompt, opts = {}) => {
   const l = opts.label || '';
   if (l.startsWith('prelude:')) return { results: [{ outcome: 'CREATED', path: '/tmp/repo.wt/c' }] };
   if (l.startsWith('review-diff:')) return { outcome: 'REVIEW_DIFF', files: [] };
+  if (l.startsWith('gate-freshness:')) return { outcome: 'FRESHNESS_CURRENT', worktree_base: 'x', main: 'y' };
   if (l.startsWith('gate:')) return { outcome: 'GATE_PASS' };
   if (l.startsWith('pr-batch:')) return { results: [{ outcome: 'REBASED', sha: 'x' }, { outcome: 'SCAN_CLEAN' }, { outcome: 'PUSHED', sha: 'x' }, { outcome: 'PR_OPENED', pr_number: 9 }] };
   if (l.startsWith('ci-batch:')) return { results: [{ mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN' }, { outcome: 'CI_GREEN' }] };
@@ -4783,6 +5196,7 @@ else {
     [/^prelude:/,      'claim'],
     [/^worker:/,       'build'],
     [/^review-diff:/,  'review'],
+    [/^gate-freshness:/, 'gate'],
     [/^gate:/,         'gate'],
     [/^pr-batch:/,     'PR'],
     [/^ci-batch:/,     'CI'],
@@ -6248,9 +6662,15 @@ echo "PASS: #1219 boundary guard — \`activation\` crosses the orchestrator->wo
 # after 3f and a Fail costs a re-push onto an already-open PR instead of a
 # loop-back to 3c. A future edit that MOVES the call — rather than removing it —
 # must fail here, unconditionally.
-K1219_GATE_LINE="$(grep -n -- '--- 3e.5. Parent-side acceptance gate' "$MJS" | head -1 | cut -d: -f1)"
-K1219_ACT_LINE="$(grep -n 'const activationEscalation = await runActivationGate' "$MJS" | head -1 | cut -d: -f1)"
-K1219_PR_LINE="$(grep -n -- '--- 3f. Push and open the PR' "$MJS" | head -1 | cut -d: -f1)"
+# round 2 (temperloop#1937 shell-reviewer MEDIUM, applied here too so the two
+# mirrored ordering guards stay identical in shape): under `set -e`/`pipefail`
+# a grep MISS inside this substitution pipeline is a non-zero exit that aborts
+# the whole script before the `[ -n ]` guard below ever gets to report it
+# legibly. `|| true` inside each substitution lets a miss fall through to an
+# EMPTY variable instead, so the `[ -n ]` guard is what actually fires.
+K1219_GATE_LINE="$(grep -n -- '--- 3e.5. Parent-side acceptance gate' "$MJS" | head -1 | cut -d: -f1 || true)"
+K1219_ACT_LINE="$(grep -n 'const activationEscalation = await runActivationGate' "$MJS" | head -1 | cut -d: -f1 || true)"
+K1219_PR_LINE="$(grep -n -- '--- 3f. Push and open the PR' "$MJS" | head -1 | cut -d: -f1 || true)"
 [ -n "$K1219_GATE_LINE" ] || fail "#1219: could not locate the 3e.5 acceptance-gate marker in build-level.mjs"
 [ -n "$K1219_ACT_LINE" ] || fail "#1219: could not locate the §3e.6 activation-gate call site in driveItem"
 [ -n "$K1219_PR_LINE" ] || fail "#1219: could not locate the 3f push/PR marker in build-level.mjs"
@@ -6428,6 +6848,267 @@ K1219_R="$(k1219_run "$K1219_E2E/fail.proof.sh")"
 [ "$K1219_R" = '"outcome":"ACTIVATION_FAIL"' ] \
   || fail "#1219-e2e: a presence proof whose wiring is ABSENT must report ACTIVATION_FAIL; got $K1219_R"
 echo "PASS: #1219-e2e proof — the generated worktree predicate runs for real, reports the predicate's own exit status, and skips the control on a presence proof"
+
+# ============================================================================
+# TEST 1937-e2e: the gate-freshness step's GENERATED SHELL, executed for real
+# against REAL LINKED worktrees (temperloop#1937 round 3, HIGH).
+#
+# Every mock-level case above intercepts the 'gate-freshness:' label and never
+# runs the shell gateFreshnessCmd()/gateFreshnessTimeoutProbeCmd() actually
+# generate — so the round-3 HIGH defect (`[ -d .git/rebase-merge ]`, which is
+# ALWAYS false in a `git worktree add` worktree because its `.git` is a
+# pointer FILE, not a directory) was invisible to every one of them. This case
+# closes that: it drives the real driver, lifts the generated command text out
+# of the executor prompt it produced (mirroring the #1219-e2e pattern above),
+# and runs it against REAL linked worktrees off a real bare origin.
+# ============================================================================
+K1937_E2E="$WF_TEST_TMPDIR/freshness-e2e"
+mkdir -p "$K1937_E2E"
+
+git init --quiet --bare "$K1937_E2E/origin.git"
+mkdir -p "$K1937_E2E/main-checkout"
+(
+  set -e
+  cd "$K1937_E2E/main-checkout"
+  git init --quiet .
+  git symbolic-ref HEAD refs/heads/main
+  git config user.email t@example.com
+  git config user.name t
+  mkdir -p scripts
+  printf '#!/bin/sh\nexit 0\n' > scripts/quality-gates.sh
+  chmod +x scripts/quality-gates.sh
+  printf 'line1\nSHARED\nline3\n' > f.txt
+  git add -A && git commit --quiet -m base
+  git remote add origin "$K1937_E2E/origin.git"
+  git push --quiet -u origin main
+) || fail "#1937-e2e: could not build the base fixture"
+
+# Three REAL LINKED worktrees (`git worktree add`, never a plain `git init`
+# checkout) — one per scenario — all branched from main BEFORE main moves on.
+git -C "$K1937_E2E/main-checkout" worktree add --quiet "$K1937_E2E/repo.wt/conf" -b build/conf main \
+  || fail "#1937-e2e: could not create the conflict-scenario linked worktree"
+git -C "$K1937_E2E/main-checkout" worktree add --quiet "$K1937_E2E/repo.wt/mid" -b build/mid main \
+  || fail "#1937-e2e: could not create the mid-rebase-scenario linked worktree"
+git -C "$K1937_E2E/main-checkout" worktree add --quiet "$K1937_E2E/repo.wt/nogate" -b build/nogate main \
+  || fail "#1937-e2e: could not create the no-gate-scenario linked worktree"
+
+# Fixture self-check — a linked worktree's `.git` is a POINTER FILE, never a
+# directory. This is the EXACT condition the round-3 HIGH fix depends on: a
+# fixture that got this wrong (a plain `git init` checkout, say) would let the
+# pre-fix `[ -d .git/rebase-merge ]` test pass by accident and prove nothing.
+[ -f "$K1937_E2E/repo.wt/conf/.git" ] \
+  || fail "#1937-e2e: fixture worktree's .git is not a pointer FILE — this fixture does not exercise the linked-worktree shape this item fixes"
+
+for k1937_d in conf mid; do
+  (
+    set -e
+    cd "$K1937_E2E/repo.wt/$k1937_d"
+    printf 'line1\nWORKER-%s\nline3\n' "$k1937_d" > f.txt
+    git add -A && git commit --quiet -m "work-$k1937_d"
+  ) || fail "#1937-e2e: could not commit the worker-side change for $k1937_d"
+done
+
+# origin/main moves on with a CONFLICTING edit to the SAME line, after every
+# worktree above branched from the old tip — the live #1934 shape this item fixes.
+(
+  set -e
+  cd "$K1937_E2E/main-checkout"
+  printf 'line1\nMAIN-MOVED-ON\nline3\n' > f.txt
+  git add -A && git commit --quiet -m main-moved-on
+  git push --quiet origin main
+) || fail "#1937-e2e: could not advance origin/main past the fixture worktrees"
+
+# The no-gate scenario's own branch removes the vendored gate script, so its
+# worktree genuinely has none (round 3 HIGH: the presence-gated no-op path).
+(
+  set -e
+  cd "$K1937_E2E/repo.wt/nogate"
+  git rm --quiet -f scripts/quality-gates.sh
+  git commit --quiet -m "remove gate script for the e2e no-gate scenario"
+) || fail "#1937-e2e: could not remove the gate script on the no-gate branch"
+
+# --- lift the generated command text out of the driver's own executor prompt --
+# Mirrors the #1219-e2e emit pattern exactly: a single static heredoc body,
+# parameterized through env vars (never textual interpolation), run via
+# `node <file>` for the same reason #1219-e2e uses it — $PREAMBLE contains
+# backticks and `$`, which a `node -e "…"` bash argument would let the shell
+# expand before node ever saw them.
+read -r -d '' K1937_EMIT_BODY << 'K1937_EMIT_END' || true
+import { writeFileSync } from 'fs';
+const k1937Slug = process.env.K1937_SLUG;
+setFreshness(k1937Slug,
+  { outcome: 'FRESHNESS_TIMEOUT' },
+  { outcome: 'FRESHNESS_TIMEOUT_PROBE', rebase_in_progress: false, aborted: false },
+);
+setMachinery(k1937Slug,
+  { outcome: 'CREATED', path: process.env.K1937_ROOT + '/repo.wt/' + process.env.K1937_DIR },
+  { outcome: 'REVIEW_DIFF' },
+);
+happyWorker(k1937Slug);
+globalThis.args = { ...baseArgs, repoRoot: process.env.K1937_ROOT + '/repo', items: [
+  { slug: k1937Slug, branch: 'build/' + k1937Slug, title: 'e2e', kind: 'impl', acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+await mod.default();
+const freshCalls = callLog.filter(c => /^gate-freshness:/.test(String(c.opts.label || '')));
+if (freshCalls[0]) writeFileSync(process.env.K1937_OUT + '.main.sh', freshCalls[0].promptFull.split(/\nCommand:\n/)[1] || '');
+if (freshCalls[1]) writeFileSync(process.env.K1937_OUT + '.probe.sh', freshCalls[1].promptFull.split(/\nCommand:\n/)[1] || '');
+K1937_EMIT_END
+
+k1937_emit() { # <slug> <worktree-dir-name> <outfile-prefix> [fixture-root, default $K1937_E2E]
+  local k1937_case="$WF_TEST_TMPDIR/e2e-fresh-$1.mjs"
+  printf '%s\n' "$PREAMBLE" > "$k1937_case"
+  printf '%s\n' "$K1937_EMIT_BODY" >> "$k1937_case"
+  MJS_PATH="$MJS" AGENT_DEF_PATH="$AGENT_DEF" \
+  K1937_ROOT="${4:-$K1937_E2E}" K1937_SLUG="$1" K1937_DIR="$2" K1937_OUT="$3" \
+  node "$k1937_case" >/dev/null || fail "#1937-e2e: could not emit the generated command for $1 (node failed)"
+}
+
+k1937_run() { { bash "$1" 2>/dev/null || true; } | { grep -o '"outcome":"[A-Z_]*"' || true; } | head -1; }
+
+# 1. CONFLICT scenario: run the REAL generated gateFreshnessCmd() shell against
+#    the real conflicting linked worktree.
+k1937_emit conf conf "$K1937_E2E/conf"
+[ -s "$K1937_E2E/conf.main.sh" ] || fail "#1937-e2e: no gate-freshness command was generated for the conflict scenario"
+K1937_FULL="$(bash "$K1937_E2E/conf.main.sh" 2>/dev/null || true)"
+K1937_R="$(printf '%s' "$K1937_FULL" | grep -o '"outcome":"[A-Z_]*"' | head -1)"
+[ "$K1937_R" = '"outcome":"FRESHNESS_CONFLICT"' ] \
+  || fail "#1937-e2e: a real conflicting rebase must report FRESHNESS_CONFLICT; got $K1937_R (full: $K1937_FULL)"
+printf '%s' "$K1937_FULL" | grep '"conflict_files":\["f.txt"\]' >/dev/null \
+  || fail "#1937-e2e: FRESHNESS_CONFLICT must name f.txt as the conflicting file: $K1937_FULL"
+printf '%s' "$K1937_FULL" | grep -i 'conflict' >/dev/null \
+  || fail "#1937-e2e (round 3 MEDIUM): FRESHNESS_CONFLICT must carry git's own rebase output as detail: $K1937_FULL"
+# The worktree must be left INTACT on its pre-rebase commit — never a
+# half-applied rebase, never a silent revert.
+git -C "$K1937_E2E/repo.wt/conf" status --porcelain | grep . >/dev/null \
+  && fail "#1937-e2e: the worktree must be clean after the abort, but git status reports changes"
+[ "$(git -C "$K1937_E2E/repo.wt/conf" log -1 --format=%s)" = "work-conf" ] \
+  || fail "#1937-e2e: the worktree must be left on its own pre-rebase commit (work-conf), not mid-rebase or reverted"
+echo "PASS: #1937-e2e conflict — the real generated gate-freshness shell detects and reports a genuine conflict, with detail, and leaves the worktree intact"
+
+# 2. NO-GATE scenario: the presence check short-circuits before any fetch, on
+#    a worktree with a REAL missing gate script (round 3 HIGH).
+k1937_emit nogate nogate "$K1937_E2E/nogate"
+[ -s "$K1937_E2E/nogate.main.sh" ] || fail "#1937-e2e: no gate-freshness command was generated for the no-gate scenario"
+K1937_R="$(k1937_run "$K1937_E2E/nogate.main.sh")"
+[ "$K1937_R" = '"outcome":"FRESHNESS_NO_GATE"' ] \
+  || fail "#1937-e2e (round 3 HIGH): a worktree with no vendored quality-gates.sh must report FRESHNESS_NO_GATE without attempting a fetch/rebase; got $K1937_R"
+echo "PASS: #1937-e2e no-gate — the real generated shell's presence check short-circuits before any fetch on a genuinely gate-absent worktree"
+
+# 3. MID-REBASE scenario: start a REAL rebase by hand so it stops mid-conflict
+#    (an actual in-progress rebase on disk), THEN run the generated
+#    gateFreshnessTimeoutProbeCmd() shell for real and assert it detects and
+#    aborts it via `git rebase --abort`'s own exit status — round 3 HIGH: a
+#    literal `[ -d .git/rebase-merge ]` test is ALWAYS false in this linked
+#    worktree (its `.git` is a pointer file), so this is the one assertion
+#    that would have caught the pre-fix defect red-handed.
+k1937_emit mid mid "$K1937_E2E/mid"
+[ -s "$K1937_E2E/mid.probe.sh" ] || fail "#1937-e2e: no timeout-probe command was generated for the mid-rebase scenario"
+(
+  cd "$K1937_E2E/repo.wt/mid"
+  git fetch --quiet origin main
+  # This rebase is EXPECTED to conflict and exit non-zero (that is the whole
+  # point — it is what leaves a real in-progress rebase on disk) — `|| true`
+  # so its non-zero exit under this script's inherited `set -e` does not
+  # abort the whole test suite.
+  git rebase origin/main >/dev/null 2>&1 || true
+)
+# Fixture self-check: the hand-run rebase above must actually be stuck
+# mid-conflict before the probe is asked to find it.
+K1937_GD="$(git -C "$K1937_E2E/repo.wt/mid" rev-parse --git-dir)"
+if [ ! -d "$K1937_GD/rebase-merge" ] && [ ! -d "$K1937_GD/rebase-apply" ]; then
+  fail "#1937-e2e: fixture self-check failed — the hand-run rebase did not leave an in-progress rebase on disk for the probe to find"
+fi
+# ONE invocation only — the probe's own job is to ABORT what it finds, so a
+# second run against the same tree would find nothing and silently pass for
+# the wrong reason. Capture the full output once and assert on both fields
+# from that single execution.
+K1937_PROBE_OUT="$(bash "$K1937_E2E/mid.probe.sh" 2>/dev/null || true)"
+K1937_R="$(printf '%s' "$K1937_PROBE_OUT" | grep -o '"outcome":"[A-Z_]*"' | head -1)"
+[ "$K1937_R" = '"outcome":"FRESHNESS_TIMEOUT_PROBE"' ] \
+  || fail "#1937-e2e: the timeout-probe shell must report FRESHNESS_TIMEOUT_PROBE; got $K1937_R (full: $K1937_PROBE_OUT)"
+printf '%s' "$K1937_PROBE_OUT" | grep '"rebase_in_progress":true' >/dev/null \
+  || fail "#1937-e2e (round 3 HIGH): the probe must detect the REAL in-progress rebase via git's own exit status, not a literal .git/rebase-merge test that is always false in a linked worktree: $K1937_PROBE_OUT"
+if [ -d "$K1937_GD/rebase-merge" ] || [ -d "$K1937_GD/rebase-apply" ]; then
+  fail "#1937-e2e: the probe must have ABORTED the in-progress rebase, but rebase state is still on disk"
+fi
+echo "PASS: #1937-e2e mid-rebase — the real generated timeout-probe shell detects and aborts a genuine in-progress rebase in a LINKED worktree via git's own exit status, never the always-false directory test"
+
+# 4. NON-CONFLICT rebase failure (round 3, MEDIUM): a REAL rebase failure with
+#    NO conflicted files — a rejecting `pre-rebase` hook, standing in for a
+#    missing-identity or leftover-in-progress-rebase failure — must report
+#    FRESHNESS_REBASE_ERROR, never FRESHNESS_CONFLICT's empty-`conflict_files`
+#    shape. An ISOLATED fixture (its own origin/worktree) because a
+#    `pre-rebase` hook lives in the repo's shared git-dir and would otherwise
+#    also fire for the conf/mid scenarios above.
+K1937_HOOK_E2E="$WF_TEST_TMPDIR/freshness-e2e-hookfail"
+mkdir -p "$K1937_HOOK_E2E"
+git init --quiet --bare "$K1937_HOOK_E2E/origin.git"
+mkdir -p "$K1937_HOOK_E2E/main-checkout"
+(
+  set -e
+  cd "$K1937_HOOK_E2E/main-checkout"
+  git init --quiet .
+  git symbolic-ref HEAD refs/heads/main
+  git config user.email t@example.com
+  git config user.name t
+  mkdir -p scripts
+  printf '#!/bin/sh\nexit 0\n' > scripts/quality-gates.sh
+  chmod +x scripts/quality-gates.sh
+  printf 'line1\nSHARED\nline3\n' > f.txt
+  git add -A && git commit --quiet -m base
+  git remote add origin "$K1937_HOOK_E2E/origin.git"
+  git push --quiet -u origin main
+) || fail "#1937-e2e: could not build the hookfail base fixture"
+git -C "$K1937_HOOK_E2E/main-checkout" worktree add --quiet "$K1937_HOOK_E2E/repo.wt/hookfail" -b build/hookfail main \
+  || fail "#1937-e2e: could not create the hookfail-scenario linked worktree"
+# A REAL pre-rebase hook that unconditionally refuses — the SHARED git-dir
+# hooks/ directory a linked worktree's rebase actually consults.
+K1937_HOOKDIR="$(git -C "$K1937_HOOK_E2E/repo.wt/hookfail" rev-parse --git-common-dir)/hooks"
+mkdir -p "$K1937_HOOKDIR"
+printf '#!/bin/sh\necho "pre-rebase hook: rejecting for e2e-hookfail" >&2\nexit 1\n' > "$K1937_HOOKDIR/pre-rebase"
+chmod +x "$K1937_HOOKDIR/pre-rebase"
+(
+  set -e
+  cd "$K1937_HOOK_E2E/repo.wt/hookfail"
+  printf 'line1\nWORKER-hookfail\nline3\n' > f.txt
+  git add -A && git commit --quiet -m work-hookfail
+) || fail "#1937-e2e: could not commit the worker-side change for hookfail"
+(
+  set -e
+  cd "$K1937_HOOK_E2E/main-checkout"
+  printf 'line1\nMAIN-MOVED-ON\nline3\n' > f.txt
+  git add -A && git commit --quiet -m main-moved-on
+  git push --quiet origin main
+) || fail "#1937-e2e: could not advance origin/main past the hookfail fixture worktree"
+
+k1937_emit hookfail hookfail "$K1937_HOOK_E2E/hookfail" "$K1937_HOOK_E2E"
+[ -s "$K1937_HOOK_E2E/hookfail.main.sh" ] || fail "#1937-e2e: no gate-freshness command was generated for the hookfail scenario"
+K1937_FULL="$(bash "$K1937_HOOK_E2E/hookfail.main.sh" 2>/dev/null || true)"
+K1937_R="$(printf '%s' "$K1937_FULL" | grep -o '"outcome":"[A-Z_]*"' | head -1)"
+[ "$K1937_R" = '"outcome":"FRESHNESS_REBASE_ERROR"' ] \
+  || fail "#1937-e2e (round 3 MEDIUM): a rebase failure with NO conflicted files (a rejecting pre-rebase hook) must report FRESHNESS_REBASE_ERROR, never FRESHNESS_CONFLICT's empty-conflict-files shape; got $K1937_R (full: $K1937_FULL)"
+printf '%s' "$K1937_FULL" | grep '"conflict_files"' >/dev/null \
+  && fail "#1937-e2e: a non-conflict outcome must never carry a conflict_files field at all (that shape is FRESHNESS_CONFLICT's alone): $K1937_FULL"
+printf '%s' "$K1937_FULL" | grep -i 'pre-rebase hook' >/dev/null \
+  || fail "#1937-e2e (round 3 MEDIUM): FRESHNESS_REBASE_ERROR must carry git's own hook-rejection output as detail: $K1937_FULL"
+echo "PASS: #1937-e2e hookfail — a real non-conflict rebase failure (a rejecting pre-rebase hook) reports its own FRESHNESS_REBASE_ERROR outcome with detail, never misread as a content conflict"
+
+# 5. FETCH FAILURE (round 3, MEDIUM): a REAL `git fetch` failure must carry
+#    git's own stderr as `detail`, never a bare constant string — the pre-fix
+#    shape discarded it entirely (`>/dev/null 2>&1`). Point `origin` at a
+#    path that does not exist so the fetch fails for real.
+git -C "$K1937_E2E/repo.wt/conf" remote set-url origin "$K1937_E2E/does-not-exist.git"
+k1937_emit conf conf "$K1937_E2E/fetchfail"
+K1937_FULL="$(bash "$K1937_E2E/fetchfail.main.sh" 2>/dev/null || true)"
+K1937_R="$(printf '%s' "$K1937_FULL" | grep -o '"outcome":"[A-Z_]*"' | head -1)"
+[ "$K1937_R" = '"outcome":"FRESHNESS_ERROR"' ] \
+  || fail "#1937-e2e: a real fetch failure must report FRESHNESS_ERROR; got $K1937_R (full: $K1937_FULL)"
+printf '%s' "$K1937_FULL" | grep '"detail":"git fetch origin main failed: [^"]' >/dev/null \
+  || fail "#1937-e2e (round 3 MEDIUM): FRESHNESS_ERROR's detail must carry git's own fetch stderr, never a bare constant string: $K1937_FULL"
+# Restore origin for anything else that might still touch this worktree.
+git -C "$K1937_E2E/repo.wt/conf" remote set-url origin "$K1937_E2E/origin.git"
+echo "PASS: #1937-e2e fetchfail — a real fetch failure's FRESHNESS_ERROR carries git's own stderr as detail, never a bare constant string"
 
 # ============================================================================
 # TESTS (temperloop#1819): session-quota death → its OWN escalation kind
