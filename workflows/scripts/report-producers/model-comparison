@@ -683,14 +683,34 @@ fi
 lake_dir="${MODEL_USAGE_RAW_DIR:-$PWD/meta/data/raw}"
 LAKE="$TMPROOT/lake.jsonl"
 : >"$LAKE"
+# THREE STATES, not two (temperloop#1534). `observed_seats == 0` was previously
+# indistinguishable between:
+#   (a) the lake could not be read at all — no files, or none readable;
+#   (b) the lake is fine and NO emit-feasible seat ran in this window;
+#   (c) an emit-feasible seat ran and did not emit — the real defect.
+# All three rendered as a hard 0% under a disclosure asserting (c). A standalone
+# comparison ALWAYS produces (b) — replay-candidate and replay-judge are
+# deliberately excluded from the numerator, so a run that drives no /build
+# pipeline work observes 0 of the 3 pipeline seats by construction — so the
+# report accused itself of a defect on every clean run.
+lake_files_n=0
 for f in "$lake_dir"/model-usage-*.jsonl; do
   [ -f "$f" ] || continue
   [ -r "$f" ] || continue
+  lake_files_n=$((lake_files_n + 1))
   cat "$f" >>"$LAKE"
 done
+lake_records_n="$(grep -c . "$LAKE" 2>/dev/null || true)"
+case "${lake_records_n:-}" in ''|*[!0-9]*) lake_records_n=0 ;; esac
 
 coverage_json='null'
 coverage_unavailable_reason='"the attribution stream could not be read"'
+# (a) — no readable lake file at all. Reported as UNAVAILABLE, never as 0%: a
+# stream that could not be read says nothing about wiring health, and rounding
+# it to zero would manufacture a defect out of a missing file.
+if [ "$lake_files_n" -eq 0 ]; then
+  coverage_unavailable_reason="$(jq -cn --arg d "$lake_dir" '"no model-usage-*.jsonl file was readable under \($d), so the per-seat attribution stream could not be read at all. Reported as UNAVAILABLE rather than 0% — an unread stream is not evidence of a wiring defect (temperloop#1534)"')"
+fi
 observed_seats="$(jq -s --argjson roster "$FEASIBLE_SEAT_ROSTER" '
   [ .[] | select(type == "object") | (.seat // empty) ]
   | map(select(. as $s | $roster | index($s) != null))
@@ -700,6 +720,9 @@ case "${observed_seats:-}" in
     coverage_unavailable_reason='"the per-seat attribution stream under the model-usage raw lake could not be parsed, so no emit-coverage figure is reported — stated rather than silently rounded up"'
     ;;
   *)
+    if [ "$lake_files_n" -eq 0 ]; then
+      cj=""      # (a) already explained above; no percentage is computed
+    else
     cj="$(bash "$STATS_SH" coverage --observed-seats "$observed_seats" 2>/dev/null)"
     if [ -n "$cj" ] && jq -e 'type == "object" and has("coverage_pct")' <<<"$cj" >/dev/null 2>&1; then
       coverage_json="$cj"
@@ -707,8 +730,22 @@ case "${observed_seats:-}" in
     else
       coverage_unavailable_reason="$(jq -cn --arg n "$observed_seats" '"stats.sh coverage refused the observed seat count (\($n)) against the configured emit-feasible denominator — most often because the two seat counts were confused; no percentage is reported rather than a nonsense one"')"
     fi
+    fi
     ;;
 esac
+
+# (b) vs (c) — a STRUCTURAL zero against a real one (temperloop#1534). Zero
+# emit-feasible seats observed, on a lake that WAS readable, means no such seat
+# ran in this window. A standalone comparison produces that by construction, so
+# it is the ordinary case, not a finding. The defect framing belongs only to a
+# run where such a seat DID run.
+coverage_zero_is_structural='false'
+coverage_zero_statement='null'
+if [ "$lake_files_n" -gt 0 ] && [ "${observed_seats:-0}" = "0" ]; then
+  coverage_zero_is_structural='true'
+  coverage_zero_statement="$(jq -cn --argjson files "$lake_files_n" --argjson recs "$lake_records_n" \
+    '"0% here is STRUCTURAL, not a defect. The attribution stream was read successfully (\($files) file(s), \($recs) record(s)) and NO emit-feasible seat ran in this window — which is what a standalone comparison always looks like, since replay-candidate and replay-judge are deliberately excluded from the numerator. `below_100_means` describes a run where an emit-feasible seat DID run; it does not apply here (temperloop#1534)"')"
+fi
 
 # ── the winner gate: one condition, nothing else can mint it ──────────────
 winner_json='null'
@@ -762,6 +799,11 @@ report_json="$(jq -n \
   --argjson stats_reason "$stats_unavailable_reason" \
   --argjson coverage "$coverage_json" \
   --argjson coverage_reason "$coverage_unavailable_reason" \
+  --argjson zero_structural "$coverage_zero_is_structural" \
+  --argjson zero_stmt "$coverage_zero_statement" \
+  --arg lake_dir_s "$lake_dir" \
+  --argjson lake_files "$lake_files_n" \
+  --argjson lake_recs "$lake_records_n" \
   --argjson exclusions "$SEAT_EXCLUSIONS" \
   --argjson roster "$FEASIBLE_SEAT_ROSTER" \
   --argjson winner "$winner_json" \
@@ -849,7 +891,11 @@ report_json="$(jq -n \
         feasible_seats: (if $coverage != null then $coverage.feasible_seats else null end),
         feasible_seat_roster: $roster,
         unavailable_reason: $coverage_reason,
-        below_100_means: "an emit-CAPABLE seat ran and did not write a record — a defect with a declared owner (a broken emit call, a swallowed error, or a new spawn site added without wiring)",
+        lake: {dir: $lake_dir_s, files_read_n: $lake_files, records_n: $lake_recs,
+               basis: "what the attribution stream itself looked like, so a reader can tell an UNREAD stream from a read one that simply had no emit-feasible seat in it — three states that all used to render as a hard 0% (temperloop#1534)"},
+        zero_is_structural: $zero_structural,
+        zero_statement: $zero_stmt,
+        below_100_means: "GIVEN that an emit-feasible seat ran: an emit-CAPABLE seat ran and did not write a record — a defect with a declared owner (a broken emit call, a swallowed error, or a new spawn site added without wiring). When zero_is_structural is true no such seat ran, and this sentence does not describe the run.",
         below_100_does_not_mean: "that the rest of the pipeline'"'"'s spend is unmeasured. It is not: ADR 0020'"'"'s transcript producer covers the un-emittable seats and remains the sole owner of the headline spend figure. This percentage measures attribution WIRING HEALTH, never spend visibility.",
         excluded_seats: $exclusions
       },

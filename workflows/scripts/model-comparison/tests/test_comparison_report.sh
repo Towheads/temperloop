@@ -1300,6 +1300,85 @@ count
 rm -f "$CANARY"
 ok "L2 the canary is functional — L1 is a measurement, not a tautology"
 
+# ═══════════════════════════════════════════════════════════════════════════
+# SECTION V — emit coverage has THREE states, not two (temperloop#1534)
+# ═══════════════════════════════════════════════════════════════════════════
+# `observed_seats == 0` used to be indistinguishable between an UNREAD stream,
+# a read stream with no emit-feasible seat in it, and a real wiring defect. All
+# three rendered as a hard 0% under a disclosure asserting the defect. Since a
+# standalone comparison drives no /build pipeline seat, EVERY clean run accused
+# itself of "a defect with a declared owner".
+count
+# (b) STRUCTURAL ZERO — the lake reads fine and holds records, but NONE from an
+# emit-feasible seat. That is what a standalone comparison always looks like:
+# replay-candidate and replay-judge are deliberately excluded from the
+# numerator, so a run driving no /build pipeline work observes 0 of 3 by
+# construction. This is the ordinary case, and the one that was being libelled.
+# Its own fixture, not $FLAT — $FLAT's lake NAMES feasible seats, so it is case
+# (c) and would prove the opposite of what V1 claims.
+STRUCT="$WORK/structural-zero"; mkrepo "$STRUCT"
+fill "$STRUCT/.temperloop/model-comparison/baseline.jsonl"  claude-opus-4-8  24 5000 0
+fill "$STRUCT/.temperloop/model-comparison/candidate.jsonl" claude-sonnet-5  24 4200 90 8
+lake "$STRUCT" replay-candidate replay-judge
+run "$STRUCT"; cp "$RUN_OUT" "$WORK/struct.json"
+[ "$(jqf "$WORK/struct.json" '.emit_coverage.observed_seats')" = "0" ] \
+  || fail "V1: the fixture must observe ZERO feasible seats, got $(jqf "$WORK/struct.json" '.emit_coverage.observed_seats')"
+[ "$(jqf "$WORK/struct.json" '.emit_coverage.lake.records_n')" != "0" ] \
+  || fail "V1: the fixture lake must hold records, or this is the unavailable case rather than the structural one"
+[ "$(jqf "$WORK/struct.json" '.emit_coverage.zero_is_structural')" = "true" ] \
+  || fail "V1: a run that drove no pipeline seat must report its 0% as STRUCTURAL, got $(jqf "$WORK/struct.json" '.emit_coverage.zero_is_structural')"
+jq -e '.emit_coverage.zero_statement | test("STRUCTURAL, not a defect")' "$WORK/struct.json" >/dev/null 2>&1 \
+  || fail "V1: the structural zero must SAY it is not a defect: $(jqf "$WORK/struct.json" '.emit_coverage.zero_statement')"
+jq -e '.emit_coverage.zero_statement | test("does not apply here")' "$WORK/struct.json" >/dev/null 2>&1 \
+  || fail "V1: the structural zero must say below_100_means does not describe this run"
+ok "V1 a run whose lake holds records but no emit-feasible seat reports its 0% as STRUCTURAL, and says the defect framing does not apply"
+
+count
+# The honesty disclosures must survive the fix — the contract is explicit that
+# the unconditional-honesty property is not weakened to solve this.
+for _k in below_100_means below_100_does_not_mean feasible_seat_roster excluded_seats; do
+  [ "$(jqf "$FLAT_OUT" ".emit_coverage | has(\"$_k\")")" = "true" ] \
+    || fail "V2: the emit-coverage disclosure '$_k' disappeared — the fix must not weaken unconditional honesty"
+done
+jq -e '.emit_coverage.below_100_means | test("GIVEN that an emit-feasible seat ran")' "$FLAT_OUT" >/dev/null 2>&1 \
+  || fail "V2: below_100_means must state its own precondition rather than asserting a defect unconditionally"
+ok "V2 every emit-coverage disclosure is still present, and below_100_means now states its precondition"
+
+count
+# (a) UNREAD STREAM — reported as unavailable, never as 0%. An unread stream is
+# not evidence of a wiring defect, and rounding it to zero manufactures one out
+# of a missing file.
+NOLAKE="$WORK/no-such-lake"
+# The var is EXPORTED inside the subshell, not passed via `env`: run_with_timeout
+# is a shell function, and `env VAR=x <function>` cannot invoke one — it looks for
+# an executable and finds nothing, which is why the first draft produced an empty
+# file and V3 failed with a blank value rather than a wrong one.
+run_nolake() { ( cd "$1" && export MODEL_USAGE_RAW_DIR="$NOLAKE" && run_with_timeout 120 bash "$PRODUCER" ) >"$WORK/nolake.json" 2>/dev/null; }
+run_nolake "$FLAT"
+[ "$(jq -r '.emit_coverage.coverage_pct' "$WORK/nolake.json")" = "null" ] \
+  || fail "V3: an unreadable stream must report a NULL percentage, got $(jq -r '.emit_coverage.coverage_pct' "$WORK/nolake.json")"
+[ "$(jq -r '.emit_coverage.zero_is_structural' "$WORK/nolake.json")" = "false" ] \
+  || fail "V3: an unread stream is not a structural zero — the two are different statements"
+jq -e '.emit_coverage.unavailable_reason | test("could not be read at all")' "$WORK/nolake.json" >/dev/null 2>&1 \
+  || fail "V3: the unavailable case must name itself: $(jq -r '.emit_coverage.unavailable_reason' "$WORK/nolake.json")"
+ok "V3 an absent attribution stream reports UNAVAILABLE with a null percentage, not a hard 0%"
+
+count
+# (c) A REAL FIGURE — a feasible seat DID run. Without this, V1 and V3 would be
+# compatible with a producer that never reports a percentage at all.
+SEATRUN="$WORK/seat-ran"; mkrepo "$SEATRUN"
+fill "$SEATRUN/.temperloop/model-comparison/baseline.jsonl"  claude-opus-4-8  24 5000 0
+fill "$SEATRUN/.temperloop/model-comparison/candidate.jsonl" claude-sonnet-5  24 4200 90 8
+lake "$SEATRUN" pipeline-drive-safe
+run "$SEATRUN"; cp "$RUN_OUT" "$WORK/seatran.json"
+[ "$(jqf "$WORK/seatran.json" '.emit_coverage.observed_seats')" -ge 1 ] \
+  || fail "V4: the fixture must observe a feasible seat, or V1/V3 prove only that no figure is ever reported"
+[ "$(jqf "$WORK/seatran.json" '.emit_coverage.zero_is_structural')" = "false" ] \
+  || fail "V4: a run where a feasible seat DID run is not a structural zero"
+[ "$(jqf "$WORK/seatran.json" '.emit_coverage.zero_statement')" = "null" ] \
+  || fail "V4: the structural statement must be absent when it does not apply"
+ok "V4 a run where an emit-feasible seat DID run reports a real percentage and is not marked structural"
+
 echo
 echo "test_comparison_report.sh: $pass/$total checks passed"
 [ "$pass" -eq "$total" ] || exit 1
