@@ -49,8 +49,24 @@ by `cache.sh` existing at all.
 
 ## On-disk layout
 
+Every path accessor and the staleness/invalidation API (`cache_repo_dir`,
+`cache_snapshot_file`, `cache_meta_file`, `cache_stale`, `cache_dirty`,
+`cache_clear`) takes an optional trailing **`kind`** argument, defaulting to
+`issues` — this file's own long-standing consumer, so every existing caller
+(none of which passes a `kind`) is byte-for-byte unchanged. `kind` namespaces
+the top-level store directory: a second kind (e.g. a state-graph snapshot
+store) shares `$CACHE_STORE_ROOT` with the issue-corpus store but gets its
+own top-level directory and its own `meta.json`, so `cache_dirty` /
+`cache_clear` / `cache_stale` on one kind never touches a sibling kind's
+staleness or contents (temperloop#1910). `cache_details_dir` /
+`cache_details_file` and the refresh/read functions (`cache_refresh*`,
+`cache_read*`) do not take a `kind` — they always resolve the default
+`issues` kind, since per-issue detail fetches and the REST-issues refresh
+pipeline are issue-corpus-specific; a non-`issues` kind is expected to be
+populated by its own caller, not by this file's refresh machinery.
+
 ```
-${CACHE_STORE_ROOT:-${XDG_CACHE_HOME:-$HOME/.cache}/temperloop}/issues/<owner>-<repo>/
+${CACHE_STORE_ROOT:-${XDG_CACHE_HOME:-$HOME/.cache}/temperloop}/<kind>/<owner>-<repo>/
   snapshot.jsonl        # one JSON object per line — the RAW REST issue row
                         # (GitHub's `gh api repos/<r>/issues` shape), PR rows
                         # filtered out, ALL states (open + closed) included.
@@ -75,8 +91,8 @@ ${CACHE_STORE_ROOT:-${XDG_CACHE_HOME:-$HOME/.cache}/temperloop}/issues/<owner>-<
                         # the next cache_refresh_details — see below.
 ```
 
-`<owner>-<repo>` is the repo slug: `owner/repo` with `/` replaced by `-`
-(`_cache_repo_slug`).
+`<kind>` defaults to `issues`; `<owner>-<repo>` is the repo slug: `owner/repo`
+with `/` replaced by `-` (`_cache_repo_slug`).
 
 ### schema_version
 
@@ -102,10 +118,12 @@ one issue at a time on the next details refresh.
 
 ## API surface
 
-Path accessors (no I/O, no gh calls):
-- `cache_repo_dir <board|owner/repo>` → the per-repo store directory
-- `cache_snapshot_file <board|owner/repo>` → `.../snapshot.jsonl`
-- `cache_meta_file <board|owner/repo>` → `.../meta.json`
+Path accessors (no I/O, no gh calls). `cache_repo_dir`, `cache_snapshot_file`
+and `cache_meta_file` take an optional trailing `[kind]` (default `issues`);
+`cache_details_dir`/`cache_details_file` always resolve the `issues` kind:
+- `cache_repo_dir <board|owner/repo> [kind]` → the per-kind, per-repo store directory
+- `cache_snapshot_file <board|owner/repo> [kind]` → `.../snapshot.jsonl`
+- `cache_meta_file <board|owner/repo> [kind]` → `.../meta.json`
 - `cache_details_dir <board|owner/repo>` → `.../details`
 - `cache_details_file <board|owner/repo> <issue#>` → `.../details/<n>.json`
 
@@ -126,14 +144,18 @@ Refresh (write side):
   it). An unchanged, complete issue costs zero calls.
 - `cache_refresh <board|owner/repo>` — the above two in sequence.
 
-Staleness + invalidation:
-- `cache_stale <board|owner/repo>` — rc 0 (true) if no meta, unparseable
-  meta, or age ≥ `CACHE_STORE_TTL` (default 3600s); rc 1 (false) otherwise.
-- `cache_dirty <board|owner/repo>` — soft invalidation: zeroes
+Staleness + invalidation (each also takes an optional trailing `[kind]`,
+default `issues`, scoped to that kind's own `meta.json`/directory only —
+never a sibling kind under the same repo, temperloop#1910):
+- `cache_stale <board|owner/repo> [kind]` — rc 0 (true) if no meta,
+  unparseable meta, or age ≥ `CACHE_STORE_TTL` (default 3600s); rc 1 (false)
+  otherwise.
+- `cache_dirty <board|owner/repo> [kind]` — soft invalidation: zeroes
   `last_refresh` so the next `cache_read` refreshes regardless of age.
   No-op if no store exists yet (already maximally stale).
-- `cache_clear <board|owner/repo>` — hard invalidation: deletes the entire
-  per-repo store (snapshot + meta + every cached detail file).
+- `cache_clear <board|owner/repo> [kind]` — hard invalidation: deletes the
+  entire per-repo, per-kind store (snapshot + meta + every cached detail
+  file, for that kind).
 
 Read (consumer-facing):
 - `cache_read <board|owner/repo>` — the staleness-aware entrypoint. See

@@ -291,4 +291,53 @@ grep -q "board_repo() is not available" "$standalone_err" \
   || fail "cache.sh standalone-failure message missing the documented hint"
 rm -f "$standalone_err"
 
+# --- 6. kind namespacing (temperloop#1910) ---------------------------------
+# Default (no kind arg) resolves under "issues/" exactly as before this item.
+reset
+default_dir="$(cache_repo_dir "$REPO")"
+case "$default_dir" in
+  "$CACHE_STORE_ROOT"/issues/Acme-kernel-cache-test) : ;;
+  *) fail "no-kind cache_repo_dir must default to the 'issues' kind, got $default_dir" ;;
+esac
+[ "$default_dir" = "$(cache_repo_dir "$REPO" "issues")" ] \
+  || fail "cache_repo_dir with no kind must equal cache_repo_dir with explicit kind 'issues'"
+
+# A second kind gets its own top-level directory alongside "issues/".
+snap_dir="$(cache_repo_dir "$REPO" "snapshot")"
+case "$snap_dir" in
+  "$CACHE_STORE_ROOT"/snapshot/Acme-kernel-cache-test) : ;;
+  *) fail "kinded cache_repo_dir wrong: $snap_dir" ;;
+esac
+[ "$snap_dir" != "$default_dir" ] || fail "a non-default kind must not collide with the 'issues' kind directory"
+
+# Warm the issues-kind store, then independently warm a second kind's
+# meta.json by hand (this item scopes the cache lib, not a state-graph
+# producer — a real snapshot kind writes its own meta.json the same shape).
+reset
+cache_refresh_snapshot "$REPO" >/dev/null 2>"$STDERR_LOG"
+mkdir -p "$snap_dir"
+jq -nc --argjson sv "$CACHE_STORE_SCHEMA_VERSION" --argjson ts "$(date +%s)" \
+  '{schema_version:$sv, repo:"'"$REPO"'", last_refresh:$ts}' >"$snap_dir/meta.json"
+
+cache_stale "$REPO" && fail "issues-kind store should be fresh after its own refresh"
+cache_stale "$REPO" "snapshot" && fail "snapshot-kind store should be fresh after its own meta write"
+
+# cache_dirty on ONE kind must not stale the OTHER kind.
+cache_dirty "$REPO"
+cache_stale "$REPO" || fail "cache_dirty(issues) did not mark the issues kind stale"
+cache_stale "$REPO" "snapshot" && fail "cache_dirty(issues) must not mark the snapshot kind stale"
+
+cache_dirty "$REPO" "snapshot"
+cache_stale "$REPO" "snapshot" || fail "cache_dirty(snapshot) did not mark the snapshot kind stale"
+
+# cache_clear on ONE kind must leave the OTHER kind's directory intact —
+# tested BOTH directions so an accidental default-kind fallback inside
+# cache_clear (which would make the two calls below indistinguishable) fails.
+cache_clear "$REPO" "snapshot"
+[ ! -d "$snap_dir" ] || fail "cache_clear(snapshot) should remove the snapshot-kind directory"
+[ -d "$default_dir" ] || fail "cache_clear(snapshot) must not remove the issues-kind directory"
+
+cache_clear "$REPO"
+[ ! -d "$default_dir" ] || fail "cache_clear(issues) should remove the issues-kind directory"
+
 echo "test_cache_store.sh: all checks passed"
