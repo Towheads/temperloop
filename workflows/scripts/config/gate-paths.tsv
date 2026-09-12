@@ -305,6 +305,7 @@ bash workflows/scripts/tests/test_async_workflow_health.sh	workflows/scripts/asy
 bash workflows/scripts/tests/test_checkin_status_trailing_newline.sh	claude/commands/check-in.md workflows/scripts/tests/test_checkin_status_trailing_newline.sh
 bash workflows/scripts/tests/test_plan_approval_drain.sh	claude/commands/build.md claude/commands/check-in.md workflows/scripts/tests/test_plan_approval_drain.sh
 bash workflows/scripts/lib/tests/test_token_sum.sh	workflows/scripts/lib/token_sum.sh workflows/scripts/lib/tests/test_token_sum.sh claude/status-line.sh
+bash workflows/scripts/lib/tests/test_graph.sh	workflows/scripts/lib/graph.sh workflows/scripts/lib/tests/test_graph.sh workflows/scripts/build/plan.sh workflows/scripts/board/cycle-check.sh workflows/scripts/build/sweep-pool-cycle-detect.sh
 bash workflows/scripts/tests/test_emit_session_context.sh	workflows/scripts/emit-session-context.sh workflows/scripts/lib/token_sum.sh workflows/scripts/tests/test_emit_session_context.sh
 bash workflows/scripts/tests/test_status_line_token_resolution.sh	claude/status-line.sh workflows/scripts/lib/token_sum.sh workflows/scripts/install/links.sh workflows/scripts/tests/test_status_line_token_resolution.sh
 bash workflows/scripts/tests/test_pipeline_spend_report.sh	workflows/scripts/pipeline-spend-report.sh workflows/scripts/report-producers/** .temperloop/report.d/** workflows/scripts/tests/test_pipeline_spend_report.sh
