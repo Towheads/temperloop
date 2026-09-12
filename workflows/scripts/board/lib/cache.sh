@@ -100,23 +100,41 @@ _cache_repo_slug() {
   printf '%s' "$1" | tr '/' '-'
 }
 
+# board number OR "owner/repo", plus an optional store KIND (default
+# "issues") -> the top-level store directory name for that kind. Kept as its
+# own accessor so the on-disk top-level dir name (currently identical to the
+# kind string) is a single decision point, not repeated in cache_repo_dir.
+_cache_kind_dir() {
+  printf '%s' "${1:-issues}"
+}
+
 # --- path accessors (public — a consumer/renderer may want these paths
 # directly rather than going through cache_read) --------------------------
+# cache_repo_dir <board|owner/repo> [kind]
+#
+# `kind` namespaces the store by CALLER/PURPOSE, not by data shape — it
+# defaults to "issues" (this file's own long-standing consumer) so every
+# existing caller (none of which passes a second argument) is byte-for-byte
+# unchanged. A second kind (e.g. a state-graph snapshot store) shares
+# $CACHE_STORE_ROOT with its own top-level directory and its own meta.json,
+# so cache_dirty/cache_clear/cache_stale on one kind never touches the
+# other's staleness or contents (temperloop#1910).
 cache_repo_dir() {
-  local repo
+  local repo kind
   repo="$(_cache_resolve_repo "$1")" || return 1
-  printf '%s/issues/%s' "${CACHE_STORE_ROOT%/}" "$(_cache_repo_slug "$repo")"
+  kind="$(_cache_kind_dir "${2:-}")"
+  printf '%s/%s/%s' "${CACHE_STORE_ROOT%/}" "$kind" "$(_cache_repo_slug "$repo")"
 }
 
 cache_snapshot_file() {
   local dir
-  dir="$(cache_repo_dir "$1")" || return 1
+  dir="$(cache_repo_dir "$1" "${2:-}")" || return 1
   printf '%s/snapshot.jsonl' "$dir"
 }
 
 cache_meta_file() {
   local dir
-  dir="$(cache_repo_dir "$1")" || return 1
+  dir="$(cache_repo_dir "$1" "${2:-}")" || return 1
   printf '%s/meta.json' "$dir"
 }
 
@@ -133,10 +151,11 @@ cache_details_file() {
 }
 
 # --- staleness + invalidation API ------------------------------------------
+# cache_stale <board|owner/repo> [kind]
 # rc 0 = stale (no meta, unparseable meta, or age >= CACHE_STORE_TTL); rc 1 = fresh.
 cache_stale() {
   local meta ttl last age
-  meta="$(cache_meta_file "$1")" || return 0
+  meta="$(cache_meta_file "$1" "${2:-}")" || return 0
   ttl="${CACHE_STORE_TTL:-3600}"
   [ -f "$meta" ] || return 0
   last="$(jq -r '.last_refresh // 0' "$meta" 2>/dev/null)"
@@ -145,13 +164,16 @@ cache_stale() {
   [ "$age" -ge "$ttl" ]
 }
 
+# cache_dirty <board|owner/repo> [kind]
 # Force the next cache_read to refresh, regardless of age — the soft
 # invalidation lever (a write-through caller that just changed an issue calls
 # this so the next read doesn't serve a pre-write snapshot). No-op if no
-# store exists yet (a miss is already maximally stale).
+# store exists yet (a miss is already maximally stale). `kind` scopes the
+# invalidation to that kind's own meta.json only — dirtying one kind never
+# marks a sibling kind under the same repo stale (temperloop#1910).
 cache_dirty() {
   local meta tmp
-  meta="$(cache_meta_file "$1")" || return 1
+  meta="$(cache_meta_file "$1" "${2:-}")" || return 1
   [ -f "$meta" ] || return 0
   tmp="${meta}.tmp.$$"
   if jq -c --argjson sv "$CACHE_STORE_SCHEMA_VERSION" \
@@ -163,12 +185,15 @@ cache_dirty() {
   fi
 }
 
-# Hard invalidation: wipe the entire per-repo store (snapshot + meta + every
-# cached detail). Rarely needed (cache_dirty is the routine lever) — for a
-# schema migration or a known-corrupt store.
+# cache_clear <board|owner/repo> [kind]
+# Hard invalidation: wipe the entire per-repo store for that kind (snapshot +
+# meta + every cached detail). Rarely needed (cache_dirty is the routine
+# lever) — for a schema migration or a known-corrupt store. Scoped to `kind`'s
+# own directory only — clearing one kind leaves a sibling kind under the same
+# repo untouched (temperloop#1910).
 cache_clear() {
   local dir
-  dir="$(cache_repo_dir "$1")" || return 1
+  dir="$(cache_repo_dir "$1" "${2:-}")" || return 1
   rm -rf "$dir"
 }
 
