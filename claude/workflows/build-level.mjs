@@ -1562,6 +1562,53 @@ function changelogFragmentSection(item) {
   ];
 }
 
+// gateRegistrationChecklistSection — the §3c "new gate script? register it"
+// checklist (temperloop#1931), a SELF-CONTAINED section appended once into
+// workerPrompt()'s array, mirroring discriminationEvidenceSection()'s shape.
+// UNGATED, like hostConfigDeferralSection() — every /build, /sweep and /fix
+// worker can add a new check-*.sh/validate-*.sh/test_*.sh, so every worker
+// needs the checklist, not just an opted-in caller.
+//
+// WHY THIS EXISTS: #1931's observed instance — three of five workers in one
+// /build level shipped a new validator/test that went RED on
+// validate-check-surface-degenerate-coverage.sh (and its test), and two also
+// missed gate-paths.tsv/setting-registry.tsv rows, because the worker's own
+// `--scoped` run (temperloop#957) selects gates by DIFF PATH: a brand-new
+// script's path matched no row in gate-paths.tsv until the worker itself
+// registered one, so the very gates that would have caught the omission
+// never ran worker-side — each miss cost a full parent-side sliced
+// acceptance-gate round trip (about 10-20 minutes). gate-paths.tsv now also
+// carries generic new-surface globs closing the SELECTION half of that gap
+// (see its own header, temperloop#1931) — this section is the PREVENTION
+// half: naming the registries up front so the worker registers before its
+// own scoped run ever needs to catch the omission after the fact.
+function gateRegistrationChecklistSection() {
+  return [
+    '',
+    '## New gate script? Register it before running the scoped gate (temperloop#1931)',
+    'If this change adds or RENAMES a gate, validator, checker, test, or setting,',
+    'register it FIRST — before your own `--scoped` run above — so that run can',
+    'actually catch a mistake in the registration itself, not just in the script:',
+    '- A new/renamed `check-*.sh` / `validate-*.sh` script (a "check surface") →',
+    '  `workflows/scripts/config/check-surface-registry.tsv` (not yet shipping its',
+    '  degenerate-input coverage? a `pending`/`excluded` row in',
+    '  `workflows/scripts/config/check-surface-discovery.tsv` naming why, or a',
+    '  documented row on `workflows/scripts/config/check-surface-degenerate-allowlist.tsv`).',
+    '- Any new gate `scripts/quality-gates.sh` invokes → a row in',
+    '  `workflows/scripts/config/gate-paths.tsv` (validated by `check-gate-paths.sh`).',
+    '- A script meant to be run directly (the `workflows/scripts/validate-*.sh` /',
+    '  `check-*.sh` family) → `workflows/scripts/config/exec-bit-registry.tsv`.',
+    '- Any new tracked path at all → BOTH coverage manifests,',
+    '  `workflows/scripts/kernel/kernel-manifest.txt` AND',
+    '  `docs/features/feature-manifest.txt` (two independent, both-mandatory gates',
+    '  over the same tree — a claim in only one leaves the other red).',
+    '- A new `: "${SETTING_NAME:=default}"` this change introduces →',
+    '  `workflows/scripts/config/setting-registry.tsv`.',
+    'Registering after a parent-side red costs a full sliced acceptance-gate round',
+    'trip (about 10-20 minutes) this checklist exists to avoid.',
+  ];
+}
+
 // parentSummarySection — the epic #1847 Produces #7 companion: injects the
 // parent epic's own "group summary" into an admitted epic member's worker
 // prompt, a SELF-CONTAINED section appended once into workerPrompt()'s
@@ -1706,6 +1753,12 @@ function workerPrompt(item, worktreePath, extraSection) {
     // and whose "helpful" resolution leaks a secret. Ungated — see the
     // function's own comment. build.md §3c carries the prose half in lockstep.
     ...hostConfigDeferralSection(),
+    '',
+    // temperloop#1931 — placed right after the FOREGROUND-ONLY block's own
+    // `--scoped` instructions (a few lines up) and its hostConfig sibling, so
+    // the worker reads "register first" while "then run --scoped" is still
+    // fresh. build.md §3c carries the prose half in lockstep.
+    ...gateRegistrationChecklistSection(),
     '',
     ...changelogFragmentSection(item),
     ...principlesSection(item),
