@@ -1609,6 +1609,54 @@ function gateRegistrationChecklistSection() {
   ];
 }
 
+// activationProofSection — the temperloop#1934 "show the worker its own
+// class-A activation predicate" section, a SELF-CONTAINED section appended
+// once into workerPrompt()'s array, mirroring gateRegistrationChecklistSection()'s
+// shape so a sibling edit to workerPrompt() rebases cleanly. Gated on
+// activationClass(item) === 'A' (defined below — hoisted, so the forward
+// reference from here is fine): an absent `activation` block, or a class
+// B/C block, renders NOTHING, so this section changes zero bytes of the
+// prompt for those items (the acceptance's byte-identical requirement).
+//
+// WHY THIS EXISTS: the live instance (epic #1910, item join-key-registry) —
+// the worker built and wired `join-keys-lib.sh`, but the plan's `proof:`
+// predicate grepped for the producer-chosen literal `join_keys`, a name the
+// worker never saw and had no reason to preserve. The worker's own
+// acceptance bullets all passed; §3e.6 then failed the whole item on a name
+// mismatch the worker was never shown, costing a full re-drive round trip.
+// Rendering the `proof:` command VERBATIM — not a paraphrase of what it
+// checks — lets the worker see the exact reachability surface the
+// orchestrator will run and either name its own artifacts to match, or, if
+// the predicate genuinely conflicts with the acceptance bullets, say so
+// (`blocked`) instead of guessing a silent rename that may or may not agree
+// with what §3e.6 actually runs.
+function activationProofSection(item) {
+  if (activationClass(item) !== 'A') return [];
+  const proof = typeof item.activation.proof === 'string' ? item.activation.proof.trim() : '';
+  if (!proof) return [];
+  return [
+    '',
+    '## Class-A activation gate — the reachability predicate you are gated on (temperloop#1934)',
+    "This item's plan carries a class-A `activation:` block. Before your PR can be pushed,",
+    'the orchestrator runs the EXACT command below — the reachability predicate — against',
+    'this worktree (build.md §3e.6), strictly after your own acceptance self-check and gate',
+    'run and before push. It reads false until your built code is genuinely reachable on the',
+    'running path, not merely present:',
+    '',
+    '```',
+    proof,
+    '```',
+    '',
+    'Name and wire your artifacts so this predicate PASSES — treat the surface it names (a',
+    'function/symbol name, a file path, a config key) as fixed, not a suggestion open to your',
+    'own naming choice. If the predicate names a surface that genuinely CONTRADICTS the',
+    'acceptance bullets above (the two disagree on what the consumer-facing name or shape',
+    'should be), do NOT silently rename your own artifact to match and do NOT weaken or',
+    'reinterpret the predicate — return `blocked` with a question naming the conflict so a',
+    'human resolves it before any further work.',
+  ];
+}
+
 // parentSummarySection — the epic #1847 Produces #7 companion: injects the
 // parent epic's own "group summary" into an admitted epic member's worker
 // prompt, a SELF-CONTAINED section appended once into workerPrompt()'s
@@ -1688,6 +1736,7 @@ function workerPrompt(item, worktreePath, extraSection) {
     '',
     '## Acceptance (self-verify each before returning done)',
     accBullets || '  - (none specified)',
+    ...activationProofSection(item),
     ...discriminationEvidenceSection(),
     '',
     '## Verification surface — write to a FILE, return only the path',
