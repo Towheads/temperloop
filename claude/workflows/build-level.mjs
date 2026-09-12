@@ -311,20 +311,30 @@ const SPINE_OUTCOME_SCHEMA = {
         // The §3e.5 PRE-gate freshness/rebase step (temperloop#1937): brings
         // the worktree up to current origin/main before the gate runs, so an
         // origin/main-ratcheted validator never false-fails on rows main
-        // gained after this worktree's base was cut. CURRENT/REBASED are the
-        // two non-blocking outcomes (proceed to the gate); DIRTY (round 2,
-        // HIGH) means git refused to even start the rebase over uncommitted
-        // tracked-file edits, probed BEFORE the rebase and escalated as
-        // `dirty-worktree`, never misread as a conflict; CONFLICT means the
-        // rebase hit a real clash and was aborted (worktree left intact,
-        // escalates `stale-worktree` — the gate never runs); ERROR is a
-        // fail-open (fetch/resolve itself could not run; proceed on the tree
-        // as-is, exactly the pre-#1937 behavior); TIMEOUT (round 2, MEDIUM) is
-        // the OUTER Bash-tool kill mid-fetch/rebase — never fail-open, always
+        // gained after this worktree's base was cut. NO_GATE (round 3, HIGH)
+        // means the worktree carries no `scripts/quality-gates.sh` at all —
+        // the same presence check gateCmd's own GATE_ABSENT arm makes — so
+        // there is nothing for this step to protect and it takes the
+        // byte-identical pre-change path with no fetch/rebase attempted.
+        // CURRENT/REBASED are the two non-blocking outcomes (proceed to the
+        // gate); DIRTY (round 2, HIGH) means git refused to even start the
+        // rebase over uncommitted tracked-file edits, probed BEFORE the
+        // rebase and escalated as `dirty-worktree`, never misread as a
+        // conflict; CONFLICT means the rebase hit a real clash and was
+        // aborted (worktree left intact, escalates `stale-worktree` — the
+        // gate never runs); REBASE_ERROR (round 3, MEDIUM) is a rebase
+        // failure with NO conflicted files (a pre-rebase hook, a missing
+        // identity, a leftover in-progress rebase) — never misreported as
+        // CONFLICT's empty-list false positive, its own not-a-conflict
+        // outcome carrying git's own output tail; ERROR is a fail-open
+        // (fetch/resolve itself could not run; proceed on the tree as-is,
+        // exactly the pre-#1937 behavior); TIMEOUT (round 2, MEDIUM) is the
+        // OUTER Bash-tool kill mid-fetch/rebase — never fail-open, always
         // routed through a follow-up abort-and-probe before escalating
         // `stale-worktree`. TIMEOUT_PROBE(_ERROR) are that follow-up probe's
         // own closed outcomes.
-        'FRESHNESS_CURRENT', 'FRESHNESS_REBASED', 'FRESHNESS_DIRTY', 'FRESHNESS_CONFLICT',
+        'FRESHNESS_NO_GATE', 'FRESHNESS_CURRENT', 'FRESHNESS_REBASED', 'FRESHNESS_DIRTY',
+        'FRESHNESS_CONFLICT', 'FRESHNESS_REBASE_ERROR',
         'FRESHNESS_ERROR', 'FRESHNESS_TIMEOUT', 'FRESHNESS_TIMEOUT_PROBE', 'FRESHNESS_TIMEOUT_PROBE_ERROR',
         // The 3e.6 class-A activation gate (temperloop#1219). ACTIVATION_PASS /
         // ACTIVATION_FAIL are the `proof:` predicate's own exit status against
@@ -3154,7 +3164,13 @@ function activationControlCmd(wt, proof) {
 // protected branch is genuinely not `main` needs a different fix than this
 // one, not a guessed fallback here.
 //
-// Six outcomes:
+// Eight outcomes:
+//   FRESHNESS_NO_GATE  — round 3 (temperloop#1937 HIGH, workflow): the
+//     worktree carries no `scripts/quality-gates.sh` at all — the SAME
+//     `[ -x … ]` presence test gateCmd's own GATE_ABSENT arm makes, checked
+//     HERE first, before the fetch. There is nothing for this step to
+//     protect on a gate-absent project, so it takes the byte-identical
+//     pre-change path: no fetch, no rebase, no follow-on machinery.
 //   FRESHNESS_CURRENT  — `git merge-base --is-ancestor origin/main HEAD`
 //     already true (the worktree is at or ahead of main). No rebase is
 //     attempted — the JSON line still names both SHAs for the record.
@@ -3174,37 +3190,75 @@ function activationControlCmd(wt, proof) {
 //     The rebase is NEVER attempted on this path, so it can never be
 //     misread as FRESHNESS_CONFLICT (which would report an empty
 //     `conflict_files` and a false "rebase aborted" disposition).
-//   FRESHNESS_CONFLICT — the rebase hit a real content clash. Conflict files
-//     are read via `git diff --name-only --diff-filter=U` BEFORE the abort
-//     (the merge markers vanish once the rebase is aborted), then
+//   FRESHNESS_CONFLICT — the rebase hit a real content clash: `git diff
+//     --name-only --diff-filter=U` (read BEFORE the abort — the merge
+//     markers vanish once it runs) names at least one conflicted path. Then
 //     `git rebase --abort` runs so the worktree is left intact on its
 //     PRE-rebase commit — never a half-applied rebase, never a silent
-//     revert, and NEVER pushed as a known-stale branch. The disposition
-//     string names exactly that so a human resolving `stale-worktree` by
-//     hand knows the worktree was not touched.
+//     revert, and NEVER pushed as a known-stale branch. The JSON line's
+//     `detail` (round 3, MEDIUM) carries the tail of the rebase's own
+//     stdout+stderr, and `disposition` names exactly what was done, so a
+//     human resolving `stale-worktree` by hand knows the worktree was not
+//     touched.
+//   FRESHNESS_REBASE_ERROR — round 3 (temperloop#1937 MEDIUM): the rebase
+//     failed (non-zero exit) but `--diff-filter=U` found NO conflicted
+//     files — a pre-rebase hook, a missing commit identity, or a leftover
+//     in-progress rebase, none of which are a content clash. Reported as its
+//     OWN outcome (never collapsed into FRESHNESS_CONFLICT's shape, which
+//     would report an empty `conflict_files` and falsely claim a clash was
+//     aborted) with the same abort + `detail` tail treatment.
 //   FRESHNESS_ERROR    — the fetch/resolve step itself could not run (no
-//     network, no `origin/main`). This step's job is to PREVENT a false gate
-//     failure, never to manufacture one of its own — runGateFreshness() below
-//     treats this as fail-OPEN (log and proceed to the gate on the tree as it
-//     stands), exactly the pre-#1937 behavior.
+//     network, no `origin/main`, or `git fetch` itself failed after one
+//     retry). This step's job is to PREVENT a false gate failure, never to
+//     manufacture one of its own — runGateFreshness() below treats this as
+//     fail-OPEN (log and proceed to the gate on the tree as it stands),
+//     exactly the pre-#1937 behavior. `detail` carries the fetch's own
+//     stderr (round 3, MEDIUM) so a genuine outage is diagnosable rather than
+//     a bare constant string.
 //   FRESHNESS_TIMEOUT  — round 2 (temperloop#1937 MEDIUM): the OUTER Bash-tool
 //     timeout killed this whole script before it printed any JSON line —
-//     possibly mid-`git rebase`, leaving `.git/rebase-merge`/`.git/rebase-apply`
-//     on disk. Unlike FRESHNESS_ERROR (nothing ran), the tree may now be
-//     mid-rebase, so fail-open would run the gate against a half-rebased
-//     tree — worse than the pre-#1937 behavior. runGateFreshness() below
-//     gives this its OWN arm: a follow-up probe checks for an in-progress
-//     rebase and aborts it, then ALWAYS escalates `stale-worktree` — never
-//     the fail-open FRESHNESS_ERROR path.
-function gateFreshnessCmd(wt) {
+//     possibly mid-`git rebase`, leaving a rebase in progress on disk. Unlike
+//     FRESHNESS_ERROR (nothing ran), the tree may now be mid-rebase, so
+//     fail-open would run the gate against a half-rebased tree — worse than
+//     the pre-#1937 behavior. runGateFreshness() below gives this its OWN
+//     arm: a follow-up probe checks for an in-progress rebase and aborts it,
+//     then ALWAYS escalates `stale-worktree` — never the fail-open
+//     FRESHNESS_ERROR path.
+//
+// `git fetch origin main`'s stderr is captured rather than discarded (round 3,
+// MEDIUM): under `parallel()` sibling worktrees fetch concurrently, and a
+// transient `cannot lock ref` race is retried ONCE (short sleep) before it is
+// reported as FRESHNESS_ERROR — a race is not evidence the network or
+// `origin/main` itself is unreachable, and silently swallowing it would fail
+// open back to the pre-#1937 behavior for no real reason.
+//
+// Every JSON line below is built with `jq -cn --arg …`, never a raw `printf`
+// substitution (round 3, LOW) — the same discipline `pr.sh cmd_rebase` uses —
+// so no interpolated value (a path, a git-output tail) can break the line's
+// JSON shape. All payload field names are snake_case throughout (round 3, LOW).
+function gateFreshnessCmd(wt, qgBin) {
   return [
-    `cd ${sq(wt)} || { printf '{"outcome":"FRESHNESS_ERROR","detail":"cannot cd to the worktree"}\\n'; exit 0; }`,
-    `git fetch origin main >/dev/null 2>&1 || { printf '{"outcome":"FRESHNESS_ERROR","detail":"git fetch origin main failed"}\\n'; exit 0; }`,
+    `cd ${sq(wt)} || { jq -cn '{outcome:"FRESHNESS_ERROR",detail:"cannot cd to the worktree"}'; exit 0; }`,
+    // round 3 (HIGH, workflow, temperloop#1937): the SAME presence check
+    // gateCmd() makes below (`[ ! -x <qgBin> ]` → GATE_ABSENT) — a project
+    // with no vendored gate script has nothing for this step to protect.
+    `[ -x ${sq(qgBin)} ] || { jq -cn '{outcome:"FRESHNESS_NO_GATE"}'; exit 0; }`,
+    // round 3 (MEDIUM, shell): capture fetch stderr and retry once on a
+    // concurrent-fetch lock race before reporting FRESHNESS_ERROR.
+    `__ferr="$(git fetch origin main 2>&1 >/dev/null)"; __frc=$?`,
+    `if [ "$__frc" -ne 0 ] && printf '%s' "$__ferr" | grep -q 'cannot lock ref'; then`,
+    `  sleep 1`,
+    `  __ferr="$(git fetch origin main 2>&1 >/dev/null)"; __frc=$?`,
+    `fi`,
+    `if [ "$__frc" -ne 0 ]; then`,
+    `  jq -cn --arg detail "$__ferr" '{outcome:"FRESHNESS_ERROR",detail:("git fetch origin main failed: " + $detail)}'`,
+    `  exit 0`,
+    `fi`,
     `__main="$(git rev-parse origin/main 2>/dev/null)"`,
-    `[ -n "$__main" ] || { printf '{"outcome":"FRESHNESS_ERROR","detail":"cannot resolve origin/main"}\\n'; exit 0; }`,
+    `[ -n "$__main" ] || { jq -cn '{outcome:"FRESHNESS_ERROR",detail:"cannot resolve origin/main"}'; exit 0; }`,
     `if git merge-base --is-ancestor origin/main HEAD 2>/dev/null; then`,
     `  __base="$(git rev-parse HEAD 2>/dev/null)"`,
-    `  printf '{"outcome":"FRESHNESS_CURRENT","worktree_base":"%s","main":"%s"}\\n' "$__base" "$__main"`,
+    `  jq -cn --arg base "$__base" --arg main "$__main" '{outcome:"FRESHNESS_CURRENT",worktree_base:$base,main:$main}'`,
     `  exit 0`,
     `fi`,
     // round 2 (HIGH, temperloop#1937): probe dirtiness BEFORE attempting the
@@ -3214,18 +3268,27 @@ function gateFreshnessCmd(wt) {
     // releases) stderr prose.
     `__dirty="$(git status --porcelain --untracked-files=no 2>/dev/null)"`,
     `if [ -n "$__dirty" ]; then`,
-    `  __dirty_paths="$(printf '%s\\n' "$__dirty" | jq -R -s -c 'split("\\n") | map(select(length>0))')"`,
-    `  printf '{"outcome":"FRESHNESS_DIRTY","main":"%s","dirty_paths":%s}\\n' "$__main" "$__dirty_paths"`,
+    `  jq -cn --arg main "$__main" --arg paths "$__dirty" '{outcome:"FRESHNESS_DIRTY",main:$main,dirty_paths:($paths|split("\\n")|map(select(length>0)))}'`,
     `  exit 0`,
     `fi`,
-    `if out="$(git rebase origin/main 2>&1)"; then`,
+    `if __out="$(git rebase origin/main 2>&1)"; then`,
     `  __base="$(git rev-parse HEAD 2>/dev/null)"`,
-    `  printf '{"outcome":"FRESHNESS_REBASED","worktree_base":"%s","main":"%s"}\\n' "$__base" "$__main"`,
+    `  jq -cn --arg base "$__base" --arg main "$__main" '{outcome:"FRESHNESS_REBASED",worktree_base:$base,main:$main}'`,
     `else`,
-    `  __conflicts="$(git diff --name-only --diff-filter=U 2>/dev/null | jq -R -s -c 'split("\\n") | map(select(length>0))')"`,
-    `  [ -n "$__conflicts" ] || __conflicts='[]'`,
+    // round 3 (MEDIUM, shell): rename the captured var (was the unused `out`)
+    // and keep it for a `detail` tail on EITHER failure shape below.
+    `  __conflicts_raw="$(git diff --name-only --diff-filter=U 2>/dev/null)"`,
+    `  __tail="$(printf '%s' "$__out" | tail -n 8)"`,
     `  git rebase --abort >/dev/null 2>&1 || true`,
-    `  printf '{"outcome":"FRESHNESS_CONFLICT","main":"%s","conflict_files":%s,"disposition":"rebase aborted; worktree left intact on its pre-rebase commit"}\\n' "$__main" "$__conflicts"`,
+    `  if [ -n "$__conflicts_raw" ]; then`,
+    `    jq -cn --arg main "$__main" --arg files "$__conflicts_raw" --arg detail "$__tail" --arg disposition "rebase aborted; worktree left intact on its pre-rebase commit" '{outcome:"FRESHNESS_CONFLICT",main:$main,conflict_files:($files|split("\\n")|map(select(length>0))),detail:$detail,disposition:$disposition}'`,
+    `  else`,
+    // round 3 (MEDIUM, shell): no conflicted files — NOT a content clash, so
+    // this is its own not-a-conflict outcome, never FRESHNESS_CONFLICT's
+    // shape (which would report an empty `conflict_files` and a false
+    // "conflict" disposition for, say, a pre-rebase hook failure).
+    `    jq -cn --arg main "$__main" --arg detail "$__tail" --arg disposition "rebase failed for a reason other than a content conflict; rebase aborted, worktree left intact on its pre-rebase commit" '{outcome:"FRESHNESS_REBASE_ERROR",main:$main,detail:$detail,disposition:$disposition}'`,
+    `  fi`,
     `fi`,
   ].join('\n');
 }
@@ -3239,25 +3302,37 @@ function gateFreshnessCmd(wt) {
 // rebase is left in progress it is aborted, restoring the worktree to its
 // pre-rebase commit exactly like gateFreshnessCmd's own FRESHNESS_CONFLICT
 // arm; either way the caller escalates rather than proceeding blind.
+//
+// round 3 (HIGH, shell, temperloop#1937): every /build worktree is a LINKED
+// worktree (`git worktree add`), whose `.git` is a pointer FILE, not a
+// directory — `[ -d .git/rebase-merge ]` is therefore ALWAYS false here; the
+// real state lives under `git rev-parse --git-dir` (…/.git/worktrees/<slug>/
+// rebase-merge). Rather than resolve and test that path by hand, run
+// `git rebase --abort` UNCONDITIONALLY and read ITS OWN exit status as the
+// in-progress verdict: exit 0 means a rebase WAS in progress and is now
+// aborted; a non-zero "no rebase in progress" exit means there was none to
+// abort, which is not itself an error worth surfacing.
 function gateFreshnessTimeoutProbeCmd(wt) {
   return [
-    `cd ${sq(wt)} || { printf '{"outcome":"FRESHNESS_ERROR","detail":"cannot cd to the worktree for the timeout probe"}\\n'; exit 0; }`,
-    `if [ -d .git/rebase-merge ] || [ -d .git/rebase-apply ]; then`,
-    `  git rebase --abort >/dev/null 2>&1 || true`,
-    `  printf '{"outcome":"FRESHNESS_TIMEOUT_PROBE","rebase_in_progress":true,"aborted":true}\\n'`,
+    `cd ${sq(wt)} || { jq -cn '{outcome:"FRESHNESS_ERROR",detail:"cannot cd to the worktree for the timeout probe"}'; exit 0; }`,
+    `if git rebase --abort >/dev/null 2>&1; then`,
+    `  jq -cn '{outcome:"FRESHNESS_TIMEOUT_PROBE",rebase_in_progress:true,aborted:true}'`,
     `else`,
-    `  printf '{"outcome":"FRESHNESS_TIMEOUT_PROBE","rebase_in_progress":false,"aborted":false}\\n'`,
+    `  jq -cn '{outcome:"FRESHNESS_TIMEOUT_PROBE",rebase_in_progress:false,aborted:false}'`,
     `fi`,
   ].join('\n');
 }
 
-// runGateFreshness(item, wt) — drives gateFreshnessCmd() as ONE solo machinery
-// call and returns an ESCALATION object to return straight out of driveItem,
-// or null to proceed to §3e.5 unchanged. Mirrors runActivationGate()'s own
-// shape (denied/timeout handled identically) — deliberately the SAME pattern,
-// not a new one.
-async function runGateFreshness(item, wt) {
-  const out = await runMachinery(gateFreshnessCmd(wt), {
+// runGateFreshness(item, wt, qgBin) — drives gateFreshnessCmd() as ONE solo
+// machinery call and returns an ESCALATION object to return straight out of
+// driveItem, or null to proceed to §3e.5 unchanged. Mirrors runActivationGate()'s
+// own shape (denied/timeout handled identically) — deliberately the SAME
+// pattern, not a new one. `qgBin` is the caller's already-resolved
+// `<wt>/scripts/quality-gates.sh` path (temperloop#1937 round 3) — passed
+// through rather than re-derived, so this function's own presence check can
+// never drift from gateCmd's.
+async function runGateFreshness(item, wt, qgBin) {
+  const out = await runMachinery(gateFreshnessCmd(wt, qgBin), {
     label: `gate-freshness:${item.slug}`,
     slug: item.slug,
     phase: enterStage(STAGE_GATE),
@@ -3269,6 +3344,13 @@ async function runGateFreshness(item, wt) {
   }
   if (out.outcome === 'STEP_TIMEOUT') {
     return (await disposeStepTimeout(item, wt, out, 'gate-freshness', { adoptable: false })).escalation;
+  }
+  if (out.outcome === 'FRESHNESS_NO_GATE') {
+    // round 3 (HIGH, workflow): no vendored gate script — byte-identical to
+    // the pre-#1937 path. §3e.5's own gateCmd() will independently make the
+    // identical presence check and report GATE_ABSENT; nothing to do here.
+    log(`[${item.slug}] pre-gate freshness — no vendored scripts/quality-gates.sh; skipping fetch/rebase (byte-identical pre-#1937 path)`);
+    return null;
   }
   if (out.outcome === 'FRESHNESS_DIRTY') {
     // round 2 (HIGH, temperloop#1937): git refused to even START the rebase
@@ -3293,19 +3375,32 @@ async function runGateFreshness(item, wt) {
     return escalate(item.slug, 'stale-worktree', {
       main: out.main ?? null,
       conflict_files: out.conflict_files ?? [],
+      detail: out.detail ?? null,
       disposition: out.disposition ?? 'rebase aborted; worktree left intact on its pre-rebase commit',
+    });
+  }
+  if (out.outcome === 'FRESHNESS_REBASE_ERROR') {
+    // round 3 (MEDIUM, shell): a rebase failure with NO conflicted files —
+    // still `stale-worktree` (the worktree's base is still what's wrong, and
+    // it is still intact on its pre-rebase commit), but a DISTINCT reason so
+    // a human resolving it by hand knows this was not a content clash.
+    return escalate(item.slug, 'stale-worktree', {
+      reason: 'rebase-failed',
+      main: out.main ?? null,
+      conflict_files: [],
+      detail: out.detail ?? null,
+      disposition: out.disposition ?? 'rebase failed for a reason other than a content conflict; rebase aborted, worktree left intact on its pre-rebase commit',
     });
   }
   if (out.outcome === 'FRESHNESS_TIMEOUT') {
     // round 2 (MEDIUM, temperloop#1937): the outer Bash-tool timeout can kill
-    // gateFreshnessCmd() mid-`git rebase`, leaving `.git/rebase-merge` /
-    // `.git/rebase-apply` on disk. FRESHNESS_ERROR's fail-open is sound only
-    // when the fetch/resolve step never ran at all; here the tree may be
-    // mid-rebase, so proceeding blind is exactly the false-signal risk #1937
-    // exists to prevent. Run the follow-up probe, abort any in-progress
-    // rebase it finds, and ALWAYS escalate `stale-worktree` — regardless of
-    // what the probe itself reports — never falling into the fail-open
-    // FRESHNESS_ERROR path.
+    // gateFreshnessCmd() mid-`git rebase`, leaving a rebase in progress on
+    // disk. FRESHNESS_ERROR's fail-open is sound only when the fetch/resolve
+    // step never ran at all; here the tree may be mid-rebase, so proceeding
+    // blind is exactly the false-signal risk #1937 exists to prevent. Run the
+    // follow-up probe, abort any in-progress rebase it finds, and ALWAYS
+    // escalate `stale-worktree` — regardless of what the probe itself
+    // reports — never falling into the fail-open FRESHNESS_ERROR path.
     const probe = await runMachinery(gateFreshnessTimeoutProbeCmd(wt), {
       label: `gate-freshness:${item.slug}`,
       slug: item.slug,
@@ -3316,17 +3411,28 @@ async function runGateFreshness(item, wt) {
       // temperloop#1819: quota death vs genuine denial — see deniedOrQuota.
       return await deniedOrQuota(item.slug, { step: 'gate-freshness-timeout-probe', out: probe }, wt);
     }
-    const rebaseInProgress = probe.rebase_in_progress === true;
-    const aborted = probe.aborted === true;
-    log(`[${item.slug}] pre-gate freshness — outer timeout during fetch/rebase; timeout-probe found rebase_in_progress=${rebaseInProgress} (aborted=${aborted}); escalating stale-worktree`);
+    // round 3 (MEDIUM, workflow): trust `rebase_in_progress`/`aborted` ONLY
+    // when the probe itself actually resolved (FRESHNESS_TIMEOUT_PROBE) —
+    // otherwise (FRESHNESS_TIMEOUT_PROBE_ERROR, or the probe's own inner
+    // STEP_TIMEOUT watchdog) those fields are simply absent, and reading
+    // `undefined === true` as `false` would confidently — and wrongly —
+    // assert nothing was in progress. Report the unknown state as its own
+    // disposition instead of guessing.
+    const probeResolved = probe.outcome === 'FRESHNESS_TIMEOUT_PROBE';
+    const rebaseInProgress = probeResolved ? probe.rebase_in_progress === true : null;
+    const aborted = probeResolved ? probe.aborted === true : null;
+    const disposition = !probeResolved
+      ? 'probe timed out — rebase state unknown, check `git rev-parse --git-path rebase-merge` by hand before re-driving'
+      : rebaseInProgress
+        ? 'the fetch/rebase step outlived its time budget mid-rebase; the in-progress rebase was aborted and the worktree left on its pre-rebase commit'
+        : 'the fetch/rebase step outlived its time budget; no rebase was left in progress on the worktree';
+    log(`[${item.slug}] pre-gate freshness — outer timeout during fetch/rebase; timeout-probe outcome=${probe.outcome ?? 'none'} rebase_in_progress=${String(rebaseInProgress)} (aborted=${String(aborted)}); escalating stale-worktree`);
     return escalate(item.slug, 'stale-worktree', {
       reason: 'timeout',
-      rebaseInProgress,
+      rebase_in_progress: rebaseInProgress,
       aborted,
-      probeOutcome: probe.outcome ?? null,
-      disposition: rebaseInProgress
-        ? 'the fetch/rebase step outlived its time budget mid-rebase; the in-progress rebase was aborted and the worktree left on its pre-rebase commit'
-        : 'the fetch/rebase step outlived its time budget; no rebase was left in progress on the worktree',
+      probe_outcome: probe.outcome ?? null,
+      disposition,
     });
   }
   if (out.outcome === 'FRESHNESS_REBASED') {
@@ -3802,22 +3908,6 @@ async function driveItem(item) {
   // byte-identically.
   const reviewSummarySuffix = reviewBodySuffix([review]);
 
-  // --- 3e.5-pre. Gate-freshness rebase (temperloop#1937) --------------------
-  // Bring the worktree up to current origin/main BEFORE the acceptance gate
-  // below runs — see runGateFreshness()'s own header for the full rationale
-  // (origin/main-ratcheted validators false-failing on a worktree that went
-  // stale mid-build; the live temperloop#1934 incident this item fixes).
-  // Strictly between §3e review and §3e.5: a conflicting rebase must escalate
-  // BEFORE quality-gates.sh ever runs, never after a wasted gate slice.
-  const freshness = await runGateFreshness(item, wt);
-  if (freshness) return freshness;
-
-  // --- 3e.5. Parent-side acceptance gate (quality-gates.sh) ----------------
-  // Run the project's static gate SSOT against the worker's work. ABSENT (the
-  // script doesn't exist, e.g. foundation itself) → skip. FAIL → escalate
-  // (do NOT push a known-red branch). The executor synthesizes GATE_PASS /
-  // GATE_FAIL / GATE_ABSENT so the .mjs branches on a closed outcome.
-  //
   // Resolve the gate script from the WORKTREE, not repoRoot (temperloop#626).
   // The point of 3e.5 is to validate the worker's CHANGES, and the `cd ${wt}`
   // below intends exactly that — but quality-gates.sh's first act is
@@ -3833,7 +3923,28 @@ async function driveItem(item) {
   // no vendored gate). Only build-SPINE scripts (worktree.sh / pr.sh / …) route
   // through machineryBin's foundation fallback; the repo-local gate resolves
   // directly against the worktree.
+  //
+  // Resolved BEFORE the freshness step below (round 3, HIGH, temperloop#1937)
+  // so runGateFreshness() can gate itself behind the identical presence check
+  // gateCmd's own GATE_ABSENT arm makes — a project with no vendored gate
+  // script has nothing for the freshness step to protect.
   const qgBin = `${wt}/scripts/quality-gates.sh`;
+
+  // --- 3e.5-pre. Gate-freshness rebase (temperloop#1937) --------------------
+  // Bring the worktree up to current origin/main BEFORE the acceptance gate
+  // below runs — see runGateFreshness()'s own header for the full rationale
+  // (origin/main-ratcheted validators false-failing on a worktree that went
+  // stale mid-build; the live temperloop#1934 incident this item fixes).
+  // Strictly between §3e review and §3e.5: a conflicting rebase must escalate
+  // BEFORE quality-gates.sh ever runs, never after a wasted gate slice.
+  const freshness = await runGateFreshness(item, wt, qgBin);
+  if (freshness) return freshness;
+
+  // --- 3e.5. Parent-side acceptance gate (quality-gates.sh) ----------------
+  // Run the project's static gate SSOT against the worker's work. ABSENT (the
+  // script doesn't exist, e.g. foundation itself) → skip. FAIL → escalate
+  // (do NOT push a known-red branch). The executor synthesizes GATE_PASS /
+  // GATE_FAIL / GATE_ABSENT so the .mjs branches on a closed outcome.
   // temperloop#1241: SCRUB the pipeline's own build.config.sh settings from the
   // gate's environment before running the suite. Under pipeline-drive the session
   // exports ~40 build.config.sh settings; the config-precedence tests the gate runs

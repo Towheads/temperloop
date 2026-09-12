@@ -1125,7 +1125,7 @@ console.log(JSON.stringify({ ok: true }));
 run_node_case "freshness-conflict (temperloop#1937): a rebase conflict escalates stale-worktree — never acceptance-gate-failed — and the gate never runs" "
 $PREAMBLE
 
-setFreshness('item-fresh-conf', { outcome: 'FRESHNESS_CONFLICT', main: 'main-sha', conflict_files: ['a.txt', 'b.txt'], disposition: 'rebase aborted; worktree left intact on its pre-rebase commit' });
+setFreshness('item-fresh-conf', { outcome: 'FRESHNESS_CONFLICT', main: 'main-sha', conflict_files: ['a.txt', 'b.txt'], detail: 'CONFLICT (content): Merge conflict in a.txt', disposition: 'rebase aborted; worktree left intact on its pre-rebase commit' });
 setMachinery('item-fresh-conf',
   { outcome: 'CREATED', path: '/tmp/repo.wt/item-fresh-conf' },
   { outcome: 'REVIEW_DIFF' },
@@ -1152,6 +1152,8 @@ if (JSON.stringify(esc.payload.conflict_files) !== JSON.stringify(['a.txt','b.tx
   { console.log(JSON.stringify({ ok: false, reason: 'payload must name the conflicting files: ' + JSON.stringify(esc.payload) })); process.exit(0); }
 if (!/aborted/i.test(String(esc.payload.disposition || '')))
   { console.log(JSON.stringify({ ok: false, reason: 'payload must name the rebase disposition: ' + JSON.stringify(esc.payload) })); process.exit(0); }
+if (!esc.payload.detail || !/conflict/i.test(String(esc.payload.detail)))
+  { console.log(JSON.stringify({ ok: false, reason: 'round 3: payload must carry git\\'s own rebase output tail as detail: ' + JSON.stringify(esc.payload) })); process.exit(0); }
 const gateCalls = callLog.filter(c => (c.opts.label||'') === 'gate:item-fresh-conf').length;
 if (gateCalls !== 0)
   { console.log(JSON.stringify({ ok: false, reason: 'the gate must never run on a conflicting rebase, but it ran ' + gateCalls + ' time(s)' })); process.exit(0); }
@@ -1256,8 +1258,8 @@ if ((result.parked ?? []).length !== 0 || (result.escalations ?? []).length !== 
 const esc = result.escalations[0];
 if (esc.kind !== 'stale-worktree')
   { console.log(JSON.stringify({ ok: false, reason: 'an outer freshness timeout must escalate stale-worktree, never fail open: got ' + esc.kind })); process.exit(0); }
-if (esc.payload.reason !== 'timeout' || esc.payload.rebaseInProgress !== true || esc.payload.aborted !== true)
-  { console.log(JSON.stringify({ ok: false, reason: 'payload must name the timeout reason and the probe verdict: ' + JSON.stringify(esc.payload) })); process.exit(0); }
+if (esc.payload.reason !== 'timeout' || esc.payload.rebase_in_progress !== true || esc.payload.aborted !== true)
+  { console.log(JSON.stringify({ ok: false, reason: 'payload must name the timeout reason and the probe verdict (snake_case): ' + JSON.stringify(esc.payload) })); process.exit(0); }
 const freshCalls = callLog.filter(c => (c.opts.label||'').startsWith('gate-freshness:item-fresh-to')).length;
 if (freshCalls !== 2)
   { console.log(JSON.stringify({ ok: false, reason: 'expected exactly 2 gate-freshness calls (the timed-out attempt + the follow-up probe), got ' + freshCalls })); process.exit(0); }
@@ -1327,6 +1329,118 @@ if (gateCalls !== 0)
 console.log(JSON.stringify({ ok: true }));
 "
 
+# ============================================================================
+# ROUND 3 (temperloop#1937): review-blocking findings — no-gate presence gate,
+# non-conflict rebase failures, and the probe-outcome trust boundary.
+# ============================================================================
+run_node_case "freshness-no-gate (temperloop#1937 round 3, HIGH): a project with no vendored quality-gates.sh takes the byte-identical pre-change path — one freshness check, no extra spawn, the gate call independently reports GATE_ABSENT" "
+$PREAMBLE
+
+setFreshness('item-fresh-nogate', { outcome: 'FRESHNESS_NO_GATE' });
+setMachinery('item-fresh-nogate',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/item-fresh-nogate' },
+  { outcome: 'REVIEW_DIFF' },
+  { outcome: 'GATE_ABSENT' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-nogate' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'sha-nogate', branch: 'build/item-fresh-nogate' },
+  { outcome: 'PR_OPENED', pr_number: 801 },
+  { outcome: 'CI_GREEN' },
+);
+happyWorker('item-fresh-nogate');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'item-fresh-nogate', branch: 'build/item-fresh-nogate', title: 'Freshness No-Gate Item', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+
+if ((result.parked ?? []).length !== 1 || (result.escalations ?? []).length !== 0)
+  { console.log(JSON.stringify({ ok: false, reason: 'a no-gate project must fail open all the way to parked: ' + JSON.stringify(result) })); process.exit(0); }
+const freshCalls = callLog.filter(c => (c.opts.label||'').startsWith('gate-freshness:item-fresh-nogate')).length;
+if (freshCalls !== 1)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected exactly 1 freshness call (no extra spawn for a no-gate project), got ' + freshCalls })); process.exit(0); }
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+run_node_case "freshness-rebase-error (temperloop#1937 round 3, MEDIUM): a rebase failure with NO conflicted files is its own not-a-conflict outcome — never misread as FRESHNESS_CONFLICT's empty-list shape — and carries git's output as detail" "
+$PREAMBLE
+
+setFreshness('item-fresh-rberr', { outcome: 'FRESHNESS_REBASE_ERROR', main: 'main-sha', detail: 'error: cannot rebase: Your local changes would be overwritten (pre-rebase hook)', disposition: 'rebase failed for a reason other than a content conflict; rebase aborted, worktree left intact on its pre-rebase commit' });
+setMachinery('item-fresh-rberr',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/item-fresh-rberr' },
+  { outcome: 'REVIEW_DIFF' },
+  // Deliberately no gate/pr/CI entries — the gate must never run.
+);
+happyWorker('item-fresh-rberr');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'item-fresh-rberr', branch: 'build/item-fresh-rberr', title: 'Freshness Rebase-Error Item', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+
+if ((result.parked ?? []).length !== 0 || (result.escalations ?? []).length !== 1)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected 0 parked / 1 escalation: ' + JSON.stringify(result) })); process.exit(0); }
+const esc = result.escalations[0];
+if (esc.kind !== 'stale-worktree')
+  { console.log(JSON.stringify({ ok: false, reason: 'a non-conflict rebase failure must still escalate stale-worktree (the base is still what is wrong): got ' + esc.kind })); process.exit(0); }
+if (JSON.stringify(esc.payload.conflict_files || []) !== '[]')
+  { console.log(JSON.stringify({ ok: false, reason: 'a non-conflict failure must never fabricate conflict files: ' + JSON.stringify(esc.payload) })); process.exit(0); }
+if (!esc.payload.detail || !/pre-rebase hook/.test(String(esc.payload.detail)))
+  { console.log(JSON.stringify({ ok: false, reason: 'payload must carry git\\'s own output as detail: ' + JSON.stringify(esc.payload) })); process.exit(0); }
+if (esc.payload.reason !== 'rebase-failed')
+  { console.log(JSON.stringify({ ok: false, reason: 'payload must name this a non-conflict rebase failure, distinct from a real conflict: ' + JSON.stringify(esc.payload) })); process.exit(0); }
+const gateCalls = callLog.filter(c => (c.opts.label||'') === 'gate:item-fresh-rberr').length;
+if (gateCalls !== 0)
+  { console.log(JSON.stringify({ ok: false, reason: 'the gate must never run on an unresolved rebase failure, but it ran ' + gateCalls + ' time(s)' })); process.exit(0); }
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+run_node_case "freshness-probe-unknown (temperloop#1937 round 3, MEDIUM): when the follow-up timeout-probe ITSELF fails to resolve, the disposition reports the rebase state as UNKNOWN rather than confidently asserting nothing was in progress" "
+$PREAMBLE
+
+// First call: the outer Bash-tool timeout. Second call (the follow-up probe):
+// the probe's OWN outer timeout — FRESHNESS_TIMEOUT_PROBE_ERROR, never
+// FRESHNESS_TIMEOUT_PROBE — so rebase_in_progress/aborted are simply ABSENT
+// from this outcome, not false.
+setFreshness('item-fresh-punk',
+  { outcome: 'FRESHNESS_TIMEOUT' },
+  { outcome: 'FRESHNESS_TIMEOUT_PROBE_ERROR' },
+);
+setMachinery('item-fresh-punk',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/item-fresh-punk' },
+  { outcome: 'REVIEW_DIFF' },
+);
+happyWorker('item-fresh-punk');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'item-fresh-punk', branch: 'build/item-fresh-punk', title: 'Freshness Probe-Unknown Item', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+
+if ((result.parked ?? []).length !== 0 || (result.escalations ?? []).length !== 1)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected 0 parked / 1 escalation: ' + JSON.stringify(result) })); process.exit(0); }
+const esc = result.escalations[0];
+if (esc.kind !== 'stale-worktree')
+  { console.log(JSON.stringify({ ok: false, reason: 'a probe that itself fails to resolve must still escalate stale-worktree: got ' + esc.kind })); process.exit(0); }
+if (esc.payload.rebase_in_progress !== null || esc.payload.aborted !== null)
+  { console.log(JSON.stringify({ ok: false, reason: 'an unresolved probe must report the rebase state as UNKNOWN (null), never confidently false: ' + JSON.stringify(esc.payload) })); process.exit(0); }
+if (!/unknown/i.test(String(esc.payload.disposition || '')))
+  { console.log(JSON.stringify({ ok: false, reason: 'disposition must say the rebase state is unknown, not assert nothing was in progress: ' + JSON.stringify(esc.payload) })); process.exit(0); }
+const gateCalls = callLog.filter(c => (c.opts.label||'') === 'gate:item-fresh-punk').length;
+if (gateCalls !== 0)
+  { console.log(JSON.stringify({ ok: false, reason: 'the gate must never run after an unresolved freshness timeout probe, but it ran ' + gateCalls + ' time(s)' })); process.exit(0); }
+
+console.log(JSON.stringify({ ok: true }));
+"
+
 # Static guard: the freshness step must run BEFORE the §3e.5 gate call in
 # driveItem — mirrors the K1219 ordering guard's shape exactly (grep the two
 # call sites' own line numbers rather than re-deriving order at runtime).
@@ -1334,7 +1448,7 @@ console.log(JSON.stringify({ ok: true }));
 # `set -e`/`pipefail` a grep MISS here is a non-zero exit that would abort the
 # whole script before the `[ -n ]` guard below ever gets to report it
 # legibly — the fallthrough to empty is what lets that guard actually fire.
-K1937_FRESH_LINE="$(grep -n 'const freshness = await runGateFreshness(item, wt);' "$MJS" | head -1 | cut -d: -f1 || true)"
+K1937_FRESH_LINE="$(grep -n 'const freshness = await runGateFreshness(item, wt, qgBin);' "$MJS" | head -1 | cut -d: -f1 || true)"
 K1937_GATE_LINE="$(grep -n 'gateOut = await runMachinery(gateCmd(gateStartAt, gateSelection), {' "$MJS" | head -1 | cut -d: -f1 || true)"
 [ -n "$K1937_FRESH_LINE" ] || fail "#1937: could not locate the pre-gate freshness call site in driveItem"
 [ -n "$K1937_GATE_LINE" ] || fail "#1937: could not locate the §3e.5 gate call site in driveItem"
@@ -6734,6 +6848,267 @@ K1219_R="$(k1219_run "$K1219_E2E/fail.proof.sh")"
 [ "$K1219_R" = '"outcome":"ACTIVATION_FAIL"' ] \
   || fail "#1219-e2e: a presence proof whose wiring is ABSENT must report ACTIVATION_FAIL; got $K1219_R"
 echo "PASS: #1219-e2e proof — the generated worktree predicate runs for real, reports the predicate's own exit status, and skips the control on a presence proof"
+
+# ============================================================================
+# TEST 1937-e2e: the gate-freshness step's GENERATED SHELL, executed for real
+# against REAL LINKED worktrees (temperloop#1937 round 3, HIGH).
+#
+# Every mock-level case above intercepts the 'gate-freshness:' label and never
+# runs the shell gateFreshnessCmd()/gateFreshnessTimeoutProbeCmd() actually
+# generate — so the round-3 HIGH defect (`[ -d .git/rebase-merge ]`, which is
+# ALWAYS false in a `git worktree add` worktree because its `.git` is a
+# pointer FILE, not a directory) was invisible to every one of them. This case
+# closes that: it drives the real driver, lifts the generated command text out
+# of the executor prompt it produced (mirroring the #1219-e2e pattern above),
+# and runs it against REAL linked worktrees off a real bare origin.
+# ============================================================================
+K1937_E2E="$WF_TEST_TMPDIR/freshness-e2e"
+mkdir -p "$K1937_E2E"
+
+git init --quiet --bare "$K1937_E2E/origin.git"
+mkdir -p "$K1937_E2E/main-checkout"
+(
+  set -e
+  cd "$K1937_E2E/main-checkout"
+  git init --quiet .
+  git symbolic-ref HEAD refs/heads/main
+  git config user.email t@example.com
+  git config user.name t
+  mkdir -p scripts
+  printf '#!/bin/sh\nexit 0\n' > scripts/quality-gates.sh
+  chmod +x scripts/quality-gates.sh
+  printf 'line1\nSHARED\nline3\n' > f.txt
+  git add -A && git commit --quiet -m base
+  git remote add origin "$K1937_E2E/origin.git"
+  git push --quiet -u origin main
+) || fail "#1937-e2e: could not build the base fixture"
+
+# Three REAL LINKED worktrees (`git worktree add`, never a plain `git init`
+# checkout) — one per scenario — all branched from main BEFORE main moves on.
+git -C "$K1937_E2E/main-checkout" worktree add --quiet "$K1937_E2E/repo.wt/conf" -b build/conf main \
+  || fail "#1937-e2e: could not create the conflict-scenario linked worktree"
+git -C "$K1937_E2E/main-checkout" worktree add --quiet "$K1937_E2E/repo.wt/mid" -b build/mid main \
+  || fail "#1937-e2e: could not create the mid-rebase-scenario linked worktree"
+git -C "$K1937_E2E/main-checkout" worktree add --quiet "$K1937_E2E/repo.wt/nogate" -b build/nogate main \
+  || fail "#1937-e2e: could not create the no-gate-scenario linked worktree"
+
+# Fixture self-check — a linked worktree's `.git` is a POINTER FILE, never a
+# directory. This is the EXACT condition the round-3 HIGH fix depends on: a
+# fixture that got this wrong (a plain `git init` checkout, say) would let the
+# pre-fix `[ -d .git/rebase-merge ]` test pass by accident and prove nothing.
+[ -f "$K1937_E2E/repo.wt/conf/.git" ] \
+  || fail "#1937-e2e: fixture worktree's .git is not a pointer FILE — this fixture does not exercise the linked-worktree shape this item fixes"
+
+for k1937_d in conf mid; do
+  (
+    set -e
+    cd "$K1937_E2E/repo.wt/$k1937_d"
+    printf 'line1\nWORKER-%s\nline3\n' "$k1937_d" > f.txt
+    git add -A && git commit --quiet -m "work-$k1937_d"
+  ) || fail "#1937-e2e: could not commit the worker-side change for $k1937_d"
+done
+
+# origin/main moves on with a CONFLICTING edit to the SAME line, after every
+# worktree above branched from the old tip — the live #1934 shape this item fixes.
+(
+  set -e
+  cd "$K1937_E2E/main-checkout"
+  printf 'line1\nMAIN-MOVED-ON\nline3\n' > f.txt
+  git add -A && git commit --quiet -m main-moved-on
+  git push --quiet origin main
+) || fail "#1937-e2e: could not advance origin/main past the fixture worktrees"
+
+# The no-gate scenario's own branch removes the vendored gate script, so its
+# worktree genuinely has none (round 3 HIGH: the presence-gated no-op path).
+(
+  set -e
+  cd "$K1937_E2E/repo.wt/nogate"
+  git rm --quiet -f scripts/quality-gates.sh
+  git commit --quiet -m "remove gate script for the e2e no-gate scenario"
+) || fail "#1937-e2e: could not remove the gate script on the no-gate branch"
+
+# --- lift the generated command text out of the driver's own executor prompt --
+# Mirrors the #1219-e2e emit pattern exactly: a single static heredoc body,
+# parameterized through env vars (never textual interpolation), run via
+# `node <file>` for the same reason #1219-e2e uses it — $PREAMBLE contains
+# backticks and `$`, which a `node -e "…"` bash argument would let the shell
+# expand before node ever saw them.
+read -r -d '' K1937_EMIT_BODY << 'K1937_EMIT_END' || true
+import { writeFileSync } from 'fs';
+const k1937Slug = process.env.K1937_SLUG;
+setFreshness(k1937Slug,
+  { outcome: 'FRESHNESS_TIMEOUT' },
+  { outcome: 'FRESHNESS_TIMEOUT_PROBE', rebase_in_progress: false, aborted: false },
+);
+setMachinery(k1937Slug,
+  { outcome: 'CREATED', path: process.env.K1937_ROOT + '/repo.wt/' + process.env.K1937_DIR },
+  { outcome: 'REVIEW_DIFF' },
+);
+happyWorker(k1937Slug);
+globalThis.args = { ...baseArgs, repoRoot: process.env.K1937_ROOT + '/repo', items: [
+  { slug: k1937Slug, branch: 'build/' + k1937Slug, title: 'e2e', kind: 'impl', acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+await mod.default();
+const freshCalls = callLog.filter(c => /^gate-freshness:/.test(String(c.opts.label || '')));
+if (freshCalls[0]) writeFileSync(process.env.K1937_OUT + '.main.sh', freshCalls[0].promptFull.split(/\nCommand:\n/)[1] || '');
+if (freshCalls[1]) writeFileSync(process.env.K1937_OUT + '.probe.sh', freshCalls[1].promptFull.split(/\nCommand:\n/)[1] || '');
+K1937_EMIT_END
+
+k1937_emit() { # <slug> <worktree-dir-name> <outfile-prefix> [fixture-root, default $K1937_E2E]
+  local k1937_case="$WF_TEST_TMPDIR/e2e-fresh-$1.mjs"
+  printf '%s\n' "$PREAMBLE" > "$k1937_case"
+  printf '%s\n' "$K1937_EMIT_BODY" >> "$k1937_case"
+  MJS_PATH="$MJS" AGENT_DEF_PATH="$AGENT_DEF" \
+  K1937_ROOT="${4:-$K1937_E2E}" K1937_SLUG="$1" K1937_DIR="$2" K1937_OUT="$3" \
+  node "$k1937_case" >/dev/null || fail "#1937-e2e: could not emit the generated command for $1 (node failed)"
+}
+
+k1937_run() { { bash "$1" 2>/dev/null || true; } | { grep -o '"outcome":"[A-Z_]*"' || true; } | head -1; }
+
+# 1. CONFLICT scenario: run the REAL generated gateFreshnessCmd() shell against
+#    the real conflicting linked worktree.
+k1937_emit conf conf "$K1937_E2E/conf"
+[ -s "$K1937_E2E/conf.main.sh" ] || fail "#1937-e2e: no gate-freshness command was generated for the conflict scenario"
+K1937_FULL="$(bash "$K1937_E2E/conf.main.sh" 2>/dev/null || true)"
+K1937_R="$(printf '%s' "$K1937_FULL" | grep -o '"outcome":"[A-Z_]*"' | head -1)"
+[ "$K1937_R" = '"outcome":"FRESHNESS_CONFLICT"' ] \
+  || fail "#1937-e2e: a real conflicting rebase must report FRESHNESS_CONFLICT; got $K1937_R (full: $K1937_FULL)"
+printf '%s' "$K1937_FULL" | grep '"conflict_files":\["f.txt"\]' >/dev/null \
+  || fail "#1937-e2e: FRESHNESS_CONFLICT must name f.txt as the conflicting file: $K1937_FULL"
+printf '%s' "$K1937_FULL" | grep -i 'conflict' >/dev/null \
+  || fail "#1937-e2e (round 3 MEDIUM): FRESHNESS_CONFLICT must carry git's own rebase output as detail: $K1937_FULL"
+# The worktree must be left INTACT on its pre-rebase commit — never a
+# half-applied rebase, never a silent revert.
+git -C "$K1937_E2E/repo.wt/conf" status --porcelain | grep . >/dev/null \
+  && fail "#1937-e2e: the worktree must be clean after the abort, but git status reports changes"
+[ "$(git -C "$K1937_E2E/repo.wt/conf" log -1 --format=%s)" = "work-conf" ] \
+  || fail "#1937-e2e: the worktree must be left on its own pre-rebase commit (work-conf), not mid-rebase or reverted"
+echo "PASS: #1937-e2e conflict — the real generated gate-freshness shell detects and reports a genuine conflict, with detail, and leaves the worktree intact"
+
+# 2. NO-GATE scenario: the presence check short-circuits before any fetch, on
+#    a worktree with a REAL missing gate script (round 3 HIGH).
+k1937_emit nogate nogate "$K1937_E2E/nogate"
+[ -s "$K1937_E2E/nogate.main.sh" ] || fail "#1937-e2e: no gate-freshness command was generated for the no-gate scenario"
+K1937_R="$(k1937_run "$K1937_E2E/nogate.main.sh")"
+[ "$K1937_R" = '"outcome":"FRESHNESS_NO_GATE"' ] \
+  || fail "#1937-e2e (round 3 HIGH): a worktree with no vendored quality-gates.sh must report FRESHNESS_NO_GATE without attempting a fetch/rebase; got $K1937_R"
+echo "PASS: #1937-e2e no-gate — the real generated shell's presence check short-circuits before any fetch on a genuinely gate-absent worktree"
+
+# 3. MID-REBASE scenario: start a REAL rebase by hand so it stops mid-conflict
+#    (an actual in-progress rebase on disk), THEN run the generated
+#    gateFreshnessTimeoutProbeCmd() shell for real and assert it detects and
+#    aborts it via `git rebase --abort`'s own exit status — round 3 HIGH: a
+#    literal `[ -d .git/rebase-merge ]` test is ALWAYS false in this linked
+#    worktree (its `.git` is a pointer file), so this is the one assertion
+#    that would have caught the pre-fix defect red-handed.
+k1937_emit mid mid "$K1937_E2E/mid"
+[ -s "$K1937_E2E/mid.probe.sh" ] || fail "#1937-e2e: no timeout-probe command was generated for the mid-rebase scenario"
+(
+  cd "$K1937_E2E/repo.wt/mid"
+  git fetch --quiet origin main
+  # This rebase is EXPECTED to conflict and exit non-zero (that is the whole
+  # point — it is what leaves a real in-progress rebase on disk) — `|| true`
+  # so its non-zero exit under this script's inherited `set -e` does not
+  # abort the whole test suite.
+  git rebase origin/main >/dev/null 2>&1 || true
+)
+# Fixture self-check: the hand-run rebase above must actually be stuck
+# mid-conflict before the probe is asked to find it.
+K1937_GD="$(git -C "$K1937_E2E/repo.wt/mid" rev-parse --git-dir)"
+if [ ! -d "$K1937_GD/rebase-merge" ] && [ ! -d "$K1937_GD/rebase-apply" ]; then
+  fail "#1937-e2e: fixture self-check failed — the hand-run rebase did not leave an in-progress rebase on disk for the probe to find"
+fi
+# ONE invocation only — the probe's own job is to ABORT what it finds, so a
+# second run against the same tree would find nothing and silently pass for
+# the wrong reason. Capture the full output once and assert on both fields
+# from that single execution.
+K1937_PROBE_OUT="$(bash "$K1937_E2E/mid.probe.sh" 2>/dev/null || true)"
+K1937_R="$(printf '%s' "$K1937_PROBE_OUT" | grep -o '"outcome":"[A-Z_]*"' | head -1)"
+[ "$K1937_R" = '"outcome":"FRESHNESS_TIMEOUT_PROBE"' ] \
+  || fail "#1937-e2e: the timeout-probe shell must report FRESHNESS_TIMEOUT_PROBE; got $K1937_R (full: $K1937_PROBE_OUT)"
+printf '%s' "$K1937_PROBE_OUT" | grep '"rebase_in_progress":true' >/dev/null \
+  || fail "#1937-e2e (round 3 HIGH): the probe must detect the REAL in-progress rebase via git's own exit status, not a literal .git/rebase-merge test that is always false in a linked worktree: $K1937_PROBE_OUT"
+if [ -d "$K1937_GD/rebase-merge" ] || [ -d "$K1937_GD/rebase-apply" ]; then
+  fail "#1937-e2e: the probe must have ABORTED the in-progress rebase, but rebase state is still on disk"
+fi
+echo "PASS: #1937-e2e mid-rebase — the real generated timeout-probe shell detects and aborts a genuine in-progress rebase in a LINKED worktree via git's own exit status, never the always-false directory test"
+
+# 4. NON-CONFLICT rebase failure (round 3, MEDIUM): a REAL rebase failure with
+#    NO conflicted files — a rejecting `pre-rebase` hook, standing in for a
+#    missing-identity or leftover-in-progress-rebase failure — must report
+#    FRESHNESS_REBASE_ERROR, never FRESHNESS_CONFLICT's empty-`conflict_files`
+#    shape. An ISOLATED fixture (its own origin/worktree) because a
+#    `pre-rebase` hook lives in the repo's shared git-dir and would otherwise
+#    also fire for the conf/mid scenarios above.
+K1937_HOOK_E2E="$WF_TEST_TMPDIR/freshness-e2e-hookfail"
+mkdir -p "$K1937_HOOK_E2E"
+git init --quiet --bare "$K1937_HOOK_E2E/origin.git"
+mkdir -p "$K1937_HOOK_E2E/main-checkout"
+(
+  set -e
+  cd "$K1937_HOOK_E2E/main-checkout"
+  git init --quiet .
+  git symbolic-ref HEAD refs/heads/main
+  git config user.email t@example.com
+  git config user.name t
+  mkdir -p scripts
+  printf '#!/bin/sh\nexit 0\n' > scripts/quality-gates.sh
+  chmod +x scripts/quality-gates.sh
+  printf 'line1\nSHARED\nline3\n' > f.txt
+  git add -A && git commit --quiet -m base
+  git remote add origin "$K1937_HOOK_E2E/origin.git"
+  git push --quiet -u origin main
+) || fail "#1937-e2e: could not build the hookfail base fixture"
+git -C "$K1937_HOOK_E2E/main-checkout" worktree add --quiet "$K1937_HOOK_E2E/repo.wt/hookfail" -b build/hookfail main \
+  || fail "#1937-e2e: could not create the hookfail-scenario linked worktree"
+# A REAL pre-rebase hook that unconditionally refuses — the SHARED git-dir
+# hooks/ directory a linked worktree's rebase actually consults.
+K1937_HOOKDIR="$(git -C "$K1937_HOOK_E2E/repo.wt/hookfail" rev-parse --git-common-dir)/hooks"
+mkdir -p "$K1937_HOOKDIR"
+printf '#!/bin/sh\necho "pre-rebase hook: rejecting for e2e-hookfail" >&2\nexit 1\n' > "$K1937_HOOKDIR/pre-rebase"
+chmod +x "$K1937_HOOKDIR/pre-rebase"
+(
+  set -e
+  cd "$K1937_HOOK_E2E/repo.wt/hookfail"
+  printf 'line1\nWORKER-hookfail\nline3\n' > f.txt
+  git add -A && git commit --quiet -m work-hookfail
+) || fail "#1937-e2e: could not commit the worker-side change for hookfail"
+(
+  set -e
+  cd "$K1937_HOOK_E2E/main-checkout"
+  printf 'line1\nMAIN-MOVED-ON\nline3\n' > f.txt
+  git add -A && git commit --quiet -m main-moved-on
+  git push --quiet origin main
+) || fail "#1937-e2e: could not advance origin/main past the hookfail fixture worktree"
+
+k1937_emit hookfail hookfail "$K1937_HOOK_E2E/hookfail" "$K1937_HOOK_E2E"
+[ -s "$K1937_HOOK_E2E/hookfail.main.sh" ] || fail "#1937-e2e: no gate-freshness command was generated for the hookfail scenario"
+K1937_FULL="$(bash "$K1937_HOOK_E2E/hookfail.main.sh" 2>/dev/null || true)"
+K1937_R="$(printf '%s' "$K1937_FULL" | grep -o '"outcome":"[A-Z_]*"' | head -1)"
+[ "$K1937_R" = '"outcome":"FRESHNESS_REBASE_ERROR"' ] \
+  || fail "#1937-e2e (round 3 MEDIUM): a rebase failure with NO conflicted files (a rejecting pre-rebase hook) must report FRESHNESS_REBASE_ERROR, never FRESHNESS_CONFLICT's empty-conflict-files shape; got $K1937_R (full: $K1937_FULL)"
+printf '%s' "$K1937_FULL" | grep '"conflict_files"' >/dev/null \
+  && fail "#1937-e2e: a non-conflict outcome must never carry a conflict_files field at all (that shape is FRESHNESS_CONFLICT's alone): $K1937_FULL"
+printf '%s' "$K1937_FULL" | grep -i 'pre-rebase hook' >/dev/null \
+  || fail "#1937-e2e (round 3 MEDIUM): FRESHNESS_REBASE_ERROR must carry git's own hook-rejection output as detail: $K1937_FULL"
+echo "PASS: #1937-e2e hookfail — a real non-conflict rebase failure (a rejecting pre-rebase hook) reports its own FRESHNESS_REBASE_ERROR outcome with detail, never misread as a content conflict"
+
+# 5. FETCH FAILURE (round 3, MEDIUM): a REAL `git fetch` failure must carry
+#    git's own stderr as `detail`, never a bare constant string — the pre-fix
+#    shape discarded it entirely (`>/dev/null 2>&1`). Point `origin` at a
+#    path that does not exist so the fetch fails for real.
+git -C "$K1937_E2E/repo.wt/conf" remote set-url origin "$K1937_E2E/does-not-exist.git"
+k1937_emit conf conf "$K1937_E2E/fetchfail"
+K1937_FULL="$(bash "$K1937_E2E/fetchfail.main.sh" 2>/dev/null || true)"
+K1937_R="$(printf '%s' "$K1937_FULL" | grep -o '"outcome":"[A-Z_]*"' | head -1)"
+[ "$K1937_R" = '"outcome":"FRESHNESS_ERROR"' ] \
+  || fail "#1937-e2e: a real fetch failure must report FRESHNESS_ERROR; got $K1937_R (full: $K1937_FULL)"
+printf '%s' "$K1937_FULL" | grep '"detail":"git fetch origin main failed: [^"]' >/dev/null \
+  || fail "#1937-e2e (round 3 MEDIUM): FRESHNESS_ERROR's detail must carry git's own fetch stderr, never a bare constant string: $K1937_FULL"
+# Restore origin for anything else that might still touch this worktree.
+git -C "$K1937_E2E/repo.wt/conf" remote set-url origin "$K1937_E2E/origin.git"
+echo "PASS: #1937-e2e fetchfail — a real fetch failure's FRESHNESS_ERROR carries git's own stderr as detail, never a bare constant string"
 
 # ============================================================================
 # TESTS (temperloop#1819): session-quota death → its OWN escalation kind
