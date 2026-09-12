@@ -2776,7 +2776,18 @@ K1934_ASSESS_MD="$REPO_ROOT/claude/commands/assess.md"
   || fail "#1934: claude/commands/assess.md is missing — the activation-authoring doc pointer cannot be verified"
 grep -q "consumer's call-site symbol" "$K1934_ASSESS_MD" \
   || fail "#1934: assess.md's activation-authoring guidance must prefer a presence proof pinned on the consumer's call-site symbol over a producer filename (the join-key-registry lesson)"
-echo "PASS: #1934 activation-proof guard — workerPrompt embeds the class-A item's activation.proof verbatim as the reachability predicate, present only for class A; build.md Step 3 and assess.md's activation-authoring guidance are in lockstep"
+# --- K1934 round-2 guard: the §3c conversational-path mirror. build.md Step 3
+# (above) only covers the Workflow path's items[] contract; §3c is the
+# separate prose site the `--no-workflow` conversational path actually reads
+# before its first worker spawn, and it never gained the mirror instruction —
+# a `--no-workflow` run left a class-A worker never seeing its `proof:` at
+# all. Pinned the same way changelogFragmentSection()'s and the
+# foreground-only clause's §3c mirrors are pinned above. -----------------------
+grep -q "the worker returns \`blocked\` with a question naming the conflict — never a silent rename" "$K1934_BUILD_MD" \
+  || fail "#1934: build.md §3c must carry the class-A activation-proof mirror sentence (verbatim proof + blocked-on-conflict, never a silent rename)"
+grep -q "the conversational path MUST include it, verbatim per the item's \`proof:\`, in the \*\*first\*\* worker prompt it authors for a class-A item" "$K1934_BUILD_MD" \
+  || fail "#1934: build.md §3c must state the conversational path renders activation.proof verbatim in the first worker prompt for a class-A item"
+echo "PASS: #1934 activation-proof guard — workerPrompt embeds the class-A item's activation.proof verbatim as the reachability predicate, present only for class A; build.md Step 3, §3c's conversational-path mirror, and assess.md's activation-authoring guidance are all in lockstep"
 
 # ============================================================================
 # TEST (K1847): a /sweep-admitted epic member's worker prompt carries the

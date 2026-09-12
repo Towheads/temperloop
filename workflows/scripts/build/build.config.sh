@@ -1026,7 +1026,19 @@ fi
 # subtraction pass ran: a single bullet is already the minimum this pointer
 # can cost. Reseeded to build.md's measured size, zero headroom, same
 # convention as every raise since temperloop#956.
-: "${PROSE_BUDGET_TIER2_FILE_CAP:=1182}"
+#
+# RAISED 1182 -> 1183 (2026-09-12, temperloop#1934 round 2): a workflow-
+# reviewer HIGH finding caught that the new activationProofSection() mirror
+# sentence (the round-1 raise above never touched it) landed only in Step 3's
+# Workflow-path items[] contract bullet — §3c, the path the conversational
+# `--no-workflow` run actually reads before its first worker spawn, never
+# gained it, so that path could still spawn a class-A worker that never sees
+# its `proof:`. §3c grows one new bullet mirroring the existing pattern (the
+# changelog-fragment and foreground-only clauses' own §3c mirrors). Measured
+# net +1; no subtraction pass ran, one bullet already being the minimum this
+# mirror can cost. Reseeded to build.md's measured size, zero headroom, same
+# convention as every raise since temperloop#956.
+: "${PROSE_BUDGET_TIER2_FILE_CAP:=1183}"
 
 # ── Pipeline spend profiler (temperloop#958) ───────────────────────────────
 # Settings for `workflows/scripts/pipeline-spend-report.sh` and its
