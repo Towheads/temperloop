@@ -95,6 +95,7 @@ workflows/scripts/validate-model-usage-emit.sh	top-level validator entrypoint (w
 workflows/scripts/validate-onramp-anchors.sh	top-level validator entrypoint (workflows/scripts/validate-*.sh family) — human-runnable directly, matches its 15 siblings at mode 755
 workflows/scripts/validate-prose-budget.sh	top-level validator entrypoint (workflows/scripts/validate-*.sh family) — human-runnable directly, matches its 15 siblings at mode 755
 workflows/scripts/validate-provider-disclosure.sh	top-level validator entrypoint (workflows/scripts/validate-*.sh family) — human-runnable directly, matches its 15 siblings at mode 755
+workflows/scripts/validate-resume-recovery-emit.sh	top-level validator entrypoint (workflows/scripts/validate-*.sh family) — human-runnable directly, matches its 15 siblings at mode 755
 workflows/scripts/validate-template-refs.sh	top-level validator entrypoint (workflows/scripts/validate-*.sh family) — human-runnable directly, matches its 15 siblings at mode 755
 claude/hooks/build-worktree-guard.sh	PreToolUse guard invoked by ~/.claude/settings.json as a bare absolute path through the ~/.claude/hooks symlink — a dropped bit means rc 126 on every matching tool call and a silently dead guard (temperloop#1836)
 claude/hooks/claude-p-spawn-guard.sh	PreToolUse guard invoked by ~/.claude/settings.json as a bare absolute path — this item's own motivating instance: shipped 100644 in review round 1, 44/44 tests green and structurally inert once installed (temperloop#1836)

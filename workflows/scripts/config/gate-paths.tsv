@@ -203,6 +203,8 @@ make validate-command-run-emit	workflows/scripts/validate-command-run-emit.sh wo
 bash workflows/scripts/tests/test_command_run_emit.sh	workflows/scripts/emit-command-run.sh workflows/scripts/validate-command-run-emit.sh workflows/scripts/tests/test_command_run_emit.sh claude/commands/sweep.md claude/commands/triage.md claude/commands/fix.md meta/data/raw/README.md
 bash workflows/scripts/tests/test_command_run_emit_epics.sh	workflows/scripts/emit-command-run.sh workflows/scripts/tests/test_command_run_emit_epics.sh claude/commands/sweep.md workflows/scripts/build/sweep-epic-closing-gate.sh
 make validate-issue-touch-emit	workflows/scripts/validate-issue-touch-emit.sh workflows/scripts/emit-issue-touch.sh workflows/scripts/board/** claude/commands/**
+make validate-resume-recovery-emit	workflows/scripts/validate-resume-recovery-emit.sh workflows/scripts/emit-resume-recovery.sh claude/commands/build.md
+bash workflows/scripts/tests/test_resume_recovery_emit.sh	workflows/scripts/emit-resume-recovery.sh workflows/scripts/validate-resume-recovery-emit.sh workflows/scripts/tests/test_resume_recovery_emit.sh claude/commands/build.md meta/data/raw/README.md
 make validate-diagnose-queue-emit	workflows/scripts/validate-diagnose-queue-emit.sh workflows/scripts/emit-diagnose-queue.sh workflows/scripts/build/gate.sh
 bash workflows/scripts/tests/test_diagnose_queue_emit.sh	workflows/scripts/emit-diagnose-queue.sh workflows/scripts/validate-diagnose-queue-emit.sh workflows/scripts/build/gate.sh workflows/scripts/tests/test_diagnose_queue_emit.sh meta/data/raw/README.md
 bash workflows/scripts/validate-provider-disclosure.sh	workflows/scripts/validate-provider-disclosure.sh workflows/scripts/model-comparison/**

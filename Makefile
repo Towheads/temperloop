@@ -19,6 +19,7 @@ TESTBED_SRC := $(FOUNDATION)/workflows/scripts/testbed
 .PHONY: help shellcheck quality-gates test-board test-build test-build-workflow \
 	test-hooks test-install test-install-links test-install-worktree-guard test-testbed-record \
 	test-prune-branches validate-capture-backstop validate-activation-registry validate-mandatory-step-signal validate-onramp-anchors validate-command-run-emit validate-issue-touch-emit \
+	validate-resume-recovery-emit \
 	validate-knowledge-search-emit validate-diagnose-queue-emit \
 	validate-lexicon validate-template-refs test-scan-stub test-vault-hygiene test-tally-findings test-findings-integrity test-model-comparison-stats test-env-hygiene-report lint-pr-body-test test-stranger-config \
 	test-kernel-manifest test-kernel-denylist test-kernel-gitleaks test-kernel-prerename test-kernel-terminology test-pr-leak-guard test-producer-egress docs \
@@ -45,6 +46,7 @@ help:
 	@echo "  validate-onramp-anchors  On-ramp anchor-registry lint (ADR 0024)"
 	@echo "  validate-command-run-emit  emit-command-run.sh presence/wiring lint"
 	@echo "  validate-issue-touch-emit  emit-issue-touch.sh presence/wiring lint"
+	@echo "  validate-resume-recovery-emit  emit-resume-recovery.sh presence/wiring lint"
 	@echo "  validate-knowledge-search-emit  ks_search read-log outcome-field presence/wiring lint"
 	@echo "  validate-lexicon        drain-mind tell-lexicon lint"
 	@echo "  validate-template-refs  Message-template reference-integrity + registry-completeness lint"
@@ -217,6 +219,9 @@ validate-command-run-emit:
 
 validate-issue-touch-emit:
 	@bash $(FOUNDATION)/workflows/scripts/validate-issue-touch-emit.sh
+
+validate-resume-recovery-emit:
+	@bash $(FOUNDATION)/workflows/scripts/validate-resume-recovery-emit.sh
 
 validate-diagnose-queue-emit:
 	@bash $(FOUNDATION)/workflows/scripts/validate-diagnose-queue-emit.sh
