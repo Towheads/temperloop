@@ -323,6 +323,18 @@ KERNEL_GATES=(
   # below (kernel Makefile is generator-owned).
   "bash workflows/scripts/validate-model-usage-emit.sh"
   "bash workflows/scripts/tests/test_model_usage_emit.sh"
+  # resume-recovery raw-lake stream emit + its presence-lint (temperloop#1908,
+  # a /build Step 0.5 baseline instrument for the graph-of-record work):
+  # emit-resume-recovery.sh is the per-resume record (one JSONL line per
+  # /build resume that recovered or flagged anything across Step 0.5's four
+  # checks); validate-resume-recovery-emit.sh mirrors validate-issue-touch-
+  # emit.sh's shape — PRESENCE only (the emit script exists+executable, and
+  # build.md's Step 0.5 item 5 still invokes it), not content. A /build
+  # resume is not a drive and never writes a command-run, so this is its own
+  # stream rather than a command-runs field. Same direct-`bash`-plus-`make`
+  # split as the sibling issue-touch-emit gate pair.
+  "make validate-resume-recovery-emit"
+  "bash workflows/scripts/tests/test_resume_recovery_emit.sh"
   "make validate-diagnose-queue-emit"
   # diagnose-queue lake-stream emit (temperloop#1192) — gate.sh's
   # cmd_diagnose_queue computes a merge-queue verdict /build and /fix branch
