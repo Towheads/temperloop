@@ -68,7 +68,9 @@
 #                                auto-resolved from origin/HEAD, origin/main)
 #
 # Kept bash-3.2-portable (macOS default shell): no associative arrays, no
-# mapfile. Membership tests are `grep -Fxq` over newline-delimited lists.
+# mapfile. Membership tests are `grep -Fx … <<<"$list"` over newline-delimited
+# lists (a herestring, never a pipe; the one `||`-chained site drops `q` and
+# redirects instead so scripts/lint-pipe-grep-q.sh reads it as clean).
 
 set -uo pipefail
 export LC_ALL=C
@@ -322,7 +324,7 @@ while IFS= read -r a_tok; do
   [ -n "$a_tok" ] || continue
   if ! grep -Fxq -- "$a_tok" <<<"$SEEN_TOKENS"; then
     _or_fail "GRANDFATHER-STALE  $a_tok is allowlisted but no longer appears in the tracked tree; delete its line in this PR"
-  elif grep -Fxq -- "$a_tok" <<<"$ISSUE_STATUS" || grep -Fxq -- "$a_tok" <<<"$SENTINELS"; then
+  elif grep -Fx -- "$a_tok" <<<"$ISSUE_STATUS" >/dev/null || grep -Fx -- "$a_tok" <<<"$SENTINELS" >/dev/null; then
     _or_fail "GRANDFATHER-STALE  $a_tok is allowlisted AND registered; the debt is paid — delete its allowlist line"
   fi
 done <<<"$ALLOW_TOKENS"
