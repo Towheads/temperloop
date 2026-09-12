@@ -7487,5 +7487,29 @@ if (canaries !== 1)
 console.log(JSON.stringify({ ok: true }));
 "
 
+# ============================================================================
+# TEST (K1941): static lockstep guard on meta.description — the Workflow
+# tool's `meta` block must be a pure literal (temperloop#903), so this string
+# is byte-identical whether /build, /fix, or /sweep invokes the script. It
+# must therefore describe one invocation generically: never assert a single
+# dependency-level scope (that reads as false on a /fix 1-item level or a
+# /sweep chunk — the exact temperloop#1941 regression, where the /fix and
+# /sweep launch/completion lines inherited build's level-scoped wording), and
+# it must name all three callers so a reader of the description alone knows
+# which commands share this script. Static, not run_node_case: meta is
+# stripped before the harness's AsyncFunction load (see loadLevel() above),
+# so this is a plain grep against the source file, mirroring the K1530/
+# K1931/K1934 lockstep idiom's grep-based checks. ---------------------------
+DESC_BLOCK="$(awk '/^export const meta = \{/,/^\};/' "$MJS")"
+[ -n "$DESC_BLOCK" ] \
+  || fail "#1941: could not locate the 'export const meta = { ... };' block in $MJS"
+echo "$DESC_BLOCK" | grep "one dependency level" >/dev/null \
+  && fail "#1941: meta.description must not assert a single dependency-level scope — /fix (1-item level) and /sweep (a chunk) invoke this same script"
+for caller in '/build' '/fix' '/sweep'; do
+  echo "$DESC_BLOCK" | grep -F "$caller" >/dev/null \
+    || fail "#1941: meta.description must name $caller as a caller of this script"
+done
+echo "PASS: #1941 meta.description guard — names /build, /fix, and /sweep as callers and never asserts a single dependency-level scope"
+
 echo ""
 echo "All test_workflow.sh cases passed."

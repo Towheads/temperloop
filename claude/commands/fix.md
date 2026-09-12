@@ -117,7 +117,7 @@ Stop. Do not claim, do not create sub-issues, do not open a PR. (Rationale: § T
 
 ### 4a — `fresh`: claim-first, then drive as a 1-item level
 
-The target is drivable. Claim is the **first mutating action** (owned by `build-level.mjs` 3a). Invoke the saved Workflow as a **1-item level**, exactly as `/sweep` Phase 2 does (invoke by `scriptPath`; `args` delivered as a JSON string the script parses):
+The target is drivable. Claim is the **first mutating action** (owned by `build-level.mjs` 3a). **Immediately before invoking**, print the **Workflow launch line** template (`claude/message-schema.md`) — `caller: fix`, this being a 1-item level, `round 1` (a `/fix` drive is never a 3d-esc continuation — see Step 4a's escalation-park branch below) — so a `/fix` run is distinguishable in the transcript from any concurrent `/build`/`/sweep` drive on the same repo (temperloop#903, temperloop#1941). Invoke the saved Workflow as a **1-item level**, exactly as `/sweep` Phase 2 does (invoke by `scriptPath`; `args` delivered as a JSON string the script parses):
 
 ```
 Workflow({ scriptPath: workflowPath, args: {
@@ -169,6 +169,8 @@ Workflow({ scriptPath: workflowPath, args: {
   verdicts: {}, onlySlugs: []
 } })
 ```
+
+**Immediately after the call returns**, print the **Workflow return line** template (`claude/message-schema.md`) — the launch line's pair.
 
 The workflow claims (3a), creates the worktree (3b), runs the **isolated worker** (3c), runs the acceptance gate + closing-keyword scan + push-by-SHA + PR open + CI poll (3e.5–3g), and returns **`{parked, escalations}`** — **it never merges**. Branch on the return:
 

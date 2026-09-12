@@ -245,20 +245,33 @@
 // `meta` MUST be a PURE literal — no vars, calls, or spreads (runtime constraint).
 // Consequence (temperloop#903): `description` can NEVER carry run context — it is
 // the same bytes on every run. So it is written for the operator as a plain
-// statement of what the run DOES; the run-IDENTIFYING half (repo, items, issues)
-// rides the one dynamic surface there is, the phase() title — see
-// levelPhaseTitle() near the entry point. That title is now emitted ONCE PER
-// STAGE (temperloop#1294), and the optional `phases` key is deliberately ABSENT
-// from this literal: meta.phases entries are matched against phase() titles
+// statement of what the run DOES, deliberately WITHOUT asserting a scope (a
+// "level") or a single caller: this script is invoked by THREE commands —
+// /build (a full dependency level), /fix (a 1-item level), and /sweep (a
+// chunk of singleton issues) — and a description that named only one of them,
+// or asserted a single dependency-level scope, would misdescribe the other
+// two invocations byte-for-byte identically (temperloop#1941 — the /fix and
+// /sweep launch/completion lines used to inherit build's level-scoped wording
+// on runs that drove neither a level nor a dependency edge). The
+// run-IDENTIFYING half
+// (caller, repo, items, issues, round) rides two dynamic surfaces instead:
+// the phase() title — see levelPhaseTitle() near the entry point, emitted
+// ONCE PER STAGE (temperloop#1294) — and, pushed unconditionally rather than
+// left to the opt-in `/workflows` surface, the orchestrator's own Workflow
+// launch/return line printed immediately around every invocation of this
+// script (`claude/message-schema.md` §§ Workflow launch line / Workflow
+// return line; `claude/commands/build.md` Step 3 + 3d-esc, `fix.md` Step 4a,
+// `sweep.md` Phase 2). The optional `phases` key is deliberately ABSENT from
+// this literal: meta.phases entries are matched against phase() titles
 // EXACTLY, and every title this workflow emits is dynamic, so a static entry
-// could only ever render an empty duplicate group. See the levelPhaseTitle block
-// for the full reasoning. Return shape, the never-merges rule and
+// could only ever render an empty duplicate group. See the levelPhaseTitle
+// block for the full reasoning. Return shape, the never-merges rule and
 // the never-writes-the-plan-note rule are contract detail and live in the I/O
 // CONTRACT block above; do not re-state them here.
 export const meta = {
   name: 'build-level',
   description:
-    'Drives one dependency level of an approved /build plan: claims each item on the board, builds it in its own isolated worktree, runs the acceptance gate, opens its PR and watches CI.',
+    'Drives one invocation\'s worth of items — a /build dependency level, a /fix single-item level, or a /sweep chunk — through claim, isolated-worktree build, the acceptance gate, PR open, and CI watch.',
   version: '1.0.0',
 };
 

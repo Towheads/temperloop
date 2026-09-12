@@ -42,10 +42,11 @@ a second, driftable copy of a rule the kernel file already owns (the
 contract-by-pointer risk `claude/presentation-plane.md` warns against for
 parsed surfaces applies just as much to prose rules split across two files).
 
-The six templates authored here: **PR-body skeleton**, **parking note**,
+The eight templates authored here: **PR-body skeleton**, **parking note**,
 **digest entry**, **question block**, **decision presentation**,
-**degradation notice**. Five of the six are the sanctioned overlay-override
-surface; **decision presentation** is explicitly excluded from it and may not
+**degradation notice**, **Workflow launch line**, **Workflow return line**.
+Seven of the eight are the sanctioned overlay-override surface; **decision
+presentation** is explicitly excluded from it and may not
 be redeclared by an overlay at all (§ Overrides). Rewriting
 `CLAUDE.kernel.md`'s existing communication rules to be *instances of* this
 model is a separate, later plan item (`kernel-guides-unify`) — not performed
@@ -448,6 +449,59 @@ for it, and `workflows/scripts/validate-capture-backstop.sh` is green because
 there is no half-present pair to find. Revisit only if a denial ever starts
 leaving a durable trace a sweep could read.
 
+### Workflow launch line
+
+**Mode(s):** 2 (live, minimal form) — printed by the orchestrator immediately <!-- cite: MS.13 incident:K#1941 -->
+before every `claude/workflows/build-level.mjs` Workflow invocation (`/build`
+Step 3 and its 3d-esc continuation, `/fix` Step 4a, `/sweep` Phase 2). The
+Workflow tool's own `meta` block must be a pure literal (runtime constraint,
+temperloop#903), so `meta.description` is the same bytes on every run and
+cannot carry which caller, repo, or items a given invocation is driving —
+three concurrent drives were indistinguishable on sight. `phase()` titles
+carry some of this (temperloop#1294) but only inside the `/workflows` surface,
+which is opt-in and not pushed to the reader; this line is the one the
+orchestrator's own transcript prints unconditionally.
+
+One line, fixed fields, in order:
+
+- **Caller** — `build` | `fix` | `sweep` — which command is invoking.
+- **Owner/repo** — the `ownerRepo` this invocation resolves against.
+- **Item count** — how many items ride this invocation's `items[]`.
+- **Each slug with its issue number** — `<slug> (#<ghIssue>)`, comma-separated,
+  one per item.
+- **Round number** — `1` for a fresh drive; incremented on each 3d-esc
+  escalation-continuation re-invocation of the same level.
+- **Escalation kind** — present only when the invocation is a continuation
+  (`onlySlugs` non-empty): the escalation kind(s) being re-driven. Omitted on
+  a fresh drive, never rendered as an empty field.
+
+Worked examples:
+```
+launch · build · Towheads/temperloop · 2 items · dynamic-launch-line-1941 (#1941), other-item (#1942) · round 1
+launch · build · Towheads/temperloop · 1 item · dynamic-launch-line-1941 (#1941) · round 2 · continuation: blocked
+launch · fix · Towheads/temperloop · 1 item · flaky-ci-detector (#1810) · round 1
+launch · sweep · Towheads/foundation · 3 items · a (#10), b (#11), c (#12) · round 1
+```
+
+### Workflow return line
+
+**Mode(s):** 2 (live, minimal form) — printed immediately after the Workflow
+call above returns, pairing with the launch line so a transcript reader can
+match each invocation's start to its outcome without re-deriving it from the
+returned `{parked, escalations}` object.
+
+One line, fixed fields:
+
+- **Parked count and slugs** — how many items parked this invocation, with
+  their slugs.
+- **Escalated count and slugs** — how many items escalated, with their slugs.
+  `0 escalated` (no slug list) when the invocation escalated nothing.
+
+Worked example:
+```
+return · build · 1 parked (dynamic-launch-line-1941) · 1 escalated (other-item)
+```
+
 ## Provisional slots — do not lock
 
 Per the L0 verification verdict, the following remain explicitly <!-- cite: MS.7 incident:K#100 -->
@@ -520,11 +574,11 @@ but none of the following may be authored as a firm, load-bearing rule:
 
 The named templates in this file are the sanctioned surface an overlay may
 override — see the carve-out in `claude/CLAUDE.kernel.md` § Kernel vs overlay
-routing rule — **with one exclusion**: of the six templates authored here,
-**five are overridable and § Decision presentation is not**. § Overrides below
+routing rule — **with one exclusion**: of the eight templates authored here,
+**seven are overridable and § Decision presentation is not**. § Overrides below
 specifies the mechanism (redeclaration precedence, dangling-override
 detection, and the non-overridable set): "sanctioned surface" means an
-override of one of those five templates by name is not, by itself, a
+override of one of those seven templates by name is not, by itself, a
 violation of "overlay may extend, never contradict", resolved per that
 mechanism. It has never meant *every* template here, and the exclusion is
 enforced by a lint rather than left to prose.
@@ -532,8 +586,8 @@ enforced by a lint rather than left to prose.
 ## Overrides
 
 This is the mechanism the carve-out in `claude/CLAUDE.kernel.md` § Kernel vs <!-- cite: MS.9 class:drifting-delta-divergence -->
-overlay routing rule points at. It governs only the **five overridable** of
-the six named templates this file authors (§ Templates) — no other kernel
+overlay routing rule points at. It governs only the **seven overridable** of
+the eight named templates this file authors (§ Templates) — no other kernel
 contract is overridable by this or any other route.
 
 - **Non-overridable set — an enforced exclusion, not a convention.** <!-- cite: MS.11 guard:workflows/scripts/validate-template-refs.sh -->
