@@ -177,3 +177,19 @@ consolidate .{0,40} before (writing|mutating)	flagging	regex
 as if (its|it'?s) a topic we'?ve (talked|spoken) about before|you'?re assuming i have more context than i do	trust-rupture	regex
 why didn'?t you answer my (last|previous) question	trust-rupture	regex
 i'?m (too )?tired\b|cannot process any more|that'?s enough for (now|today)|no more of these	trust-rupture	regex
+
+# --- promoted at check-in 2026-09-12 from the candidate-tells surface ---
+could you clarify	trust-rupture	literal
+(even )?more confused|now i'?m confused	trust-rupture	regex
+\b(this|that) is(n'?t| not) the first time\b	trust-rupture	regex
+\b(was|is) (the )?(incorrect|wrong) guidance\b	trust-rupture	regex
+i don't understand these	trust-rupture	literal
+is there a bug here	trust-rupture	literal
+not assume (it|that|they)('s| is| are)? ?not	trust-rupture	regex
+context .{0,20}(visible|available) before|before (prompting|promoting) me with a question	trust-rupture	regex
+\bi don'?t want to (hack|fake|stub|paper over)\b	filing-decision	regex
+instead we should	filing-decision	literal
+\bi want to (be transparent|make it clear|be explicit) about\b	filing-decision	regex
+figure out if this .{0,40}(is something we need to|belongs)	filing-decision	regex
+\bi'?m (worried|concerned) about\b	flagging	regex
+\bhow could we\b.*\?	deferral	regex
