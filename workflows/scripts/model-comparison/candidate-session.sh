@@ -99,7 +99,7 @@
 # replay-execute-and-score and judge-rotation-mode).
 #
 # Usage:
-#   candidate-session.sh preflight --provider <name>
+#   candidate-session.sh preflight --provider <name> [--execution live|recorded]
 #       Exit 0, silent — default provider (or provider omitted), or a
 #       non-default provider whose key IS set.
 #       Exit 1, legible message on stderr — a non-default provider whose key
@@ -184,22 +184,37 @@ HERE="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 _CS_DEFAULT_PROVIDER='anthropic'
 
-# ── Provider → required env var (the host-supply seam) ───────────────────────
-# The ONE table the preflight check, spawn's key FORWARDING, and spawn's
-# "every other provider key is absent" property all read from — registering a
-# provider means editing exactly this table, and a provider added here is
-# automatically (a) gated by preflight, (b) forwardable when selected, and
-# (c) EXCLUDED from every other provider's child environment. There is no
-# second, hand-kept list to fall out of sync with it.
+# ── Provider → required env var → runner (the host-supply seam) ──────────────
+# The ONE table the preflight check, spawn's key FORWARDING, spawn's "every
+# other provider key is absent" property, and the runner-availability gate all
+# read from — registering a provider means editing exactly this table, and a
+# provider added here is automatically (a) gated by preflight, (b) forwardable
+# when selected, (c) EXCLUDED from every other provider's child environment,
+# and (d) REFUSED at preflight until it has a runner. There is no second,
+# hand-kept list to fall out of sync with it.
+#
+# Format: `<provider>:<KEY_VAR>:<runner>`. The THIRD field names the runner
+# that can actually execute this provider's models. An EMPTY third field means
+# "registered, but nothing here can run it", and preflight refuses that
+# provider (temperloop#1743).
+#
+# `claude-cli` is the only runner implemented today — the `${CLAUDE_BIN:-claude}`
+# spawn at the bottom of this file — and it speaks Anthropic's API alone.
+# Forwarding OPENAI_API_KEY into that binary does not make it an OpenAI client,
+# which is exactly the gap this column closes: before it existed, selecting a
+# non-default provider passed preflight, wrote a disclosure-log entry attesting
+# a cross-vendor send, and then ran the Claude CLI anyway — a FALSE ATTESTATION
+# in the log whose entire job is to record provider exposure truthfully
+# (ADR 0028). A provider that cannot be executed must never reach the log.
 #
 # `anthropic` is the DEFAULT provider and is listed here for the FORWARDING
 # half only: it is exempt from preflight's unset-key gate (the default host
 # authenticates by subscription session, not by an env key), so its key is
 # forwarded when set and simply absent when not.
-_CS_PROVIDER_TABLE='anthropic:ANTHROPIC_API_KEY
-openai:OPENAI_API_KEY
-google:GEMINI_API_KEY
-gemini:GEMINI_API_KEY'
+_CS_PROVIDER_TABLE='anthropic:ANTHROPIC_API_KEY:claude-cli
+openai:OPENAI_API_KEY:
+google:GEMINI_API_KEY:
+gemini:GEMINI_API_KEY:'
 
 # ── The child's environment allowlist ────────────────────────────────────────
 # `env -i` gives the child NOTHING; these names are added back when (and only
@@ -235,16 +250,70 @@ mcpconfig
 settingsources'
 
 _cs_provider_env_var() {  # $1 = provider name -> prints its env var, or fails
-  local p="$1" name var
-  while IFS=: read -r name var; do
+  local p="$1" name var runner
+  while IFS=: read -r name var runner; do
     [ "$name" = "$p" ] && { printf '%s\n' "$var"; return 0; }
   done <<<"$_CS_PROVIDER_TABLE"
   return 1
 }
 
+# ── Test seam: declaring a runner for a provider that has none ───────────────
+# Every non-default provider's runner column is deliberately empty, which makes
+# non-default-provider behaviour — key forwarding, the `env -i` containment,
+# and the argv guards (temperloop#1252) — unreachable from tests the moment the
+# gate below starts refusing before spawn. Those are SECURITY properties and
+# they must stay tested, so a fixture may declare a runner for a named
+# provider:
+#
+#   CANDIDATE_PROVIDER_TEST_SEAM=1
+#   CANDIDATE_PROVIDER_RUNNER_EXTRA='openai:stub-runner'   (newline-separated)
+#
+# Same shape, and the same reasoning, as allowlist.sh's
+# PROVIDER_ALLOWLIST_TEST_SEAM: the override is IGNORED unless the seam flag is
+# set to 1 explicitly, so a stray environment variable can never quietly make
+# an unrunnable provider look runnable on a real host. It only ever ADDS a
+# runner to a provider the committed table already registers — it cannot
+# introduce a new provider, and it cannot remove a runner.
+#
+# Scope, stated plainly so the next reader does not over-read this column:
+# today the runner name is consumed by the PREFLIGHT GATE alone. Spawn still
+# execs `${CLAUDE_BIN:-claude}` unconditionally — wiring per-provider DISPATCH
+# is the second half of temperloop#1743 and needs a real vendor adapter. So a
+# seam-declared runner makes a provider *selectable* for containment testing;
+# it does not make it *executable*.
+_cs_provider_runner_override() {  # $1 = provider -> prints an override runner, or fails
+  [ "${CANDIDATE_PROVIDER_TEST_SEAM:-0}" = "1" ] || return 1
+  [ -n "${CANDIDATE_PROVIDER_RUNNER_EXTRA:-}" ] || return 1
+  local p="$1" name runner
+  while IFS=: read -r name runner; do
+    [ "$name" = "$p" ] && [ -n "$runner" ] && { printf '%s\n' "$runner"; return 0; }
+  done <<<"$CANDIDATE_PROVIDER_RUNNER_EXTRA"
+  return 1
+}
+
+# _cs_provider_runner <provider> -> prints its runner (possibly EMPTY), or
+# fails when the provider is not registered at all. An empty stdout with a 0
+# return is the "registered but unrunnable" case preflight refuses; a non-zero
+# return is the "unknown provider" case it reports differently. Callers must
+# keep those two apart — collapsing them tells an operator to register a
+# provider that is already registered.
+_cs_provider_runner() {
+  local p="$1" name var runner override
+  while IFS=: read -r name var runner; do
+    if [ "$name" = "$p" ]; then
+      # The seam may only fill an EMPTY runner, never replace a real one.
+      if [ -z "$runner" ] && override="$(_cs_provider_runner_override "$p")"; then
+        printf '%s\n' "$override"; return 0
+      fi
+      printf '%s\n' "$runner"; return 0
+    fi
+  done <<<"$_CS_PROVIDER_TABLE"
+  return 1
+}
+
 _cs_provider_key_vars() {  # -> prints every registered provider key var, deduped
-  local name var
-  while IFS=: read -r name var; do
+  local name var runner
+  while IFS=: read -r name var runner; do
     [ -n "$var" ] && printf '%s\n' "$var"
   done <<<"$_CS_PROVIDER_TABLE" | sort -u
 }
@@ -255,15 +324,53 @@ _cs_need_operand() {  # $1 = flag, $2 = remaining arg count ($#) at the flag
   return 2
 }
 
-# candidate_session_preflight <provider>
+# candidate_session_preflight <provider> [<execution-mode>]
+#
+# <execution-mode> is `live` (default) or `recorded`, and it selects whether
+# the RUNNER gate applies. It exists because a recorded/stubbed runner — the
+# `--candidate-runner` / `--judge-runner` seam every fixture drives — IS a
+# runner: it produces the envelope itself and never reaches a vendor, so
+# refusing it would break every fixture while preventing nothing. The runner
+# gate's whole purpose is the LIVE path, where `${CLAUDE_BIN:-claude}` is what
+# actually executes.
+#
+# The default is `live` deliberately: a caller that forgets to say gets the
+# STRICT gate, so the failure mode of a missed call site is a refusal to run,
+# never a silent unguarded send.
 candidate_session_preflight() {
   local provider="${1:-$_CS_DEFAULT_PROVIDER}"
+  local execution="${2:-live}"
   if [ -z "$provider" ] || [ "$provider" = "$_CS_DEFAULT_PROVIDER" ]; then
     return 0
   fi
   local var
   if ! var="$(_cs_provider_env_var "$provider")"; then
     printf 'candidate-session: unknown provider %s — no env-var mapping registered in candidate-session.sh (_CS_PROVIDER_TABLE)\n' "$provider" >&2
+    return 1
+  fi
+  # The runner gate comes BEFORE the key gate on purpose. If nothing here can
+  # execute this provider, telling the operator to go set an API key sends
+  # them to fix the wrong thing — the key was never what was missing.
+  # Skipped for `recorded` execution: the caller supplied its own runner.
+  local runner
+  runner="$(_cs_provider_runner "$provider")" || runner=""
+  if [ "$execution" = "live" ] && [ -z "$runner" ]; then
+    cat >&2 <<EOF
+candidate-session: provider '$provider' has no runner registered — refusing to spawn.
+  '$provider' is a known provider name (its key var is $var), but nothing in
+  this kernel can execute its models. The only runner implemented today is
+  \`claude-cli\` (\${CLAUDE_BIN:-claude}), which speaks Anthropic's API alone —
+  forwarding a provider key into that binary does not make it a client for
+  that provider.
+
+  Refusing HERE is deliberate and load-bearing: this preflight runs BEFORE the
+  disclosure-log write in replay.sh, so a provider that cannot be executed
+  never produces a log entry attesting a send that did not happen (ADR 0028,
+  temperloop#1743).
+
+  To enable '$provider': implement a runner for it and name that runner in the
+  third column of _CS_PROVIDER_TABLE in this file.
+EOF
     return 1
   fi
   if [ -z "${!var-}" ]; then
@@ -421,7 +528,9 @@ candidate_session_spawn() {
     esac
   done
 
-  candidate_session_preflight "$provider" || return 1
+  # spawn IS the live path — it is the function that execs $CLAUDE_BIN — so it
+  # always takes the strict gate, never the recorded one.
+  candidate_session_preflight "$provider" live || return 1
 
   _cs_settings_check "$settings" || { rc=$?; return "$rc"; }
 
@@ -465,13 +574,21 @@ cmd="${1:-}"; shift || true
 case "$cmd" in
   preflight)
     provider="$_CS_DEFAULT_PROVIDER"
+    execution="live"
     while [ $# -gt 0 ]; do
       case "$1" in
         --provider) _cs_need_operand --provider $# || exit 2; provider="$2"; shift 2 ;;
+        --execution)
+          _cs_need_operand --execution $# || exit 2
+          case "$2" in
+            live|recorded) execution="$2" ;;
+            *) printf 'candidate-session.sh: preflight: --execution takes live|recorded, got %s\n' "$2" >&2; exit 2 ;;
+          esac
+          shift 2 ;;
         *) printf 'candidate-session.sh: preflight: unknown argument %s\n' "$1" >&2; exit 2 ;;
       esac
     done
-    candidate_session_preflight "$provider"
+    candidate_session_preflight "$provider" "$execution"
     exit $?
     ;;
   resolve)

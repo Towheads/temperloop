@@ -155,6 +155,19 @@ export OPENAI_API_KEY GEMINI_API_KEY ANTHROPIC_API_KEY SENTRY_AUTH_TOKEN CANDIDA
 LOCAL
 chmod 600 "$CO/build/build.config.local.sh"
 
+# This suite exercises NON-DEFAULT-provider behaviour — key forwarding, the
+# `env -i` containment, and the argv guards (temperloop#1252) — using `openai`
+# as its representative provider. Since temperloop#1743 the SUT refuses any
+# provider with no runner registered, and every non-default provider's runner
+# column is deliberately empty, so those properties are unreachable without the
+# SUT's own test seam. Declaring a stub runner here keeps the security
+# properties tested; `test_provider_runner_gate.sh` is what covers the gate
+# itself, WITHOUT this seam set.
+export CANDIDATE_PROVIDER_TEST_SEAM=1
+export CANDIDATE_PROVIDER_RUNNER_EXTRA='openai:stub-runner
+google:stub-runner
+gemini:stub-runner'
+
 # Every fixture invocation starts from a host that carries none of the five, so
 # the ladder — not this test process — is what puts them into the script's
 # environment.
