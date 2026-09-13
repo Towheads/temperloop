@@ -43,6 +43,11 @@
 # skip visible is park()'s per-item review tally, whose `mandatory_ok` field is
 # FALSE exactly when a mandatory reviewer was skipped — surfaced in the Step 6
 # summary, so a run that degraded says so in its own record.
+# `mandatory_ok` is DELIBERATELY scoped to this one declaration: only
+# workflow-reviewer on a command-doc diff is mandatory. Every OTHER routed
+# reviewer rides the companion field `routed_not_run` in the same tally
+# (temperloop#1984, ADR 0037) — visible, never blocking — so a skipped tsv
+# route cannot leave the tally reading clean without widening this row's gate.
 claude/commands/build.md	3e — pre-push review (workflow-reviewer on a claude/commands/*.md diff)	Mandatory for a `claude/commands/*.md` diff (foundation#1007):	tally	claude/workflows/build-level.mjs	mandatory_ok: !skipped.some((s) => s.mandatory)	-	park() returns review: { ran, skipped, mandatory_ok } per item and Step 6 tallies it; a degraded mandatory review is named in the run's own summary rather than being invisible.
 
 # ── /build §3e.6 — the class-A activation proof (temperloop#1451) ───────────
