@@ -161,6 +161,16 @@
 //                  fallback to 'general-purpose' in a checkout that has not
 //                  deployed the agent definition. Pass 'general-purpose' to pin
 //                  the pre-#1014 behavior. See machineryAgent() below.
+//     reviewBlockingMaxRounds
+//                — the §3e convergence bound (temperloop#1970), resolved from
+//                  $BUILD_REVIEW_BLOCKING_MAX_ROUNDS at build.md / sweep.md /
+//                  fix.md Step 0 and handed in on the SAME seam, for the same
+//                  structural reason, as gateSliceSecs (the Workflow runtime has
+//                  no shell to source build.config.sh — DESIGN NOTE 1). Caps how
+//                  many review ROUNDS one item's worktree may spend before a
+//                  HIGH finding is carried into the PR body instead of
+//                  escalating `review-blocking` again. Absent / empty /
+//                  non-positive → the in-file default; never unbounded.
 //     verdicts   — escalation-continuation map. Empty/absent on a fresh level;
 //                  on a 3d-esc continuation, keyed by slug:
 //                    { [slug]: { kind, verdict_section } }
@@ -237,6 +247,15 @@
 //   `routed_not_run` names every routed-but-unrun reviewer, mandatory or not,
 //   so the tally cannot read fully clean while a tsv-routed reviewer was
 //   skipped. Absent only for a spike (kind:spike skips 3b-3h, never reviews).
+//
+//   That `review` object ALSO carries `residual_blocking: [{ round, max_rounds,
+//   findings }]` (temperloop#1970) — present ONLY when a review round hit the
+//   §3e convergence bound: HIGH findings that were CARRIED into the PR body's
+//   `## Review notes` instead of escalating `review-blocking` for yet another
+//   build-review round-trip. It is the bound's per-run execution signal, and it
+//   marks an item a human should read the review notes on before merging; it is
+//   NOT a failure (the gates, the activation gate and CI all still passed) and
+//   it never stalls the level. Omitted entirely when no round hit the bound.
 //
 //   The workflow NEVER writes the plan note (race-safety: the orchestrator
 //   serializes all plan-note writeback at the level boundary). It only RETURNS
@@ -456,6 +475,12 @@ const SPINE_OUTCOME_SCHEMA = {
     // cannot (see reviewDiffTsvGap's comment for the observed case this
     // catches, temperloop#1978 round 4).
     tsv_checksum: { type: ['number', 'string'] },
+    // temperloop#1970: how many §3e review rounds this worktree has ALREADY
+    // run, read (and then bumped) by reviewDiffCmd from a marker in the
+    // worktree's own git dir. The REVIEW_BLOCKING convergence bound reads it;
+    // absent/unparseable means 0 (an older machinery relay, or a worktree
+    // predating the marker) — i.e. exactly today's unbounded first round.
+    review_rounds: { type: ['number', 'string'] },
     // 3e.5 sliced-gate fields (temperloop#1021). resumeAt — the 0-based gate
     // index the NEXT slice starts at; failed — failures seen in THIS slice (the
     // driver accumulates); elapsedSecs / budgetSecs — the margin pair that makes
@@ -726,6 +751,61 @@ const GATE_SLICE_SECS = Math.max(
     GATE_SLICE_SECS_MAX,
     Number(input.gateSliceSecs) > 0 ? Math.floor(Number(input.gateSliceSecs)) : GATE_SLICE_SECS_DEFAULT,
   ),
+);
+// --- §3e review-blocking convergence bound (temperloop#1970) -----------------
+// THE FAILURE THIS BOUNDS. §3e is a cold, one-shot advisory pass, and a HIGH
+// finding escalates `review-blocking` → the orchestrator loops the item back to
+// 3c → the worker fixes it → a FRESH reviewer reads the now-LARGER diff. Nothing
+// bounded that loop. Measured on one live item (temperloop#1938 L1, item
+// `interview-command-spec`/#1962): FIVE consecutive §3e passes, four DISTINCT
+// HIGHs, ZERO repeats, ~2h45m and ~1.05M subagent tokens before convergence —
+// and pass 4's HIGH was CAUSED by pass 3's directed fix, while the reviewed spec
+// grew 447 → 635 lines across the rounds. So the loop is partly SELF-FEEDING,
+// not merely serial discovery: each round enlarges the surface the next one
+// reads, and the orchestrator had to invent a stopping rule by hand at pass 5.
+//
+// THE OTHER HALF IS THE REVIEWER SEAT, NOT THIS BOUND. claude/agents/
+// workflow-reviewer.md now instructs the seat to enumerate EVERY HIGH it can
+// identify in ONE pass before it ranks or narrows; this constant is the backstop
+// for when that still does not converge. Deliberately NOT a model-tier change:
+// that seat is pinned `model: sonnet` by its own frontmatter, on purpose.
+//
+// WHAT IT DOES, PRECISELY. `REVIEW_BLOCKING_MAX_ROUNDS` caps the number of
+// review ROUNDS one item's worktree may spend. On the round that reaches the
+// cap, a blocking finding no longer escalates: the item continues to 3e.5/3f
+// with the findings carried in the return value — into the PR body's
+// `## Review notes` (the same reviewBodySuffix() render every round uses) and
+// into the parked record's `review.residual_blocking` tally — so the human at
+// the merge gate reads exactly what the reviewer said. ADVISORY, NEVER A
+// SUPPRESSION: what stops is the automatic build-review-build loop, not the
+// findings. An item that converges in fewer rounds is byte-identical to
+// pre-#1970 behaviour, which is why the default preserves today's path for
+// everything under the bound.
+//
+// ROUND COUNTING IS DURABLE, because the loop spans PROCESSES: each
+// review-blocking escalation returns to the orchestrator, which re-invokes this
+// workflow. The Workflow runtime has no filesystem (DESIGN NOTE 1), so the
+// counter lives in the worktree's own GIT DIR (never the working tree — it must
+// not show up in `git status`, in a `--scoped` gate's untracked-path resolution,
+// or in a coverage manifest) and is read+bumped by reviewDiffCmd in the SAME
+// machinery call §3e already makes: zero extra agent spawns. A continuation
+// re-uses the worktree (3b is skipped), so the count survives exactly the loop
+// it bounds; a fresh item gets a fresh worktree and therefore a fresh count.
+// The CI-fix re-review (§3g) shares the counter deliberately — it is the same
+// item's review budget, and counting it is the conservative direction.
+//
+// REVIEW_BLOCKING_MAX_ROUNDS is a NAMED SETTING (BUILD_REVIEW_BLOCKING_MAX_ROUNDS),
+// handed in by the orchestrator at Step 0 exactly like GATE_SLICE_SECS above —
+// the Workflow runtime cannot source build.config.sh itself. A non-positive or
+// unparseable value falls back to the in-file default rather than disabling the
+// bound, and the floor of 1 means no caller can configure the loop back to
+// unbounded.
+const REVIEW_BLOCKING_MAX_ROUNDS_DEFAULT = 3;
+const REVIEW_BLOCKING_MAX_ROUNDS = Math.max(
+  1,
+  Number(input.reviewBlockingMaxRounds) > 0
+    ? Math.floor(Number(input.reviewBlockingMaxRounds))
+    : REVIEW_BLOCKING_MAX_ROUNDS_DEFAULT,
 );
 // The gate executor's Bash-tool timeout — derived, never typed twice. Kept under
 // this name because it is still exactly that: the tool-level timeout threaded to
@@ -2795,7 +2875,26 @@ async function deniedOrQuota(slug, payload, worktree) {
 // emits `tsv:""`, `tsv_rows:0`, `tsv_checksum:0` — never an omitted `tsv`
 // key — so "missing" stays a signal of the relay dropping the field, not of
 // a legitimate no-tsv worktree.
-function reviewDiffCmd(wt) {
+//
+// temperloop#1970: it ALSO reads — and, on a bumping call, increments — the
+// per-worktree §3e ROUND COUNTER the REVIEW_BLOCKING convergence bound reads.
+// `review_rounds` is the PRE-increment value: how many review rounds this
+// worktree had already run before this one. Three properties are load-bearing:
+//   - it lives in the worktree's GIT DIR (`git rev-parse --git-dir`, which for a
+//     linked worktree is that worktree's own `…/.git/worktrees/<name>`), NEVER
+//     in the working tree — a stray untracked file there would surface in
+//     `git status`, in the 3e.5 gate's `--scoped` untracked-path resolution, and
+//     in the tracked-path coverage manifests. It is removed with the worktree.
+//   - it rides THIS call, which §3e already makes — zero extra agent spawns, and
+//     the counter survives the escalate → orchestrator → re-invoke loop it
+//     bounds (a continuation skips 3b, so the worktree and its git dir persist).
+//   - `bump` is false on the #1976 tsv-gap RE-FETCH, so one driver round bumps
+//     the counter exactly once no matter how many times the command runs.
+// Every step fails SOFT (a missing/unwritable marker reads 0, and a
+// corrupted-but-present one degrades to 0 rather than aborting the step), so a
+// worktree whose git dir cannot be resolved simply behaves as it did before
+// this item.
+function reviewDiffCmd(wt, bump = true) {
   const tsvPath = `${wt}/workflows/scripts/config/reviewer-routing.tsv`;
   // The row-filter awk program (blank/`#` lines stripped) is reused for BOTH
   // tsv_rows (count) and tsv_checksum (position-weighted byte-sum via `od`)
@@ -2805,6 +2904,36 @@ function reviewDiffCmd(wt) {
     `BEGIN{c=0} { l=$0; sub(/\\r$/,"",l); t=l; gsub(/^[ \\t]+|[ \\t]+$/,"",t); if (t != "" && substr(t,1,1) != "#") print l }`;
   return [
     `cd ${sq(wt)} || exit 1`,
+    `rounds_file=""`,
+    `gd="$(git rev-parse --git-dir 2>/dev/null)"`,
+    `[ -n "$gd" ] && rounds_file="$gd/build-review-rounds"`,
+    `review_rounds=0`,
+    // DECIMAL, NEVER OCTAL (temperloop#1970, typescript-reviewer round 1). The
+    // `tr` filter strips non-digits but NOT leading zeros, and POSIX `$(( ))`
+    // reads a leading-`0` numeral as OCTAL — so a marker file someone
+    // hand-edited, or restored from a stale snapshot, holding `08`/`09` is not
+    // a wrong count but a HARD shell error that aborts the whole step and
+    // surfaces as exactly the `review-diff-error` escalation §3e is least able
+    // to act on. This code path cannot write such a value itself, but the file
+    // is an ordinary file in the worktree's git dir and the surrounding
+    // contract is explicit that every marker step fails SOFT — a
+    // corrupted-but-present marker was the one case that story did not cover.
+    // `sed -E 's/^0+//'` normalises to a bare decimal (an all-zeros value
+    // collapses to the empty string, which the `[ -n … ]` fallback below then
+    // reads as 0), so a corrupted marker degrades to "first round" exactly as a
+    // missing one does. `sed -E` over `\\?`-style BRE: the same portable dialect
+    // the `origin/` strip below already relies on.
+    `if [ -n "$rounds_file" ] && [ -f "$rounds_file" ]; then`,
+    `  review_rounds="$(tr -cd '0-9' < "$rounds_file" | sed -E 's/^0+//')"`,
+    `fi`,
+    `[ -n "$review_rounds" ] || review_rounds=0`,
+    ...(bump
+      ? [
+          `if [ -n "$rounds_file" ]; then`,
+          `  printf '%s\\n' "$((review_rounds + 1))" > "$rounds_file" 2>/dev/null || true`,
+          `fi`,
+        ]
+      : []),
     `default="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##')"`,
     `if [ -z "$default" ]; then`,
     `  for b in main master; do`,
@@ -2856,7 +2985,7 @@ function reviewDiffCmd(wt) {
     `  tsv_rows=0`,
     `  tsv_checksum=0`,
     `fi`,
-    `printf '{"outcome":"REVIEW_DIFF","files":%s,"tsv":%s,"tsv_rows":%s,"tsv_checksum":%s}\\n' "$files_json" "$tsv_json" "$tsv_rows" "$tsv_checksum"`,
+    `printf '{"outcome":"REVIEW_DIFF","files":%s,"tsv":%s,"tsv_rows":%s,"tsv_checksum":%s,"review_rounds":%s}\\n' "$files_json" "$tsv_json" "$tsv_rows" "$tsv_checksum" "$review_rounds"`,
   ].join('\n');
 }
 
@@ -3095,11 +3224,15 @@ function reviewDiffTsvGap(diffOut, files) {
 // check. Empty string when nothing ran. Callers splice `notes` into a durable
 // surface (the PR body, at the 3f call site) rather than letting it evaporate
 // once the blocking check has read it.
+//
+// `round` (temperloop#1970) is this pass's 1-based round number for THIS item's
+// worktree, durable across the escalate→re-invoke loop (see reviewDiffCmd). The
+// two blocking call sites compare it against REVIEW_BLOCKING_MAX_ROUNDS.
 async function runReviewers(item, wt) {
-  const fetchReviewDiff = (phaseTitle) =>
-    runMachinery(reviewDiffCmd(wt), { label: `review-diff:${item.slug}`, slug: item.slug, phase: phaseTitle });
+  const fetchReviewDiff = (phaseTitle, bump) =>
+    runMachinery(reviewDiffCmd(wt, bump), { label: `review-diff:${item.slug}`, slug: item.slug, phase: phaseTitle });
 
-  let diffOut = await fetchReviewDiff(enterStage(STAGE_REVIEW));
+  let diffOut = await fetchReviewDiff(enterStage(STAGE_REVIEW), true);
   if (machineryDenied(diffOut)) {
     // temperloop#1819: quota death vs genuine denial — see deniedOrQuota.
     return { escalation: await deniedOrQuota(item.slug, { step: 'review-diff', out: diffOut }, wt) };
@@ -3107,14 +3240,23 @@ async function runReviewers(item, wt) {
   if (diffOut.outcome !== 'REVIEW_DIFF') {
     return { escalation: escalate(item.slug, 'review-diff-error', { diffOut }) };
   }
+  // temperloop#1970 — read the round counter from the BUMPING fetch only. A
+  // relay that drops/garbles the field reads 0, i.e. "first round", which is
+  // exactly the pre-#1970 behaviour: the degraded case can only ever be MORE
+  // permissive, never a bound that fires early on a healthy item.
+  const priorRounds = Number.isFinite(Number(diffOut.review_rounds))
+    ? Math.max(0, Math.floor(Number(diffOut.review_rounds)))
+    : 0;
+  const round = priorRounds + 1;
   let files = Array.isArray(diffOut.files) ? diffOut.files : [];
   // temperloop#1976: a dropped/truncated tsv relay is nondeterministic per
   // copy (the same command, re-run, has been observed to carry it intact) —
   // re-run the SAME diff-fetch command once before treating it as a genuine
   // failure, so determineReviewers() is never called with an empty table for
-  // a worktree that actually ships a real one.
+  // a worktree that actually ships a real one. The re-fetch is NON-BUMPING
+  // (temperloop#1970): one driver round must advance the round counter once.
   if (!REVIEWER_ROUTING_TSV && reviewDiffTsvGap(diffOut, files)) {
-    diffOut = await fetchReviewDiff(stagePhase(STAGE_REVIEW));
+    diffOut = await fetchReviewDiff(stagePhase(STAGE_REVIEW), false);
     if (machineryDenied(diffOut)) {
       return { escalation: await deniedOrQuota(item.slug, { step: 'review-diff', out: diffOut }, wt) };
     }
@@ -3135,7 +3277,7 @@ async function runReviewers(item, wt) {
     || (typeof diffOut.tsv === 'string' ? diffOut.tsv : '');
   const routes = determineReviewers(item, files, tsvText);
   if (routes.length === 0) {
-    return { summary: '', notes: '', sections: [], blocking: [], ran: [], skipped: [] };
+    return { summary: '', notes: '', sections: [], blocking: [], ran: [], skipped: [], round };
   }
 
   const ran = [];
@@ -3219,7 +3361,20 @@ async function runReviewers(item, wt) {
     blocking,
     ran,
     skipped,
+    round,
   };
+}
+
+// reviewBoundReached(review) — the §3e convergence bound's ONE predicate
+// (temperloop#1970), so both blocking call sites (the 3e pass and §3g's CI-fix
+// re-review) ask the identical question and cannot drift apart. True when this
+// round has blocking findings AND the item has spent its budget of review
+// rounds: past that, the findings are CARRIED (PR body + parked tally) instead
+// of escalating for another build-review round-trip. `review.round` is absent
+// only on a return shape older than this item; `?? 1` then reads "first round",
+// which can never trip the bound early.
+function reviewBoundReached(review) {
+  return review.blocking.length > 0 && (review.round ?? 1) >= REVIEW_BLOCKING_MAX_ROUNDS;
 }
 
 // reviewBodySuffix — the ONE renderer of §3e evidence into the PR body
@@ -3290,19 +3445,36 @@ function reviewBodySuffix(rounds) {
 // never read fully clean while any routed reviewer was skipped. A reviewer
 // skipped in one round and run in another stays listed — the skip was real,
 // and which round covered which diff is exactly what a reader needs to see.
+//
+// temperloop#1970 adds `residual_blocking` — the convergence bound's PER-RUN
+// EXECUTION SIGNAL (§ Mandatory-step birth rule): one entry per round that hit
+// the bound, carrying the round number and the findings that were CARRIED into
+// the PR body rather than re-escalated. So an operator reading the Step 6
+// summary can see the bound firing, on which items, with what still outstanding
+// — never a prose-only declaration that it exists. OMITTED ENTIRELY when no
+// round hit the bound, so an ordinary item's parked record stays byte-identical.
 function reviewTally(...rounds) {
   const ran = [];
   const skipped = [];
+  const residual = [];
   for (const r of rounds) {
     if (!r) continue;
     ran.push(...(r.ran ?? []));
     skipped.push(...(r.skipped ?? []));
+    if (r.residualBlocking) {
+      residual.push({
+        round: r.round ?? null,
+        max_rounds: REVIEW_BLOCKING_MAX_ROUNDS,
+        findings: r.blocking ?? [],
+      });
+    }
   }
   return {
     ran,
     skipped,
     mandatory_ok: !skipped.some((s) => s.mandatory),
     routed_not_run: Array.from(new Set(skipped.map((s) => s.reviewer))),
+    ...(residual.length > 0 ? { residual_blocking: residual } : {}),
   };
 }
 
@@ -4198,7 +4370,27 @@ async function driveItem(item) {
   const review = await runReviewers(item, wt);
   if (review.escalation) return review.escalation;
   if (review.blocking.length > 0) {
-    return escalate(item.slug, 'review-blocking', { findings: review.blocking });
+    // temperloop#1970 — the convergence bound. Under it, a HIGH escalates
+    // exactly as before (byte-identical for every item that converges within
+    // its round budget). AT it, the loop stops: the item proceeds to 3e.5/3f
+    // and the residual findings ride the PR body's `## Review notes` (via
+    // reviewBodySuffix below, which already renders review.sections in full)
+    // plus the parked record's `review.residual_blocking` tally, so the human
+    // at the merge gate reads them. Findings are carried, never suppressed.
+    if (!reviewBoundReached(review)) {
+      return escalate(item.slug, 'review-blocking', {
+        findings: review.blocking,
+        round: review.round,
+        max_rounds: REVIEW_BLOCKING_MAX_ROUNDS,
+      });
+    }
+    review.residualBlocking = true;
+    log(
+      `[${item.slug}] §3e review round ${review.round}/${REVIEW_BLOCKING_MAX_ROUNDS} still has ` +
+        `${review.blocking.length} BLOCKING finding(s) — convergence bound reached (temperloop#1970): ` +
+        `opening the PR with them carried in ## Review notes instead of escalating again ` +
+        `(${review.blocking.map((b) => b.reviewer).join(', ')})`,
+    );
   }
   // Carried into the PR body at 3f below (verdictJson.summary) — the PR must
   // carry REAL evidence a review ran (or a legible, non-guaranteed skip
@@ -5065,8 +5257,31 @@ async function ciPollLoop(item, ownerRepo, pr, initialSha, wt) {
         return { escalation: esc.kind, payload: { ...esc.payload, sha } };
       }
       if (fixReview.blocking.length > 0) {
-        log(`[${item.slug}] §3e review on the CI-fix commit found a BLOCKING finding — escalating before push`);
-        return { escalation: 'review-blocking', payload: { findings: fixReview.blocking, stage: 'ci-fix', sha } };
+        // temperloop#1970 — the SAME convergence bound the 3e pass applies, via
+        // the SAME predicate, over the SAME per-worktree round counter: this is
+        // one item's review budget, not a second independent one. Under the
+        // bound this escalates byte-identically to pre-#1970. At it, the fix is
+        // pushed and the residual findings ride 3g.5's merged body re-render
+        // (fixReviewRounds below feeds reviewBodySuffix) plus the parked tally.
+        if (!reviewBoundReached(fixReview)) {
+          log(`[${item.slug}] §3e review on the CI-fix commit found a BLOCKING finding — escalating before push`);
+          return {
+            escalation: 'review-blocking',
+            payload: {
+              findings: fixReview.blocking,
+              stage: 'ci-fix',
+              sha,
+              round: fixReview.round,
+              max_rounds: REVIEW_BLOCKING_MAX_ROUNDS,
+            },
+          };
+        }
+        fixReview.residualBlocking = true;
+        log(
+          `[${item.slug}] §3e review on the CI-fix commit: round ${fixReview.round}/${REVIEW_BLOCKING_MAX_ROUNDS} ` +
+            `still has ${fixReview.blocking.length} BLOCKING finding(s) — convergence bound reached ` +
+            `(temperloop#1970): pushing the fix with them carried in ## Review notes instead of escalating again`,
+        );
       }
       fixReviewRounds.push(fixReview);
       // Push the fixed SHA and pin the re-poll to it. This is a plain push — no

@@ -506,6 +506,44 @@ fi
 # copy of this file, i.e. the version the change under test ships.
 : "${BUILD_GATE_SCOPED:=1}"
 
+# claude/workflows/build-level.mjs — the §3e REVIEW-BLOCKING CONVERGENCE BOUND:
+# how many review ROUNDS one item's worktree may spend before a HIGH-severity
+# finding stops costing another escalation round-trip and is instead carried
+# into the PR body's `## Review notes` for the human reviewer.
+#
+# WHY IT EXISTS (temperloop#1970). §3e is a cold, one-shot advisory pass: a HIGH
+# finding escalates `review-blocking`, the orchestrator loops the item back to
+# 3c, the worker fixes it, and a FRESH reviewer reads the (now larger) diff.
+# Nothing bounded that loop. Measured on one live item (temperloop#1938 L1, item
+# `interview-command-spec`/#1962): FIVE consecutive §3e passes, four DISTINCT
+# HIGHs, zero repeats, ~2h45m and ~1.05M subagent tokens before it converged —
+# and the spec grew 447 -> 635 lines across the fix passes, so each round
+# enlarged the surface the next round reviewed. The orchestrator had to invent a
+# stopping rule by hand at pass 5. This setting is that stopping rule as
+# machinery. Its companion half is the reviewer seat itself
+# (claude/agents/workflow-reviewer.md), now instructed to enumerate EVERY HIGH it
+# can identify in ONE pass rather than surfacing them serially.
+#
+# ADVISORY, NEVER A SUPPRESSION. Past the bound the findings are not discarded:
+# they ride the PR body (`## Review notes`, rendered by the same reviewBodySuffix
+# every round uses) and the parked record's `review.residual_blocking` tally, so
+# the human at the merge gate sees exactly what the reviewer said. What stops is
+# only the automatic build-review-build loop.
+#
+# 3 = at most TWO review-blocking escalations for one item, then ship with notes.
+# Any item that converges in fewer rounds behaves EXACTLY as it did before this
+# setting existed. Raise it to give a noisy surface more automatic rounds; a
+# non-positive value falls back to the .mjs's own in-file default rather than
+# disabling the bound — an unbounded loop is not an option this setting offers.
+#
+# Handed to build-level.mjs exactly like BUILD_GATE_SLICE_SECS above — as the
+# orchestrator-supplied WORKFLOW INPUT `input.reviewBlockingMaxRounds`, resolved
+# at build.md / sweep.md / fix.md Step 0 — because the Workflow runtime has no
+# shell to source this file (DESIGN NOTE 1). The .mjs keeps its own in-file
+# default, so an un-updated caller that omits the key (or resolves it to an empty
+# string) still runs bounded.
+: "${BUILD_REVIEW_BLOCKING_MAX_ROUNDS:=3}"
+
 # claude/workflows/build-level.mjs — the per-STEP WALL-CLOCK LIVENESS BOUND on a
 # machinery-executor step (the `prelude` / `pr-batch` / `ci-batch` batches and the
 # solo `gate` / `recover-probe` / `push-retry` calls), in seconds.
@@ -1638,6 +1676,7 @@ export BUILD_QUOTA_PAUSE_PCT BUILD_QUOTA_CACHE BUILD_QUOTA_WAIT_BUFFER \
        SWEEP_FANOUT_WIDTH SWEEP_DETECT_MODEL SWEEP_WORKER_MODEL SWEEP_BG_POLL_ATTEMPTS SWEEP_BG_POLL_INTERVAL \
        SWEEP_ADMIT_OPERATIONAL_EPICS \
        FIX_WORKER_MODEL INTERVIEW_PROBE_MODEL BUILD_MACHINERY_SOLO_MODEL BUILD_MACHINERY_BATCH_MODEL BUILD_GATE_SLICE_SECS \
+       BUILD_REVIEW_BLOCKING_MAX_ROUNDS \
        BUILD_MACHINERY_STEP_CEILING_SECS BUILD_MACHINERY_STEP_SLOW_SECS \
        PIPELINE_OPERATOR PIPELINE_REQUIRED_CHECK \
        PIPELINE_DRIVE PIPELINE_DRIVE_CAP PIPELINE_DRIVE_MODEL PIPELINE_DRIVE_SETTINGS \

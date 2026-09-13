@@ -6322,8 +6322,14 @@ console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
 # --- K1450 static lockstep guard: the CI-fix path re-runs §3e ---------------
 grep -q 'const fixReview = await runReviewers(item, wt);' "$MJS" \
   || fail "#1450: ciPollLoop's CI_FAILED arm must re-run runReviewers() against the CI-fix diff before the retry push"
-grep -q "escalation: 'review-blocking', payload: { findings: fixReview.blocking" "$MJS" \
+# temperloop#1970 reflowed this return across several lines when it wrapped the
+# escalation in the convergence bound, so the guard now pins the two halves that
+# actually carry the contract (the kind, and that it ships fixReview.blocking)
+# rather than one exact source line.
+grep -q "escalation: 'review-blocking'," "$MJS" \
   || fail "#1450: a blocking CI-fix review must escalate review-blocking before the retry push, exactly like the original 3e pass"
+grep -q 'findings: fixReview.blocking,' "$MJS" \
+  || fail "#1450: the CI-fix review-blocking escalation must carry fixReview.blocking as its findings payload"
 echo "PASS: #1450 ci-fix re-review guard — the CI_FAILED arm re-runs §3e against the fix commit before pushing it"
 
 # ============================================================================
@@ -6930,8 +6936,11 @@ grep -q 'function reviewDiffTsvGap' "$MJS" \
   || fail "#1976: build-level.mjs must define reviewDiffTsvGap() — the missing/mismatched-tsv guard, kept in legible .mjs rather than buried in prompt text"
 grep -q 'tsv_rows' "$MJS" \
   || fail "#1976: reviewDiffCmd must emit tsv_rows alongside tsv, and runReviewers must check it — the row-count guard against a relay-truncated table"
-grep -q 'fetchReviewDiff(stagePhase(STAGE_REVIEW))' "$MJS" \
-  || fail "#1976: the relay-drop guard must re-run the review-diff step through the SAME fetchReviewDiff() closure, never a re-derived command"
+# temperloop#1970 gave the closure a `bump` argument (the re-fetch must NOT
+# advance the §3e round counter a second time within one driver round), so the
+# guard pins the closure call WITH that argument rather than the bare form.
+grep -q 'fetchReviewDiff(stagePhase(STAGE_REVIEW), false)' "$MJS" \
+  || fail "#1976/#1970: the relay-drop guard must re-run the review-diff step through the SAME fetchReviewDiff() closure (never a re-derived command), and NON-BUMPING so one driver round advances the review-round counter exactly once"
 grep -q "escalate(item.slug, 'review-diff-error', gap)" "$MJS" \
   || fail "#1976: a still-incomplete tsv after the retry must escalate review-diff-error naming the gap (missing/mismatch)"
 echo "PASS: #1976 review-diff tsv-guard wiring — reviewDiffCmd emits tsv_rows, reviewDiffTsvGap detects a missing/mismatched tsv, runReviewers retries once through the same command before escalating"
@@ -8129,6 +8138,340 @@ for caller in '/build' '/fix' '/sweep'; do
     || fail "#1941: meta.description must name $caller as a caller of this script"
 done
 echo "PASS: #1941 meta.description guard — names /build, /fix, and /sweep as callers and never asserts a single dependency-level scope"
+
+# ============================================================================
+# TEST (K1970): the §3e REVIEW-BLOCKING CONVERGENCE BOUND.
+#
+#   Before this item nothing bounded the §3e loop: a HIGH finding escalated
+#   `review-blocking`, the orchestrator looped the item back to 3c, the worker
+#   fixed it, and a fresh cold reviewer read the now-LARGER diff — repeat. One
+#   live item (temperloop#1938 L1, `interview-command-spec`/#1962) spent FIVE
+#   consecutive passes, four DISTINCT HIGHs, zero repeats, ~2h45m and ~1.05M
+#   subagent tokens, with the reviewed spec growing 447 -> 635 lines across the
+#   rounds; the orchestrator invented a stopping rule by hand at pass 5.
+#
+#   Three behaviours, deliberately covering BOTH sides of the bound so the
+#   suite discriminates rather than merely observing the new code exists:
+#     - UNDER the bound, a HIGH escalates exactly as it did before (this is the
+#       negative case: if the bound fires early, this case goes red).
+#     - AT the bound, the item proceeds to 3f and the findings are CARRIED into
+#       the PR body's ## Review notes plus the parked review.residual_blocking
+#       tally — never discarded, never escalated again.
+#     - the ORCHESTRATOR SETTING (input.reviewBlockingMaxRounds, from
+#       $BUILD_REVIEW_BLOCKING_MAX_ROUNDS) actually moves where the bound sits.
+# ============================================================================
+run_node_case "K1970 under the bound: round 2 of 3 with a HIGH still escalates review-blocking (the bound must never fire early)" "
+$PREAMBLE
+
+setMachinery('bound-under',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/bound-under' },
+  // review_rounds:1 = one round already spent on this worktree, so THIS is
+  // round 2 of the default bound of 3 — still inside the budget.
+  { outcome: 'REVIEW_DIFF', files: ['claude/commands/build.md'], tsv: '', tsv_rows: 0, tsv_checksum: 0, review_rounds: 1 },
+  // Deliberately NO further entries: if the bound wrongly fires here the
+  // driver proceeds to the gate, the queue is exhausted and the mock throws.
+);
+happyWorker('bound-under');
+setReview('bound-under', '## Summary\\n1 finding.\\n\\n## Findings\\n### [HIGH] Silent failure mode in claude/commands/build.md Step 3\\n**Where:** claude/commands/build.md — Step 3\\n');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'bound-under', branch: 'build/bound-under', title: 'Touch build.md', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+let reason = null;
+if ((result.escalations ?? []).length !== 1) reason = 'a HIGH under the bound must still escalate: ' + JSON.stringify(result);
+else if (result.escalations[0].kind !== 'review-blocking') reason = 'wrong escalation kind: ' + result.escalations[0].kind;
+else if (result.escalations[0].payload.round !== 2) reason = 'the escalation must name its round number: ' + JSON.stringify(result.escalations[0].payload.round);
+else if (result.escalations[0].payload.max_rounds !== 3) reason = 'the escalation must name the bound it is under: ' + JSON.stringify(result.escalations[0].payload.max_rounds);
+else if ((result.parked ?? []).length !== 0) reason = 'a blocking round under the bound must not park the item: ' + JSON.stringify(result.parked);
+if (!reason) {
+  const prBatch = callLog.find(c => (c.opts.label||'').startsWith('pr-batch:bound-under'));
+  if (prBatch) reason = 'an escalating round must stop BEFORE 3f (push/PR): ' + prBatch.opts.label;
+}
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+run_node_case "K1970 at the bound: round 3 of 3 opens the PR with the HIGH carried into ## Review notes, never a further escalation" "
+$PREAMBLE
+
+setMachinery('bound-at',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/bound-at' },
+  // review_rounds:2 = two rounds already spent, so THIS is round 3 == the
+  // default bound: the loop stops here and the item ships with its notes.
+  { outcome: 'REVIEW_DIFF', files: ['claude/commands/build.md'], tsv: '', tsv_rows: 0, tsv_checksum: 0, review_rounds: 2 },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-ba' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'sha-ba', branch: 'build/bound-at' },
+  { outcome: 'PR_OPENED', pr_number: 1970 },
+  { outcome: 'CI_GREEN' },
+);
+happyWorker('bound-at');
+setReview('bound-at', '## Summary\\n1 finding.\\n\\n## Findings\\n### [HIGH] Residual invariant gap in claude/commands/build.md Step 3\\n**Issue:** UNRESOLVED-AT-BOUND\\n');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'bound-at', branch: 'build/bound-at', title: 'Touch build.md', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+let reason = null;
+if ((result.escalations ?? []).length !== 0) reason = 'at the bound the item must NOT escalate again: ' + JSON.stringify(result.escalations);
+else if ((result.parked ?? []).length !== 1) reason = 'at the bound the item must park with its PR open: ' + JSON.stringify(result);
+const rec = (result.parked ?? [])[0];
+if (!reason && rec.pr !== 1970) reason = 'parked record must carry the opened PR: ' + JSON.stringify(rec);
+// The bound's PER-RUN EXECUTION SIGNAL: the tally names the round and carries
+// what was left outstanding, so Step 6 can surface it (mandatory-step birth rule).
+if (!reason && !(rec.review && Array.isArray(rec.review.residual_blocking) && rec.review.residual_blocking.length === 1))
+  reason = 'the parked tally must carry review.residual_blocking: ' + JSON.stringify(rec.review);
+else if (!reason && rec.review.residual_blocking[0].round !== 3)
+  reason = 'residual_blocking must name the round that hit the bound: ' + JSON.stringify(rec.review.residual_blocking[0]);
+else if (!reason && rec.review.residual_blocking[0].max_rounds !== 3)
+  reason = 'residual_blocking must name the bound: ' + JSON.stringify(rec.review.residual_blocking[0]);
+else if (!reason && !JSON.stringify(rec.review.residual_blocking[0].findings).includes('UNRESOLVED-AT-BOUND'))
+  reason = 'residual_blocking must carry the findings themselves, not just a count: ' + JSON.stringify(rec.review.residual_blocking[0]);
+// CARRIED, NOT SUPPRESSED: the HIGH text must reach the human via the PR body.
+const prBatch = callLog.find(c => (c.opts.label||'').startsWith('pr-batch:bound-at'));
+if (!reason && !prBatch) reason = 'at the bound the item must reach 3f (push/PR) — no pr-batch call was made';
+if (!reason && !prBatch.promptFull.includes('## Review notes'))
+  reason = 'the PR body must carry a ## Review notes section at the bound: ' + prBatch.promptFull.slice(0, 400);
+if (!reason && !prBatch.promptFull.includes('UNRESOLVED-AT-BOUND'))
+  reason = 'the residual HIGH findings TEXT must be spliced into the PR body, never dropped: ' + prBatch.promptFull.slice(0, 600);
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+run_node_case "K1970 setting wired: reviewBlockingMaxRounds=1 makes the FIRST blocking round the last (input.* actually moves the bound)" "
+$PREAMBLE
+
+setMachinery('bound-cfg',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/bound-cfg' },
+  // No review_rounds field at all -> 0 prior rounds -> this is round 1, which
+  // under the DEFAULT bound of 3 would escalate. The orchestrator-supplied
+  // setting is the only thing that can make it ship instead.
+  { outcome: 'REVIEW_DIFF', files: ['claude/commands/build.md'], tsv: '', tsv_rows: 0, tsv_checksum: 0 },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-bc' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'sha-bc', branch: 'build/bound-cfg' },
+  { outcome: 'PR_OPENED', pr_number: 1971 },
+  { outcome: 'CI_GREEN' },
+);
+happyWorker('bound-cfg');
+setReview('bound-cfg', '## Summary\\n1 finding.\\n\\n## Findings\\n### [HIGH] Silent failure mode in claude/commands/build.md Step 3\\n');
+
+globalThis.args = { ...baseArgs, reviewBlockingMaxRounds: 1, items: [
+  { slug: 'bound-cfg', branch: 'build/bound-cfg', title: 'Touch build.md', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+let reason = null;
+if ((result.escalations ?? []).length !== 0) reason = 'with the bound set to 1 the first blocking round must not escalate: ' + JSON.stringify(result.escalations);
+else if ((result.parked ?? []).length !== 1) reason = 'expected the item to park: ' + JSON.stringify(result);
+const rec = (result.parked ?? [])[0];
+if (!reason && !(rec.review && rec.review.residual_blocking && rec.review.residual_blocking[0].max_rounds === 1))
+  reason = 'the tally must report the CONFIGURED bound, not the in-file default: ' + JSON.stringify(rec.review);
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+# --- K1970 static lockstep guards (the mandatory-step-birth-rule signal) -----
+# These go RED the moment the bound's enforcement is deleted from either
+# blocking call site, or the named setting stops being the seam it reads from.
+grep -q 'const REVIEW_BLOCKING_MAX_ROUNDS = ' "$MJS" \
+  || fail "#1970: build-level.mjs must define the REVIEW_BLOCKING_MAX_ROUNDS convergence bound"
+grep -q 'input.reviewBlockingMaxRounds' "$MJS" \
+  || fail "#1970: the bound must be a NAMED SETTING handed in as input.reviewBlockingMaxRounds (kernel § Named-setting convention), never an unreachable literal"
+grep -q 'function reviewBoundReached(review)' "$MJS" \
+  || fail "#1970: both blocking call sites must share ONE reviewBoundReached() predicate so they cannot drift apart"
+grep -q 'if (!reviewBoundReached(review)) {' "$MJS" \
+  || fail "#1970: the §3e blocking site must gate its review-blocking escalation on the convergence bound"
+grep -q 'if (!reviewBoundReached(fixReview)) {' "$MJS" \
+  || fail "#1970: the §3g CI-fix blocking site must gate its review-blocking escalation on the SAME convergence bound"
+grep -q 'residual_blocking' "$MJS" \
+  || fail "#1970: reaching the bound must surface a per-run tally (review.residual_blocking), never a prose-only declaration"
+grep -q 'build-review-rounds' "$MJS" \
+  || fail "#1970: the round counter must be persisted per-worktree so it survives the escalate -> re-invoke loop it bounds"
+grep -q 'review_rounds' "$MJS" \
+  || fail "#1970: reviewDiffCmd must emit review_rounds for the bound to read"
+grep -q ': "\${BUILD_REVIEW_BLOCKING_MAX_ROUNDS:=' "$REPO_ROOT/workflows/scripts/build/build.config.sh" \
+  || fail "#1970: BUILD_REVIEW_BLOCKING_MAX_ROUNDS must be declared in build.config.sh (the ONE place the default lives)"
+grep -q 'BUILD_REVIEW_BLOCKING_MAX_ROUNDS' "$REPO_ROOT/workflows/scripts/config/setting-registry.tsv" \
+  || fail "#1970: BUILD_REVIEW_BLOCKING_MAX_ROUNDS must carry a setting-registry.tsv row"
+grep -qiE 'every HIGH|all HIGH' "$REPO_ROOT/claude/agents/workflow-reviewer.md" \
+  || fail "#1970: the workflow-reviewer seat must be instructed to enumerate EVERY HIGH in one pass — the bound alone only truncates serial discovery, it does not fix it"
+echo "PASS: #1970 convergence-bound guards — the bound is enforced at both blocking sites from a named setting, tallied per run, and the reviewer seat is told to enumerate every HIGH in one pass"
+
+# --- K1970 REPORT-SURFACE lockstep guards (the tally's declared READER) ------
+# The guards above pin the tally's PRODUCER (build-level.mjs emits
+# review.residual_blocking). A per-run tally is only an execution signal if the
+# human-facing report DECLARED to read it actually names it — the exact failure
+# class mandatory-step-registry.tsv's own header names, and the one this item
+# exists to fix. Without these, an item that shipped a PR with an UNRESOLVED
+# HIGH reads byte-identically to a clean one in every orchestrator summary and
+# the only trace is buried in that one PR's ## Review notes.
+#
+# SECTION-SCOPED on purpose: a stray `residual_blocking` mention anywhere else
+# in the spec must not satisfy the guard, so each check is confined to the
+# report step's own line range (heading -> next `## ` heading, or EOF).
+k1970_section() { # <file> <heading-regex> -> that section's text on stdout
+  local _f="$1" _h="$2" _start _end
+  _start="$(grep -nE "$_h" "$_f" | head -1 | cut -d: -f1)"
+  [ -n "$_start" ] || return 1
+  _end="$(awk -v s="$_start" 'NR>s && /^## /{print NR-1; exit}' "$_f")"
+  [ -n "$_end" ] || _end="$(wc -l <"$_f")"
+  sed -n "${_start},${_end}p" "$_f"
+}
+
+K1970_BUILD_MD="$REPO_ROOT/claude/commands/build.md"
+[ -f "$K1970_BUILD_MD" ] \
+  || fail "#1970: claude/commands/build.md is missing — the report-surface half of this contract pair cannot be verified"
+K1970_STEP6="$(k1970_section "$K1970_BUILD_MD" '^## Step 6 — Final summary')" \
+  || fail "#1970: build.md '## Step 6 — Final summary' heading not found — the tally's declared reader cannot be section-scoped"
+printf '%s\n' "$K1970_STEP6" | grep 'residual_blocking' >/dev/null \
+  || fail "#1970: build.md Step 6's summary must name residual_blocking — a tally the .mjs emits and the Step 6 prose never renders is a signal that dead-ends, which is exactly the defect this item fixes"
+printf '%s\n' "$K1970_STEP6" | grep 'max_rounds' >/dev/null \
+  || fail "#1970: build.md Step 6's residual_blocking case must name each affected item's round/max_rounds, not just a count"
+printf '%s\n' "$K1970_STEP6" | grep '## Review notes' >/dev/null \
+  || fail "#1970: build.md Step 6's residual_blocking case must tell the operator to read the PR's ## Review notes before merging — that is where the carried findings live"
+
+K1970_SWEEP_MD="$REPO_ROOT/claude/commands/sweep.md"
+[ -f "$K1970_SWEEP_MD" ] \
+  || fail "#1970: claude/commands/sweep.md is missing — the report-surface half of this contract pair cannot be verified"
+K1970_SWEEP_REPORT="$(k1970_section "$K1970_SWEEP_MD" '^## Step 4 — Report')" \
+  || fail "#1970: sweep.md '## Step 4 — Report' heading not found — the tally's declared reader cannot be section-scoped"
+printf '%s\n' "$K1970_SWEEP_REPORT" | grep 'residual_blocking' >/dev/null \
+  || fail "#1970: sweep.md Step 4's report must name residual_blocking — /sweep passes reviewBlockingMaxRounds, so it can strand a residual HIGH exactly like /build"
+printf '%s\n' "$K1970_SWEEP_REPORT" | grep '## Review notes' >/dev/null \
+  || fail "#1970: sweep.md Step 4's residual_blocking block must point at the PR's ## Review notes"
+
+K1970_FIX_MD="$REPO_ROOT/claude/commands/fix.md"
+[ -f "$K1970_FIX_MD" ] \
+  || fail "#1970: claude/commands/fix.md is missing — the report-surface half of this contract pair cannot be verified"
+K1970_FIX_REPORT="$(k1970_section "$K1970_FIX_MD" '^## Step 7 — Report the terminal disposition')" \
+  || fail "#1970: fix.md '## Step 7 — Report the terminal disposition' heading not found — the tally's declared reader cannot be section-scoped"
+printf '%s\n' "$K1970_FIX_REPORT" | grep 'residual_blocking' >/dev/null \
+  || fail "#1970: fix.md Step 7's report must name residual_blocking — /fix passes reviewBlockingMaxRounds, so it can strand a residual HIGH exactly like /build"
+printf '%s\n' "$K1970_FIX_REPORT" | grep '## Review notes' >/dev/null \
+  || fail "#1970: fix.md Step 7's residual_blocking line must point at the PR's ## Review notes"
+echo "PASS: #1970 report-surface guards — build.md Step 6, sweep.md Step 4 and fix.md Step 7 each render the residual_blocking tally the .mjs emits, section-scoped"
+
+# ============================================================================
+# TEST (K1970-e2e): the round counter's GENERATED SHELL, executed for real
+#   against a REAL LINKED worktree.
+#
+#   Every mock case above hands the driver a `review_rounds` fixture and never
+#   runs the shell reviewDiffCmd() actually generates — so the durability half
+#   (does the counter survive the escalate -> orchestrator -> re-invoke loop at
+#   all?) would be entirely untested by them. This case closes that, mirroring
+#   the #1219-e2e / #1937-e2e lift-the-generated-command pattern: it asserts
+#   the counter advances across SEPARATE invocations, and that the marker lands
+#   in the worktree's GIT DIR rather than its working tree (a stray untracked
+#   file there would show up in `git status`, in the 3e.5 gate's --scoped
+#   untracked-path resolution, and in the tracked-path coverage manifests).
+# ============================================================================
+K1970_E2E="$WF_TEST_TMPDIR/review-rounds-e2e"
+mkdir -p "$K1970_E2E"
+mkdir -p "$K1970_E2E/main-checkout"
+(
+  set -e
+  cd "$K1970_E2E/main-checkout"
+  git init --quiet .
+  git symbolic-ref HEAD refs/heads/main
+  git config user.email t@example.com
+  git config user.name t
+  printf 'base\n' > f.txt
+  git add -A && git commit --quiet -m base
+) || fail "#1970-e2e: could not build the base fixture"
+git -C "$K1970_E2E/main-checkout" worktree add --quiet "$K1970_E2E/repo.wt/rounds" -b build/rounds main \
+  || fail "#1970-e2e: could not create the linked worktree"
+# Fixture self-check: a LINKED worktree's .git is a pointer FILE, so
+# `git rev-parse --git-dir` (not a literal .git/ path) is the only correct way
+# to reach its private git dir — the same shape #1937 was burned by.
+[ -f "$K1970_E2E/repo.wt/rounds/.git" ] \
+  || fail "#1970-e2e: fixture worktree's .git is not a pointer FILE — this fixture does not exercise the linked-worktree shape"
+
+read -r -d '' K1970_EMIT_BODY << 'K1970_EMIT_END' || true
+import { writeFileSync } from 'fs';
+setMachinery('rounds',
+  { outcome: 'CREATED', path: process.env.K1970_WT },
+  { outcome: 'REVIEW_DIFF', files: [], tsv: '', tsv_rows: 0 },
+);
+happyWorker('rounds');
+globalThis.args = { ...baseArgs, repoRoot: process.env.K1970_ROOT + '/repo', items: [
+  { slug: 'rounds', branch: 'build/rounds', title: 'e2e', kind: 'impl', acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+await mod.default();
+const rd = callLog.find(c => /^review-diff:/.test(String(c.opts.label || '')));
+writeFileSync(process.env.K1970_OUT, rd ? (rd.promptFull.split(/\nCommand:\n/)[1] || '') : '');
+K1970_EMIT_END
+
+K1970_CASE="$WF_TEST_TMPDIR/e2e-rounds.mjs"
+printf '%s\n' "$PREAMBLE" > "$K1970_CASE"
+printf '%s\n' "$K1970_EMIT_BODY" >> "$K1970_CASE"
+MJS_PATH="$MJS" AGENT_DEF_PATH="$AGENT_DEF" \
+K1970_ROOT="$K1970_E2E" K1970_WT="$K1970_E2E/repo.wt/rounds" K1970_OUT="$K1970_E2E/review-diff.sh" \
+  node "$K1970_CASE" >/dev/null || fail "#1970-e2e: could not emit the generated review-diff command (node failed)"
+[ -s "$K1970_E2E/review-diff.sh" ] || fail "#1970-e2e: no review-diff command was generated"
+
+K1970_GD="$(git -C "$K1970_E2E/repo.wt/rounds" rev-parse --git-dir)"
+[ -e "$K1970_GD/build-review-rounds" ] \
+  && fail "#1970-e2e: fixture self-check failed — the round marker already exists before any run"
+
+K1970_R1="$(bash "$K1970_E2E/review-diff.sh" 2>/dev/null | grep -o '\"review_rounds\":[0-9]*' | head -1)"
+[ "$K1970_R1" = '"review_rounds":0' ] \
+  || fail "#1970-e2e: a fresh worktree's FIRST review round must report 0 prior rounds; got '$K1970_R1'"
+K1970_R2="$(bash "$K1970_E2E/review-diff.sh" 2>/dev/null | grep -o '\"review_rounds\":[0-9]*' | head -1)"
+[ "$K1970_R2" = '"review_rounds":1' ] \
+  || fail "#1970-e2e: the round counter must be DURABLE across separate invocations (that is the escalate -> re-invoke loop it bounds); got '$K1970_R2'"
+K1970_R3="$(bash "$K1970_E2E/review-diff.sh" 2>/dev/null | grep -o '\"review_rounds\":[0-9]*' | head -1)"
+[ "$K1970_R3" = '"review_rounds":2' ] \
+  || fail "#1970-e2e: the round counter must keep advancing; got '$K1970_R3'"
+[ -f "$K1970_GD/build-review-rounds" ] \
+  || fail "#1970-e2e: the round marker must live in the worktree's private GIT DIR"
+git -C "$K1970_E2E/repo.wt/rounds" status --porcelain | grep . >/dev/null \
+  && fail "#1970-e2e: the round marker must NOT appear in the worktree's working tree (git status must stay clean — a stray untracked file would reach the --scoped gate and the coverage manifests)"
+echo "PASS: #1970-e2e round counter — the real generated review-diff shell reads and advances a DURABLE per-worktree counter kept in the private git dir, leaving the working tree clean"
+
+# ============================================================================
+# TEST (K1970-octal): a CORRUPTED-BUT-PRESENT marker degrades SOFT.
+#
+#   The `tr -cd '0-9'` filter strips non-digits but not leading zeros, and
+#   POSIX `$(( ))` reads a leading-`0` numeral as OCTAL — so a marker holding
+#   `08`/`09` is not an off-by-N count but a HARD arithmetic error. Under
+#   `sh` that error is FATAL: the shell exits before the closing printf, so
+#   the machinery executor receives NO JSON line and §3e escalates
+#   `review-diff-error` — the one escalation kind the loop this item bounds is
+#   least able to act on. This code path never writes such a value itself, but
+#   the marker is an ordinary file in the worktree's git dir (hand-editable,
+#   restorable from a stale snapshot) and the whole marker contract is
+#   "every step fails SOFT".
+#
+#   Executed against the SAME real generated shell the case above lifted, and
+#   asserted under BOTH shells: `sh` (where the unfixed form aborts outright)
+#   and `bash` (where it survives but emits `"review_rounds":08` — invalid
+#   JSON, so the relay breaks one layer later instead).
+# ============================================================================
+printf '08\n' > "$K1970_GD/build-review-rounds"
+K1970_OCT_SH="$(sh "$K1970_E2E/review-diff.sh" 2>/dev/null | grep -o '"review_rounds":[0-9]*' | head -1 || true)"
+[ "$K1970_OCT_SH" = '"review_rounds":8' ] \
+  || fail "#1970-octal: a marker holding '08' must read as DECIMAL 8 under sh, not abort the step on an octal arithmetic error; got '$K1970_OCT_SH'"
+printf '09\n' > "$K1970_GD/build-review-rounds"
+K1970_OCT_BASH="$(bash "$K1970_E2E/review-diff.sh" 2>/dev/null | grep -o '"review_rounds":[0-9]*' | head -1 || true)"
+[ "$K1970_OCT_BASH" = '"review_rounds":9' ] \
+  || fail "#1970-octal: a marker holding '09' must read as DECIMAL 9 under bash — a leading zero also makes the emitted JSON unparseable; got '$K1970_OCT_BASH'"
+[ "$(cat "$K1970_GD/build-review-rounds")" = "10" ] \
+  || fail "#1970-octal: the bump must write back a normalised DECIMAL count (9 -> 10), not re-corrupt the marker; got '$(cat "$K1970_GD/build-review-rounds")'"
+# All-zeros: stripping leading zeros leaves the EMPTY string, so the existing
+# `[ -n … ] || review_rounds=0` fallback is what must catch it — the same soft
+# degradation a missing or unwritable marker already gets.
+printf '000\n' > "$K1970_GD/build-review-rounds"
+K1970_ZEROS="$(sh "$K1970_E2E/review-diff.sh" 2>/dev/null | grep -o '"review_rounds":[0-9]*' | head -1 || true)"
+[ "$K1970_ZEROS" = '"review_rounds":0' ] \
+  || fail "#1970-octal: an all-zeros marker must fall back to 0 (the empty result of stripping leading zeros), never emit an empty field; got '$K1970_ZEROS'"
+echo "PASS: #1970-octal corrupted marker — a leading-zero count reads as decimal and an all-zeros one degrades to 0, so a hand-edited marker never aborts the step with an octal arithmetic error"
 
 echo ""
 echo "All test_workflow.sh cases passed."
