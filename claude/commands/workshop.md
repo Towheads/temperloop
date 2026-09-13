@@ -1,15 +1,15 @@
 ---
-description: Facilitate a structured design conversation for INVENTED work (an idea born in conversation, not a discovered defect) against the coverage template in `claude/design-schema.md`, then ratify and materialize it into the pipeline as a board epic with a well-formed `## Contract`, draft ADRs for its architectural calls, a Decisions note, and a hand-off to `/assess --epic N`. Operator-present only — no unattended arm.
+description: Facilitate a structured design conversation for INVENTED work (an idea born in conversation, not a discovered defect) in two phases — Phase 1 executes `/interview` inline to build a shared understanding out of the operator's own decisions, Phase 2 expands every dimension of `claude/design-schema.md` unattended, runs the review panel and congruence pass, and puts the result back as one chunked delta report — then ratify and materialize it into the pipeline as a board epic with a well-formed `## Contract`, draft ADRs for its architectural calls, a Decisions note, and a hand-off to `/assess --epic N`. Operator-present only — no unattended arm.
 argument-hint: "[<problem-statement> | <pointer-note>] [--board <N> | --project <name>]"
 ---
 
 You are running the **workshop** command (formerly `/design`; renamed —
 temperloop#354 — to avoid colliding with Claude Code's builtin `/design`).
-Goal: take an idea that was *invented* in conversation — not discovered as
-a Backlog defect — and walk it against a fixed coverage template until
-every dimension has an explicit disposition, then ratify and materialize
-it into the same pipeline `/triage` feeds. This is the pipeline's
-**second front door**, for invented rather than discovered work
+Goal: take an idea *invented* in conversation — not discovered as a Backlog
+defect — interview the operator until the design's decisions are theirs,
+cover the rest against a fixed template, and ratify and materialize it into
+the same pipeline `/triage` feeds. This is the pipeline's **second front
+door**, for invented rather than discovered work
 (`Decisions/temperloop - design command as front door for invented work`):
 
 ```
@@ -17,7 +17,7 @@ capture.sh (bugs) ┐
 sweeps / audits   ┼─► /triage      cull → collapse → group → epic + sub-issues
 loose Backlog     ┘
                                                                     │
-a design conversation ──► /workshop   intake → coverage walk → review pass → ratify → materialize
+a design conversation ──► /workshop   interview → coverage + review → delta approval → ratify → materialize
                                                                     │
                                                                     ▼
                                               board epic (## Contract, design-brief: marker)
@@ -27,21 +27,40 @@ a design conversation ──► /workshop   intake → coverage walk → review 
 ```
 
 `/triage` explicitly disclaims a pre-designed epic (its own spec: "no path to
-decompose an already-existing, fully-specified epic"); `/workshop` is that epic's
-point of origin, not a patch to triage. Both front doors converge on the same
-`/assess --epic N` → `/build` pipeline — nothing downstream of materialization
-changes.
+decompose an already-existing, fully-specified epic"); `/workshop` is that
+epic's point of origin, not a patch to triage. Both front doors converge on
+the same `/assess --epic N` → `/build` pipeline.
+
+## The two phases
+
+**Phase 1 (Steps 0–1)** — the operator drives, in batched `AskUserQuestion`
+rounds; the premise gate is round 1's Q1. **Phase 2 (Steps 2–3.7)** — the
+facilitator drives, foreground and unattended, with one operator gate at
+the end: the chunked delta report (3.7), plus the ratio-gate round (3.6) when
+over half the dimensions came out facilitator-drafted, not interviewed.
+**Phase 3 (Steps 4–6)** — ratify, materialize, summarize.
+
+Why (`docs/adr/0035-workshop-is-an-interview-then-unattended-coverage.md`):
+the predecessor walked all seventeen dimensions one modal stop at a time —
+26 stops on the 2026-09-11 graph-of-record brief, 10 acknowledgement-only,
+Claude drafting and the operator auditing — while the panel on that same
+brief folded ≈25 real findings. The part that paid is kept and run
+unattended; the part that did not is replaced by the interview.
 
 ## Scope
 
-This file ships the full flow end to end: intake → coverage walk → review
-pass → ratify → materialize, including Step 3's tier decision/adversarial
-panel/findings fold-back and Step 5c's draft ADR emission (conforming to
+This file ships the full flow end to end: interview → dimension expansion →
+review pass → congruence pass → delta approval → ratify → materialize,
+including Step 3's tier decision/adversarial panel/findings fold-back and
+Step 5c's draft ADR emission (conforming to
 `docs/adr/0000-adr-process.md`). Step 3.2's install-surface mandate
 specifies *when* an executed first-run/uninstall persona run is required;
-the agents that actually run one — `claude/agents/hobbyist-persona.md`,
+the agents that run one — `claude/agents/hobbyist-persona.md`,
 `consultant-persona.md`, `team-member-persona.md` — are the
-`design-persona-agents` (temperloop#221).
+`design-persona-agents` (temperloop#221). Phase 1's question mechanics —
+frontier, fact probes, per-round persist, resume grammar — belong to
+`claude/commands/interview.md`; this file names the parameter block it
+hands over, never restating them.
 
 ## Inputs
 
@@ -59,56 +78,69 @@ the agents that actually run one — `claude/agents/hobbyist-persona.md`,
 
 - **Operator-present only — no unattended arm.** `/workshop` is modal by <!-- cite: W.1 class:rubber-stamped-coverage-walk -->
   construction: no `--unattended` flag, no `ScheduleWakeup` poll, no async
-  decision-issue backend. Every ask (Step 4's ratify confirmation; any
-  disambiguating question during the walk) is a direct, interactive
-  `AskUserQuestion` — never routed through `decision_sink_ask(...)`, whose
-  whole purpose is choosing between a live operator and an absent one, a
-  choice that never arises here.
+  decision-issue backend. Every ask (Phase 1's interview rounds, Step 3.6's
+  ratio-gate round, Step 3.7's delta-report chunks, Step 4's ratify
+  confirmation) is a direct, interactive `AskUserQuestion` — never routed
+  through `decision_sink_ask(...)`, whose whole purpose is choosing between
+  a live operator and an absent one, a choice that never arises here. Phase
+  2 running *unattended* means no operator gate between 3.1 and 3.7, not
+  that the operator has left.
 - **Minimum-viable-output rule.** Whatever else is unavailable — no `gh` auth, <!-- cite: W.2 guard:docs/principles.md -->
   no repo, no registered board, no reviewer agents declared (Step 3) — the
-  coverage walk still produces a **ratified brief note in the knowledge
-  store**. That is the floor this command guarantees. Every dependency below
-  degrades legibly (a stated `skipped — <reason>` line, never a silent
-  no-op) rather than blocking the walk itself.
+  command still produces a **ratified brief note in the knowledge store**.
+  That is the floor. Every dependency below degrades legibly (a stated
+  `skipped — <reason>` line, never a silent no-op) rather than blocking.
 - **Idempotent materialization.** Epic creation is **probe-before-create** on <!-- cite: W.3 class:duplicate-epics-on-rerun -->
-  the `design-brief:` marker line (Step 5b) — a re-run of `/workshop` against an
-  already-ratified brief (or a re-run of just Step 5 after a partial failure)
-  **adopts** the existing epic rather than duplicating it, exactly like
-  `/triage`'s epic creation.
+  the `design-brief:` marker line (Step 5b) — a re-run against an
+  already-ratified brief (or of just Step 5 after a partial failure)
+  **adopts** the existing epic rather than duplicating it.
 - **The dimension list belongs to `claude/design-schema.md`, not to this <!-- cite: W.4 class:driftable-dimension-list-copy -->
-  file.** This command walks whatever that file currently defines — the
-  kernel's 16 dimensions plus any overlay-added ones (letter-suffixed, e.g.
-  `16a`, per that file's § Overlay extensibility — add-only). Never hand-add
-  or hand-drop a dimension here; a dimension-list change is a `design-schema.md`
-  edit (kernel-repo, upstream-first per `claude/CLAUDE.kernel.md` § Kernel vs
-  overlay routing rule).
+  file.** Step 2 expands whatever that file currently defines — the
+  kernel's 17 dimensions plus any overlay-added ones (letter-suffixed, e.g.
+  `16a`, per its § Overlay extensibility — add-only). Never hand-add or
+  hand-drop a dimension here; that is a `design-schema.md` edit
+  (kernel-repo, upstream-first per the kernel's routing rule).
 - **No silent skips.** Every dimension gets exactly one of the three
   dispositions defined in `claude/design-schema.md` § Disposition grammar
-  (quoted verbatim in Step 2 below) — never left blank, never inferred.
-- **Kernel-only checkout works end to end.** This checkout (temperloop) has a
-  plain-files knowledge store and its own board (board 7, Status carried on
-  `fnd:status:*` labels) — every step below is written to work on that
-  substrate with no overlay dependency, per the ratified design brief's
-  first-run-experience dimension (§ 12).
+  (quoted verbatim in Step 2 below) — never blank, never inferred. A
+  dimension no interview decision reached is **drafted and flagged**, never
+  passed off as the operator's call (Step 2.3).
+- **Persist-then-ask — dual-surface before any gate.** Never open an <!-- cite: W.8 incident:K#670 -->
+  accept/contest question over brief content until that content is **both
+  (a)** persisted to the brief note via Step 2.4's write primitive — the
+  note is the **artifact of record**, and a write's OK return is not proof
+  it landed, so confirm it with a read-back — **and (b)** presented in
+  chat, so the operator reviews the text itself rather than a gist of it.
+  Neither alone is enough, and both must be current *before* the question
+  is posed. Gating over content that exists **only** as a transient chat
+  bullet list is forbidden (temperloop#670: a 13-dimension draft gated for
+  approval while the brief note was still empty). **Scope: every Phase 2
+  and Phase 3 gate, no exemptions.** Phase 1's own equivalent is
+  `claude/commands/interview.md` § Operating principles'
+  persist-before-you-ask rule, applied by that spec, not re-imposed here.
+- **Kernel-only checkout works end to end.** This checkout (temperloop) has
+  a plain-files knowledge store and its own board (board 7, Status on
+  `fnd:status:*` labels); every step below works on that substrate with no
+  overlay dependency.
 
 ## Step 0 — Validate
 
 Run in parallel:
 
-1. **Knowledge store reachable.** The brief lives at `Designs/<short
-   title>.md` in the knowledge store, resolved per
+1. **Knowledge store reachable.** The brief lives at `Designs/<repo> - <short
+   title>.md`, resolved per
    `workflows/scripts/lib/knowledge_store.contract.md`. On an Obsidian-backed
    checkout, confirm `mcp__obsidian-builtin__*` tools are loaded (the
    agent-plane transport for that mode); on a plain-files checkout, confirm
-   `KNOWLEDGE_STORE_ROOT` resolves (default per the contract). Stop with a
-   one-line error if neither resolves — there is no brief without this.
+   `KNOWLEDGE_STORE_ROOT` resolves. Stop with a one-line error if neither
+   resolves — there is no brief without this.
 2. **`claude/design-schema.md` reachable.** Confirm the file exists in this
    checkout (deployed to `~/.claude/design-schema.md` by `make install-claude`
    alongside `plan-schema.md`). If missing, stop: "design-schema missing —
    run `make install-claude` from the foundation checkout, or copy
    `claude/design-schema.md` to `~/.claude/design-schema.md` directly (this
    repo's Makefile carries no `install-claude` target)."
-3. **`gh` + repo (best-effort — needed for materialize, not for the walk).**
+3. **`gh` + repo (best-effort — needed for materialize, not for the design).**
    `gh auth status`; if it fails, or no repo resolves at all (`gh repo view`
    also fails), note the gap and continue — Step 5 degrades materialize to
    brief-only rather than blocking Steps 1–4.
@@ -121,55 +153,72 @@ Run in parallel:
    or no registered board for this repo, is **not fatal** — it only means
    Step 5b's epic lands as a plain `gh issue create` with no board mirroring.
 5. **Reviewer-agent capability probing happens at Step 3, not here.** No
-   probe result changes Steps 0–2's behavior, so it's deferred to the point
-   of use — Step 3 probes `architecture-reviewer`, `requirements-auditor`,
-   a red-team lens, and any persona agent right before it would spawn each,
+   probe result changes Steps 0–2's behavior, so it is deferred to the
+   point of use — Step 3 probes each lens right before it would spawn it,
    per the canonical predicate (Step 3.3).
+6. **Config sourced (best-effort).**
+   `source workflows/scripts/build/build.config.sh 2>/dev/null || true` —
+   the one place Phase 1's fact-probe tier defaults. From here on both this
+   spec and the interview it executes name that tier only as
+   `$INTERVIEW_PROBE_MODEL`, never a literal (`claude/CLAUDE.kernel.md`
+   § Named-setting convention); where the config file is not vendored,
+   `${INTERVIEW_PROBE_MODEL:-}` is empty and probes run at the session
+   tier, stated once rather than silently.
 
-If check 1 or 2 fails, stop. Checks 3–4 are best-effort and never stop the
-run — they only shape Step 5's degradation path; check 5 shapes Step 3's.
+If check 1 or 2 fails, stop. Checks 3, 4 and 6 are best-effort — they only
+shape Step 5's degradation path and Phase 1's probe tier; check 5 shapes
+Step 3's.
 
-## Step 1 — Intake
+## Step 1 — Phase 1: the interview
 
-Establish problem/outcome, the stranger test, and the kernel/overlay routing
-call **before** anything else — they gate every downstream dimension, so
-getting them right first means the rest of the walk isn't re-litigating a
-foundation that later shifts underneath it.
+Phase 1 produces the brief's `## Shared understanding` section — the problem
+in the operator's words, the facts the facilitator looked up itself, the
+numbered decisions, deferrals and risks — by **executing
+`claude/commands/interview.md` inline, in this same session**, with the
+parameter block item 5 composes. Never as a subagent: that spec's
+§ Invocation contract owns the rule and the reason (the caller's context
+*is* the interview's context), applied here rather than restated.
 
 1. **Source the problem statement.** If `$1` was given, read it (a one-line
-   statement, or the pointer note it names). Otherwise ask the operator
-   directly, live: what problem is this, and for whom?
-2. **Dimension 1 — Problem & outcome (stranger standpoint).** State the
-   problem and the customer-visible outcome from a **stranger's** point of
-   view — never the implementation's. This is the exact content
-   `claude/design-schema.md`'s dimension 1 asks for; capture it now so Step 2
-   can simply confirm/refine it rather than starting cold.
-3. **Stranger test → kernel/overlay routing.** Apply the stranger test from
-   `claude/CLAUDE.kernel.md` § Kernel vs overlay routing rule: would a
-   stranger's kernel-only install need this for the kernel machinery (board
-   adapter, build/sweep pipeline, install/doctor, branch/PR policy) to work
-   correctly? The answer feeds **dimension 3** (Alignment / routing)
-   directly — record the routing call and its rationale now.
-
+   statement, or the pointer note it names); otherwise ask the operator
+   live: what problem is this, and for whom? This is the interview's seed
+   (`interview.md` § Inputs), not a dimension write.
+2. **Resolve the brief path.** `Designs/<repo> - <short title>.md` — the
+   store is one flat corpus per `$HOME`
+   (`docs/features/knowledge-store.md` § Limitations), so the repo prefix
+   is what keeps two repos' briefs on one topic apart.
+3. **Dimensions 1 and 3 are interview decisions, not a pre-fill.** The
+   problem/outcome from a stranger's standpoint (dimension 1) and the
+   kernel/overlay routing call (dimension 3 — the stranger test in
+   `claude/CLAUDE.kernel.md` § Kernel vs overlay routing rule) are
+   **root-level nodes of the design tree**, reached in round 1 and answered
+   by the operator — never drafted here and confirmed.
 4. **Probe-before-create the brief note** — the brief-side mirror of Step
-   5b.3's epic probe, so a re-run (including one crashed between ratify and
-   materialize) never clobbers an existing brief, **and so a killed or
-   ratified idea short-circuits here before the premise gate (item 5) could
-   re-litigate it**. Runs **ahead of** the premise gate: create-or-adopt the
-   note first, walk the gate second, so the gate's dimension-0 write and any
-   drop action always target a note already on disk. Check whether
-   `Designs/<short title>.md` already exists in the knowledge store; if it
-   does, branch on its frontmatter `status`: <!-- cite: W.5 incident:K#509 -->
-   - **`draft`** → adopt it: skip creation and **resume the walk at Step 2**
-     against the existing note (its already-dispositioned dimensions stand;
-     the walk covers the rest). The premise gate already ran on the pass that
-     first created this draft, so it is **not** re-run on a plain adopt.
+   5b.3's epic probe, so a re-run (including one crashed mid-phase) never
+   clobbers an existing brief, **and so a killed or ratified idea
+   short-circuits here before the premise gate (item 5) could re-litigate
+   it**. Runs **ahead of** the interview, so the gate's dimension-0 write
+   and any drop action always target a note already on disk. Check whether
+   the item-2 path already exists in the knowledge store; if it does,
+   branch on its frontmatter `status`: <!-- cite: W.5 incident:K#509 -->
+   - **`draft`** → adopt it and **resume where the note itself shows**, read
+     from the note alone, never from memory. A **tagged** `round N pending
+     (ratio-gate):` line under `### Interview calls` is Phase 2's ratio-gate
+     round (3.6.4) — resume at **Step 3.6**, never at the interview, whose
+     § Resume would discard the finished panel and congruence work; a plain
+     `round N pending:` line is Phase 1's — hand the note back to the
+     interview, whose § Resume owns that
+     recovery; otherwise resume at **Step 2** when the record carries no
+     `delta` stop line, or at **Step 3.7** from the dimension after the
+     last `delta` line when it does. The premise gate already ran on the
+     pass that created this draft, so it is **not** re-run on a plain adopt
+     and `--first-question` is omitted from any resumed interview call.
    - **`ratified`** → **stop.** A ratified brief is immutable
      (`claude/design-schema.md` § Frontmatter); never edit it in place. If
      the design has genuinely changed, author a **new** brief under a new
      title that supersedes it via `[[wikilink]]`; if it hasn't, the right
      move is Step 5 (materialize) against the ratified brief, not a new
-     walk.
+     run.
    - **`dropped`** → **stop.** A `dropped` brief is a **killed idea** —
      Step 1.3b's drop action flipped it, and its dimension 0 carries the
      kill rationale. **Never take the silent `draft`-adopt path here**:
@@ -177,153 +226,151 @@ foundation that later shifts underneath it.
      `AskUserQuestion` (reopen this dropped brief, or leave it killed).
      Absent an explicit "reopen", **stop**, so a later run on the same title
      never silently un-kills an idea the operator already rejected. Only on
-     "reopen" does the walk resume: flip `status: dropped → draft` and bump
+     "reopen" does the run resume: flip `status: dropped → draft` and bump
      `last_verified`, using Step 4.4's full-file-rewrite/read-back
      discipline (never a `vault_patch` frontmatter `replace` — same silent-
-     drop risk). Then resume at Step 2.
+     drop risk). Then resume at item 5 with a freshly composed premise gate.
 
    Only when no note exists: **create it**, `status: draft`, per
    `claude/design-schema.md`'s frontmatter shape (`tags`, `date`,
    `status: draft`, `source_kind: claude-stamped`, `source_session`,
-   `source_model`, `last_verified`), with **dimension 0's `## 0. Premise &
-   null hypothesis` section present as the landing place the premise gate
-   (item 5) fills** — created empty/placeholder here, populated by the
-   gate's part (ii) — and dimensions 1 and 3 pre-filled from this step's
-   answers (disposition `filled` on both; a stranger test that can't yet be
-   answered gets `deferred → …` like any other dimension, never a
-   placeholder masquerading as an answer). Then **continue to the premise
-   gate (item 5)**: note-creation is a precondition of the gate, so on a
-   brand-new design's first pass the gate's dimension-0 write and its drop
-   action both act on the note just created here — a `drop` therefore
-   persists a durable `status: dropped` kill record even on that first pass.
-5. **Step 1.3b — Premise gate (null-hypothesis checkpoint).** Runs **after** <!-- cite: W.6 incident:K#509 -->
-   the brief note exists (item 4's probe-before-create), so its dimension-0
-   write and drop action always target a note already on disk, and a killed
-   or ratified idea has already short-circuited at item 4 before this gate
-   could re-litigate it. (Numbered `1.3b` for its stable cross-reference
-   name — conceptually part of the Step 1.3 routing call, but it **executes
-   here**, as the fifth intake action.) Compose and answer the case
-   *against* this design existing at all — the content of **dimension 0**
-   (Premise & null hypothesis) in `claude/design-schema.md` § Kernel
-   dimension list, the schema's one **`filled`-only** dimension
-   (`n/a`/`deferred` are invalid for it). Fires once per intake pass. Three
-   parts, in order:
+   `source_model`, `last_verified`) **plus the record-grammar stamp**:
 
-   - **(i) Compose the case *against*.** From the null hypothesis "this
-     design should not exist", state:
-     - the **do-nothing cost** — what actually breaks if this is never built;
-     - the **strongest subtraction alternative** — the smallest existing
-       surface (a rule, a gate, a doc, a habit) that could absorb the need
-       with no new mechanism;
-     - **existing-surface coverage** — which current mechanism already covers
-       part or all of this.
+   ```
+   record_grammar: delta
+   ```
 
-     Argue each point **citing `docs/principles.md` by principle name** —
-     most directly the **stranger test** (principle 13), **subtraction over
-     mechanism** (principle 8: fit or remove an existing mechanism before
-     adding one), and **minimum-viable-output** (principle 14). A
-     case-against that names no principle is not composed. This is a
-     genuine adversarial pass, not a formality: compose the strongest case
-     you honestly can, so the operator answers a real challenge rather than
-     a rubber stamp.
+   Every brief this command authors carries it: it is what puts the brief
+   under `claude/design-schema.md` § Record completeness's per-dimension
+   `delta` bar (Step 4.1c) instead of the legacy exemption, and what makes
+   Phase 1's `interview` stop lines legal rather than a
+   `RECORD-GRAMMAR-UNSTAMPED` defect. Write it once, at creation, never
+   edit it after. Give the note dimension 0's `## 0. Premise & null
+   hypothesis` section as the landing place the premise gate (item 5)
+   fills, then hand the path to the interview as `--into` — the interview
+   **adopts** an existing note (`interview.md` Step 1.5) rather than
+   creating its own `Context/` shape, which is why the `Designs/` brief is
+   created here first.
+5. **Execute the interview.** Read `claude/commands/interview.md` and run
+   its steps inline with this parameter block — the three names are a
+   frozen surface (`claude/presentation-plane.md` § Kernel table), so pass
+   them exactly as spelled:
 
-   - **(ii) Elicit and record the operator's justification into dimension
-     0.** Put the composed case-against to the operator; elicit their
-     justification for proceeding anyway (or their agreement to kill it).
-     Record that justification — and the case-against it answers — into the
-     brief's **`## 0. Premise & null hypothesis`** section (the landing place
-     item 4 created) at disposition `filled`. **Compose the case-against and
-     its justification fresh for THIS brief every time** — never reuse, copy,
-     or carry a premise over from a prior brief; a recycled justification
-     defeats the gate, whose whole point is that this idea earned its own
-     place. On the **proceed** path this write uses Step 2.6's backend
-     write primitive; on the **drop** path it is folded into that path's
-     single full-file rewrite below, which also flips the frontmatter.
+   - **`--into`** — the item-2 path, the note item 4 created or adopted.
+   - **`--first-question`** — **Step 1.3b, the premise gate**, now asked as <!-- cite: W.6 incident:K#509 -->
+     **Q1 of round 1** rather than as a modal stop of its own (it keeps the
+     stable cross-reference name `1.3b` other specs cite). Compose the case
+     *against* this design existing at all — the content of **dimension 0**
+     in `claude/design-schema.md` § Kernel dimension list, the schema's one
+     **`filled`-only** dimension — from the null hypothesis "this design
+     should not exist", stating the **do-nothing cost** (what actually
+     breaks if this is never built), the **strongest subtraction
+     alternative** (the smallest existing surface — a rule, a gate, a doc,
+     a habit — that could absorb the need with no new mechanism), and
+     **existing-surface coverage** (which current mechanism already covers
+     part or all of this). Argue each point **citing `docs/principles.md`
+     by principle name** — most directly the **stranger test** (principle
+     13), **subtraction over mechanism** (principle 8) and
+     **minimum-viable-output** (principle 14); a case-against that names no
+     principle is not composed. Compose it **fresh for THIS brief every
+     time**, never reusing a premise from a prior brief — a recycled
+     justification defeats the gate, whose whole point is that this idea
+     earned its own place. The block carries that case in plain language
+     and three options, the **recommended verdict first**:
+     - **`proceed`** — the premise holds. The operator's answer (the
+       option's own reasoning, or their verbatim words via `Other`) is the
+       justification; the interview records it as `D1` and Step 2 writes it
+       into `## 0. Premise & null hypothesis` at disposition `filled`.
+     - **`reshape`** — the framing is wrong but the idea isn't dead, and
+       this is **not** a terminating answer: the operator restates the
+       framing in their own words, the interview records that as `D1` and
+       recomputes the design tree from it in the same round
+       (`interview.md` Step 2.7), so round 2's frontier is the reshaped
+       design's. Persist a one-line `premise-gate: reshaped once` marker
+       into `## Working notes` in that round's persist and **never offer
+       `reshape` again this pass** — a re-composed gate offers `proceed` /
+       `drop` only, so a framing that still fails resolves either way,
+       never in a third loop.
+     - **`drop`** — the case-against wins; the idea is killed. This option
+       carries a **terminating `then:`** naming the **drop action**
+       (`interview.md` § Parameters): the interview persists that one
+       decision and returns immediately, and this command performs the drop
+       as a **single full-file rewrite** (Step 4.4's discipline — never a
+       `vault_patch` frontmatter `replace`, same silent-drop risk) that
+       sets the frontmatter to **`status: dropped`**
+       (`claude/design-schema.md` § Frontmatter), writes dimension 0's
+       `## 0.` section with the kill rationale (disposition `filled` — the
+       justification, stated in the negative), and bumps `last_verified`.
+       Then **stop the command**: a dropped brief is neither ratified nor
+       materialized; it stands as the durable record that this idea was
+       considered and killed, so a later run on the same title sees the
+       kill at item 4's `dropped` branch rather than re-litigating it.
+   - **`--check-questions`** — one question, appended to the understanding
+     check: **the review tier**, priced before it is picked. <!-- cite: W.9 class:unpriced-speculative-review-spend -->
+     State the cost *inside the block*, in **model tiers** and a **token
+     order-of-magnitude**, never as a bare label: **brief pass** = two
+     standing lenses (`architecture-reviewer`, `requirements-auditor`)
+     once each — two mechanical-tier runs, tens of thousands of tokens;
+     **full pass** = those two **plus** a red-team lens, a persona pass and
+     (when 3.2 applies) an executed first-run/uninstall run — of order
+     eight runs, one at the judgment tier, hundreds of thousands of tokens
+     and roughly ten minutes of Phase 2 wall-clock. This is the adapted
+     Shape Up "appetite" move: the budgeted resource is review
+     effort/tokens, and the tier is a quantized review-cost appetite, not a
+     time estimate (`Context/temperloop - design methodology spike
+     verdict.md` § 6). Naming the cost **before** the pick is the point —
+     never spawn a reviewer speculatively while the pick is still open —
+     with the availability caveat in the same breath: each lens runs only
+     if it passes 3.3's capability probe, so a checkout missing a declared
+     agent reduces part of a full pass to legible skip lines. Suggest a
+     default from the design's apparent weight (single-file and
+     low-blast-radius suggests brief; touching the install surface, adding
+     a command, or reshaping a contract surface suggests full); the
+     operator overrides it regardless. The answer is durable in the check
+     call's working-notes entry (`interview.md` § Output), where Step 3.1
+     reads it after a crash.
 
-   - **(iii) Offer the decision — `AskUserQuestion`.** Present it per
-     `claude/message-schema.md`'s **Decision presentation** template (parts
-     (i) and (ii) above supply the case-against and the elicited
-     justification its slots draw on). **Apply it by reference; never
-     restate its parts here** — it owns their shape and is **not overridable
-     by an overlay** (that file's § Overrides). The offered option set is
-     **conditioned on this brief's reshape marker**: on the **first**
-     encounter this pass, present all three — `proceed` / `reshape` /
-     `drop`; **once the reshape marker is set**, present only two —
-     `proceed` / `drop` (reshape is spent).
-     - **proceed** → the premise holds. Record dimension 0 `filled` (part ii)
-       and continue to **Step 2**.
-     - **reshape** → the framing is wrong but the idea isn't dead. **First set
-       the reshape marker**: persist a one-line `premise-gate: reshaped once`
-       marker into the brief's **working-notes surface — the same surface
-       Step 3.1's tier record uses (3.1.4)** — so the once-per-pass bound
-       survives a crash/resume. Then loop back to **Step 1.1** to restate the
-       problem and re-run **Steps 1.1, 1.2, 1.3, and this gate** against the
-       new framing — **not** item 4's note probe (the draft note already
-       exists this pass; re-probing it would adopt-and-resume, skipping this
-       gate). Because the marker is now set, this gate's next encounter offers
-       only `proceed` / `drop` — reshape is **not** offered a second time; if
-       the reshaped framing still fails the premise the operator chooses
-       `proceed` or `drop`, never a third loop.
-     - **drop** → the case-against wins; the idea is killed. Perform the
-       **drop action** as a **single full-file rewrite** (Step 4.4's
-       discipline — never a `vault_patch` frontmatter `replace`, same
-       silent-drop risk) that sets the brief's frontmatter to **`status:
-       dropped`** (`claude/design-schema.md` § Frontmatter), writes
-       **dimension 0's `## 0.` section with the kill rationale**
-       (disposition `filled` — the justification, stated in the negative),
-       and bumps `last_verified`. Then **stop the command** — a dropped
-       brief is neither ratified nor materialized; it stands as the durable
-       record that this idea was considered and killed, so a later run on
-       the same title sees the kill at item 4's `dropped` branch rather than
-       silently re-litigating it.
+   **Dimension 4 is the last question by construction, not by a fourth
+   parameter.** When the tree is built (`interview.md` Step 1.4), make the
+   Contract — dimension 4's `Produces` / `Consumes` / `Acceptance` — a node
+   whose prerequisites are **every other decision**, so the frontier
+   reaches it last: the final question of the final round, derived from the
+   decisions already taken, never asked cold. Write the actual contract
+   text, not a summary of one; Step 5 copies it **verbatim** into the
+   epic's `## Contract`, and `/assess`'s epic-decomposition mode must
+   decompose `Produces` with zero changes (§ Materialization contract).
 
-## Step 2 — Coverage walk
+   The whole of Phase 1 is `AskUserQuestion` calls of at most **≤4**
+   questions each, the recommended option first, the next call opening in
+   the same turn as the previous answer, one persist per **round** — no
+   per-dimension stop, no proposal splitting the dimensions into tiers, and
+   no fixed round count; more rounds mean more refinement, not overrun.
 
-Collaborative by construction: every decision that reaches the brief is
-presented with its reasoning and can be contested before it is recorded —
-there is no minimal-interaction path. The operator's speed lever is how fast
-they accept at each stop, never whether content is shown.
+6. **Phase 1 returns** the note path, the `--first-question` answer, the
+   `--check-questions` answer (the review tier), and the run tally
+   (`interview.md` Step 4). Step 3.1 reads the tier and Step 6 folds in the
+   tally; continue at Step 2 in the same session.
+
+## Step 2 — Phase 2a: dimension expansion
+
+Phase 2 opens here and runs **foreground and unattended** — no operator gate
+between this step and Step 3.7's delta report, except the ratio-gate round
+(3.6) when it fires. Narrate one line per stage so the wait is legible.
 
 1. Read `claude/design-schema.md` § Kernel dimension list, plus any
    overlay-added dimensions from `claude/design-schema.overlay.md` if this
    checkout carries one (letter-suffixed, e.g. `16a`, per that file's
    § Overlay extensibility — add-only; a kernel-only checkout like this one
-   has none). **The walk's size is that list as it stands, never a count
-   cached here.**
-2. **Tier-split proposal — the walk's first stop, and its first challengeable
-   decision.** Before walking anything, propose the split: which dimensions
-   are **load-bearing for this design** (each gets its own stop) and which are
-   **mechanical** (clustered 2–4 to a stop, every dimension's full content
-   still shown — a cluster compresses the *asking*, never the *showing*).
-   Present it per item 3, stating in the proposal itself:
-   - **the total stop count** the split commits this session to, so the
-     operator sees the interaction cost before accepting it; and
-   - **every dimension from item 1, each assigned exactly one tier —
-     including the Step-1-seeded dimensions 0, 1 and 3.** They are seeded (0
-     by the Step 1.3b premise gate, 1 and 3 by Step 1's intake), not exempt:
-     their stop is a **confirm-or-challenge** over content that already
-     exists, and a confirm is a real verdict — it records a `walk` stop line
-     with `source: step-1-seed` (`claude/design-schema.md` § Challenge
-     record, "Seeded dimensions count their Step-1 confirm as their walk
-     verdict"). Leave them out and the operator never formally accepts the
-     problem statement or the routing call.
-
-   The split is a proposal: the operator may move a dimension between tiers,
-   re-cluster, or reject it — item 4's loop applies here as at any stop, and no
-   content stop opens until it is accepted. The schema's order is the default
-   walk order and the operator may reorder freely, but every dimension in the
-   split must be reached before Step 3. This sets *walk* granularity only;
-   Step 3.1's brief/full **review** tier is a separate axis.
-3. **Each stop: a decision presentation, then exactly one disposition per
-   dimension.** Present every stop — a load-bearing dimension, a mechanical
-   cluster, or item 2's split itself — per `claude/message-schema.md`'s
-   **Decision presentation** template. **Apply it by reference; never
-   restate its parts here** — it owns their shape and is **not overridable
-   by an overlay** (that file's § Overrides). Then record, for each
-   dimension the stop covered, **exactly one** of the three dispositions
-   defined in `claude/design-schema.md` § Disposition grammar, quoted here
-   verbatim (this command applies the grammar; it does not restate a
-   variant of it):
+   has none). **The expansion's size is that list as it stands, never a
+   count cached here.**
+2. **Expand every dimension into the brief body,** in the schema's order,
+   from Phase 1's `## Shared understanding` section. A dimension one or
+   more `D<n>` decisions touch is written **from those decisions**, naming
+   them inline (`from D3, D7`) so the delta report can render it as
+   unchanged-since-the-interview. Record, for each dimension, **exactly
+   one** of the three dispositions defined in `claude/design-schema.md`
+   § Disposition grammar, quoted here verbatim (this command applies the
+   grammar; it does not restate a variant of it):
 
    ```
    filled                         — the dimension is answered in the brief body
@@ -331,133 +378,90 @@ they accept at each stop, never whether content is shown.
    deferred → <tracking ref>      — real but out of scope for this brief; ref is an issue/epic that owns it
    ```
 
-   - **No-silent-skips rule.** A dimension left without one of the three
-     dispositions is incomplete — never let the walk move past it.
-     `workflows/scripts/validate-design-brief.sh --brief FILE` (temperloop#216,
-     shipped 2026-07-11) checks this on demand, and its brief-conformance
-     check (C) checks the challenge record (item 5) too; briefs live outside
-     CI in the knowledge store, so Step 4 re-checks both in-session anyway.
-   - **Dimension 4 (Contract seams) gets special care.** Its `Produces` /
-     `Consumes` / `Acceptance` is what Step 5 copies **verbatim** into the
-     epic's `## Contract` — write the actual contract text, not a summary of
-     one; `/assess`'s epic-decomposition mode must decompose `Produces` with
-     zero changes (the schema's § Materialization contract).
-4. **Bounded challenge loop — three free rounds, then an explicit fork.** When
-   the operator challenges a stop, fold the challenge in, revise, and
-   re-present (item 3's shape, naming what changed). Rounds one through three
-   loop freely; a **fourth** escalates to a fork the operator picks from
-   explicitly: **accept as-is** (content stands, verdict recorded);
-   **`deferred → <tracking ref>`** (real but not resolvable this session —
-   never available for dimension 0, whose only legal disposition is
-   `filled`); or **park the walk** (stop the command, brief left
-   `status: draft` — a later run adopts the draft at Step 1's probe and
-   resumes here). A non-converging stop is a visible operator choice, never
-   an invisible grind (`docs/principles.md` principle 11).
-5. **Append to the challenge record as each stop closes.** Write the stop's
-   line(s) into the brief's `## Working notes` → `### Challenge record` per
-   `claude/design-schema.md` § Challenge record — that section owns the line
-   shape, verdict vocabulary, clustering rule, `walk`/`walkthrough`
-   discriminator and record-start marker, applied by reference, never
-   re-copied here. What this walk owes it:
-   - **`kind` is `walk`** at every Step 2 stop; `walkthrough` belongs to
-     Step 3's review pass.
-   - **A clustered stop carries one verdict per dimension in the cluster** —
-     N verdicts, never one collapsed cluster verdict; a mixed cluster splits
-     into as many lines as it has distinct verdicts.
-   - **An `operator-edited` verdict carries the operator's verbatim words**
-     in its `response:` field, never a facilitator paraphrase.
-   - **The pass's first stop also writes the `challenge-record-start:
-     <today>` marker** when no `### Challenge record` subheading exists yet —
-     in the *same* write as that first stop line, so the record is never
-     announced-but-empty. It is what lets a resume tell a post-change crash
-     from a pre-change brief.
-
-   **Walk-structure note — provisional, do not cite Double Diamond.** The <!-- cite: W.16 incident:K#224 -->
-   walk above is a **convergent inspection checklist**: dimensions applied in
-   a default order, each presented, challenged and dispositioned, with no
-   divergent / alternatives-generation phase (item 3's alternatives part
-   reports alternatives already weighed; it generates none). Double
-   Diamond's diverge-then-converge framing was evaluated against this walk
-   and **rejected** (`Context/temperloop - design methodology spike
-   verdict.md`) — never cite it for the walk's structure. Whether to *add* a
-   bounded alternatives-generation moment is still open — **provisional —
-   pending temperloop#224**.
-6. **Persist as you go.** Write each dimension's content into the brief note
-   incrementally — as each stop closes, not in one end-of-walk rewrite — so a
-   crashed walk loses at most the stop in flight. By backend:
+   Dimension 0 is `filled`-only — its content is the premise gate's
+   case-against and the operator's answer to it (Step 1.5). Dimension 4 is
+   the Contract the interview confirmed, copied forward as written.
+3. **A dimension no decision reached is drafted and flagged.** Draft it
+   honestly — the facilitator's best call, not a placeholder — and mark its
+   provenance with the schema's flag line, `_facilitator-drafted, not from
+   interview_`, written **immediately after the disposition line and before
+   any body prose** (`claude/design-schema.md` § Disposition grammar owns
+   that placement: the lint reads the first non-blank line under a heading
+   as the disposition, so a flag ahead of it is misread as a malformed
+   disposition value). The flag makes the interview's coverage gap
+   **visible** rather than assumed away — it drives Step 3.7's rendering
+   rule and is the numerator of Step 3.6's ratio gate and a Step 6 tally
+   field.
+4. **Persist as you go.** Write each dimension's content into the brief note
+   as it is expanded, not in one end-of-phase rewrite, so a crash loses at
+   most the dimension in flight. By backend:
    - **Obsidian-backed store:** a small append/patch per dimension (the vault's
      write-small convention), falling back to a full-file rewrite whenever a
      heading path isn't safely `vault_patch`-able (the safe-targeting contract).
    - **Plain-files store:** the backend has **no mid-file patch primitive** —
-     only `ks_write` (whole-file replace) and `ks_append` (end-of-file). So
-     each dimension update is a **full-file rewrite via `ks_write`** (read →
-     modify in memory → write). **Never** persist dimensions as
-     per-dimension `ks_append` calls: the walk is operator-reorderable
-     (Step 2.2), so appends land out of dimension order and corrupt the
-     note's numbered-section structure.
-7. **Persist-then-ask ordering — dual-surface before any gate.** Step 2.6 <!-- cite: W.8 incident:K#670 -->
-   requires the incremental *write*; this fixes its **ordering** relative to
-   any operator gate. Never open a stop's accept/challenge question over
-   drafted content until that content is **both**:
-   - **(a) persisted to the brief note** via Step 2.6's write primitive — the
-     note is the **artifact of record**. A write's OK return is **not**
-     proof it landed: an Obsidian `vault_patch` can silently misfire (the
-     vault safe-targeting contract — duplicate-heading synthesis, a stale
-     document map), so **confirm the persist with a read-back**, or take
-     the misfire-free full-file-rewrite path (the same discipline Steps
-     1.3b and 4.4 require); **and**
-   - **(b) presented in chat** — item 3's decision presentation over that
-     same content, for in-line review.
+     only `ks_write` (whole-file replace) and `ks_append` (end-of-file). A
+     dimension that lands **mid-file** (the numbered sections, whose order
+     is the schema's) is therefore a **full-file rewrite via `ks_write`**
+     (read → modify in memory → write): a per-dimension `ks_append` would
+     land out of order and corrupt the note's numbered-section structure.
+     Content that is genuinely **append-only at the end of the note** — a
+     `## Working notes` stop line, a coverage-record line, an
+     `### Interview calls` entry — may instead use a **targeted
+     `ks_append`**, one call rather than a rewrite that grows with the
+     note. The crash guarantee is unchanged either way because it comes
+     from the **read-back**, not the write's width: every write, targeted
+     or whole-file, is confirmed by re-reading the note and finding the
+     slice it carried, under one retry, before anything else happens.
+5. **Then validate the brief, and fix before continuing.** Run
+   `workflows/scripts/validate-design-brief.sh --brief <path>` and resolve
+   every failure before Step 3 spawns a single reviewer. This is a real
+   gate: on the 2026-09-12 prototype the brief failed 18 checks at exactly
+   this point and only the panel caught it — spending panel tokens on a
+   brief the lint would have rejected is the waste this ordering removes.
+   If the script is absent from this checkout, say so on one line per
+   `claude/message-schema.md`'s **Degradation notice** template and check
+   the same invariants by hand (one disposition per dimension, dimension 0
+   `filled`, the flag line's placement) — never a silent skip.
 
-   Both surfaces must be **current** *before* the question is posed; neither
-   alone is enough. Gating over content that exists **only** as a transient
-   chat bullet list with **no** persisted note behind it is forbidden — the
-   observed failure (temperloop#670: a 13-dimension draft gated for approval
-   while the brief note was still empty).
+   **Structure note — provisional, do not cite Double Diamond.** The <!-- cite: W.16 incident:K#224 -->
+   expansion above is a **convergent inspection checklist**: a fixed
+   dimension list in a default order, each dimension dispositioned against
+   decisions already taken, with no divergent/alternatives-generation phase
+   (a dimension's alternatives part reports alternatives already weighed in
+   Phase 1; it generates none). Double Diamond's diverge-then-converge
+   framing was evaluated against this pass and **rejected**
+   (`Context/temperloop - design methodology spike verdict.md`) — never
+   cite it for this command's structure. Whether to *add* a bounded
+   alternatives-generation moment is still open — **provisional — pending
+   temperloop#224**.
 
-   **Scope: every gate over brief content, no exemptions.** This ordering
-   governs the walk's own stops (Step 2), the findings fold-back (Step 3.4)
-   and the ratify ask (Step 4) alike. The only sanctioned way to ask once
-   over several dimensions is a mechanical cluster the operator accepted at
-   item 2 — every dimension still shown, every dimension separately
-   verdicted.
+## Step 3 — Phase 2b–2d: review pass
 
-## Step 3 — Review pass
+Runs after Step 2's expansion completes (every dimension carries a
+disposition and the brief validates clean), and before Step 3.5's
+congruence pass. Four parts, in order: **3.1** tier decision, answered in
+Phase 1 and stated before any reviewer is spawned; **3.2** the
+install-surface first-run/uninstall mandate; **3.3** capability-probed
+adversarial panel execution; **3.4** findings fold-back. A brief that skips
+this step never reaches ratify — Step 4.1b re-checks that every finding it
+produced was actually disposed of.
 
-Runs after Step 2's coverage walk completes (every dimension carries a
-disposition), and before Step 3.5's congruence pass hands a reviewed brief
-to Step 4 (ratify). Four parts, in order: **3.1** tier decision, stated to
-the operator before any reviewer is spawned; **3.2** the install-surface
-first-run/uninstall mandate; **3.3** capability-probed adversarial panel
-execution; **3.4** findings fold-back into the brief. A brief that skips
-this step never reaches ratify — Step 4.1b re-checks that every finding
-this step produced was actually disposed of.
+### 3.1 — Tier decision (priced in Phase 1, applied here)
 
-### 3.1 — Tier decision (stated before committing)
-
-1. **State the cost, then ask.** Before spawning a single reviewer, tell the <!-- cite: W.9 class:unpriced-speculative-review-spend -->
-   operator what each tier costs: **brief pass** = two standing lenses
-   (`architecture-reviewer`, `requirements-auditor`) reviewing the brief
-   once each; **full pass** = the same two lenses **plus** a red-team lens,
-   a persona pass, and (when 3.2 applies) an executed first-run/uninstall
-   run. This is the adapted Shape Up "appetite" move — the budgeted resource
-   is review effort/tokens, not a team's build cycle, and the tier is a
-   quantized review-cost appetite, not a time estimate
-   (`Context/temperloop - design methodology spike verdict.md` § 6). Naming
-   the cost **before** the pick is the point; never spawn a reviewer
-   speculatively while the pick is still open. State the availability
-   caveat in the same breath: each lens runs only if it passes 3.3's
-   capability probe, so on a checkout missing a declared agent, part of a
-   full pass reduces to legible skip lines. The red-team lens
-   (`claude/agents/red-team-lens.md`, temperloop#510) and the persona
-   lenses (`design-persona-agents`, temperloop#221) both ship as declared
-   agents under `claude/agents/`, so a full pass runs live here subject to
-   the normal capability probe.
-2. **Ask.** `AskUserQuestion`: brief pass or full pass? Suggest a default
-   from the epic's apparent weight (a single-file, low-blast-radius design
-   suggests brief; a design that touches the install surface, adds a new
-   command, or reshapes a contract surface suggests full) — the operator's
-   answer overrides the suggestion regardless.
+1. **The tier is already chosen — read it, don't re-ask.** Phase 1's
+   understanding check carried the review-tier question as its
+   `--check-questions` block, priced before the pick (Step 1.5). Take the
+   answer from Step 1.6's return, or — after a crash — from the check
+   call's working-notes entry under `### Interview calls`, its durable
+   record (`interview.md` § Output). **Never re-ask it here**: a second ask
+   spends an operator turn on a decision already taken and invites a
+   different answer than the one the brief's provenance records.
+2. **State which tier is running, and what it costs, before spawning.**
+   One line naming the tier, the lenses it implies, and the availability
+   caveat. The red-team lens (`claude/agents/red-team-lens.md`,
+   temperloop#510) and the persona lenses (`design-persona-agents`,
+   temperloop#221) both ship as declared agents under `claude/agents/`, so
+   a full pass runs live here subject to the normal capability probe.
 3. **Brief pass always runs both standing lenses.** Per the ratified
    design brief's RQ-4: `architecture-reviewer` **and**
    `requirements-auditor` run on *every* review, brief tier or full —
@@ -537,7 +541,7 @@ this step produced was actually disposed of.
    whole panel while every lens would have spawned fine. A skip line that
    fires for an *available* lens is a review that silently didn't happen,
    which is worse than the panel not existing. Probe each candidate lens
-   right before it would be spawned; absence is never fatal to the walk.
+   right before it would be spawned; absence is never fatal to the run.
 1a. **Two skip-line forms — the single definition every later mention below <!-- cite: W.11 incident:K#290 -->
    defers to.** When the state is not `installed`, the skip line takes one
    of two forms per `claude/message-schema.md` § Degradation notice (the
@@ -617,25 +621,32 @@ this step produced was actually disposed of.
 2. **Apply clear wins directly.** A finding that clearly improves a
    dimension's content — no judgment call, no disagreement with the
    brief's existing stance — is folded into that dimension's body **now**,
-   using Step 2.6's write primitive for this backend. A finding that
-   surfaces a real gap the operator chooses not to resolve now converts
-   that dimension's disposition to `deferred → <tracking ref>` rather than
+   using Step 2.4's write primitive for this backend. A finding that
+   surfaces a real gap the fold-back cannot close here converts that
+   dimension's disposition to `deferred → <tracking ref>` rather than
    leaving it `filled` with an unaddressed critique.
    **Dimension-0 carve-out.** A finding on **dimension 0** (Premise & <!-- cite: W.13 guard:claude/design-schema.md -->
    null hypothesis — the red-team lens's sharpest target) is the one
    exception: dimension 0 is `filled`-only (`claude/design-schema.md`
-   § Disposition grammar), so an unresolved dimension-0 finding may
-   **never** convert to `deferred`. It resolves one of two ways — a real
-   fix folded into the premise justification now (`folded`), or an
-   explicit decline that leaves dimension 0 `filled` (noted per item 4's
-   decline vocabulary). If the premise gap is serious enough that
-   dimension 0 cannot honestly stay `filled`, route back to the premise
-   gate (Step 1.3b) or decline-and-stay-`draft` — never mint an invalid
-   `deferred` disposition the schema declares impossible.
-3. **Surface contested findings.** A finding the brief's owner disagrees
-   with is not applied silently — put it to the operator via
-   `AskUserQuestion` (clear win vs. contested is the same split `/assess`
-   Step 3 makes for its own review pass) before folding or discarding it.
+   § Disposition grammar), so it may **never** convert to `deferred` —
+   never mint a disposition the schema declares impossible. A clear win
+   folds into the premise justification (`folded`); anything else becomes
+   a contest marker carried to Step 3.7 per item 3, where a premise that
+   can no longer honestly stay `filled` routes back to the premise gate
+   (Step 1.3b) or leaves the brief `draft`.
+3. **Carry contested findings to the delta report — don't ask here.** A
+   finding the brief's stance disagrees with is not applied silently, and
+   it is also **not** put to the operator at this point: Phase 2 has no
+   gate between 3.1 and 3.7 by design. Instead attach it to its
+   dimension(s) as a **contest marker** — the lens's name, the claim, and
+   the brief's counter-stance, each in one line — which Step 3.7 renders
+   inside that dimension's delta and inside the cluster question's own
+   block, so the operator decides it **in context**, next to the text it
+   concerns, rather than as a context-free interrupt mid-panel. (Clear win
+   vs. contested is the same split `/assess` Step 3 makes for its own
+   review pass; only *when* the contested half is asked differs.) A
+   contest marker the operator resolves at 3.7 is disposed there under
+   item 4's vocabulary, exactly as if it had been asked here.
 4. **No dangling findings.** Every finding from 3.3 is either folded in, <!-- cite: W.12 class:silently-dropped-review-findings -->
    converted to a `deferred` disposition with a real tracking ref, or
    explicitly declined by the operator with the decline noted in the
@@ -646,26 +657,24 @@ this step produced was actually disposed of.
    blocks ratify rather than evaporating (dimension-level completeness
    alone can't catch it — every dimension already carried a disposition
    before the panel ran).
-5. **Only then does Step 3.5 run.** This step does not re-open Step 2's walk
-   order or re-litigate the tier picked in 3.1 — it is strictly the
+5. **Only then does Step 3.5 run.** This step does not re-open Step 2's
+   expansion or re-litigate the tier picked in 3.1 — it is strictly the
    apply-findings-then-proceed step between review and the congruence pass.
+## Step 3.5 — Congruence pass
 
-## Step 3.5 — Congruence pass + walkthrough
-
-Runs once Step 3.4 has settled every finding, before Step 4. Per-dimension
+Runs once Step 3.4 has settled every finding, before Step 3.6. Per-dimension
 completeness is not congruence: a brief can carry a valid disposition on
 every dimension and still contradict itself *across* two of them —
 dimension 4 promising an Acceptance check dimension 8 says is manual-only.
-Three parts, in order: the seam checklist (item 1), the cold-read lens
-(item 2), and the tier-mirrored walkthrough (item 3) that puts both, plus
-everything 3.3 and 3.4 changed, in front of the operator one dimension at a
-time.
+Two parts: the seam checklist (item 1) and the cold-read lens (item 2).
+Both run unattended; what they surface reaches the operator in Step 3.7's
+delta report, quoted against the dimensions it concerns.
 
 1. **Run the congruence seam checklist.** Work the named-minimum seam table
    in `claude/design-schema.md` § Congruence seams — that section owns the
    seams, what must agree at each, and its floor-not-ceiling extension
    rule. **Apply it by reference; never restate the table here**, the same
-   discipline Step 2.3 applies to the disposition grammar. The checklist is
+   discipline Step 2.2 applies to the disposition grammar. The checklist is
    **facilitator-run and unconditional**: no agent, no probe, no network —
    so it runs on every brief in every checkout, including one where item
    2's lens is unavailable. Record each seam as **held** or **flagged**; a
@@ -700,65 +709,149 @@ time.
      3.4's disposal path and is recorded against the **same** 3.1.4
      coverage record under the **same** three-way vocabulary (`folded` /
      `deferred → <ref>` / `declined — <note>`) 3.4.4 already owns. Neither
-     these flags nor item 3's walkthrough verdicts open a second disposal
+     these flags nor Step 3.7's `delta` verdicts open a second disposal
      ledger: Step 4.1b re-checks one record.
-3. **Tier-mirrored walkthrough — every dimension, one verdict each.** It
-   mirrors the **walk** tier split the operator accepted at Step 2.2 (that
-   axis, not Step 3.1's brief/full *review* tier — the two compose freely):
-   each load-bearing dimension gets its own step, each mechanical cluster
-   steps through as the cluster it was walked in. **The step count derives
-   from the schema's dimension list as it stands** — § Kernel dimension
-   list plus any overlay additions, as read at Step 2.1 — and the accepted
-   split. Never a count cached here.
-   - **Individually listed, delta-flagged, individually verdicted.** <!-- cite: W.18 class:cluster-collapsed-verdicts -->
-     Clustering compresses the *asking* only — never the showing, never
-     the verdicting. A cluster step lists each of its dimensions on its
-     own line and closes with **one walkthrough verdict per dimension in
-     it**: N verdicts, never one collapsed cluster verdict (Step 2.5's
-     N-verdict rule for walk stops). This is what stops a load-bearing
-     decision tier-split into a mechanical cluster from reaching ratify
-     without a second look of its own.
-   - **What each step shows, per dimension:** its **final disposition**; a
-     **gist** of the content as it now stands; the **delta since the
-     operator last saw it** — what 3.3's panel and 3.4's fold-back changed,
-     named concretely, or an explicit `no change since your walk verdict`;
-     and any **congruence flags** items 1–2 raised against it, quoted. The
-     § Decision presentation template's plain-language rule **governs the
-     gists and deltas too** — the rule does not lapse when the challenge
-     phase ends.
-   - **Persist-then-ask applies unchanged** (Step 2.7 — every gate over
-     brief content, no exemptions): a step's question opens only over
-     content already written into the note, read-back-confirmed, *and*
-     echoed in chat.
-   - **Verdicts, and the time-boxing valve.** Each dimension's verdict
-     comes from § Challenge record's vocabulary (`accepted` / `challenged
-     → revised ×N` / `operator-edited`). A dimension the operator wants
-     changed re-enters 3.4 for that edit and its step re-presents; Step
-     2.4's three-free-rounds-then-explicit-fork bound applies here as at
-     any stop. **Any non-premise dimension may instead resolve `deferred →
-     <tracking ref>` at its step** — the sanctioned time-boxing valve for a
-     session that has to end — provided the ref names a real, open item
-     (§ Congruence seams' `deferred-refs-resolve` seam checks that).
-     **Dimension 0 is excluded**: `filled` is its only legal disposition,
-     so a premise the operator can no longer accept routes back to the
-     premise gate (Step 1.3b) or leaves the brief `draft` — never a
-     `deferred` the schema forbids.
-   - **Append to the challenge record as each step closes** — same write
-     discipline as Step 2.5, applied by reference and never re-copied.
-     What this step owes it: **`kind` is `walkthrough`** at every step
-     here (`walk` belongs to Step 2); one line per distinct verdict, so a
-     mixed cluster splits; and an `operator-edited` verdict carries the
-     operator's **verbatim** words in its `response:` field. A verdict a
-     lens flag drove names `congruence-lens` as its `source`.
-4. **Then Step 4 runs.** This step neither ratifies nor blocks ratify —
-   Step 4.1's checks are Step 4's. What it guarantees is that by the time
-   the ratify question is asked, every dimension has been shown once more
-   with its deltas and congruence flags, and carries a verdict of its own.
+3. **Then Step 3.6 runs.** What this step guarantees is that by the time
+   the delta report is rendered, every cross-dimension seam has been worked
+   and every flag it raised is attached to the dimension it concerns.
+
+## Step 3.6 — Facilitator-drafted ratio gate
+
+The interview cannot guarantee coverage; Step 2.3's flag makes the
+shortfall visible, and this step is what the command *does* about it.
+
+1. **Compute the ratio.** Flagged `_facilitator-drafted, not from
+   interview_` dimensions ÷ every dimension in Step 2.1's list. State it on
+   one line whether or not the gate fires — it is a Step 6 tally field
+   either way.
+2. **Fires above half.** If **more than 50%** are facilitator-drafted, run
+   **one targeted interview round** before the delta report: a single
+   `AskUserQuestion` call of at most **≤4** questions, composed exactly
+   like any interview round (`claude/commands/interview.md` Step 2.3 — the
+   decision in plain terms, two to four options with the recommended one
+   first, `Other` carrying the operator's own words, no
+   acknowledgement-only question), on the **highest-value undiscussed
+   decisions** the drafted dimensions had to guess at. At or below 50%,
+   skip it and say so on one line.
+3. **The panel's contested findings ride the same call.** A contest marker
+   from 3.4.3 that is a genuine *decision* — not a wording fix — is asked
+   here as one of the round's questions, so one call resolves both the
+   coverage gap and the contest. Markers left over stay attached to their
+   dimension and are decided at 3.7.
+4. **Record it as an interview round, then re-expand.** Persist it exactly
+   as Phase 1 persists a round (`interview.md` Step 2.6): `D<n>` bullets
+   continuing the existing numbering, an `### Interview record` line, and
+   `interview`-kind stop lines under `### Challenge record` with
+   `source: operator` — with one difference: its write-ahead pre-call line
+   (2.4) is **tagged**, `round N pending (ratio-gate): call k — Q1 "<text>";
+   …`, and no other round is, so the interview's own § Resume parse is
+   untouched. 3.6 runs *before* 3.7, so a crash here leaves no `delta` line to
+   tell it from a Phase-1 crash; the tag is what makes Step 1.4's recovery
+   branch syntactic, resuming **here** rather than at `interview.md` § Resume,
+   which would restart Phase 2 at Step 2 and discard the finished panel,
+   fold-back and congruence work. Then rewrite each dimension the answers
+   touched, **remove its facilitator-drafted flag** — it is no longer drafted
+   — and re-run `validate-design-brief.sh --brief` (Step 2.5) before
+   continuing.
+5. **Exactly once per run.** A ratio still above half afterwards is a
+   *reported* number, not a second round: coverage the operator declines to
+   close is a legitimate outcome, the flags stand in the brief and in 3.7's
+   rendering, and the ratify ask is where the brief is accepted or refused
+   on those terms.
+
+## Step 3.7 — Delta report (the Phase 2 operator gate)
+
+The single gate Phase 2 has. Everything the panel, the fold-back, the
+congruence pass and the ratio gate changed comes back to the operator here,
+in chat, in about **two chunks**, with one verdict per dimension.
+
+1. **Chunk the report.** Roughly two chunks — dimensions 0–7, then 8–16
+   (overlay-added dimensions ride the chunk their number falls in). Two is
+   a shape, not a constant: a brief whose changes cluster may use three,
+   and the boundary moves rather than splitting one cluster question's
+   dimensions across two calls.
+2. **The rendering rule — what each dimension shows.** The report's length
+   must track what actually needs reading, and the failure runs both ways:
+   a report of gists is as context-free as the walkthrough it replaced, and
+   a report of everything at full length goes unread.
+   - **A dimension the panel changed, or one flagged
+     `_facilitator-drafted, not from interview_`** → its disposition, its
+     **full current text**, its deltas as explicit **before/after**, its
+     flag, and any contest marker from 3.4.3 or congruence flag from 3.5,
+     quoted against it.
+   - **An interview-derived dimension the panel left untouched** → the
+     decision it came from (`unchanged from D7`) and a **two-line gist**,
+     with the full text still present **below a fold** — one expansion
+     away, never absent.
+   The **Decision presentation** template's plain-language rule
+   (`claude/message-schema.md`) governs the gists and the deltas: a
+   spec-internal reference, a slug, a dimension number or an issue ref is
+   explained inline at its point of use, and the rule does not lapse
+   because the phase is called a report.
+3. **After each chunk, one `AskUserQuestion` call of at most ≤4 cluster
+   questions** — accept, or contest via `Other` in the operator's own
+   words. **Each cluster question carries its dimensions' Δ inside the
+   question body and the option descriptions**, never only in the chat
+   above it. This is the rule **risk R1** fired on — R1 being this design's own
+   first premortem risk (`R<n>` is how `claude/design-schema.md` § `### Risks`
+   numbers them; ADR 0035 records this one): that the report's questions reach
+   the operator with no context inside the block. The prototype's own
+   operator-outcome answer was that "the last several questions about
+   dimensions had no context visible", because the report sat in chat while
+   the block held one-line summaries (`claude/CLAUDE.kernel.md`
+   § Communication conventions — load-bearing context goes inside the
+   question). **If a cluster's Δ does not fit the block, the cluster is
+   smaller — never the Δ.**
+   - **Individually listed, individually verdicted.** Clustering compresses <!-- cite: W.18 class:cluster-collapsed-verdicts -->
+     the *asking* only — never the showing, never the verdicting. A cluster
+     question names each of its dimensions on its own line and yields **one
+     verdict per dimension in it**: N verdicts, never one collapsed cluster
+     verdict. That is what stops a load-bearing dimension batched in with
+     three mechanical ones from reaching ratify without a look of its own.
+   - **Persist-then-ask applies unchanged** (§ Operating principles): a
+     chunk's question opens only over content already written into the
+     note, read-back-confirmed, *and* rendered in chat.
+4. **Contest → revise → re-present, with a soft checkpoint on the third.**
+   A contested dimension is revised from the operator's words and its chunk
+   re-presented, naming what changed. A dimension re-presents freely twice;
+   **on the third the same call carries one extra question** — *accept
+   as-is* / *defer to a tracking ref* / *park the brief* / *keep going* —
+   with the **lens re-run cost so far** stated in the block (which lenses
+   have re-run, at which tiers, roughly what that spent). It is a
+   **checkpoint, not a bound**: `keep going` is always available and never
+   forces an exit, and no round cap exists anywhere in this command.
+   *Defer* is open to any non-premise dimension provided the ref names a
+   real, open item (§ Congruence seams' `deferred-refs-resolve` seam checks
+   that); **dimension 0 is excluded** — `filled` is its only legal
+   disposition, so a premise the operator can no longer accept routes back
+   to the premise gate (Step 1.3b) or leaves the brief `draft`. *Park the
+   brief* stops the run there, leaving `status: draft` and its `delta`
+   lines, so Step 1.4 resumes at 3.7 after the last one.
+5. **One `delta` line per dimension.** As each chunk's verdicts land, append
+   the brief's `## Working notes` → `### Challenge record` per
+   `claude/design-schema.md` § Challenge record — that section owns the
+   line shape, verdict vocabulary, clustering rule and record-start marker,
+   applied by reference and never re-copied here. What this step owes it:
+   - **`kind` is `delta` and `source` is the literal `operator`** at every
+     verdict here. Never `walkthrough`: that kind's source is a review
+     lens, so a lens line would satisfy the operator gate and it would fail
+     open.
+   - **A cluster carries one verdict per dimension** — N lines or one
+     clustered `dim-list`, but a mixed cluster splits into as many lines as
+     it has distinct verdicts.
+   - **An `operator-edited` verdict carries the operator's verbatim words**
+     in its `response:` field, never a facilitator paraphrase.
+   - **The first `delta` line also writes the `challenge-record-start:
+     <today>` marker** when no `### Challenge record` subheading exists yet
+     — in the *same* write, never ahead of it, so the record is never
+     announced-but-empty.
+6. **Then Step 4 runs**, once every dimension carries a `delta` verdict and
+   every contest marker is resolved or deferred.
 
 ## Step 4 — Ratify
 
 1. **Completeness check.** Confirm every dimension — every kernel dimension
-   plus any overlay additions walked in Step 2, including any disposition
+   plus any overlay additions expanded in Step 2, including any disposition
    Step 3.4 converted to `deferred` during fold-back — carries exactly one
    disposition. List any gap and stop; do not proceed to ratify a brief with
    an undispositioned dimension. This is the enforcement point
@@ -787,48 +880,44 @@ time.
    findings records `no findings`, a clean checklist records its seams
    held.
 
+
    1c. **Challenge-record completeness check** (cross-referenced elsewhere
    as Step 4.1c). Runs immediately after 1b, before check 2, and gates the
    Ask (item 3 below). Re-read the brief's `### Challenge record` (working
-   notes, 3.1.4) and enforce `claude/design-schema.md` § Record
-   completeness's two rules verbatim — the single source of truth this
-   check reuses rather than restates: **(1) stamp-gated delta
-   completeness** — when the brief's frontmatter carries `record_grammar:
-   delta`, every kernel dimension 0..16 carries at least one `delta` stop
-   line (`source: operator`); a brief with no `record_grammar` field is
-   legacy and exempt from this rule entirely, whatever kinds its record
-   carries, and a `delta`/`interview` stop line in such an unstamped brief
-   is itself a defect. **(2)** every `operator-edited` stop line carries a
-   verbatim `response:` field. `walk`/`walkthrough` stay valid, parsable
-   kinds and `walkthrough` coverage stays opportunistic, but neither is
-   ever required per dimension. List any gap and stop, same shape as
-   checks 1 and 1b: return to Step 2 or 3.4 and complete the record before
-   ratifying.
-
-   **Migration carve-out.** A brief with NO `### Challenge record`
-   subheading at all is exempt from rule (1) — never flagged — keyed on
-   the per-brief `status:` signal (temperloop#512), never a global version
-   flip; a non-ratified (draft/dropped) brief is never held to (1) or (2)
-   either. The record-start-marker-present-but-empty defect is independent
-   of ratification status and applies regardless. Fixture
-   `workflows/scripts/tests/fixtures/design-briefs/challenge-record-migration-exempt.md`
-   (ratified, no `### Challenge record` section at all) ratifies under this
-   carve-out.
-
-   **Not excused.** Fixture
-   `workflows/scripts/tests/fixtures/design-briefs/challenge-record-delta-missing.md`
-   (stamped `record_grammar: delta`, ratified, marker present, dimension
-   6's `delta` line omitted) is NOT excused and IS blocked — the loophole
-   the record-start marker exists to close: a crashed post-change walk
-   masquerading as a migration case.
+   notes, 3.1.4) and apply `claude/design-schema.md` § Record
+   completeness's two rules **by reference — never restated here**: that
+   section is the single source of truth this check reuses, so the
+   in-session gate and the shipped lint cannot diverge. It owns the
+   **stamp-gated delta-completeness** predicate (rule 1 — keyed on the
+   brief's own frontmatter `record_grammar` field, which Step 1.4 stamps
+   `delta` on every brief this command authors), the verbatim-`response:`
+   requirement (rule 2), and the `status:`-keyed exemptions bounding both.
+   That same predicate is mechanically enforced by
+   `workflows/scripts/validate-design-brief.sh`'s brief-conformance check
+   (C), so a `--brief <path>` run **is** the cheapest way to evaluate 1c:
+   its `MISSING-DELTA-VERDICT` and `RECORD-GRAMMAR-UNSTAMPED` codes name
+   exactly the gaps this check blocks on, and its fixtures — not this file
+   — pin the boundary cases. List any gap and stop, same shape as checks 1
+   and 1b: return to Step 3.7 and complete the record before ratifying.
 2. **Contract sanity.** Re-read dimension 4's `Produces` / `Consumes` /
    `Acceptance`. If it reads as a summary rather than an actual contract —
    the kind of content `/assess`'s epic-decomposition mode would need to
    reshape before it could decompose — send it back to Step 2 rather than
    ratifying a brief whose Contract isn't really `filled`.
-3. **Ask.** Confirm with the operator directly via `AskUserQuestion` — ratify
-   this brief? (No `decision_sink_ask(...)` routing: this command has no
-   operator-absent case to route around.)
+3. **Ask — two questions, one call.** Confirm with the operator directly
+   via `AskUserQuestion` (no `decision_sink_ask(...)` routing: this command
+   has no operator-absent case to route around):
+   - **Q1 — ratify this brief?**
+   - **Q2 — the operator-outcome signal: "was any chunk of the delta report
+     a rubber stamp?"** Ask it plainly, options `no` / `yes — <which
+     chunk>`, and record the answer verbatim in Step 6's tally. This is the
+     command's own falsification probe, not a satisfaction survey: a "yes"
+     says the delta report has drifted back into the gist-approval failure
+     it replaced. One "yes" sharpens the rendering rule (3.7.2). Beyond
+     that it is **operator judgment, not a tracked threshold** — the
+     answer is printed in the per-run tally, stored nowhere, and each run
+     is a fresh session — so if *you* answer "yes" run after run, fall
+     back to drafting the brief first and clarifying it afterwards.
 4. **On approval:** flip the note's frontmatter `status: draft → ratified` <!-- cite: W.7 class:frontmatter-patch-silent-drop -->
    and update `last_verified`, via a **full-file rewrite** (`vault_write`,
    or the plain-files equivalent) — never a `vault_patch` frontmatter-scalar
@@ -838,9 +927,8 @@ time.
    brief is immutable from here: a later change is a **new** brief that
    supersedes it via `[[wikilink]]`, never an edit-in-place
    (`claude/design-schema.md` § Frontmatter).
-5. **On decline:** stop. The brief stays `draft`; resume the walk (Step 2) or
+5. **On decline:** stop. The brief stays `draft`; resume Phase 2 (Step 2) or
    materialize (Step 5) later — nothing here is lost.
-
 ## Step 5 — Materialize
 
 Runs only against a `ratified` brief (Step 4). Five sub-steps, in order —
@@ -999,9 +1087,39 @@ Print, in order: the brief note's path and final `status`; each dimension's
 disposition in one compact line (`filled: N · n/a: N · deferred: N`, with the
 deferred refs listed); whether the leak-guard scan ran or was skipped (and
 why); the epic — created, adopted, or not-created-and-why; each ADR emitted
-in Step 5c (path + number), or the degradation reason if none were emitted;
-the Decisions note path; and the Step 5e hand-off line, verbatim, as the
-last line of the response.
+in Step 5c (path + number), or the degradation reason if none were; the
+Decisions note path; the **per-run tally** below; and the Step 5e hand-off
+line, verbatim, as the last line of the response.
+
+**The per-run tally.** Computed from the persisted record — Phase 1's
+`### Interview calls` entries (`interview.md` § Output) and Phase 2's own
+chunk calls — never from memory, and reported in full whether or not the
+numbers flatter the run. It is not a budget — the tally surfaces cost, not
+a case against a cap — so **count is reported, never capped**. Ten fields:
+
+- **calls** — every `AskUserQuestion` call, Phase 1 and Phase 2 together.
+- **questions, with each one's option count** — the shape of what was
+  asked, not just how much.
+- **decisions taken against the recommendation** (`chosen: alternative`) —
+  the evidence that recommended-first is a proposal, not a nudge.
+- **verbatim responses** (`chosen: other` and `chosen: free-text`).
+- **acknowledgement-only questions — this must be `0`.** A question with
+  fewer than two options and no free-text ask is acknowledgement-only, and
+  the classification is mechanical from the persisted entry, never a
+  judgment. A non-zero count is a defect in the run, reported as one: name
+  which question. Baseline for contrast — the 2026-09-11 walk took 26 modal
+  stops, 10 of them acknowledgement-only.
+- **facilitator-drafted dimensions** — the count and ratio Step 3.6
+  computed, plus whether the gate fired.
+- **contested dimensions** — how many carried a contest marker into 3.7,
+  and how each resolved.
+- **chunk-accept latency** — the gap between consecutive call timestamps.
+- **wall-clock, first question to ratify.**
+- **the Step 4.3 Q2 answer, verbatim** — was any chunk a rubber stamp?
+
+Dates and times render in the operator's display timezone, never UTC
+(`claude/CLAUDE.kernel.md` § Communication conventions); the stored per-call
+timestamps stay ISO-8601 UTC.
 
 ## Failure modes
 
@@ -1010,56 +1128,74 @@ restatement — follow the step reference for the actual handling.
 
 - **Knowledge store or `design-schema.md` unreachable** (Step 0) → stop
   before any conversation starts.
-- **`gh`/repo unavailable at materialize time** (Step 5b) → not a command
-  failure; the brief still ratifies and persists, only the epic and hand-off
-  degrade (Step 5e).
+- **`AskUserQuestion` unavailable** (a headless or `-p` run) → the
+  interview stops at its own Step 0 and so does this command.
+- **A round crashes mid-call** → the tag routes the recovery: a plain
+  `round N pending:` line is Phase 1's, owned by
+  `claude/commands/interview.md` § Resume; a `round N pending (ratio-gate):`
+  line is Step 3.6's and resumes there (3.6.4). A re-run reaches both through
+  Step 1.4's `draft` branch, which never re-runs the premise gate.
+- **The brief fails `validate-design-brief.sh --brief` after expansion**
+  (Step 2.5) → fix before spawning a reviewer; never spend panel tokens on
+  a brief the lint would reject.
+- **A dimension is undispositioned, or carries no `delta` verdict, at
+  ratify time** (Step 4.1 / 4.1c) → block ratification, list the gaps, and
+  return to Step 2 or Step 3.7 respectively.
+- **`gh`/repo unavailable at materialize time** (Step 5b) → not a failure;
+  the brief still ratifies, only the epic and hand-off degrade (Step 5e).
 - **No board registered for the resolved repo** (Step 5b.4) → epic still
-  created as a plain GitHub issue; note the skip.
-- **No `docs/adr/` directory, or the ratified brief makes no architectural
-  call** (Step 5c) → emit nothing, legible degradation notice.
-- **A dimension is left undispositioned at ratify time** (Step 4.1) → block
-  ratification, list the gaps, return to Step 2.
+  created as a plain GitHub issue; note the skip. **No `docs/adr/`, or no
+  architectural call** (Step 5c) → emit nothing, legible degradation.
 - **Operator gated on drafted content with no persisted note behind it**
-  (Step 2.7) → forbidden; this is the temperloop#670 failure.
+  (§ Operating principles, persist-then-ask) → forbidden; this is the
+  temperloop#670 failure.
 - **A reviewer, red-team lens, persona agent, or the congruence lens is
-  unavailable** (Steps 3.2–3.3, 3.5.2) → expected outcome under the
-  capability-probe predicate ([[Decisions/foundation - Project capability
-  probes]]); emit the per-lens skip line (§ 3.3 item 1a) and continue with
-  whatever's available — see `docs/features/review-agents.md` §
-  Installation for the remedy the shipped-but-not-installed form names.
+  unavailable** (Steps 3.2–3.3, 3.5.2) → expected under the capability-probe
+  predicate ([[Decisions/foundation - Project capability probes]]); emit the
+  per-lens skip line (§ 3.3 item 1a) and continue with whatever's available
+  — see `docs/features/review-agents.md` § Installation for the remedy.
 - **Dimension 4 reads as a summary, not a real contract** (Step 4.2) → send
-  back to Step 2.
-- **Leak-guard scan finds a hit** (Step 5a) → block materialization, the one
-  non-best-effort check in Step 5.
+  back to Step 2. **Leak-guard scan finds a hit** (Step 5a) → block
+  materialization, the one non-best-effort check in Step 5.
 - **Re-running `/workshop` (or just Step 5) against an already-ratified,
   already-materialized brief** → idempotent throughout (Step 5b.3 epic
   probe, 5d Decisions-note one-time-write check).
 - **The operator declines to ratify** (Step 4.5) → stop; brief stays
   `draft`, nothing downstream runs.
 
+
 ## Cross-references
 
+- Phase 1's callee, executed inline in this same session:
+  `claude/commands/interview.md` — its § Invocation contract owns the
+  never-a-subagent rule, its § Parameters the `--into` /
+  `--first-question` / `--check-questions` block (a frozen surface in
+  `claude/presentation-plane.md` § Kernel table).
 - Peer front door: `claude/commands/triage.md` (discovered work; explicitly
-  disclaims pre-designed epics).
-- Consumer, unchanged: `claude/commands/assess.md`'s epic-decomposition mode
-  (a `## Contract`-bearing epic with no sub-issues).
+  disclaims pre-designed epics). Consumer, unchanged:
+  `claude/commands/assess.md`'s epic-decomposition mode.
 - Template + grammar this command applies: `claude/design-schema.md`
-  (Step 3.5 applies its § Congruence seams and § Challenge record by
-  reference); cold-read lens charter: `claude/agents/congruence-lens.md`.
+  (Step 3.5 applies its § Congruence seams; Steps 3.7 and 4.1c apply its
+  § Challenge record and § Record completeness by reference); cold-read
+  lens charter: `claude/agents/congruence-lens.md`.
+- The decisions this shape came from:
+  `docs/adr/0035-workshop-is-an-interview-then-unattended-coverage.md` (two
+  phases, two gates) and
+  `docs/adr/0036-design-brief-record-operator-delta-lines.md` (the
+  `delta`/`interview` record grammar).
 - ADR process Step 5c conforms to: `docs/adr/0000-adr-process.md`
   (MADR-lite format, append-only numbering, kernel-public routing rule).
 - Executing customer-persona agents: `design-persona-agents`,
   temperloop#221 — `claude/agents/hobbyist-persona.md`,
   `consultant-persona.md`, `team-member-persona.md`.
+- Message templates used here: `claude/message-schema.md` § Question block
+  (every gate in Phases 2 and 3), § Decision presentation (which fills that
+  block's Context slot, and whose plain-language rule governs Step 3.7's
+  gists and deltas) and § Degradation notice.
 - Capability-probe predicate: [[Decisions/foundation - Project capability
-  probes]] — same predicate `/assess` Step 3 and `/triage` Step 3 apply to
-  their own review panels.
-- Grounding: `Context/temperloop - design methodology spike verdict.md` (L0
-  spike verdict — grounds Step 3.1's tier/appetite mapping, Step 3.2's
-  executed-run rubric, and Step 3.3's panel-structure mapping; Double
-  Diamond is REJECTED there for the walk's structure); the ratified brief,
-  `Designs/temperloop - design command design brief.md`; the epic plan,
-  `Plans/2026-07-08 temperloop - design command front door.md`.
+  probes]] — the same predicate `/assess` and `/triage` Step 3 apply.
+- Grounding: `Context/temperloop - design methodology spike verdict.md`
+  (3.1's tier/appetite mapping, 3.2's executed-run rubric, 3.3's panel
+  structure; Double Diamond is REJECTED there); the ratified brief behind
+  this shape, `Designs/temperloop - workshop two-phase interview.md`.
 - Kernel routing: `claude/CLAUDE.kernel.md` § Kernel vs overlay routing rule.
-- Message templates used here: `claude/message-schema.md` § Decision
-  presentation (every Step 2 stop) and § Degradation notice.
