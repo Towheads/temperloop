@@ -8,8 +8,9 @@
 # network), plus this file's own `_sg_git` seam for `git worktree list`.
 # Fixtures are entirely synthetic: no real host names, session ids, or paths.
 #
-# Covers (sixteen ok/absent/error/stale cases, four per source, plus three
-# extra pr_list cases for the control-byte / empty-after-sanitize classes):
+# Covers (sixteen ok/absent/error/stale cases, four per source, plus six extra
+# pr_list cases for the control-byte, empty-after-sanitize, and arity/type
+# guard classes):
 #   - board:        ok (valid fnd:status:* + a claimed_by edge, session id
 #                    normalized via jk_session8), absent (zero open issues),
 #                    error (a status not in the ontology registry), stale
@@ -29,7 +30,13 @@
 #                    only and a whitespace-only payload — each asserting a ZERO
 #                    return plus valid JSON with status `error`, since jq exits
 #                    0 with no output on both and the fall-through was a
-#                    non-zero return that aborts the whole snapshot build
+#                    non-zero return that aborts the whole snapshot build,
+#                    and three arity/type cases (round 3) — a multi-document
+#                    payload, non-array JSON, and an array whose elements are
+#                    not PR objects — each asserting a ZERO return plus valid
+#                    JSON with status `error`, since a `length`-only guard let
+#                    all three past into either the hard abort or a confident
+#                    `ok` over an empty node set
 #   - worktrees:    ok (a linked `<repo>.wt/<slug>` worktree), absent (no
 #                    linked worktrees), error (git itself fails), stale
 # Plus: the snapshot goes through lib/cache.sh (repo-keyed dir, meta.json,
@@ -551,8 +558,10 @@ echo "PASS: pr_list source ok — a literal control byte in a PR title/body is s
 #
 # Two routes reach the same hole, hence two cases:
 #   1. control-byte-only — `tr -d '\000-\037'` strips the payload to nothing;
-#   2. whitespace-only — SPACE is 0x20, OUTSIDE that range, so the payload
-#      survives sanitizing intact and reaches jq as whitespace.
+#   2. whitespace-only — SPACE is 0x20, OUTSIDE `tr -d '\000-\037'`, so the
+#      SPACEs survive sanitizing while the TAB (0x09) is stripped, which is why
+#      the payload is still WHITESPACE when it reaches jq rather than empty.
+#      (It sanitizes to four spaces — the tab does NOT survive intact.)
 _board_gh() {
   case "$1 $2" in
     "pr list") printf '\001\002\003' ;;
@@ -577,7 +586,71 @@ out="$(_sg_read_pr_list "$BOARD")" || rc=$?
 [ "$rc" -eq 0 ] || fail "pr_list whitespace-only payload must return 0, not abort the snapshot build (rc=$rc, out: $out)"
 jq -e . >/dev/null 2>&1 <<<"$out" || fail "pr_list whitespace-only payload must emit valid JSON (got: $out)"
 [ "$(jq -r .status <<<"$out")" = "error" ] || fail "pr_list whitespace-only payload status (got: $out)"
-echo "PASS: pr_list source error — a whitespace-only payload (survives sanitizing: SPACE is 0x20) reports error and returns 0"
+echo "PASS: pr_list source error — a whitespace-only payload (SPACEs survive sanitizing; the TAB is stripped) reports error and returns 0"
+
+# --- pr_list: the `count` guard needs ARITY and TYPE, not just non-emptiness -
+# temperloop#1981 round 3. Round 2's `jq 'length'` guard answered a WEAKER
+# question than the guard needs, and three input classes slipped past it into
+# the two failure modes above:
+#
+#   1. MULTI-DOCUMENT (`[] []`) — bare `jq` emits one line PER INPUT DOCUMENT,
+#      so `count` is $'0\n0': non-empty, so `[ -z ]` passes; `[ "$count" -eq 0 ]`
+#      then errors on a non-integer and evaluates false; the transforms each
+#      emit two documents, and `--argjson` rejects them → the ROUND-1 HARD
+#      ABORT by a third route.
+#   2. NON-ARRAY JSON (`{"a":1}`) — `length` is defined on objects (key count),
+#      strings (character count) and numbers (absolute value), so each passes a
+#      guard that only proves "parses, length non-zero". The `.[]` projection
+#      then fails → round 2's `|| nodes='[]'` default reported `ok` with ZERO PR
+#      nodes: a SILENT WRONG-EMPTY answer, which `_sg_query_unlinked_prs` does
+#      NOT refuse (it refuses only a DEGRADED source), so it would assert "no
+#      unlinked PRs" over a payload it could not read.
+#   3. ARRAY OF NON-OBJECTS (`["a","b"]`) — a GENUINE array of length 2, so it
+#      passes the arity/type guard LEGITIMATELY and still fails `.[]`. This is
+#      the case the guard fix alone does not close; it discriminates the
+#      honest-`error` transform arms specifically.
+#
+# All three assert a ZERO return AND valid JSON AND status `error`, for the same
+# reason the two cases above do: the failure modes are a non-zero return with
+# empty stdout, and a confident `ok` with an empty node set.
+_board_gh() {
+  case "$1 $2" in
+    "pr list") printf '[] []' ;;
+    *) echo "test _board_gh: unhandled '$1 $2'" >&2; return 3 ;;
+  esac
+}
+rc=0
+out="$(_sg_read_pr_list "$BOARD")" || rc=$?
+[ "$rc" -eq 0 ] || fail "pr_list multi-document payload must return 0, not abort the snapshot build (rc=$rc, out: $out)"
+jq -e . >/dev/null 2>&1 <<<"$out" || fail "pr_list multi-document payload must emit valid JSON (got: $out)"
+[ "$(jq -r .status <<<"$out")" = "error" ] || fail "pr_list multi-document payload status (got: $out)"
+echo "PASS: pr_list source error — a multi-document payload reports error and returns 0"
+
+_board_gh() {
+  case "$1 $2" in
+    "pr list") printf '{"a":1}' ;;
+    *) echo "test _board_gh: unhandled '$1 $2'" >&2; return 3 ;;
+  esac
+}
+rc=0
+out="$(_sg_read_pr_list "$BOARD")" || rc=$?
+[ "$rc" -eq 0 ] || fail "pr_list non-array payload must return 0 (rc=$rc, out: $out)"
+jq -e . >/dev/null 2>&1 <<<"$out" || fail "pr_list non-array payload must emit valid JSON (got: $out)"
+[ "$(jq -r .status <<<"$out")" = "error" ] || fail "pr_list non-array JSON must report error, never a confident ok with an empty node set (got: $out)"
+echo "PASS: pr_list source error — non-array JSON reports error, not a wrong-empty ok"
+
+_board_gh() {
+  case "$1 $2" in
+    "pr list") printf '["a","b"]' ;;
+    *) echo "test _board_gh: unhandled '$1 $2'" >&2; return 3 ;;
+  esac
+}
+rc=0
+out="$(_sg_read_pr_list "$BOARD")" || rc=$?
+[ "$rc" -eq 0 ] || fail "pr_list array-of-non-objects payload must return 0 (rc=$rc, out: $out)"
+jq -e . >/dev/null 2>&1 <<<"$out" || fail "pr_list array-of-non-objects payload must emit valid JSON (got: $out)"
+[ "$(jq -r .status <<<"$out")" = "error" ] || fail "pr_list array whose elements are not PR objects must report error, never a confident ok with an empty node set (got: $out)"
+echo "PASS: pr_list source error — an array of non-objects reports error, not a wrong-empty ok"
 
 # =============================================================================
 # source: worktrees (Worktree nodes)

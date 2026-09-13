@@ -711,7 +711,21 @@ _sg_read_pr_list() {
   # assignment turns into a `set -e` abort of the WHOLE snapshot build. Same
   # shape `_sg_read_board` already uses above (:515-519); every `_sg_read_*`
   # in this file returns 0 on every path.
-  count="$(printf '%s' "$raw" | jq 'length' 2>/dev/null)" || count=""
+  #
+  # The program is `jq -s`, not a bare `jq 'length'`, because the guard needs
+  # ARITY and TYPE, not just non-emptiness. Bare `jq 'length'` emits one line
+  # PER INPUT DOCUMENT, so a multi-document payload (`[] []`) yields $'0\n0' —
+  # non-empty, so `[ -z ]` passes, `[ "$count" -eq 0 ]` then errors on a
+  # non-integer and falls through to the same hard abort. And `length` is
+  # defined on strings (character count), objects (key count) and numbers
+  # (absolute value), so `"abc"` / `{"a":1}` / `5` all pass a guard that only
+  # proves "parses, non-zero length" — then fail the `.[]` projection below.
+  # Slurping collapses the whole payload to ONE document and the type test
+  # admits only a single top-level array; everything else yields `empty`, so
+  # `[ -z "$count" ]` reports the honest `error`. Deliberate consequence: a
+  # `null` payload now reports `error` rather than `absent` — `null` is not a
+  # legitimately empty PR list.
+  count="$(printf '%s' "$raw" | jq -s 'if (length == 1 and (.[0]|type) == "array") then (.[0]|length) else empty end' 2>/dev/null)" || count=""
   if [ -z "$count" ]; then
     _sg_source_result error '[]' '[]' "unparseable gh pr list output"
     return 0
@@ -720,20 +734,33 @@ _sg_read_pr_list() {
     _sg_source_result absent '[]' '[]' ""
     return 0
   fi
-  # Belt-and-suspenders, same form as the closed-residue block above (~:583-593):
-  # both transforms are unreachable-on-failure (the `count` guard already proved
-  # `$raw` parses as a non-empty array), but neither may hand an empty string to
-  # `_sg_source_result`'s `--argjson`.
-  nodes="$(printf '%s' "$raw" | jq -c '[ .[] | {type:"PR", id:("PR:"+(.number|tostring)), number:.number, title:(.title // "")} ]' 2>/dev/null)" || nodes='[]'
-  [ -n "$nodes" ] || nodes='[]'
+  # These arms are NOT unreachable-on-failure: they are the honest-error path
+  # for a payload that parses as a single top-level array (so the `count` guard
+  # above admits it, legitimately) but whose ELEMENTS are not PR objects —
+  # `["a","b"]` is the worked case. They therefore report `error`, NOT the
+  # belt-and-suspenders `|| extra='[]'` default the closed-residue block uses
+  # (~:583-593). That default is right THERE because `extra` is supplementary
+  # data, where an empty fallback loses only a little context. Here `nodes` IS
+  # the answer, so defaulting it to `[]` would manufacture a confident false
+  # negative: `_sg_query_unlinked_prs` refuses to answer over a DEGRADED source
+  # — that refusal is the safety property — but an `ok` source with zero nodes
+  # does not trigger it, so the query would assert "no unlinked PRs" over a
+  # payload it could not read. That silent wrong-empty is the class
+  # `_board_sanitize_control_chars`'s own header records as worse than a
+  # degrade. The `[ -n ]` belts stay: neither arm may hand an empty string to
+  # `_sg_source_result`'s `--argjson`, and jq can exit zero with no output.
+  nodes="$(printf '%s' "$raw" | jq -c '[ .[] | {type:"PR", id:("PR:"+(.number|tostring)), number:.number, title:(.title // "")} ]' 2>/dev/null)" \
+    || { _sg_source_result error '[]' '[]' "pr_list node transform failed"; return 0; }
+  [ -n "$nodes" ] || { _sg_source_result error '[]' '[]' "pr_list node transform produced no output"; return 0; }
   edges="$(printf '%s' "$raw" | jq -c '
     [ .[] as $pr
       | (($pr.body // "") | split("\n")[]) as $line
       | select($line | test("^[ \t]*(close[sd]?|fix(e[sd])?|resolve[sd]?)[ \t]+#[0-9]+[ \t]*$"; "i"))
       | ($line | capture("#(?<n>[0-9]+)")) as $m
       | {type:"closes", from:("PR:"+($pr.number|tostring)), to:("Issue:"+$m.n)}
-    ]' 2>/dev/null)" || edges='[]'
-  [ -n "$edges" ] || edges='[]'
+    ]' 2>/dev/null)" \
+    || { _sg_source_result error '[]' '[]' "pr_list edge transform failed"; return 0; }
+  [ -n "$edges" ] || { _sg_source_result error '[]' '[]' "pr_list edge transform produced no output"; return 0; }
   _sg_source_result ok "$nodes" "$edges" ""
 }
 
