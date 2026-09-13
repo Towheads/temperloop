@@ -20,8 +20,9 @@
   the soak to **also invoke `reconcile.sh --labels`** would add a second
   reconcile invocation and a second report-shape parser — more divergence
   surface in the one place divergence *is* the bug, the same reasoning
-  #1980 round 3 rejected its analogue for. The reasoning is recorded beside
-  the code (`_SG_SOAK_STATUS_DRIFT_KIND_COUNTERPART`) together with the
+  #1980 round 3 — the stale-claims counterpart gap — rejected its analogue
+  for. The reasoning is recorded beside the code
+  (`_SG_SOAK_STATUS_DRIFT_KIND_COUNTERPART`) together with the
   kind-by-kind audit, and a test fails if a **fourth** kind is ever added
   without being dispositioned against what `--status` can emit — this is
   the third time this mismatch shape has been rediscovered.

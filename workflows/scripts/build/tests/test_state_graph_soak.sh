@@ -518,9 +518,26 @@ echo "PASS: soak — a parked-but-stamped open issue produces no false status-dr
 # disagreement in a production soak log.
 # =============================================================================
 sg_src="$HERE/../state-graph.sh"
-emitted_kinds="$(sed -n '/^_sg_query_status_drift()/,/^}/p' "$sg_src" |
-  grep -o 'kind:"[a-z_]*"' | sed -e 's/^kind:"//' -e 's/"$//' | sort -u)"
+sg_body="$(sed -n '/^_sg_query_status_drift()/,/^}/p' "$sg_src")"
+# WHITESPACE-TOLERANT extraction (shell-reviewer, MEDIUM). A strict
+# `kind:"..."` pattern is defeated by `kind: "..."` — one space, valid jq,
+# stylistically indistinguishable — and the count assertion is derived from
+# the SAME extraction, so it passes too and both completeness loops then
+# iterate the known three. A guard a one-character reformat silently disarms
+# is not a structural defense (kernel principle 5), which is precisely what
+# this block exists to be. `-E` + POSIX classes behave identically on BSD and
+# GNU grep. `|| true` keeps the no-match case reaching its own explanatory
+# `fail` below rather than dying bare under `set -e` + `pipefail` (the LOW).
+emitted_kinds="$(printf '%s\n' "$sg_body" |
+  grep -oE 'kind:[[:space:]]*"[a-z_]+"' |
+  sed -E -e 's/^kind:[[:space:]]*"//' -e 's/"$//' | sort -u || true)"
+# STRICT extraction, kept only as a cross-check: if the two disagree, someone
+# reformatted a `kind:` and the strict pattern would have started silently
+# under-reporting. Trip the test on the reformat instead of absorbing it.
+emitted_kinds_strict="$(printf '%s\n' "$sg_body" |
+  grep -o 'kind:"[a-z_]*"' | sed -e 's/^kind:"//' -e 's/"$//' | sort -u || true)"
 [ -n "$emitted_kinds" ] || fail "could not extract any finding kind from _sg_query_status_drift — the completeness check would pass vacuously"
+[ "$emitted_kinds" = "$emitted_kinds_strict" ] || fail "whitespace-tolerant and strict kind extractions disagree — a \`kind:\` was reformatted, and the strict pattern would silently under-report. Loose: $(printf '%s' "$emitted_kinds" | tr '\n' ' ')| strict: $(printf '%s' "$emitted_kinds_strict" | tr '\n' ' ')"
 [ "$(printf '%s\n' "$emitted_kinds" | wc -l | tr -d ' ')" -eq 3 ] || fail "expected _sg_query_status_drift to emit 3 finding kinds (got: $(printf '%s' "$emitted_kinds" | tr '\n' ' '))"
 while IFS= read -r k; do
   [ "$(jq -r --arg k "$k" 'has($k)' <<<"$_SG_SOAK_STATUS_DRIFT_KIND_COUNTERPART")" = "true" ] ||
@@ -529,10 +546,17 @@ done <<<"$emitted_kinds"
 # And the table names nothing the query cannot emit (a stale entry silently
 # narrowing a kind that no longer exists is the same bug pointed the other
 # way).
+# Captured, NOT a process substitution (shell-reviewer, LOW): a process
+# substitution's exit status is invisible to `set -e`/`pipefail`, so a
+# malformed table literal would yield no lines, skip the loop body, and report
+# PASS having checked nothing. A failing command substitution DOES trip
+# `set -e`, and the non-empty assertion closes the remaining vacuity.
+table_kinds="$(jq -r 'keys[]' <<<"$_SG_SOAK_STATUS_DRIFT_KIND_COUNTERPART")"
+[ -n "$table_kinds" ] || fail "_SG_SOAK_STATUS_DRIFT_KIND_COUNTERPART yielded no keys — the reverse-direction check would pass vacuously"
 while IFS= read -r k; do
   printf '%s\n' "$emitted_kinds" | grep -Fx "$k" >/dev/null ||
     fail "_SG_SOAK_STATUS_DRIFT_KIND_COUNTERPART names kind '$k', which _sg_query_status_drift never emits"
-done < <(jq -r 'keys[]' <<<"$_SG_SOAK_STATUS_DRIFT_KIND_COUNTERPART")
+done <<<"$table_kinds"
 echo "PASS: soak — every status-drift finding kind is dispositioned in the counterpart table, and the table names no kind the query cannot emit (temperloop#1996)"
 
 # =============================================================================
