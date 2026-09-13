@@ -231,6 +231,7 @@ kernel workflows/scripts/build/lib/pr-linkage.sh
 kernel workflows/scripts/build/state-graph.sh
 kernel workflows/scripts/build/tests/test_state_graph.sh
 kernel workflows/scripts/build/tests/test_state_graph_local.sh
+kernel workflows/scripts/build/tests/test_state_graph_soak.sh
 # test_rework_snapshot.sh tests workflows/scripts/rework-snapshot.sh, which is
 # overlay (personal telemetry pipeline, see the flat-files block below) — a
 # kernel-only checkout has nothing for this test to exercise. Single-file

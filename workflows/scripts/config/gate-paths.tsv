@@ -183,6 +183,10 @@ bash workflows/scripts/build/tests/test_state_graph_local.sh	workflows/scripts/b
 # snapshot JSON, plus the shared route-alphabet fixture and the ontology
 # registry it is checked against.
 bash workflows/scripts/build/tests/test_state_graph_queries.sh	workflows/scripts/build/state-graph.sh workflows/scripts/build/tests/test_state_graph_queries.sh workflows/scripts/build/tests/fixtures/state-graph-routes.json workflows/scripts/config/ontology-registry.tsv
+# `state-graph.sh soak` (temperloop#1910, this item): the mechanical soak
+# runner, plus the reconcile.sh script it independently invokes through the
+# _sg_reconcile seam and the cache.sh accessors its log rides.
+bash workflows/scripts/build/tests/test_state_graph_soak.sh	workflows/scripts/build/state-graph.sh workflows/scripts/build/tests/test_state_graph_soak.sh workflows/scripts/board/lib/cache.sh workflows/scripts/board/lib/board.sh workflows/scripts/board/reconcile.sh workflows/scripts/config/ontology-registry.tsv
 bash workflows/scripts/validate-state-graph-call.sh	workflows/scripts/validate-state-graph-call.sh workflows/scripts/build/state-graph.sh claude/commands/build.md
 bash workflows/scripts/tests/test_state_graph_call.sh	workflows/scripts/validate-state-graph-call.sh workflows/scripts/build/state-graph.sh workflows/scripts/tests/test_state_graph_call.sh claude/commands/build.md
 make test-build-workflow	workflows/scripts/build/** claude/workflows/** workflows/scripts/lib/portable-timeout.sh

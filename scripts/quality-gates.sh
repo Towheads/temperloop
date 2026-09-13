@@ -144,6 +144,12 @@ KERNEL_GATES=(
   # of a snapshot JSON — already glob-covered by `make test-build` above,
   # registered here too by-name, same convention as the two entries above.
   "bash workflows/scripts/build/tests/test_state_graph_queries.sh"
+  # `state-graph.sh soak` (temperloop#1910, this item): the mechanical
+  # fourteen-day cross-check between `query status-drift` and the
+  # INDEPENDENT `reconcile.sh --status` read, plus `--count`/`--audit` and
+  # `bench`'s soak-log capture — already glob-covered by `make test-build`
+  # above, registered here too by-name, same convention as the entries above.
+  "bash workflows/scripts/build/tests/test_state_graph_soak.sh"
   # The `state-graph.sh query resume` call's presence-lint (temperloop#1910
   # L6) — build.md Step 0.5 declares this call mandatory on every resume
   # (mandatory-step-registry.tsv); this guard is that declaration's
