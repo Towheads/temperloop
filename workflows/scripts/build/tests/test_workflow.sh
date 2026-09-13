@@ -6936,6 +6936,28 @@ grep -q "escalate(item.slug, 'review-diff-error', gap)" "$MJS" \
   || fail "#1976: a still-incomplete tsv after the retry must escalate review-diff-error naming the gap (missing/mismatch)"
 echo "PASS: #1976 review-diff tsv-guard wiring — reviewDiffCmd emits tsv_rows, reviewDiffTsvGap detects a missing/mismatched tsv, runReviewers retries once through the same command before escalating"
 
+# --- temperloop#1982 STRUCTURAL close: the reviewer-routing table is a STATIC
+# repo file, so it rides the Step-0 orchestrator hand-off (the same seam as
+# principlesSummaries / gateSliceSecs) instead of crossing the
+# machinery-executor agent's verbatim-echo contract at all. The relay was
+# mangled three distinct ways across eight occurrences — omitted, replaced by
+# prose describing the table, and returned double-JSON-encoded (quotes plus
+# literal \t/\n instead of real tabs/newlines, parsing as 1 row not 11).
+# Guarding a value the agent should never have been carrying is the wrong
+# layer; these assert the agent is OUT of the path, not better-checked.
+grep -q 'REVIEWER_ROUTING_TSV' "$MJS" \
+  || fail "#1982: build-level.mjs must define REVIEWER_ROUTING_TSV — the orchestrator-supplied routing table that removes the machinery-executor agent from this data's path"
+grep -q "input.reviewerRoutingTsv" "$MJS" \
+  || fail "#1982: REVIEWER_ROUTING_TSV must read input.reviewerRoutingTsv — the Step-0 hand-off seam, same shape as input.principlesSummaries"
+grep -q '!REVIEWER_ROUTING_TSV && reviewDiffTsvGap' "$MJS" \
+  || fail "#1982: the relay gap-check + retry must be SKIPPED when the orchestrator supplied the table — otherwise a run still pays a retry round-trip guarding a value it is not using"
+grep -q 'const tsvText = REVIEWER_ROUTING_TSV' "$MJS" \
+  || fail "#1982: determineReviewers must prefer REVIEWER_ROUTING_TSV over diffOut.tsv — the supplied table is authoritative when present"
+grep -q "typeof diffOut.tsv === 'string' ? diffOut.tsv : ''" "$MJS" \
+  || fail "#1982: the legacy diffOut.tsv relay path must REMAIN as the fallback — an un-migrated caller (older orchestrator, consuming repo) must keep working unchanged"
+echo "PASS: #1982 reviewer-routing hand-off — the static routing table is supplied by the orchestrator (input.reviewerRoutingTsv), is authoritative when present, skips the relay gap-check/retry it makes moot, and leaves the legacy relay path intact for an un-migrated caller"
+
+
 # --- K1430 static lockstep guards: §3e mandatory/routed pre-push review ------
 # build.md §3e is the SPEC; build-level.mjs's driveItem is the as-built
 # encoding (the same lockstep discipline as every other *_BUILD_MD guard in
