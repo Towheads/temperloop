@@ -63,17 +63,25 @@
 #   (C) CHALLENGE-RECORD COMPLETENESS CHECK — a brief's `## Working notes` §
 #       `### Challenge record` (design-schema.md § Challenge record) is
 #       checked in two independent ways: every stop line present must match
-#       the § Challenge record grammar exactly (dim-list, `[walk|walkthrough]`,
-#       source, verdict, optional verbatim `response:`), and an
-#       `operator-edited` stop line without a `response:` field is flagged
-#       (design-schema.md § Record completeness — "the record is incomplete
-#       without capturing what that hand actually wrote"). SOURCE OF TRUTH,
-#       same rule as (A)/(B): the completeness bar itself — every kernel
-#       dimension 0..16 needs a `walk` stop line before a brief may ratify —
-#       is READ FROM design-schema.md § Record completeness, never re-encoded
-#       here independently; this script only enforces what that section
-#       states, and `/workshop` Step 4.1c (the in-session ratify gate) reuses
-#       the identical rule so the two can never drift apart. Two carve-outs,
+#       the § Challenge record grammar exactly (dim-list — a kernel-dimension
+#       digit or, for an `interview` line, a `D<n>` decision ref —
+#       `[walk|walkthrough|delta|interview]`, source, verdict, optional
+#       verbatim `response:`), and an `operator-edited` stop line without a
+#       `response:` field is flagged (design-schema.md § Record completeness —
+#       "the record is incomplete without capturing what that hand actually
+#       wrote"). SOURCE OF TRUTH, same rule as (A)/(B): the completeness bar
+#       itself — every kernel dimension 0..16 needs a `walk` stop line before
+#       a brief may ratify — is READ FROM design-schema.md § Record
+#       completeness, never re-encoded here independently; this script only
+#       enforces what that section states, and `/workshop` Step 4.1c (the
+#       in-session ratify gate) reuses the identical rule so the two can never
+#       drift apart. NOTE (temperloop#1938, design-schema-delta-grammar): the
+#       grammar above additively parses `delta`/`interview` lines and a `D<n>`
+#       dim-ref, but this completeness bar itself is UNCHANGED — it still
+#       keys on `walk` only. design-schema.md § Record completeness now
+#       documents a stamp-gated `delta` completeness rule as the target
+#       (frontmatter `record_grammar: delta`), provisional pending a separate,
+#       dependent follow-on item that flips this bar to match. Two carve-outs,
 #       both keyed on the frontmatter `status:` field exactly as (B)'s
 #       dimension-0 exemption already is (never a global flip):
 #         - NO `### Challenge record` subheading at all → exempt, for ANY
@@ -440,7 +448,21 @@ EOF
 
 # Stop-line grammar (design-schema.md § Challenge record "Per-stop line
 # shape"): <dim-list> [<kind>] <source>: <verdict>[ — response: "<text>"]
-CHALLENGE_STOP_RE='^([0-9]+[a-z]?(,[0-9]+[a-z]?)*) \[(walk|walkthrough)\] ([^:]+): (accepted|challenged → revised ×[0-9]+|operator-edited)( — response: "(.*)")?$'
+#
+# temperloop#1938 (design-schema-delta-grammar): additive widening only — a
+# `dim-ref` gains a `D<n>` alternative (a § Shared understanding decision
+# ref, used by an `interview` line's dim-list) alongside the existing
+# kernel-dimension digit form, and `kind` gains `delta`/`interview` alongside
+# `walk`/`walkthrough`. NO change to the completeness bar below (still
+# `walk`-keyed) — design-schema.md § Record completeness is provisional on a
+# separate, dependent follow-on item that flips it.
+#
+# BASH_REMATCH indices below are NOT 1/2/3/4/6 as they were before this
+# widening — the `D[0-9]+|[0-9]+[a-z]?` alternation inside dim-ref adds two
+# extra capturing groups (ERE has no non-capturing form), shifting every
+# later group by two: dimlist=[1] (unchanged), kind=[5] (was 3),
+# source=[6] (was 4), verdict=[7] (was 5), response=[9] (was 7).
+CHALLENGE_STOP_RE='^((D[0-9]+|[0-9]+[a-z]?)(,(D[0-9]+|[0-9]+[a-z]?))*) \[(walk|walkthrough|delta|interview)\] ([^:]+): (accepted|challenged → revised ×[0-9]+|operator-edited)( — response: "(.*)")?$'
 CHALLENGE_MARKER_RE='^challenge-record-start: [0-9]{4}-[0-9]{2}-[0-9]{2}$'
 
 # ---------------------------------------------------------------------------
@@ -511,7 +533,7 @@ EOF
       failures+=("BAD-CHALLENGE-LINE  $label — '$sl' matches none of the § Challenge record grammar's stop-line forms")
       continue
     fi
-    local dimlist="${BASH_REMATCH[1]}" kind="${BASH_REMATCH[3]}" source="${BASH_REMATCH[4]}" verdict="${BASH_REMATCH[5]}" response="${BASH_REMATCH[7]}"
+    local dimlist="${BASH_REMATCH[1]}" kind="${BASH_REMATCH[5]}" source="${BASH_REMATCH[6]}" verdict="${BASH_REMATCH[7]}" response="${BASH_REMATCH[9]}"
 
     if [[ "$verdict" == "operator-edited" && -z "$response" ]]; then
       failures+=("MISSING-RESPONSE  $label dimension(s) $dimlist — 'operator-edited' stop line ($source) carries no verbatim 'response:' field (design-schema.md § Record completeness)")
