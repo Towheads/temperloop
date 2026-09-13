@@ -34,6 +34,7 @@ store, parallel in status to `Plans/`.
 tags: [design-brief, project/<name>]
 date: <YYYY-MM-DD created>
 status: draft                         # draft | ratified | dropped
+record_grammar: delta                 # optional; absent = legacy grammar
 source_kind: claude-stamped
 source_session: <session-id>
 source_model: <model id that drafted the brief>
@@ -41,15 +42,22 @@ last_verified: <YYYY-MM-DD>
 ---
 ```
 
-This is the standard vault provenance schema (note-level) plus one
-brief-specific field: `status`. `status: draft` is the gate between the
-coverage walk and materialization — the command's ratify step
-(`/workshop` Step 4) flips it to `ratified` only after every dimension carries
-a disposition (§ Disposition grammar) and the review tier for that epic's
-weight has run (`/workshop` Step 3). A `ratified` brief is treated as <!-- cite: DS.4 class:ratified-record-silent-mutation -->
+This is the standard vault provenance schema (note-level) plus two
+brief-specific fields: `status` and `record_grammar`. `status: draft` is the
+gate between the coverage walk and materialization — the command's ratify
+step (`/workshop` Step 4) flips it to `ratified` only after every dimension
+carries a disposition (§ Disposition grammar) and the review tier for that
+epic's weight has run (`/workshop` Step 3). A `ratified` brief is treated as <!-- cite: DS.4 class:ratified-record-silent-mutation -->
 immutable going forward: a later change is a **new** brief that supersedes
 it (linked via `[[wikilink]]`), the same convention `Decisions/` notes use
 for supersession — never an edit-in-place of a ratified brief.
+
+`record_grammar: delta` is stamped once, at brief creation, by whatever
+command wrote it (`/workshop`/`/interview`); its absence is the normal state
+for a brief created before this field existed. It is the switch
+§ Record completeness's stamp-gated rule reads — see that section, not this
+one, for what the value controls; this field only exists to be stamped and
+never edited afterward, ratified or not.
 
 A `dropped` brief is a **killed idea** — the third terminal `status` value,
 alongside `draft` (in-walk) and `ratified` (accepted). The `/workshop`
@@ -62,6 +70,48 @@ rejected, so a later `/workshop` run on the same title **stops** rather than
 silently re-adopting it as a draft. Reopening a dropped brief requires an
 **explicit operator confirmation** (`/workshop` Step 1.4), never the silent
 draft-adopt path — a killed idea does not un-kill itself on the next run.
+
+## Shared understanding
+
+`/interview` (`/workshop` Phase 1) writes a `## Shared understanding` <!-- cite: DS.13 incident:K#1938 -->
+section at the top of the brief — under the title, before dimension 0 —
+persisted round by round as decisions are made, never as a single end-of-
+phase dump. It is not one of the seventeen kernel dimensions (no digit
+prefix, no disposition line): it is the interview's own durable record, in
+the words used to produce it, as distinct from § Challenge record's
+structured per-round verdict lines below. Five parts, plus a closing log:
+
+- **`### Problem (operator's words)`** — the problem, quoted or closely
+  paraphrased from the operator's own framing, never restated only in the
+  facilitator's words.
+- **`### Facts found (facilitator, not asked)`** — bullet facts the
+  facilitator looked up itself rather than asking the operator (a fact
+  reachable by reading the codebase or a config file is never a question).
+- **`### Decisions — round <n> (<date>)`** — one bullet per decision,
+  `D<n>` numbered sequentially across the whole interview (a heading per
+  round groups the bullets; numbering never restarts or renumbers): `D<n>
+  **<short title>.** <the decision, in the operator's verbatim words
+  wherever the operator gave them, quoted — the facilitator's own summary
+  otherwise>`. A decision a later round supersedes keeps its number and
+  states the supersession inline (`D9 ... — superseded by D17`), the same
+  never-renumber convention `Decisions/` notes use.
+- **`### Deferrals`** — real gaps the operator chose not to resolve now,
+  each naming a tracking ref (the same `deferred → <ref>` discipline
+  § Disposition grammar's dimension dispositions use); `(none yet)` when
+  empty.
+- **`### Risks`** — `R<n>`-numbered, premortem-framed risk bullets
+  (dimension 15's shape), each carrying its kill condition inline.
+- **`### Interview record`** — one plain-language line per round (`round
+  <n>: D<a>–D<b> [interview] operator: <k> asked, <k> answered<, notes>`).
+  This is prose, not grammar the validator parses — it is a human-readable
+  tally, never a substitute for the machine-checked `interview`-kind stop
+  lines § Challenge record defines below (those live in `## Working notes`,
+  are what the completeness check reads, and use a comma-separated `D<n>`
+  dim-list rather than this log's en-dash range).
+
+A standalone `/interview` run (invoked without `/workshop`) writes the same
+`## Shared understanding` shape to a caller-named note outside `Designs/`
+(default `Context/<repo> - <topic>.md`), with no brief created around it.
 
 ## Kernel dimension list
 
@@ -165,6 +215,22 @@ disposition: deferred → <tracking ref>    — real but out of scope for this b
 The disposition line is the **first non-blank line** under its dimension
 heading — body prose follows it, never precedes it (the brief-conformance
 lint enforces this position).
+
+**Facilitator-drafted flag.** A dimension `/workshop` Phase 2 drafts with no <!-- cite: DS.17 class:disposition-line-flag-collision -->
+interview decision behind it carries one more line, *immediately after* the
+disposition line and before any body prose:
+
+```
+_facilitator-drafted, not from interview_[ — <one-line note>]
+```
+
+It is a line **after** the disposition line, never before it and never in
+its place — the brief-conformance lint reads the first non-blank line under
+a heading as the disposition (above), so a flag placed ahead of it would be
+misread as a malformed disposition value. The flag is a provenance note for
+the reader (and the input to the facilitator-drafted ratio `/workshop` uses
+to decide whether a targeted interview round is owed) — it carries no
+disposition value of its own and is not itself dispositioned.
 
 `n/a` is not a way to skip an inconvenient dimension — it is for a
 dimension that genuinely does not apply (e.g. dimension 11 uninstallability
@@ -337,7 +403,14 @@ challenge-record-start: <YYYY-MM-DD>
 ```
 
 Its presence commits to "at least one stop line follows below, before the
-next heading." Its **absence has two distinct readings, and they are not <!-- cite: DS.10 class:silently-incomplete-review-record -->
+next heading." **The marker is written together with the first stop line it <!-- cite: DS.15 class:premature-record-start-marker -->
+commits to, never ahead of it** — never persisted alone in one write with the
+first stop deferred to a later turn or round; `/interview`'s per-round
+persist and `/workshop` Phase 2's delta approval both write the marker (when
+their pass is the record's first) and that pass's first stop line in the
+same file write, so the record is never left in a transient marker-with-no-
+stops state by construction, only by the genuine defect below. Its **absence
+has two distinct readings, and they are not <!-- cite: DS.10 class:silently-incomplete-review-record -->
 interchangeable**: no `### Challenge record` subheading at all under
 `## Working notes` means *zero stops were recorded this pass* — every
 dimension's first look sailed through as an implicit accept with nothing
@@ -360,8 +433,11 @@ dim-list ::= <dim-ref> ("," <dim-ref>)*
 dim-ref  ::= digit+ [a-z]?              (a kernel dimension, optionally
                                           letter-suffixed per § Overlay
                                           extensibility, e.g. `8`, `16a`)
-kind     ::= "walk" | "walkthrough"
-source   ::= "step-1-seed" | <review-lens-or-persona-name>
+           | "D" digit+                 (a § Shared understanding decision
+                                          ref, e.g. `D5` — an `interview`
+                                          line only, never a kernel dimension)
+kind     ::= "walk" | "walkthrough" | "delta" | "interview"
+source   ::= "step-1-seed" | "operator" | <review-lens-or-persona-name>
 verdict  ::= "accepted"
            | "challenged → revised ×" digit+
            | "operator-edited"
@@ -369,6 +445,20 @@ response ::= present only when the operator's own verbatim words are what
              decided the verdict (e.g. Step 3.4.3's contested-finding
              resolution) — quoted, never paraphrased or summarized
 ```
+
+**Delta and interview kinds.** `delta` is Phase 2's per-dimension operator <!-- cite: DS.14 class:review-lens-satisfies-operator-gate -->
+delta-approval line (one per dimension, or a same-verdict dimension cluster
+exactly like `walk`); its `source` is always the literal token `operator`,
+never a review-lens or persona name. Reusing `walkthrough` for this line was
+considered and rejected: `walkthrough`'s `source` is a review lens, so a
+single clustered lens `accepted` line would satisfy the operator gate too —
+the gate would fail open. `interview` is Phase 1's per-decision record line,
+written per round by `/interview`; its `dim-list` holds one or more `D<n>`
+decision refs (never a kernel-dimension digit) and its `source` is likewise
+`operator`. Both new kinds reuse the existing verdict vocabulary and
+clustering rule unchanged — only their `dim-list` referent and `source`
+differ from `walk`/`walkthrough`, which stay valid, parsable kinds for every
+brief whose record already carries them (§ Record completeness).
 
 **Clustering.** `dim-list` legitimately holds more than one `dim-ref` —
 several dimensions that share the identical `kind`, `source`, and
@@ -421,13 +511,40 @@ migration carve-out below) must satisfy two structural rules — both
 mechanically checked by `workflows/scripts/validate-design-brief.sh`'s
 brief-conformance check (C), and this is the single source of truth
 `/workshop` Step 4.1c's in-session ratify gate reuses verbatim rather than
-restating, so the two can never diverge: **(1)** every kernel dimension
-0..16 carries at least one `walk` stop line — the coverage-walk requirement
-the dimension-0 walk-verdict note (above) already establishes is satisfiable
-for every brief via the seeded-dimension rule; `walkthrough` coverage stays
-opportunistic, exactly as the walk-vs-walkthrough discriminator above
-describes ("a dimension no panel lens reached ... carries only a `walk`
-line"), and is never required for every dimension. **(2)** every
+restating, so the two can never diverge.
+
+**(1) — stamp-gated delta completeness.** Every kernel dimension 0..16 <!-- cite: DS.16 class:date-keyed-exemption-breaks-vendored-adopter -->
+carries at least one `delta` stop line **when the brief's frontmatter carries
+`record_grammar: delta`**; a brief with no such frontmatter field is
+**legacy and exempt** from this rule entirely, whatever kinds its record
+carries. A record carrying any `delta` or `interview` stop line while its
+frontmatter lacks the `record_grammar: delta` stamp is itself a defect —
+new-grammar content authored with no stamp declaring the new grammar in
+force. The switch reads a per-brief frontmatter field, deliberately **never
+a date constant**: an earlier draft of this rule (ADR 0036) keyed the
+exemption on whether a brief's `challenge-record-start:` date preceded the
+grammar's ship date, and architecture review found that this breaks an
+adopter vendored at an older kernel tag who keeps ratifying walk-grammar
+briefs *after* that date — every such brief would go red on the next sync
+with no migration available, since a ratified brief is immutable
+(§ Frontmatter). The stamp is written once, at brief creation, and travels
+with the brief instead of depending on when the kernel doc happened to
+change. `walk`/`walkthrough` stay valid, parsable kinds regardless
+(§ Challenge record) — this rule only says which kind a stamped brief's
+completeness is judged on.
+
+> **Provisional — pending temperloop#1938's follow-on validator item.** This <!-- cite: DS.18 class:schema-ahead-of-enforcement -->
+> rule states the target grammar this doc is the single source of truth
+> for; today's shipped `validate-design-brief.sh` still enforces this
+> rule's predecessor — every kernel dimension needs a `walk` stop line,
+> unconditionally — because `CHALLENGE_STOP_RE` (§ Challenge record) parses
+> `delta`/`interview` lines additively without yet flipping the
+> completeness check itself. A stamped brief therefore parses clean today
+> but is judged by the old `walk` rule until that follow-on item lands; it
+> is a separate, dependent change sharing this same script's lines, not a
+> second implementation of this rule.
+
+**(2)** every
 `operator-edited` stop line carries a verbatim `response:` field — the
 verdict's own definition ("the operator's own hand ... not from folding in
 the source's finding verbatim") means the record is incomplete without
@@ -438,10 +555,15 @@ record` subheading at all predates this record — challenge records did not
 exist when it ratified — and is EXEMPT from rule (1) above, never flagged,
 by the same per-brief `status:` signal § Disposition grammar's dimension-0
 requirement already keys on (temperloop#512), never a global version flip.
-A non-ratified (draft or dropped) brief is never held to rule (1) or (2)
-either — its record is still being built. Only a `ratified` brief whose
-`### Challenge record` subheading is present is checked for completeness;
-the record-start-marker-present-but-empty defect (above) is independent of
+This is independent of rule (1)'s own stamp-based exemption above: a
+ratified brief can lack a Challenge record section entirely (this
+carve-out), or carry a full record with no `record_grammar: delta` stamp
+(rule (1)'s legacy exemption) — either is sufficient on its own to exempt
+it, and a brief can also satisfy both at once. A non-ratified (draft or
+dropped) brief is never held to rule (1) or (2) either — its record is
+still being built. Only a `ratified` brief whose `### Challenge record`
+subheading is present is checked for completeness; the
+record-start-marker-present-but-empty defect (above) is independent of
 ratification and applies regardless of status.
 
 ## Worked example (skeleton)
@@ -451,6 +573,7 @@ ratification and applies regardless of status.
 tags: [design-brief, project/example]
 date: 2026-08-01
 status: draft
+record_grammar: delta
 source_kind: claude-stamped
 source_session: a1b2c3d4
 source_model: claude-example-model
@@ -458,6 +581,27 @@ last_verified: 2026-08-01
 ---
 
 # Design brief: <feature name>
+
+## Shared understanding
+
+### Problem (operator's words)
+"<the problem, in the operator's own framing>"
+
+### Facts found (facilitator, not asked)
+- <a fact the facilitator looked up itself>
+
+### Decisions — round 1 (2026-08-01)
+- D1 **<short title>.** <the decision, operator's verbatim words where given>
+- D2 **<short title>.** <the decision>
+
+### Deferrals
+(none yet)
+
+### Risks
+- R1 <premortem-framed risk, kill condition inline>
+
+### Interview record
+- round 1: D1–D2 [interview] operator: 2 asked, 2 answered
 
 ## 0. Premise & null hypothesis
 disposition: filled
@@ -489,6 +633,7 @@ disposition: n/a — this design adds no new command, only a schema change
 
 ## 6. Scalability & resource impact
 disposition: filled
+_facilitator-drafted, not from interview_
 <cost tier; API/token impact>
 
 ## 7. Maintainability
@@ -534,25 +679,31 @@ disposition: filled
 
 ### Challenge record
 challenge-record-start: 2026-08-01
+D1,D2 [interview] operator: accepted
 
-0 [walk] step-1-seed: accepted
-1,3 [walk] step-1-seed: accepted
-8 [walk] requirements-auditor: accepted
-12 [walkthrough] first-run-uninstall persona: challenged → revised ×1 — response: "yes, the uninstall step needs its own confirm prompt — add it"
+0,1 [delta] operator: accepted
+3 [delta] operator: challenged → revised ×1
+6 [delta] operator: accepted
+8 [delta] operator: accepted
+12 [delta] operator: operator-edited — response: "yes, the uninstall step needs its own confirm prompt — add it"
 ```
 
 `## Working notes` is not a numbered kernel dimension (no digit prefix, no
 disposition line) — it is the § Challenge record's home section, plus a
 home for the review-tier/per-lens coverage record `/workshop` Step 3.1.4
-keeps and the Step 1.3b `premise-gate: reshaped once` marker. The four
-lines above exercise every production the § Challenge record grammar
-defines: `challenge-record-start:` (the record-start marker), a
-single-dimension `walk` stop (`8 [walk] requirements-auditor: accepted`),
-a clustered `walk` stop across two dimensions sharing the identical
-`step-1-seed` source and `accepted` verdict (`1,3 [walk] step-1-seed:
-accepted` — the same mechanism dimension 0's own line demonstrates for the
-seeded-dimension walk-verdict rule), and a `walkthrough` stop carrying a
-verbatim `response:` field.
+keeps and the Step 1.3b `premise-gate: reshaped once` marker. The six
+lines above exercise the § Challenge record grammar's new-grammar
+productions: `challenge-record-start:` written with its first stop line
+(never ahead of it), a clustered `interview` stop using the `D<n>` dim-ref
+form (`D1,D2 [interview] operator: accepted`, keyed to the same two
+decisions the `## Shared understanding` section above records), a clustered
+`delta` stop across two kernel dimensions (`0,1 [delta] operator:
+accepted`), a single-dimension `delta` stop reaching a `challenged →
+revised` verdict, and a `delta` stop carrying a verbatim `operator-edited`
+`response:` field. `walk`/`walkthrough` stay parsable for a brief whose
+record already uses them (§ Record completeness) — this worked example
+shows the new grammar a `record_grammar: delta`-stamped brief authors
+under, not the legacy one.
 
 ## Cross-references
 
@@ -568,3 +719,10 @@ verbatim `response:` field.
   status.
 - Epic-decomposition consumer: `/assess` epic-decomposition mode
   (foundation#526).
+- Shared-understanding / delta / interview grammar: temperloop#1938 (epic),
+  `docs/adr/0036-design-brief-record-operator-delta-lines.md` (record-grammar
+  decision, stamp-keyed exemption per its epic's Sequencing notes rather than
+  the date key its own text still shows — amended at a later item in the
+  same epic), the ratified `Designs/temperloop - workshop two-phase
+  interview` brief (the shape's own bootstrap instance, itself a legacy/
+  unstamped record predating this grammar).
