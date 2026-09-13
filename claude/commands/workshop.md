@@ -622,20 +622,18 @@ produced was actually disposed of.
    dimension's content — no judgment call, no disagreement with the
    brief's existing stance — is folded into that dimension's body **now**,
    using Step 2.4's write primitive for this backend. A finding that
-   surfaces a real gap the operator chooses not to resolve now converts
-   that dimension's disposition to `deferred → <tracking ref>` rather than
+   surfaces a real gap the fold-back cannot close here converts that
+   dimension's disposition to `deferred → <tracking ref>` rather than
    leaving it `filled` with an unaddressed critique.
    **Dimension-0 carve-out.** A finding on **dimension 0** (Premise & <!-- cite: W.13 guard:claude/design-schema.md -->
    null hypothesis — the red-team lens's sharpest target) is the one
    exception: dimension 0 is `filled`-only (`claude/design-schema.md`
-   § Disposition grammar), so an unresolved dimension-0 finding may
-   **never** convert to `deferred`. It resolves one of two ways — a real
-   fix folded into the premise justification now (`folded`), or an
-   explicit decline that leaves dimension 0 `filled` (noted per item 4's
-   decline vocabulary). If the premise gap is serious enough that
-   dimension 0 cannot honestly stay `filled`, route back to the premise
-   gate (Step 1.3b) or decline-and-stay-`draft` — never mint an invalid
-   `deferred` disposition the schema declares impossible.
+   § Disposition grammar), so it may **never** convert to `deferred` —
+   never mint a disposition the schema declares impossible. A clear win
+   folds into the premise justification (`folded`); anything else becomes
+   a contest marker carried to Step 3.7 per item 3, where a premise that
+   can no longer honestly stay `filled` routes back to the premise gate
+   (Step 1.3b) or leaves the brief `draft`.
 3. **Carry contested findings to the delta report — don't ask here.** A
    finding the brief's stance disagrees with is not applied silently, and
    it is also **not** put to the operator at this point: Phase 2 has no
@@ -826,7 +824,9 @@ in chat, in about **two chunks**, with one verdict per dimension.
    real, open item (§ Congruence seams' `deferred-refs-resolve` seam checks
    that); **dimension 0 is excluded** — `filled` is its only legal
    disposition, so a premise the operator can no longer accept routes back
-   to the premise gate (Step 1.3b) or leaves the brief `draft`.
+   to the premise gate (Step 1.3b) or leaves the brief `draft`. *Park the
+   brief* stops the run there, leaving `status: draft` and its `delta`
+   lines, so Step 1.4 resumes at 3.7 after the last one.
 5. **One `delta` line per dimension.** As each chunk's verdicts land, append
    the brief's `## Working notes` → `### Challenge record` per
    `claude/design-schema.md` § Challenge record — that section owns the
@@ -1094,8 +1094,8 @@ line, verbatim, as the last line of the response.
 **The per-run tally.** Computed from the persisted record — Phase 1's
 `### Interview calls` entries (`interview.md` § Output) and Phase 2's own
 chunk calls — never from memory, and reported in full whether or not the
-numbers flatter the run. It is not a budget: more calls mean more context
-and better alignment, so **count is reported, never capped**. Ten fields:
+numbers flatter the run. It is not a budget — the tally surfaces cost, not
+a case against a cap — so **count is reported, never capped**. Ten fields:
 
 - **calls** — every `AskUserQuestion` call, Phase 1 and Phase 2 together.
 - **questions, with each one's option count** — the shape of what was
