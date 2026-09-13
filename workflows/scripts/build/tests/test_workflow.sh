@@ -6355,8 +6355,8 @@ echo "PASS: #1846 review-evidence re-render guard — one renderer for 3f and 3g
 #   leaving `files` intact (evidence: wf_cbc556f5-7be — a REVIEW_DIFF result
 #   with files but no `tsv` key at all ran only docs-reviewer, never the
 #   shell-reviewer a later run of the SAME item routed to via an intact tsv).
-#   reviewDiffCmd now also emits `tsv_rows`/`tsv_sha256`, computed off the
-#   worktree file itself; runReviewers treats a missing (non-string) `tsv` or
+#   reviewDiffCmd now also emits `tsv_rows`, computed off the worktree file
+#   itself; runReviewers treats a missing (non-string) `tsv` or
 #   a `parseTsvRows(tsv).length` disagreeing with `tsv_rows` as a relay drop
 #   on any non-empty `files` diff, re-runs the SAME review-diff command once,
 #   and escalates review-diff-error (never computing a roster from an
@@ -6454,11 +6454,44 @@ else if ((result.parked ?? []).length !== 0) reason = 'a persistent row-count mi
 else if ((result.escalations ?? []).length !== 1) reason = 'expected exactly 1 escalation: ' + JSON.stringify(result.escalations);
 else if (result.escalations[0].kind !== 'review-diff-error') reason = 'wrong escalation kind: ' + result.escalations[0].kind;
 else {
-  const mm = result.escalations[0].payload.mismatch;
-  if (!mm || mm.expected !== 2 || mm.got !== 0) reason = 'escalation payload must name the expected/got row counts: ' + JSON.stringify(result.escalations[0].payload);
+  const payload = result.escalations[0].payload;
+  const mm = payload.mismatch;
+  if (!mm || mm.expected !== 2 || mm.got !== 0) reason = 'escalation payload must name the expected/got row counts: ' + JSON.stringify(payload);
+  else if (!Array.isArray(payload.files) || payload.files[0] !== 'workflows/scripts/foo.py') reason = 'escalation payload must carry the changed-file list: ' + JSON.stringify(payload);
 }
 const reviewCalls = callLog.filter(c => isReviewCall(c.opts));
 if (!reason && reviewCalls.length !== 0) reason = 'no reviewer roster may ever be computed from a mismatched tsv: ' + JSON.stringify(reviewCalls.map(c => c.opts.agentType));
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+run_node_case "K1976 mismatch (tsv_rows absent): tsv present with no tsv_rows key follows the same retry-then-escalate path, and 'got' survives JSON serialization as null rather than vanishing as undefined" "
+$PREAMBLE
+const TAB = String.fromCharCode(9);
+const tsv = '.py' + TAB + 'python-reviewer' + TAB + 'claude/agents/reviewers/python-reviewer.md\\n';
+
+setMachinery('droptsv-cc',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/droptsv-cc' },
+  { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/foo.py'], tsv },
+  { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/foo.py'], tsv },
+);
+happyWorker('droptsv-cc');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'droptsv-cc', branch: 'build/droptsv-cc', title: 'Touch a python file', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+let reason = null;
+const diffCalls = callLog.filter(c => (c.opts.label||'').startsWith('review-diff:droptsv-cc'));
+if (diffCalls.length !== 2) reason = 'expected exactly one retry (2 review-diff calls total), got ' + diffCalls.length;
+else if ((result.escalations ?? []).length !== 1) reason = 'expected exactly 1 escalation: ' + JSON.stringify(result.escalations);
+else {
+  const serialized = JSON.parse(JSON.stringify(result.escalations[0].payload));
+  const mm = serialized.mismatch;
+  if (!mm || !('got' in mm) || mm.got !== null) reason = 'got must survive JSON serialization as null, never vanish as undefined: ' + JSON.stringify(serialized);
+  else if (mm.expected !== 1) reason = 'expected must still be the real row count: ' + JSON.stringify(serialized);
+}
 console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
 "
 
@@ -6500,13 +6533,11 @@ grep -q 'function reviewDiffTsvGap' "$MJS" \
   || fail "#1976: build-level.mjs must define reviewDiffTsvGap() — the missing/mismatched-tsv guard, kept in legible .mjs rather than buried in prompt text"
 grep -q 'tsv_rows' "$MJS" \
   || fail "#1976: reviewDiffCmd must emit tsv_rows alongside tsv, and runReviewers must check it — the row-count guard against a relay-truncated table"
-grep -q 'tsv_sha256' "$MJS" \
-  || fail "#1976: reviewDiffCmd must emit tsv_sha256 alongside tsv_rows"
 grep -q 'fetchReviewDiff(stagePhase(STAGE_REVIEW))' "$MJS" \
   || fail "#1976: the relay-drop guard must re-run the review-diff step through the SAME fetchReviewDiff() closure, never a re-derived command"
 grep -q "escalate(item.slug, 'review-diff-error', gap)" "$MJS" \
   || fail "#1976: a still-incomplete tsv after the retry must escalate review-diff-error naming the gap (missing/mismatch)"
-echo "PASS: #1976 review-diff tsv-guard wiring — reviewDiffCmd emits tsv_rows/tsv_sha256, reviewDiffTsvGap detects a missing/mismatched tsv, runReviewers retries once through the same command before escalating"
+echo "PASS: #1976 review-diff tsv-guard wiring — reviewDiffCmd emits tsv_rows, reviewDiffTsvGap detects a missing/mismatched tsv, runReviewers retries once through the same command before escalating"
 
 # --- K1430 static lockstep guards: §3e mandatory/routed pre-push review ------
 # build.md §3e is the SPEC; build-level.mjs's driveItem is the as-built
