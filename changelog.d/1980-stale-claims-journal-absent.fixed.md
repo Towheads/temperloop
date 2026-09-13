@@ -33,3 +33,13 @@
   liveness signal. Scoped to `_sg_query_stale_claims` and
   `_sg_reconcile_class_set`'s awk mapping; `_sg_degraded`, `status-drift`,
   and `resume` are unchanged.
+- **`stale-claims` now also gates its claim set on Status: In Progress**,
+  matching reconcile.sh's own producer (`reconcile.sh:876-879`), which emits
+  its "stale claims" class only for an In-Progress issue. Without this, a
+  claim stamp left behind on an issue moved off In Progress — the ordinary
+  "Park, don't abandon" residue, since `board_set_status` never clears the
+  claim stamp (only `release.sh` does) — surfaced as a confident stale
+  finding reconcile.sh structurally never reports, a standing false
+  disagreement the mirror image of the closed-issue exclusion above. `_sg_now`
+  is a new seam (mirrors `_sg_git`/`_sg_soak_day`) so a test can pin
+  `_sg_read_transcripts`'s liveness cutoff comparison exactly on its boundary.

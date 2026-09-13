@@ -305,6 +305,62 @@ out="$(RECONCILE_STALE_AFTER_SECS=3600 _sg_read_transcripts)"
 [ "$(jq '.nodes | length' <<<"$out")" -eq 0 ] || fail "transcripts: a transcript past RECONCILE_STALE_AFTER_SECS must emit no node (got: $out)"
 echo "PASS: transcripts source — a transcript older than RECONCILE_STALE_AFTER_SECS emits no node (dead, not absent)"
 
+# --- transcripts: "now" is seamed (_sg_now), pinned exactly ON the cutoff --
+# boundary (temperloop#1980 round 4 MEDIUM 1). The source's whole claim is
+# equivalence with reconcile.sh's `_reconcile_session_live`, whose own
+# `(now - newest) <= RECONCILE_STALE_AFTER_SECS` this file's awk reduction
+# mirrors — a transcript aged EXACTLY the cutoff must still emit a node
+# (`<=`, not `<`). `epoch_stamp` (below) turns a FIXED epoch into a
+# `touch -t` stamp so the file's mtime and `_sg_now`'s pinned return value
+# are related by an exact, race-free subtraction — no reliance on real wall
+# time elapsing between computing the stamp and touching the file (unlike
+# `past_stamp`'s "N seconds ago from actual now", which cannot land exactly
+# on a boundary). Mutating the awk comparison to `<` makes this fixture
+# fail: (now - mt) == cutoff is no longer `< cutoff`.
+epoch_stamp() { # <epoch-seconds> -> touch -t stamp, local time
+  if date -r 0 '+%Y' >/dev/null 2>&1; then
+    date -r "$1" '+%Y%m%d%H%M.%S'          # BSD/macOS
+  else
+    date -d "@$1" '+%Y%m%d%H%M.%S'         # GNU coreutils
+  fi
+}
+FIXED_NOW=1700000000
+CUTOFF=3600
+_sg_now() { echo "$FIXED_NOW"; }
+export CLAUDE_PROJECTS_DIR="$TMP/cp-cutoff-boundary"
+mkdir -p "$CLAUDE_PROJECTS_DIR/proj1"
+BOUNDARY_FILE="$CLAUDE_PROJECTS_DIR/proj1/55555555-5555-5555-5555-555555555555.jsonl"
+: > "$BOUNDARY_FILE"
+touch -t "$(epoch_stamp $((FIXED_NOW - CUTOFF)))" "$BOUNDARY_FILE"
+out="$(RECONCILE_STALE_AFTER_SECS=$CUTOFF _sg_read_transcripts)"
+[ "$(jq -r .status <<<"$out")" = "ok" ] || fail "transcripts cutoff-boundary status (got: $out)"
+[ "$(jq '.nodes | length' <<<"$out")" -eq 1 ] || fail "transcripts: a transcript aged EXACTLY RECONCILE_STALE_AFTER_SECS must still emit a node (<=, not <) (got: $out)"
+[ "$(jq -r '.nodes[0].sess8' <<<"$out")" = "55555555" ] || fail "transcripts cutoff-boundary sess8 (got: $out)"
+_sg_now() { date +%s; }  # restore the real seam for every test after this one
+echo "PASS: transcripts source — a transcript aged EXACTLY RECONCILE_STALE_AFTER_SECS still emits a node (<=, boundary-pinned via the _sg_now seam)"
+
+# --- transcripts: newest-mtime-per-session reduction, not last-wins --------
+# (temperloop#1980 round 4 MEDIUM 2). A real session routinely has SEVERAL
+# transcript files across project dirs (Claude Code starts a fresh file per
+# project directory for the same session); the awk reduction must keep the
+# NEWEST mtime among them all, mirroring _reconcile_session_live's own "max
+# mtime among any matching file". Two files for one sess8 in two project
+# dirs — one aged past the cutoff, one fresh — must still resolve to exactly
+# one live Transcript node. Mutating the reduction to last-wins
+# (`{ max[$1] = $2 }`, unconditional) makes this fixture non-deterministic/
+# fail: whichever file the glob happens to visit LAST decides liveness, and
+# the older-file-last ordering below would then read dead.
+export CLAUDE_PROJECTS_DIR="$TMP/cp-multi-file-session"
+mkdir -p "$CLAUDE_PROJECTS_DIR/proj-old" "$CLAUDE_PROJECTS_DIR/proj-fresh"
+: > "$CLAUDE_PROJECTS_DIR/proj-old/66666666-6666-6666-6666-666666666666.jsonl"
+touch -t "$(past_stamp 7200)" "$CLAUDE_PROJECTS_DIR/proj-old/66666666-6666-6666-6666-666666666666.jsonl"
+: > "$CLAUDE_PROJECTS_DIR/proj-fresh/66666666-6666-6666-6666-666666666666.jsonl"
+out="$(RECONCILE_STALE_AFTER_SECS=3600 _sg_read_transcripts)"
+[ "$(jq -r .status <<<"$out")" = "ok" ] || fail "transcripts multi-file-session status (got: $out)"
+[ "$(jq '.nodes | length' <<<"$out")" -eq 1 ] || fail "transcripts: two files for one sess8 (one stale, one fresh) must reduce to exactly one Transcript node (got: $out)"
+[ "$(jq -r '.nodes[0].sess8' <<<"$out")" = "66666666" ] || fail "transcripts multi-file-session sess8 (got: $out)"
+echo "PASS: transcripts source — the newest mtime among several files for one session decides liveness (max reduction, not last-wins)"
+
 # --- transcripts: absent (no such directory) --------------------------------
 export CLAUDE_PROJECTS_DIR="$TMP/cp-no-such-dir"
 out="$(_sg_read_transcripts)"

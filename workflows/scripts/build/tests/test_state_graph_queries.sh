@@ -20,6 +20,11 @@
 #     axis — the ONE enum, ONE drift check the acceptance bullet asks for.
 #   - one GOLDEN (exact-JSON) fixture per query: status-drift, stale-claims,
 #     unlinked-prs, orphan-worktrees, resume.
+#   - stale-claims's STATUS gate (temperloop#1980 round 4 HIGH): `$claims`
+#     only ever considers a `claimed_by` edge whose Issue node is currently
+#     `fnd:status:in-progress`, matching reconcile.sh's own producer — a
+#     Ready-status issue still wearing its claim stamp (the ordinary "Park,
+#     don't abandon" residue) answers findings:[], never a stale finding.
 #   - resume's ranked-merge authority ordering (plan > journal > git >
 #     board): one fixture per tier deciding, PLUS the invariant fixture — a
 #     terminal `[x]` sentinel is never reversed even when a lower tier
@@ -138,7 +143,9 @@ SNAP_STALE_CLAIMS='{
   "host": "mini-1",
   "sources": {"board":{"status":"ok"},"transcripts":{"status":"ok"}},
   "nodes": [
-    {"type":"Transcript","id":"Transcript:live1","sess8":"live1"}
+    {"type":"Transcript","id":"Transcript:live1","sess8":"live1"},
+    {"type":"Issue","id":"Issue:1","number":1,"status":"fnd:status:in-progress"},
+    {"type":"Issue","id":"Issue:2","number":2,"status":"fnd:status:in-progress"}
   ],
   "edges": [
     {"type":"claimed_by","from":"Issue:1","to":"Session:mini-1:live1"},
@@ -189,6 +196,7 @@ SNAP_STALE_CLAIMS_NO_STEP_OUTCOME='{
   "sources": {"board":{"status":"ok"},"transcripts":{"status":"ok"},"journal":{"status":"ok"}},
   "nodes": [
     {"type":"Transcript","id":"Transcript:live1","sess8":"live1"},
+    {"type":"Issue","id":"Issue:1","number":1,"status":"fnd:status:in-progress"},
     {"type":"Session","id":"Session:mini-1:other","steps":[{"step":"pr-open","outcome":"PR_OPENED"}]}
   ],
   "edges": [
@@ -209,7 +217,9 @@ echo "PASS: stale-claims — a live session holding a claim with no step-outcome
 SNAP_STALE_CLAIMS_FOREIGN_HOST='{
   "host": "mini-1",
   "sources": {"board":{"status":"ok"},"transcripts":{"status":"ok"}},
-  "nodes": [],
+  "nodes": [
+    {"type":"Issue","id":"Issue:41","number":41,"status":"fnd:status:in-progress"}
+  ],
   "edges": [
     {"type":"claimed_by","from":"Issue:41","to":"Session:otherbox:remote77"}
   ]
@@ -218,6 +228,31 @@ out="$(_sg_query_stale_claims "$SNAP_STALE_CLAIMS_FOREIGN_HOST")"
 [ "$(jq -r .status <<<"$out")" = "ok" ] || fail "stale-claims host gate: foreign-host-only input must still read status:ok (got: $out)"
 [ "$(jq -c '.findings' <<<"$out")" = '[]' ] || fail "stale-claims host gate: a claim stamped to another host must never be reported stale from this host's own transcript evidence (got: $out)"
 echo "PASS: stale-claims — a claim stamped to another host is excluded from findings entirely (host-gated, matches reconcile.sh's own gating)"
+
+# --- STATUS gate (temperloop#1980 round 4 HIGH): a claim stamped on an
+# issue that has since moved OFF In Progress (a Ready-status issue still
+# wearing its claim stamp — the ordinary "Park, don't abandon" residue:
+# board_set_status never clears the claim stamp, only release.sh does) is
+# excluded from findings entirely — matching reconcile.sh's own producer,
+# which emits its "stale claims (In Progress...)" class ONLY for an
+# In-Progress issue (reconcile.sh:876-879). Reproduces the reviewer's own
+# live repro (`"drift_query_set":[21],"reconcile_set":[]`) at the query
+# level: no live transcript for the claimed session, so absent this gate
+# the claim would read stale.
+SNAP_STALE_CLAIMS_NOT_IN_PROGRESS='{
+  "host": "mini-1",
+  "sources": {"board":{"status":"ok"},"transcripts":{"status":"ok"}},
+  "nodes": [
+    {"type":"Issue","id":"Issue:21","number":21,"status":"fnd:status:ready"}
+  ],
+  "edges": [
+    {"type":"claimed_by","from":"Issue:21","to":"Session:mini-1:ghost21"}
+  ]
+}'
+out="$(_sg_query_stale_claims "$SNAP_STALE_CLAIMS_NOT_IN_PROGRESS")"
+[ "$(jq -r .status <<<"$out")" = "ok" ] || fail "stale-claims status gate: a Ready-status claimed issue must still read status:ok (got: $out)"
+[ "$(jq -c '.findings' <<<"$out")" = '[]' ] || fail "stale-claims status gate: a claim on an issue no longer In Progress must never be reported stale (got: $out)"
+echo "PASS: stale-claims — a claim stamped on an issue that has moved off In Progress is excluded from findings entirely (status-gated, matches reconcile.sh's own In-Progress-only producer)"
 
 # --- scoping regression: status-drift's own board=absent reading is
 # UNCHANGED by the local transcripts-liveness carve-out above (temperloop#1980

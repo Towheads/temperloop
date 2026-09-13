@@ -33,6 +33,11 @@
 #     this item's day-1 #158 shape): surfaces in the status-drift class on
 #     BOTH sides (the board source's own closed-issue residue read vs.
 #     reconcile's `residual status labels on closed issues`) — agree:true.
+#   - a Ready-status issue still wearing its claim stamp (temperloop#1980
+#     round 4 HIGH): correctly ABSENT from stale-claims's own
+#     drift_query_set — `$claims` is gated to In Progress, matching
+#     reconcile's own producer, which emits nothing for a non-In-Progress
+#     claim (the "Park, don't abandon" residue).
 #   - unlinked-prs / orphan-worktrees: reconcile.sh has no matching class for
 #     either, so their reconcile_set/diff always read the literal string
 #     "not-covered" — never an empty-set false agreement/disagreement.
@@ -411,6 +416,36 @@ record="$(_sg_soak_run "$BOARD")"
 echo "PASS: soak — reconcile's 'stranded claim stamps on closed issues' class is excluded from stale-claims entirely (temperloop#1980 round 3 MEDIUM: a class that can never agree is not diffed)"
 
 # =============================================================================
+# a Ready-status issue still wearing its claim stamp (temperloop#1980 round
+# 4 HIGH): `$claims` is now gated to In Progress, matching reconcile's own
+# producer, which emits NOTHING for a stamp on a non-In-Progress item — the
+# ordinary "Park, don't abandon" residue (board_set_status moves an issue
+# off In Progress without clearing its claim stamp; only release.sh does).
+# Reproduces the reviewer's own live repro against a built snapshot:
+# `"drift_query_set":[21],"reconcile_set":[]` before this fix. Absent the
+# gate, #21's claim would read stale (no live transcript for 'ghost21').
+# =============================================================================
+_board_gh() {
+  case "$1 $2" in
+    "issue list")
+      echo '[{"number":21,"title":"x","labels":[{"name":"fnd:status:ready"},{"name":"fnd:host/session:mini-1:ghost21"}]}]'
+      ;;
+    "api repos/$REPO/issues/21/sub_issues") echo '[]' ;;
+    "api repos/$REPO/issues/21/dependencies/blocked_by") echo '[]' ;;
+    "pr list") echo '[]' ;;
+    "api repos/$REPO/issues") echo '[]' ;;
+    *) echo "test _board_gh: unhandled '$1 $2'" >&2; return 3 ;;
+  esac
+}
+_sg_reconcile() { echo "In sync: every board item's status matches its GitHub state; no orphaned or stale claims."; }
+_sg_soak_day() { echo "2026-01-10"; }
+record="$(_sg_soak_run "$BOARD")"
+[ "$(class_field stale-claims drift_query_set "$record")" = '[]' ] || fail "a Ready-status issue's claim stamp must NOT surface in stale-claims's drift_query_set (got: $record)"
+[ "$(class_field stale-claims reconcile_set "$record")" = '[]' ] || fail "reconcile's own (in-sync) read carries no class for a non-In-Progress claim (got: $record)"
+[ "$(jq -r '.classes["stale-claims"].diff.agree' <<<"$record")" = "true" ] || fail "an empty drift_query_set against an empty reconcile_set should read agree:true, not a manufactured disagreement (got: $record)"
+echo "PASS: soak — a Ready-status issue's claim stamp is excluded from stale-claims's drift_query_set entirely (temperloop#1980 round 4 HIGH: gated to In Progress, matching reconcile's own producer)"
+
+# =============================================================================
 # --count: distinct days, log is append-only through lib/cache.sh
 # =============================================================================
 expect_dir="$(cache_repo_dir "$BOARD" state-graph-soak)"
@@ -418,10 +453,10 @@ expect_log="$(cache_snapshot_file "$BOARD" state-graph-soak)"
 [ -d "$expect_dir" ] || fail "soak log directory was not created via cache_repo_dir(kind=state-graph-soak)"
 [ -s "$expect_log" ] || fail "soak log file was not created via cache_snapshot_file(kind=state-graph-soak)"
 lines_before="$(wc -l <"$expect_log" | tr -d ' ')"
-[ "$lines_before" -eq 9 ] || fail "soak log should carry exactly the nine runs above (got $lines_before lines)"
+[ "$lines_before" -eq 10 ] || fail "soak log should carry exactly the ten runs above (got $lines_before lines)"
 
 count="$(cmd_soak --count --board "$BOARD")"
-[ "$count" = 9 ] || fail "soak --count should report 9 distinct days (got: $count)"
+[ "$count" = 10 ] || fail "soak --count should report 10 distinct days (got: $count)"
 echo "PASS: soak --count — distinct days recorded, log persisted append-only through lib/cache.sh"
 
 # --count SCHEMA exclusion (temperloop#1978, acceptance criterion 4): a
@@ -432,9 +467,9 @@ echo "PASS: soak --count — distinct days recorded, log persisted append-only t
 # run for a day nothing per-class was ever recorded on.
 printf '%s\n' '{"day":"2025-12-31","drift_query_set":[],"reconcile_set":[],"diff":{"only_in_drift_query":[],"only_in_reconcile":[],"agree":true}}' >>"$expect_log"
 lines_after_legacy="$(wc -l <"$expect_log" | tr -d ' ')"
-[ "$lines_after_legacy" -eq 10 ] || fail "the hand-appended legacy record should still add a line to the log (got $lines_after_legacy lines)"
+[ "$lines_after_legacy" -eq 11 ] || fail "the hand-appended legacy record should still add a line to the log (got $lines_after_legacy lines)"
 count_with_legacy="$(cmd_soak --count --board "$BOARD")"
-[ "$count_with_legacy" = 9 ] || fail "soak --count must exclude a pre-temperloop#1978 flat-schema run record from the day count (got: $count_with_legacy)"
+[ "$count_with_legacy" = 10 ] || fail "soak --count must exclude a pre-temperloop#1978 flat-schema run record from the day count (got: $count_with_legacy)"
 echo "PASS: soak --count — a pre-temperloop#1978 flat-schema run record (no type field) is excluded from the day count"
 
 # --count on a board with no soak log yet prints 0, never an error.

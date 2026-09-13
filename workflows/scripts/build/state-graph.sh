@@ -221,6 +221,17 @@
 #                       once at `build` time (`board_host_label`) and carried
 #                       on the snapshot's own top-level `.host` field, so this
 #                       query stays a pure function of the snapshot.
+#                       ALSO GATED ON STATUS (temperloop#1980 round 4 HIGH):
+#                       `$claims` only ever considers a `claimed_by` edge
+#                       whose Issue is currently `fnd:status:in-progress` —
+#                       reconcile.sh's own producer emits its "stale claims
+#                       (In Progress...)" class the same way (reconcile.sh:
+#                       876-879), so a claim stamp left behind on an issue
+#                       moved off In Progress (an ordinary "Park, don't
+#                       abandon" residue — `board_set_status` never clears
+#                       the stamp, only `release.sh` does) is excluded here
+#                       exactly as it is on reconcile's side, never a
+#                       standing false disagreement.
 #                       Unlike every other consumer of `_sg_degraded`/absent-
 #                       as-empty, an `absent` transcripts source (no
 #                       `~/.claude/projects`-shaped directory at all —
@@ -353,6 +364,20 @@ _sg_now_ms() {
 # needs its own seam rather than a hand-rolled subprocess call sprinkled
 # through cmd_soak.
 _sg_reconcile() { "$_SG_HERE/../board/reconcile.sh" "$@"; }
+
+# "Now" for `_sg_read_transcripts`'s liveness cutoff (temperloop#1980 round
+# 4 MEDIUM 1) — mirrors `reconcile.sh`'s own `_reconcile_now` seam
+# (reconcile.sh:422, "so a test injects a fixed epoch"): the source's whole
+# claim is equivalence with `_reconcile_session_live`, and its `<=` cutoff
+# comparison is the last inch of that equivalence, so it is routed through
+# a seam like every other clock read in this file (`_sg_now_ms`,
+# `_sg_soak_day`) rather than a raw `date +%s` a test cannot pin to sit
+# exactly on the boundary. `built_at` (this file's own snapshot timestamp)
+# and `_sg_read_snapshot`'s staleness age deliberately keep calling `date
+# +%s` raw — this file has precedent both ways, and this ONE call is seamed
+# because a test needs to land exactly on this ONE cutoff, not because
+# every timestamp in this file must be injectable.
+_sg_now() { date +%s; }
 
 # `soak`'s day key — UTC (stored/parsed timestamps stay UTC, never the
 # operator's display timezone; claude/CLAUDE.kernel.md § Communication
@@ -971,11 +996,14 @@ _sg_read_tmux() {
 # `journal`'s own default root) mtime, within `RECONCILE_STALE_AFTER_SECS`
 # of "now" — BOTH settings named identically to reconcile.sh's own (never a
 # second literal; check-setting-registry.sh's "byte-identical duplicate seam
-# in a non-owning file" allowance is exactly this shape). No seam like
-# `_sg_git`/`_sg_tmux`: mirrors the journal source's own precedent (no
+# in a non-owning file" allowance is exactly this shape). No COMMAND seam
+# like `_sg_git`/`_sg_tmux`: mirrors the journal source's own precedent (no
 # command to shim, only files — tests point `CLAUDE_PROJECTS_DIR` at a
 # fixture directory with `touch -t`-controlled mtimes, exactly like
-# `SPEND_TRANSCRIPT_ROOT` for journal).
+# `SPEND_TRANSCRIPT_ROOT` for journal). "Now" itself IS seamed, though
+# (temperloop#1980 round 4 MEDIUM 1) — see `_sg_now`'s own definition
+# above — so a test can pin a fixture's mtime exactly on the cutoff
+# boundary and discriminate the `<=`/`<` comparison sense.
 #
 # `absent` = no transcript directory at all (nothing to check liveness
 # against — matches tmux's prior "no server" cannot-determine case, and
@@ -993,7 +1021,7 @@ _sg_read_transcripts() {
   dir="${CLAUDE_PROJECTS_DIR:-$HOME/.claude/projects}"
   [ -d "$dir" ] || { _sg_source_result absent '[]' '[]' "no transcript directory"; return 0; }
   [ -r "$dir" ] || { _sg_source_result error '[]' '[]' "transcript directory not readable"; return 0; }
-  now="$(date +%s)"
+  now="$(_sg_now)"
   cutoff="${RECONCILE_STALE_AFTER_SECS:-86400}"
   # one <sess8>\t<mtime> row per transcript file — portable mtime (GNU
   # `stat -c` / BSD `stat -f`, the same fallback `_reconcile_session_live`
@@ -1219,10 +1247,30 @@ _sg_query_stale_claims() {
   # a foreign host's liveness, and reconcile.sh's own claim-liveness lens
   # gates the exact same way (`[ "$shost" = "$HOST" ]`) before ever
   # reaching `_reconcile_session_live`.
+  #
+  # STATUS GATE (temperloop#1980 round 4 HIGH): `$claims` is ALSO gated to
+  # Issue nodes currently `fnd:status:in-progress`, matching reconcile.sh's
+  # own producer (reconcile.sh:876-879), which emits its "stale claims (In
+  # Progress...)" class ONLY for an In-Progress issue — a claim stamp on a
+  # non-In-Progress item (the ordinary "Park, don't abandon" residue:
+  # `board_set_status` moves an issue off In Progress without clearing its
+  # claim stamp, only `release.sh` does that) is NOTHING on reconcile's
+  # side, never a finding. Round 3 applied the host half of this gate and
+  # left the status half off, so a parked issue's stranded claim stamp
+  # surfaced here (`drift_query_set:[N]`) against reconcile's structurally
+  # empty set for it — a standing false disagreement, the same shape this
+  # query's own MEDIUM (stranded claim stamps on closed issues, see the
+  # soak header comment above) was already excluded for. `$ip` is read off
+  # the SAME board source already gated above (never a second source), so a
+  # claim naming an Issue with no matching node at all (never emitted by
+  # the board source, e.g. a fixture that omits it) is excluded exactly
+  # like a real non-in-progress issue would be.
   jq -c --arg host "$host" '
     (.nodes | map(select(.type=="Transcript")) | map(.sess8)) as $live8
+    | (.nodes | map(select(.type=="Issue" and .status=="fnd:status:in-progress")) | map(.id)) as $ip
     | (.edges | map(select(.type=="claimed_by"))
-              | map(select((.to | split(":")[1]) == $host))) as $claims
+              | map(select((.to | split(":")[1]) == $host))
+              | map(select(.from as $f | $ip | index($f) != null))) as $claims
     | { query:"stale-claims", status:"ok",
         findings: [ $claims[] | .from as $iid
                     | (.to | split(":")[2]) as $sess8
