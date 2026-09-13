@@ -431,6 +431,25 @@ _sg_read_board() {
     return 0
   fi
 
+  # Ontology-registry check — HOISTED ABOVE the closed-issue residue fan-out
+  # below (round-4 verdict, LOW 3): a registry-drift board (a status token
+  # outside the ontology registry) must not spend one live REST call per
+  # `fnd:status:*` label on residue that its own `error` return below would
+  # only discard. `bad` depends only on `$items`, already parsed above —
+  # `bad` over an empty array is 0, so this stays safe ahead of the
+  # `count -eq 0` check too, which stays BELOW the residue read (round-3
+  # hoist preserved: bad check → residue read → count -eq 0).
+  bad="$(printf '%s' "$items" | jq --argjson toks "$(_sg_issue_status_tokens | jq -Rsc 'split("\n") | map(select(length>0))')" "
+    $_SG_STATUS_TOKEN_JQ
+    [ .[] | (.status // \"\") as \$s
+      | (if \$s == \"\" then \"\" else (\$s | status_token) end) as \$tok
+      | select(\$tok == \"\" or (\$toks | index(\$tok)) == null) ] | length
+  ")"
+  if [ "${bad:-0}" -gt 0 ]; then
+    _sg_source_result error '[]' '[]' "node status not in ontology registry"
+    return 0
+  fi
+
   # Closed-issue residue supplement — see this function's own header comment
   # above. HOISTED ABOVE the `count -eq 0` branch below (round-3 verdict,
   # MEDIUM 3): a board with zero OPEN issues but real closed-with-label
@@ -474,13 +493,16 @@ _sg_read_board() {
       [ -n "$label" ] || continue
       if closed_raw="$(_board_gh api "repos/$repo/issues" --method GET -f state=closed -f "labels=$label" -f per_page=100 2>/dev/null)"; then
         page_count="$(printf '%s' "$closed_raw" | _board_sanitize_control_chars | jq 'length' 2>/dev/null)" || page_count=""
-        if [ "${page_count:-0}" -eq 100 ]; then
+        if [ -z "$page_count" ]; then
+          echo "state-graph.sh: warning: closed-issue residue read for board $board repo $repo label $label returned an unparseable page — residue not read for this label this cycle" >&2
+        elif [ "$page_count" -eq 100 ]; then
           echo "state-graph.sh: warning: closed-issue residue read for board $board repo $repo label $label returned a full page (100) — possible truncation, residue may be incomplete for this label this cycle" >&2
         fi
         extra="$(printf '%s' "$closed_raw" | _board_sanitize_control_chars | jq -c --arg lbl "$label" '
           [ .[]? | select(has("pull_request") | not) | { type:"Issue", id:("Issue:"+(.number|tostring)), number:.number,
                       status:$lbl, state:"closed" } ]
         ' 2>/dev/null)" || extra='[]'
+        [ -n "$extra" ] || extra='[]'
         closed_nodes="$(jq -c --argjson extra "$extra" '. + $extra' <<<"$closed_nodes")"
       else
         echo "state-graph.sh: warning: closed-issue residue read failed for board $board repo $repo label $label (gh api rate-limited/auth?) — status-drift will not see closed-with-label residue for this label this cycle" >&2
@@ -490,16 +512,6 @@ _sg_read_board() {
 
   if [ "$count" -eq 0 ]; then
     _sg_source_result absent "$closed_nodes" '[]' ""
-    return 0
-  fi
-  bad="$(printf '%s' "$items" | jq --argjson toks "$(_sg_issue_status_tokens | jq -Rsc 'split("\n") | map(select(length>0))')" "
-    $_SG_STATUS_TOKEN_JQ
-    [ .[] | (.status // \"\") as \$s
-      | (if \$s == \"\" then \"\" else (\$s | status_token) end) as \$tok
-      | select(\$tok == \"\" or (\$toks | index(\$tok)) == null) ] | length
-  ")"
-  if [ "${bad:-0}" -gt 0 ]; then
-    _sg_source_result error '[]' '[]' "node status not in ontology registry"
     return 0
   fi
   nodes="$(printf '%s' "$items" | jq -c "
