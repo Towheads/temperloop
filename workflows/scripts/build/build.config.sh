@@ -1554,6 +1554,46 @@ fi
 # disable the breaker entirely (the pre-#1554 run-the-corpus-out behaviour).
 : "${MODEL_COMPARISON_BATCH_MAX_CONSECUTIVE_STAGE_ERRORS:=5}"
 
+# ── Batch driver concurrency (temperloop#1682, epic #1225) ────────────────
+# How many corpus RECORDS workflows/scripts/model-comparison/batch.sh replays
+# at a time. A record's own two legs always run sequentially in their
+# counterbalanced order whatever this is set to — concurrency is across
+# records only, because temperloop#1571's execution_order.position is
+# meaningless if a record's two legs overlap, and losing it re-opens the
+# arm-vs-position confound temperloop#1606 was filed against.
+#
+# Why 1: the measured cost of NOT having this is real — the temperloop#1656
+# validation run took 29 min/leg, projecting ~27h for a 28-record batch, a
+# third of it the in-worktree quality-gates.sh run rather than model time. But
+# the default stays sequential so an existing invocation behaves exactly as it
+# did, and widening is a deliberate act: `--concurrency N` on the command line,
+# or this setting raised on a host that has earned it.
+#
+# WHAT RAISING THIS TRADES. Not CPU — the real ceiling is the PROVIDER'S RATE
+# LIMIT. temperloop#1554's 28-leg outage happened on a strictly sequential run,
+# and N concurrent records multiply request rate against one account's quota,
+# so a higher N makes tripping the circuit breaker MORE likely, not less. There
+# is a second, smaller cost in local CPU: each leg forks its own
+# quality-gates.sh, which itself pools up to 4 wide, so N records is already
+# roughly 4N concurrent processes. Raise it a rung at a time and watch the
+# breaker.
+: "${MODEL_COMPARISON_BATCH_CONCURRENCY:=1}"
+
+# The hard ceiling MODEL_COMPARISON_BATCH_CONCURRENCY and `--concurrency N`
+# are both clamped to, with a printed notice naming the clamp. It is a setting
+# rather than a literal in batch-pool.sh because the right ceiling is a
+# property of the host and the account — a shared laptop and a dedicated
+# runner on a higher rate limit do not want the same number.
+#
+# Why 4: the same width scripts/quality-gates.sh's own auto-detect caps at,
+# for a related reason — past that point oversubscription costs both wall
+# clock and reliability. Here the binding constraint is the rate limit rather
+# than cores, and 4 concurrent records is already ~8 concurrent replay legs'
+# worth of request rate against one quota. An operator on a host that has
+# demonstrably more headroom raises this deliberately; nothing auto-detects it,
+# because nothing local can read a provider's quota.
+: "${MODEL_COMPARISON_BATCH_MAX_CONCURRENCY:=4}"
+
 # ── Post-run spend reconciliation (temperloop#1555, epic #1225) ────────────
 # workflows/scripts/model-comparison/batch.sh compares the spend the operator
 # AUTHORIZED at the gate against the spend the run actually INCURRED (summed
@@ -1611,6 +1651,7 @@ export BUILD_QUOTA_PAUSE_PCT BUILD_QUOTA_CACHE BUILD_QUOTA_WAIT_BUFFER \
        REPLAY_PREFLIGHT_CEILING_TOKENS REPLAY_PREFLIGHT_ASSUMED_STDDEV_TOKENS \
        REPLAY_CANDIDATE_TIMEOUT_SECS REPLAY_SCORE_GATE_RELPATH REPLAY_SCORE_GATE_TIMEOUT_SECS \
        REPLAY_SCORE_DIFF_EXCERPT_MAX_BYTES \
+       MODEL_COMPARISON_BATCH_CONCURRENCY MODEL_COMPARISON_BATCH_MAX_CONCURRENCY \
        MODEL_COMPARISON_JUDGE_MODEL MODEL_COMPARISON_JUDGE_TIMEOUT_SECS \
        MODEL_COMPARISON_JUDGE_MAX_ATTEMPTS MODEL_COMPARISON_JUDGE_ROTATION_ENABLED MODEL_COMPARISON_JUDGE_ROTATION_MIN_JUDGES \
        MODEL_COMPARISON_REPORT_RECORDS_DIR \
