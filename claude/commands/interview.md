@@ -74,7 +74,9 @@ so a renamed flag desyncs them with no runtime error to catch it.
   that one decision and returns immediately — the caller runs the action.
 - **`--check-questions <block>`** — up to **three** caller questions
   appended to the understanding-check call (Step 3) after the interview's
-  own question, so the whole check stays one call of at most four. Each is
+  own question, so the whole check stays one call of at most four —
+  asked on the **first** check call only, never re-asked after a fix, so
+  each has exactly one answer. Each is
   a fully formed question in the same shape. Their answers are recorded
   verbatim in the check call's working-notes entry — the `answer:` field
   of each question line (§ Output), their only durable record, since a
@@ -218,7 +220,8 @@ Run in parallel; the first two are fatal, the rest degrade legibly:
 5. **Create or adopt the note.** If the `--into` note (or the default)
    exists, adopt it (§ Parameters). Otherwise create `Context/<repo> -
    <topic>.md` with a minimal frontmatter (`tags: [context,
-   project/<repo>]`, `date`, `source_kind: claude-stamped`,
+   project/<repo>]`, `date`, `last_verified` equal to `date` on creation,
+   `source_kind: claude-stamped`,
    **`record_grammar: delta`**, and the session/model provenance the
    kernel's note-provenance convention names when the session id is in
    context) and the empty `## Shared understanding` skeleton per
@@ -351,7 +354,12 @@ restarts or renumbers.
      2.3, 2.4 pending line, 2.5 — every `AskUserQuestion` call in this
      spec is composed per 2.3, this one included): *"What should track
      this deferral?"* with options `File
-     it for me (Recommended)` and `Other` for an existing ref. `File it`
+     it for me (Recommended)` and `Other` for an existing ref. An `Other`
+     ref is re-checked the same way; when it too does not resolve, it is
+     **not** taken at face value — the round falls through to the `File
+     it` arm, stated on one line ("<ref> does not resolve; filing it"),
+     so the bullet never carries a ref that points nowhere and the ask is
+     never repeated. `File it`
      routes by the kernel's defect-vs-enhancement split
      (`claude/CLAUDE.kernel.md` § Task workflow): a gap that should
      already exist goes to the board via the adapter's `capture` and the
@@ -371,7 +379,8 @@ restarts or renumbers.
    - the round's `### Interview record` line: `round N: D<a>–D<b>
      [interview] operator: <k> asked, <k> answered<, notes>` — `<k>`
      counts every question the round's calls asked, the round-1 problem
-     statement included, while `D<a>–D<b>` names decisions only (the
+     statement included, while `D<a>–D<b>` names decisions only —
+     `(no new decisions)` in its place when the round produced none (the
      notes name decisions taken against the recommendation and any
      operator-edited answer);
    - the `interview`-kind stop lines under `## Working notes` →
@@ -420,9 +429,11 @@ restarts or renumbers.
    turn by one free-text call asking for the fix (composed per 2.3, 2.4
    pending line), so the fix round (3.3) always opens holding verbatim
    text. The `--check-questions` block's
-   questions (at most three) follow in the same call; their answers are
-   recorded in the call entry and returned to the caller. Persist a `round
-   N pending:` line for this call like any other (2.4).
+   questions (at most three) follow in the same call **on the first check
+   call only**; their answers are recorded in that call's entry and are
+   the canonical ones Step 4 returns — a re-asked check after a fix (3.3)
+   carries Q1 alone, so a check question is never answered twice. Persist
+   a `round N pending:` line for this call like any other (2.4).
 3. **`One fix` reopens a round.** The fix arrives via `Other`, so it is
    a round of its own, persisted like any other **before the next check
    call opens**: the check's call entry replaces its pending line, and
@@ -432,7 +443,11 @@ restarts or renumbers.
    `### Interview record` line — all in one 2.6 full-file rewrite with
    read-back. Only then: if the fix opens new frontier, Step 2 runs again
    for it (2.1 onward, its own rounds and persists); either way the check
-   re-renders and re-asks (2 above, with a fresh pending line). Several
+   re-renders and re-asks (2 above, with a fresh pending line — Q1 only,
+   the `--check-questions` having been answered on the first check call).
+   A check round with no fix — `Understood` on the first try — writes
+   its `### Interview record` line with `(no new decisions)` in place of
+   the `D<a>–D<b>` range, the one case the range is empty. Several
    fixes before `Understood` are several persisted rounds, so a crash
    mid-check loses at most the one answer in flight (§ Resume), never an
    earlier fix. `Understood` records the check's call entry, writes the
@@ -567,7 +582,9 @@ Every external call has a named failure path; none is silent:
   resolve** → one follow-up call in the same round (2.6): the operator
   names a ref via `Other`, or the facilitator files it — board `capture`
   for a gap, a `Decisions/`/`Context/` note for a design seam — and the
-  `### Deferrals` bullet is written only with the ref in hand. A bare
+  `### Deferrals` bullet is written only with the ref in hand; an `Other`
+  ref that also fails to resolve is not accepted — the facilitator files
+  it, stated once, never a second ask. A bare
   "later" is never persisted. **`capture` unavailable** (no board, `gh`
   down) **or `capture` fails mid-call** (non-zero exit, error, timeout,
   no issue number returned) → the note form, stated once; a failing note
