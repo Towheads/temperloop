@@ -36,8 +36,9 @@ the same `/assess --epic N` → `/build` pipeline.
 **Phase 1 (Steps 0–1)** — the operator drives, in batched `AskUserQuestion`
 rounds; the premise gate is round 1's Q1. **Phase 2 (Steps 2–3.7)** — the
 facilitator drives, foreground and unattended, with one operator gate at
-the end: the chunked delta report (3.7), plus the ratio-gate round (3.6)
-when it fires. **Phase 3 (Steps 4–6)** — ratify, materialize, summarize.
+the end: the chunked delta report (3.7), plus the ratio-gate round (3.6) when
+over half the dimensions came out facilitator-drafted, not interviewed.
+**Phase 3 (Steps 4–6)** — ratify, materialize, summarize.
 
 Why (`docs/adr/0035-workshop-is-an-interview-then-unattended-coverage.md`):
 the predecessor walked all seventeen dimensions one modal stop at a time —
@@ -200,10 +201,13 @@ parameter block item 5 composes. Never as a subagent: that spec's
    and any drop action always target a note already on disk. Check whether
    the item-2 path already exists in the knowledge store; if it does,
    branch on its frontmatter `status`: <!-- cite: W.5 incident:K#509 -->
-   - **`draft`** → adopt it and **resume at the phase the note itself
-     shows**, read from the note alone, never from memory: a `round N
-     pending:` line under `### Interview calls` means Phase 1 was in flight
-     — hand the note back to the interview, whose § Resume owns that
+   - **`draft`** → adopt it and **resume where the note itself shows**, read
+     from the note alone, never from memory. A **tagged** `round N pending
+     (ratio-gate):` line under `### Interview calls` is Phase 2's ratio-gate
+     round (3.6.4) — resume at **Step 3.6**, never at the interview, whose
+     § Resume would discard the finished panel and congruence work; a plain
+     `round N pending:` line is Phase 1's — hand the note back to the
+     interview, whose § Resume owns that
      recovery; otherwise resume at **Step 2** when the record carries no
      `delta` stop line, or at **Step 3.7** from the dimension after the
      last `delta` line when it does. The premise gate already ran on the
@@ -740,9 +744,17 @@ shortfall visible, and this step is what the command *does* about it.
    as Phase 1 persists a round (`interview.md` Step 2.6): `D<n>` bullets
    continuing the existing numbering, an `### Interview record` line, and
    `interview`-kind stop lines under `### Challenge record` with
-   `source: operator`. Then rewrite each dimension the answers touched and
-   **remove its facilitator-drafted flag** — it is no longer drafted — and
-   re-run `validate-design-brief.sh --brief` (Step 2.5) before continuing.
+   `source: operator` — with one difference: its write-ahead pre-call line
+   (2.4) is **tagged**, `round N pending (ratio-gate): call k — Q1 "<text>";
+   …`, and no other round is, so the interview's own § Resume parse is
+   untouched. 3.6 runs *before* 3.7, so a crash here leaves no `delta` line to
+   tell it from a Phase-1 crash; the tag is what makes Step 1.4's recovery
+   branch syntactic, resuming **here** rather than at `interview.md` § Resume,
+   which would restart Phase 2 at Step 2 and discard the finished panel,
+   fold-back and congruence work. Then rewrite each dimension the answers
+   touched, **remove its facilitator-drafted flag** — it is no longer drafted
+   — and re-run `validate-design-brief.sh --brief` (Step 2.5) before
+   continuing.
 5. **Exactly once per run.** A ratio still above half afterwards is a
    *reported* number, not a second round: coverage the operator declines to
    close is a legitimate outcome, the flags stand in the brief and in 3.7's
@@ -782,7 +794,10 @@ in chat, in about **two chunks**, with one verdict per dimension.
    questions** — accept, or contest via `Other` in the operator's own
    words. **Each cluster question carries its dimensions' Δ inside the
    question body and the option descriptions**, never only in the chat
-   above it. This is the rule R1 fired on: the prototype's own
+   above it. This is the rule **risk R1** fired on — R1 being this design's own
+   first premortem risk (`R<n>` is how `claude/design-schema.md` § `### Risks`
+   numbers them; ADR 0035 records this one): that the report's questions reach
+   the operator with no context inside the block. The prototype's own
    operator-outcome answer was that "the last several questions about
    dimensions had no context visible", because the report sat in chat while
    the block held one-line summaries (`claude/CLAUDE.kernel.md`
@@ -1115,10 +1130,11 @@ restatement — follow the step reference for the actual handling.
   before any conversation starts.
 - **`AskUserQuestion` unavailable** (a headless or `-p` run) → the
   interview stops at its own Step 0 and so does this command.
-- **The interview crashes mid-round** (Phase 1) → recovery belongs to
-  `claude/commands/interview.md` § Resume, read from the note's
-  `round N pending:` lines; a re-run reaches it through Step 1.4's `draft`
-  branch, which never re-runs the premise gate.
+- **A round crashes mid-call** → the tag routes the recovery: a plain
+  `round N pending:` line is Phase 1's, owned by
+  `claude/commands/interview.md` § Resume; a `round N pending (ratio-gate):`
+  line is Step 3.6's and resumes there (3.6.4). A re-run reaches both through
+  Step 1.4's `draft` branch, which never re-runs the premise gate.
 - **The brief fails `validate-design-brief.sh --brief` after expansion**
   (Step 2.5) → fix before spawning a reviewer; never spend panel tokens on
   a brief the lint would reject.
