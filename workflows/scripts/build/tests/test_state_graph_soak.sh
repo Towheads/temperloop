@@ -38,6 +38,19 @@
 #     drift_query_set — `$claims` is gated to In Progress, matching
 #     reconcile's own producer, which emits nothing for a non-In-Progress
 #     claim (the "Park, don't abandon" residue).
+#   - the PARKED-BUT-STAMPED case against STATUS-DRIFT (temperloop#1996): an
+#     OPEN issue off In Progress still wearing its claim stamp is flagged
+#     `claimed_not_in_progress` by the query, but that kind has NO
+#     counterpart in `reconcile.sh --status` (its real counterpart, class
+#     (m) `PARKED claim stamps on OPEN issues`, lives in the `--labels`
+#     lens the soak never calls) — so it is excluded from the compared set
+#     and NAMED in `not_covered_kinds`, never left in `only_in_drift_query`
+#     as a standing false disagreement. The query itself still reports it.
+#   - KIND COMPLETENESS (temperloop#1996): every finding kind
+#     `_sg_query_status_drift` can emit is dispositioned in
+#     `_SG_SOAK_STATUS_DRIFT_KIND_COUNTERPART`, and the table names no kind
+#     the query cannot emit — so a FOURTH kind cannot be added without
+#     being audited against what `--status` can actually report.
 #   - unlinked-prs / orphan-worktrees: reconcile.sh has no matching class for
 #     either, so their reconcile_set/diff always read the literal string
 #     "not-covered" — never an empty-set false agreement/disagreement.
@@ -446,6 +459,107 @@ record="$(_sg_soak_run "$BOARD")"
 echo "PASS: soak — a Ready-status issue's claim stamp is excluded from stale-claims's drift_query_set entirely (temperloop#1980 round 4 HIGH: gated to In Progress, matching reconcile's own producer)"
 
 # =============================================================================
+# the PARKED-BUT-STAMPED case, now against STATUS-DRIFT (temperloop#1996):
+# an OPEN issue, status off In Progress, claim stamp still attached — the
+# ordinary "Park, don't abandon" residue (board_set_status moves the issue
+# off In Progress; only release.sh clears the stamp, release.sh:175).
+#
+# `_sg_query_status_drift` flags it `claimed_not_in_progress`, and that kind
+# has NO counterpart in `reconcile.sh --status` at all: its real counterpart
+# is reconcile class (m), `PARKED claim stamps on OPEN issues`, which lives
+# in `label_reconcile_main` — the `--labels` lens `_sg_soak_run` never
+# calls. So before this fix every parked-but-stamped item landed in
+# `only_in_drift_query` and could never agree — a standing false
+# disagreement on an ordinary documented flow. The soak now excludes the
+# kind from the compared set and NAMES it in `not_covered_kinds` instead.
+#
+# Deliberately a separate run from the round-4 case above (same fixture
+# shape, different lens): that one asserts the STALE-CLAIMS gate, this one
+# the STATUS-DRIFT kind gate, and neither should silently carry the other.
+# =============================================================================
+_board_gh() {
+  case "$1 $2" in
+    "issue list")
+      echo '[{"number":22,"title":"x","labels":[{"name":"fnd:status:ready"},{"name":"fnd:host/session:mini-1:parked22"}]}]'
+      ;;
+    "api repos/$REPO/issues/22/sub_issues") echo '[]' ;;
+    "api repos/$REPO/issues/22/dependencies/blocked_by") echo '[]' ;;
+    "pr list") echo '[]' ;;
+    "api repos/$REPO/issues") echo '[]' ;;
+    *) echo "test _board_gh: unhandled '$1 $2'" >&2; return 3 ;;
+  esac
+}
+_sg_reconcile() { echo "In sync: every board item's status matches its GitHub state; no orphaned or stale claims."; }
+_sg_soak_day() { echo "2026-01-11"; }
+record="$(_sg_soak_run "$BOARD")"
+# The query itself still reports the finding — this fix narrows the SOAK's
+# comparison, it does not delete a true drift finding from `query`.
+[ "$(jq -r '[.findings[] | select(.kind=="claimed_not_in_progress") | .id] | join(",")' \
+     <<<"$(_sg_query_status_drift "$(_sg_build_snapshot "$BOARD")")")" = "Issue:22" ] ||
+  fail "query status-drift must STILL report the parked-but-stamped issue as claimed_not_in_progress — the soak narrows the comparison, not the query"
+[ "$(class_field status-drift drift_query_set "$record")" = '[]' ] || fail "a parked-but-stamped issue must NOT enter status-drift's compared drift_query_set — --status has no counterpart for that kind (got: $record)"
+[ "$(class_field status-drift reconcile_set "$record")" = '[]' ] || fail "reconcile's own (in-sync) --status read carries nothing for a parked claim stamp (got: $record)"
+[ "$(jq -c '.classes["status-drift"].diff.only_in_drift_query' <<<"$record")" = '[]' ] || fail "a parked-but-stamped issue must never land in only_in_drift_query (got: $record)"
+[ "$(jq -r '.classes["status-drift"].diff.agree' <<<"$record")" = "true" ] || fail "the parked-but-stamped case must not manufacture a status-drift disagreement (got: $record)"
+# The narrowing is NAMED, never silent — the per-kind analogue of the
+# class-level "not-covered" literal.
+[ "$(class_field status-drift not_covered_kinds "$record")" = '["claimed_not_in_progress"]' ] || fail "status-drift's entry must name the excluded kind in not_covered_kinds (got: $record)"
+[ "$(class_field stale-claims not_covered_kinds "$record")" = '[]' ] || fail "stale-claims has no uncounterparted finding kind — its not_covered_kinds is [] (got: $record)"
+[ "$(class_field unlinked-prs not_covered_kinds "$record")" = '[]' ] || fail "unlinked-prs is not-covered as a WHOLE class, so its not_covered_kinds stays [] (got: $record)"
+echo "PASS: soak — a parked-but-stamped open issue produces no false status-drift disagreement, and the excluded kind is named in not_covered_kinds (temperloop#1996)"
+
+# =============================================================================
+# KIND COMPLETENESS (temperloop#1996): every finding kind
+# `_sg_query_status_drift` can emit must be dispositioned in
+# `_SG_SOAK_STATUS_DRIFT_KIND_COUNTERPART` — counterparted, or explicitly
+# "not-covered". This is the structural half of the fix: adding a FOURTH
+# kind without auditing it against what `--status` can emit fails HERE
+# rather than being rediscovered a fourth time as a standing false
+# disagreement in a production soak log.
+# =============================================================================
+sg_src="$HERE/../state-graph.sh"
+sg_body="$(sed -n '/^_sg_query_status_drift()/,/^}/p' "$sg_src")"
+# WHITESPACE-TOLERANT extraction (shell-reviewer, MEDIUM). A strict
+# `kind:"..."` pattern is defeated by `kind: "..."` — one space, valid jq,
+# stylistically indistinguishable — and the count assertion is derived from
+# the SAME extraction, so it passes too and both completeness loops then
+# iterate the known three. A guard a one-character reformat silently disarms
+# is not a structural defense (kernel principle 5), which is precisely what
+# this block exists to be. `-E` + POSIX classes behave identically on BSD and
+# GNU grep. `|| true` keeps the no-match case reaching its own explanatory
+# `fail` below rather than dying bare under `set -e` + `pipefail` (the LOW).
+emitted_kinds="$(printf '%s\n' "$sg_body" |
+  grep -oE 'kind:[[:space:]]*"[a-z_]+"' |
+  sed -E -e 's/^kind:[[:space:]]*"//' -e 's/"$//' | sort -u || true)"
+# STRICT extraction, kept only as a cross-check: if the two disagree, someone
+# reformatted a `kind:` and the strict pattern would have started silently
+# under-reporting. Trip the test on the reformat instead of absorbing it.
+emitted_kinds_strict="$(printf '%s\n' "$sg_body" |
+  grep -o 'kind:"[a-z_]*"' | sed -e 's/^kind:"//' -e 's/"$//' | sort -u || true)"
+[ -n "$emitted_kinds" ] || fail "could not extract any finding kind from _sg_query_status_drift — the completeness check would pass vacuously"
+[ "$emitted_kinds" = "$emitted_kinds_strict" ] || fail "whitespace-tolerant and strict kind extractions disagree — a \`kind:\` was reformatted, and the strict pattern would silently under-report. Loose: $(printf '%s' "$emitted_kinds" | tr '\n' ' ')| strict: $(printf '%s' "$emitted_kinds_strict" | tr '\n' ' ')"
+[ "$(printf '%s\n' "$emitted_kinds" | wc -l | tr -d ' ')" -eq 3 ] || fail "expected _sg_query_status_drift to emit 3 finding kinds (got: $(printf '%s' "$emitted_kinds" | tr '\n' ' '))"
+while IFS= read -r k; do
+  [ "$(jq -r --arg k "$k" 'has($k)' <<<"$_SG_SOAK_STATUS_DRIFT_KIND_COUNTERPART")" = "true" ] ||
+    fail "status-drift finding kind '$k' is not dispositioned in _SG_SOAK_STATUS_DRIFT_KIND_COUNTERPART — audit it against what reconcile.sh --status can emit, then map it or mark it not-covered"
+done <<<"$emitted_kinds"
+# And the table names nothing the query cannot emit (a stale entry silently
+# narrowing a kind that no longer exists is the same bug pointed the other
+# way).
+# Captured, NOT a process substitution (shell-reviewer, LOW): a process
+# substitution's exit status is invisible to `set -e`/`pipefail`, so a
+# malformed table literal would yield no lines, skip the loop body, and report
+# PASS having checked nothing. A failing command substitution DOES trip
+# `set -e`, and the non-empty assertion closes the remaining vacuity.
+table_kinds="$(jq -r 'keys[]' <<<"$_SG_SOAK_STATUS_DRIFT_KIND_COUNTERPART")"
+[ -n "$table_kinds" ] || fail "_SG_SOAK_STATUS_DRIFT_KIND_COUNTERPART yielded no keys — the reverse-direction check would pass vacuously"
+while IFS= read -r k; do
+  printf '%s\n' "$emitted_kinds" | grep -Fx "$k" >/dev/null ||
+    fail "_SG_SOAK_STATUS_DRIFT_KIND_COUNTERPART names kind '$k', which _sg_query_status_drift never emits"
+done <<<"$table_kinds"
+echo "PASS: soak — every status-drift finding kind is dispositioned in the counterpart table, and the table names no kind the query cannot emit (temperloop#1996)"
+
+# =============================================================================
 # --count: distinct days, log is append-only through lib/cache.sh
 # =============================================================================
 expect_dir="$(cache_repo_dir "$BOARD" state-graph-soak)"
@@ -453,10 +567,10 @@ expect_log="$(cache_snapshot_file "$BOARD" state-graph-soak)"
 [ -d "$expect_dir" ] || fail "soak log directory was not created via cache_repo_dir(kind=state-graph-soak)"
 [ -s "$expect_log" ] || fail "soak log file was not created via cache_snapshot_file(kind=state-graph-soak)"
 lines_before="$(wc -l <"$expect_log" | tr -d ' ')"
-[ "$lines_before" -eq 10 ] || fail "soak log should carry exactly the ten runs above (got $lines_before lines)"
+[ "$lines_before" -eq 11 ] || fail "soak log should carry exactly the eleven runs above (got $lines_before lines)"
 
 count="$(cmd_soak --count --board "$BOARD")"
-[ "$count" = 10 ] || fail "soak --count should report 10 distinct days (got: $count)"
+[ "$count" = 11 ] || fail "soak --count should report 11 distinct days (got: $count)"
 echo "PASS: soak --count — distinct days recorded, log persisted append-only through lib/cache.sh"
 
 # --count SCHEMA exclusion (temperloop#1978, acceptance criterion 4): a
@@ -467,9 +581,9 @@ echo "PASS: soak --count — distinct days recorded, log persisted append-only t
 # run for a day nothing per-class was ever recorded on.
 printf '%s\n' '{"day":"2025-12-31","drift_query_set":[],"reconcile_set":[],"diff":{"only_in_drift_query":[],"only_in_reconcile":[],"agree":true}}' >>"$expect_log"
 lines_after_legacy="$(wc -l <"$expect_log" | tr -d ' ')"
-[ "$lines_after_legacy" -eq 11 ] || fail "the hand-appended legacy record should still add a line to the log (got $lines_after_legacy lines)"
+[ "$lines_after_legacy" -eq 12 ] || fail "the hand-appended legacy record should still add a line to the log (got $lines_after_legacy lines)"
 count_with_legacy="$(cmd_soak --count --board "$BOARD")"
-[ "$count_with_legacy" = 10 ] || fail "soak --count must exclude a pre-temperloop#1978 flat-schema run record from the day count (got: $count_with_legacy)"
+[ "$count_with_legacy" = 11 ] || fail "soak --count must exclude a pre-temperloop#1978 flat-schema run record from the day count (got: $count_with_legacy)"
 echo "PASS: soak --count — a pre-temperloop#1978 flat-schema run record (no type field) is excluded from the day count"
 
 # --count on a board with no soak log yet prints 0, never an error.
