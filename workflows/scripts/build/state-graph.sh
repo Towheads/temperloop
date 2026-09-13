@@ -25,12 +25,17 @@
 # the named setting `STATE_GRAPH_MAX_AGE_S`, so a consumer never silently
 # acts on data this run has already outgrown.
 #
-# THE READER TABLE IS EXTENSIBLE (acceptance criterion 1): this file adds
-# exactly four sources — board / board_edges / pr_list / worktrees — as four
+# THE READER TABLE IS EXTENSIBLE (acceptance criterion 1): this file first
+# shipped four sources — board / board_edges / pr_list / worktrees — as four
 # independent `_sg_read_*` functions plus one line each in `_SG_SOURCES`
-# below. `state-graph-build-local` (temperloop#1918) appends three more
-# (plan_notes / journal / tmux) the same way, without touching these four or
-# the assembly loop that calls them.
+# below. `state-graph-build-local` (temperloop#1918) appended three more
+# HOST-LOCAL sources the same way — plan_notes (knowledge-store `Plans/`
+# notes), journal (the Workflow runtime's `agent-<id>.jsonl` transcripts),
+# and tmux (the per-window `@claimed_issue` claim marker) — without touching
+# the original four or the assembly loop that calls them. "Host-local" means
+# exactly that: unlike the four `gh`-backed/git sources above, these three
+# describe the state of the MACHINE running `build`, not the repo/board, so
+# a snapshot built on two different hosts can legitimately disagree on them.
 #
 #   state-graph.sh build --board <N>            build + persist + print
 #   state-graph.sh clean --board <N>             remove ONE repo's snapshot
@@ -64,6 +69,9 @@ source "$_SG_HERE/../config/join-keys-lib.sh"
 # shellcheck source=workflows/scripts/build/build.config.sh
 # shellcheck disable=SC1091
 source "$_SG_HERE/build.config.sh"
+# shellcheck source=workflows/scripts/lib/knowledge_store.sh
+# shellcheck disable=SC1091
+source "$_SG_HERE/../lib/knowledge_store.sh"
 
 # The ontology registry (ADR 0032) — the ONE source of truth for the
 # `state:issue-status` alphabet a board-read Issue node's `status` must
@@ -129,6 +137,21 @@ _sg_normalize_claimed_by() {
     printf '%s:%s' "$host" "$full"
   else
     printf '%s:%s' "$host" "$(printf '%s' "$part" | tr '[:upper:]' '[:lower:]')"
+  fi
+}
+
+# journal reader: normalize a workflow-journal `sessionId` field through
+# jk_session_full (the join-key loader) rather than hand-rolled parsing —
+# the journal source's own equivalent of _sg_normalize_claimed_by above. A
+# non-UUID-shaped id (never expected in a real transcript, but a journal is
+# untrusted input) falls back to the loader's own lowercase OUTPUT shape,
+# same fallback discipline as _sg_normalize_claimed_by.
+_sg_normalize_session_id() {
+  local raw="$1" full
+  if full="$(jk_session_full "$raw" 2>/dev/null)"; then
+    printf '%s' "$full"
+  else
+    printf '%s' "$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')"
   fi
 }
 
@@ -295,28 +318,281 @@ _sg_read_worktrees() {
   fi
 }
 
+# --- source 5: plan_notes (PlanItem nodes, depends_on/after edges) ---------
+# One `ks_list Plans` + `ks_read` per matching note, through the knowledge-
+# store interface (lib/knowledge_store.sh, `KNOWLEDGE_STORE_ROOT`) — never a
+# hand-rolled vault-path read. Only a note whose frontmatter `status:` is
+# `approved` or `executing` counts (a `draft`/`done`/`abandoned` plan is not
+# live work — mirrors `/build`'s own `status:` gate, claude/plan-schema.md).
+# `absent` = the store (or its `Plans/` prefix) does not exist, OR no note
+# matched (acceptance criterion: "an absent store or no matching note is
+# absent") — `ks_list` already returns nothing (not an error) for a missing
+# root/prefix, so this needs no separate existence probe. `error` = an
+# item's checkbox sentinel is not a `state:plan-sentinel` row in the
+# ontology registry (mirrors source 1's own unknown-token error, ADR 0032).
+# `depends-on:`/`after:` are parsed by SLUG (claude/plan-schema.md § Item
+# identifier, never by position) and resolved to `PlanItem:<stem>:<slug>`
+# node ids, `<stem>` from `jk_plan_stem` (the join-key loader — never a
+# hand-stripped `basename`/`.md` trim). `pr:`/`pushed_sha:` (orchestrator-
+# written fields, same section) ride as plain node fields; the ontology
+# defines no edge for them.
+_sg_plan_sentinel_tokens() {
+  awk -F'\t' '$1=="state:plan-sentinel" && $2!="" {print $2}' "$ONTOLOGY_REGISTRY_FILE" 2>/dev/null
+}
+
+# <content> -> the frontmatter `status:` value, or nothing if absent/no
+# frontmatter block. Scoped strictly to the FIRST `---`/`---` pair so a
+# `status:`-shaped line in the body (an example in `notes:`, say) is never
+# mistaken for the real frontmatter field.
+_sg_plan_note_status() {
+  awk '
+    /^---[[:space:]]*$/ { d++; next }
+    d==1 && /^status:[[:space:]]*/ { sub(/^status:[[:space:]]*/,""); gsub(/[[:space:]]+$/,""); print; exit }
+    d>=2 { exit }
+  ' <<<"$1"
+}
+
+# <sentinel-tokens-json> <stem> <slug> <sentinel-char> <depends-csv>
+# <after-csv> <pr> <pushed_sha> -> {bad, node, edges} for one plan item.
+# `bad`=true when the sentinel is not a registered state:plan-sentinel
+# token (the caller flips the whole source to `error`); node/edges are
+# null/empty in that case. Kept as its own function (rather than inlined in
+# the line-scanning loop below) purely to keep that loop a plain
+# state-machine walk.
+_sg_plan_item_result() {
+  local toks="$1" stem="$2" slug="$3" sentinel="$4" deps="$5" afters="$6" pr="$7" sha="$8"
+  jq -cn --argjson toks "$toks" --arg stem "$stem" --arg slug "$slug" --arg tok "[$sentinel]" \
+    --arg pr "$pr" --arg sha "$sha" --arg deps "$deps" --arg afters "$afters" '
+    ("PlanItem:" + $stem + ":" + $slug) as $id |
+    if ($toks | index($tok)) == null then
+      {bad: true, node: null, edges: []}
+    else
+      {
+        bad: false,
+        node: ({type:"PlanItem", id:$id, slug:$slug, state:$tok}
+               + (if $pr=="" then {} else {pr:$pr} end)
+               + (if $sha=="" then {} else {pushed_sha:$sha} end)),
+        edges: (
+          ($deps | split(",") | map(select(length>0))
+            | map({type:"depends_on", from:$id, to:("PlanItem:"+$stem+":"+.)}))
+          + ($afters | split(",") | map(select(length>0))
+            | map({type:"after", from:$id, to:("PlanItem:"+$stem+":"+.)}))
+        )
+      }
+    end'
+}
+
+_sg_read_plan_notes() {
+  local ids id content st stem nodes edges bad=0 sentinel_toks
+  local line cur_slug cur_sentinel cur_deps cur_afters cur_pr cur_sha
+  local records s se de af pr sh res fs
+  # Item checkbox: `- [<c>] **<title>** \`slug: <kebab>\` — <scope>`, at
+  # column 0 (an indented sub-bullet, e.g. an acceptance-list line, never
+  # matches). Sub-field: `  - <key>: <value>`, 2-space indented under it.
+  # shellcheck disable=SC2016  # the backtick is a literal pattern character
+  local item_re='^- \[([^]])\].*`slug:[[:space:]]*([a-z0-9-]+)`'
+  local sub_re='^[[:space:]]+- (depends-on|after|pr|pushed_sha):[[:space:]]*(.*)$'
+  # Internal-only field separator for the `records` accumulator below — the
+  # ASCII Unit Separator (0x1F), never TAB. Bash's `read` treats TAB (like
+  # every default-IFS whitespace char) as a COLLAPSING delimiter regardless
+  # of what IFS is set to: a run of them is one delimiter and an EMPTY field
+  # between two of them silently vanishes, shifting every field after it one
+  # slot left (`pr:`/`pushed_sha:` landing in each other's place when
+  # `depends-on:`/`after:` is absent in between). \x1f is not IFS
+  # whitespace, so `read` preserves empty fields exactly where TAB would not.
+  fs=$'\x1f'
+
+  sentinel_toks="$(_sg_plan_sentinel_tokens | jq -Rsc 'split("\n") | map(select(length>0))')"
+  nodes='[]'; edges='[]'
+  ids="$(ks_list Plans 2>/dev/null)" || ids=""
+
+  while IFS= read -r id; do
+    [ -n "$id" ] || continue
+    content="$(ks_read "$id" 2>/dev/null)" || continue
+    st="$(_sg_plan_note_status "$content")"
+    case "$st" in
+      approved | executing) ;;
+      *) continue ;;
+    esac
+    stem="$(jk_plan_stem "$id" 2>/dev/null)" || stem="$id"
+
+    records=""
+    cur_slug=""; cur_sentinel=""; cur_deps=""; cur_afters=""; cur_pr=""; cur_sha=""
+    while IFS= read -r line; do
+      if [[ $line =~ $item_re ]]; then
+        if [ -n "$cur_slug" ]; then
+          records="${records}${cur_slug}${fs}${cur_sentinel}${fs}${cur_deps}${fs}${cur_afters}${fs}${cur_pr}${fs}${cur_sha}"$'\n'
+        fi
+        cur_sentinel="${BASH_REMATCH[1]}"
+        cur_slug="${BASH_REMATCH[2]}"
+        cur_deps=""; cur_afters=""; cur_pr=""; cur_sha=""
+      elif [ -n "$cur_slug" ] && [[ $line =~ $sub_re ]]; then
+        case "${BASH_REMATCH[1]}" in
+          depends-on) cur_deps="$(printf '%s' "${BASH_REMATCH[2]}" | tr -d ' ')" ;;
+          after) cur_afters="$(printf '%s' "${BASH_REMATCH[2]}" | tr -d ' ')" ;;
+          pr) cur_pr="${BASH_REMATCH[2]}" ;;
+          pushed_sha) cur_sha="${BASH_REMATCH[2]}" ;;
+        esac
+      fi
+    done <<<"$content"
+    if [ -n "$cur_slug" ]; then
+      records="${records}${cur_slug}${fs}${cur_sentinel}${fs}${cur_deps}${fs}${cur_afters}${fs}${cur_pr}${fs}${cur_sha}"$'\n'
+    fi
+
+    while IFS="$fs" read -r s se de af pr sh; do
+      [ -n "$s" ] || continue
+      res="$(_sg_plan_item_result "$sentinel_toks" "$stem" "$s" "$se" "$de" "$af" "$pr" "$sh")"
+      if [ "$(jq -r '.bad' <<<"$res")" = "true" ]; then
+        bad=1
+        continue
+      fi
+      nodes="$(jq -c --argjson n "$(jq -c '.node' <<<"$res")" '. + [$n]' <<<"$nodes")"
+      edges="$(jq -c --argjson e "$(jq -c '.edges' <<<"$res")" '. + $e' <<<"$edges")"
+    done <<<"$records"
+  done <<<"$ids"
+
+  if [ "$bad" -eq 1 ]; then
+    _sg_source_result error '[]' '[]' "plan-item sentinel not in ontology registry"
+    return 0
+  fi
+  if [ "$(jq 'length' <<<"$nodes")" -eq 0 ]; then
+    _sg_source_result absent '[]' '[]' ""
+  else
+    _sg_source_result ok "$nodes" "$edges" ""
+  fi
+}
+
+# --- source 6: journal (Session nodes, step outcomes) -----------------------
+# Reads every `agent-*.jsonl` workflow-runtime transcript found at any depth
+# under `$SPEND_TRANSCRIPT_ROOT` (build.config.sh) — the SAME transcript
+# root pipeline-spend-report.sh already reads (temperloop#958); no second
+# setting for the same directory. Each line is a JSON object; a line
+# carrying BOTH a `sessionId` and a `step`+`outcome` pair is a step-outcome
+# record (build.md's own pr-batch-executor `{outcome:"PR_OPENED", ...}`
+# shape, generalized to a named `step` so more than that one executor's
+# outcomes can be recorded) and is folded into that session's `steps` array
+# — every other line (an ordinary transcript message) carries neither field
+# and is skipped; not every journal line is a step-outcome record.
+# `sessionId` is normalized through `_sg_normalize_session_id` (the
+# join-key loader), never hand-rolled. `absent` = no transcript root, no
+# matching files, or no step-outcome lines in any of them found (nothing to
+# report — the same "legitimately empty" convention as pr_list/worktrees;
+# covers the acceptance criterion's "a missing transcript directory is
+# absent" as the degenerate case of "nothing found"). `error` = a journal
+# line that is not valid JSON at all (a corrupted/truncated transcript).
+_sg_read_journal() {
+  local root files f line sid outcome nodes malformed=0 by_sid='{}'
+  root="${SPEND_TRANSCRIPT_ROOT:-}"
+  if [ -z "$root" ] || [ ! -d "$root" ]; then
+    _sg_source_result absent '[]' '[]' "no transcript root"
+    return 0
+  fi
+  files="$(find "$root" -type f -name 'agent-*.jsonl' 2>/dev/null | sort)"
+  if [ -z "$files" ]; then
+    _sg_source_result absent '[]' '[]' "no journal files"
+    return 0
+  fi
+
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      if ! jq -e . >/dev/null 2>&1 <<<"$line"; then
+        malformed=1
+        break
+      fi
+      sid="$(jq -r '.sessionId // empty' <<<"$line")"
+      [ -n "$sid" ] || continue
+      if ! jq -e '((.step // "") != "") and ((.outcome // "") != "")' >/dev/null 2>&1 <<<"$line"; then
+        continue
+      fi
+      sid="$(_sg_normalize_session_id "$sid")"
+      outcome="$(jq -c '{step:.step, outcome:.outcome}' <<<"$line")"
+      by_sid="$(jq -c --arg sid "$sid" --argjson step "$outcome" \
+        '.[$sid] = ((.[$sid] // []) + [$step])' <<<"$by_sid")"
+    done < "$f"
+    [ "$malformed" -eq 0 ] || break
+  done <<<"$files"
+
+  if [ "$malformed" -eq 1 ]; then
+    _sg_source_result error '[]' '[]' "malformed journal line"
+    return 0
+  fi
+
+  nodes="$(jq -c '[ to_entries[] | {type:"Session", id:("Session:"+.key), steps:.value} ]' <<<"$by_sid")"
+  if [ "$(jq 'length' <<<"$nodes")" -eq 0 ]; then
+    _sg_source_result absent '[]' '[]' ""
+  else
+    _sg_source_result ok "$nodes" '[]' ""
+  fi
+}
+
+# --- source 7: tmux (Marker nodes, marked_by edges) -------------------------
+# `tmux list-windows -a` for every window's `@claimed_issue` option — the
+# SAME per-window marker claim.sh/release.sh write via
+# workflows/scripts/board/lib/claim_marker.sh — never a hand-rolled tmux
+# query. New seam `_sg_tmux` (mirrors `_sg_git`). Its failure covers BOTH
+# "no tmux binary on this host" and "tmux binary present but no server
+# running": both read the same way from the caller's side (the command
+# simply fails), and the acceptance criterion treats them identically —
+# `absent`, never "no claims held". A host that DOES have a reachable
+# server but holds zero claims right now is `ok` with an empty node/edge
+# list — that zero-claims state must NEVER be reported as `absent`
+# (acceptance criterion). `error` = the server answered `list-sessions` but
+# a SECOND, independent call (`list-windows`) then failed unexpectedly — a
+# genuine tmux-side fault, not an absence. A window's `@claimed_issue`
+# value not shaped like `#<N> ...` (claim.sh's own display-string
+# convention, claim_marker.sh) carries no issue to attach a `marked_by`
+# edge to and is skipped — it is not ours to graph.
+_sg_tmux() { tmux "$@"; }
+
+_sg_read_tmux() {
+  local raw nodes edges wid disp issue
+  if ! _sg_tmux list-sessions >/dev/null 2>&1; then
+    _sg_source_result absent '[]' '[]' "no tmux binary or no server"
+    return 0
+  fi
+  if ! raw="$(_sg_tmux list-windows -a -F $'#{window_id}\t#{@claimed_issue}' 2>/dev/null)"; then
+    _sg_source_result error '[]' '[]' "tmux list-windows failed"
+    return 0
+  fi
+  nodes='[]'; edges='[]'
+  while IFS=$'\t' read -r wid disp; do
+    [ -n "$wid" ] || continue
+    [ -n "$disp" ] || continue
+    case "$disp" in
+      "#"[0-9]*) issue="${disp#"#"}"; issue="${issue%%[!0-9]*}" ;;
+      *) continue ;;
+    esac
+    nodes="$(jq -c --arg w "$wid" --arg d "$disp" \
+      '. + [{type:"Marker", id:("Marker:"+$w), window:$w, display:$d}]' <<<"$nodes")"
+    edges="$(jq -c --arg i "$issue" --arg w "$wid" \
+      '. + [{type:"marked_by", from:("Issue:"+$i), to:("Marker:"+$w)}]' <<<"$edges")"
+  done <<<"$raw"
+  _sg_source_result ok "$nodes" "$edges" ""
+}
+
 # --- the extensible reader table (acceptance criterion 1) -------------------
-# state-graph-build-local (temperloop#1918) appends plan_notes/journal/tmux
-# entries here (each its own `_sg_read_<name>` function taking `<board>` —
-# board_edges is the one exception, taking board's own already-read result as
-# a second arg, since it is gated on that source rather than re-reading it)
-# without touching _sg_build_snapshot's assembly loop below.
-_SG_SOURCES="board board_edges pr_list worktrees"
+_SG_SOURCES="board board_edges pr_list worktrees plan_notes journal tmux"
 
 # --- assemble one full snapshot (live, always fresh) ------------------------
 _sg_build_snapshot() {
-  local board="$1" repo built_at r_board r_board_edges r_pr r_wt
+  local board="$1" repo built_at r_board r_board_edges r_pr r_wt r_plan r_journal r_tmux
   repo="$(board_repo "$board" 2>/dev/null)" || repo=""
   r_board="$(_sg_read_board "$board")"
   r_board_edges="$(_sg_read_board_edges "$board" "$r_board")"
   r_pr="$(_sg_read_pr_list "$board")"
   r_wt="$(_sg_read_worktrees "$board")"
+  r_plan="$(_sg_read_plan_notes "$board")"
+  r_journal="$(_sg_read_journal "$board")"
+  r_tmux="$(_sg_read_tmux "$board")"
   built_at="$(date +%s)"
 
   jq -cn \
     --arg board "$board" --arg repo "$repo" --argjson built_at "$built_at" --argjson sv 1 \
     --argjson board_r "$r_board" --argjson board_edges_r "$r_board_edges" \
-    --argjson pr_r "$r_pr" --argjson wt_r "$r_wt" '
+    --argjson pr_r "$r_pr" --argjson wt_r "$r_wt" \
+    --argjson plan_r "$r_plan" --argjson journal_r "$r_journal" --argjson tmux_r "$r_tmux" '
     def src($r): {status: $r.status, detail: $r.detail, n_nodes: ($r.nodes|length), n_edges: ($r.edges|length)};
     {
       schema_version: $sv,
@@ -327,10 +603,15 @@ _sg_build_snapshot() {
         board: src($board_r),
         board_edges: src($board_edges_r),
         pr_list: src($pr_r),
-        worktrees: src($wt_r)
+        worktrees: src($wt_r),
+        plan_notes: src($plan_r),
+        journal: src($journal_r),
+        tmux: src($tmux_r)
       },
-      nodes: ($board_r.nodes + $board_edges_r.nodes + $pr_r.nodes + $wt_r.nodes),
-      edges: ($board_r.edges + $board_edges_r.edges + $pr_r.edges + $wt_r.edges)
+      nodes: ($board_r.nodes + $board_edges_r.nodes + $pr_r.nodes + $wt_r.nodes
+              + $plan_r.nodes + $journal_r.nodes + $tmux_r.nodes),
+      edges: ($board_r.edges + $board_edges_r.edges + $pr_r.edges + $wt_r.edges
+              + $plan_r.edges + $journal_r.edges + $tmux_r.edges)
     }'
 }
 

@@ -1,0 +1,298 @@
+#!/usr/bin/env bash
+#
+# Tests for the three HOST-LOCAL sources state-graph-build-local
+# (temperloop#1918, epic #1910) added to workflows/scripts/build/state-
+# graph.sh's reader table — plan_notes, journal, tmux — alongside the four
+# core sources test_state_graph.sh already covers (board / board_edges /
+# pr_list / worktrees, untouched by this item). Same fixture discipline as
+# that file: this test `source`s state-graph.sh (whose source-guard skips
+# the CLI dispatch) and overrides each new source's own seam — no network,
+# no real tmux server, no real knowledge store / transcript root on the
+# host running the test. Fixtures are entirely synthetic: no real host
+# names, session ids, or paths.
+#
+# Twelve cases (ok/absent/error/stale, one per state, per source):
+#   - plan_notes: ok (an approved note's PlanItem nodes + depends_on/after
+#     edges + pr:/pushed_sha: fields, from the knowledge store), absent (no
+#     store, and separately no note whose status is approved/executing),
+#     error (a checkbox sentinel not in the ontology registry's
+#     state:plan-sentinel alphabet), stale
+#   - journal: ok (a Session node + step-outcome from an `agent-*.jsonl`
+#     transcript under $SPEND_TRANSCRIPT_ROOT), absent (a missing
+#     transcript root, and separately a root with no matching files), error
+#     (a malformed JSON line), stale
+#   - tmux: ok (a `@claimed_issue`-marked window's Marker node + marked_by
+#     edge, AND separately a reachable server with zero claims — this must
+#     read `ok`, never `absent`), absent (no tmux binary or no server),
+#     error (list-windows fails after list-sessions succeeded), stale
+#
+# The deliberately-INVALID plan-sentinel fixture (the error case) is built
+# via `printf '...[%s]...' 'q'` rather than a literal `- [q] ` markdown
+# line in this file's own source: workflows/scripts/config/check-ontology-
+# registry.sh scans every git-tracked file (this one included) for the
+# `- [<c>] ` / `` `[<c>]` `` sentinel grammar and would flag a literal
+# unregistered bracket-char sequence as UNLISTED-SENTINEL. The runtime-
+# assembled fixture file itself lives only under a mktemp dir, never
+# git-tracked, so it is never scanned — only THIS FILE'S OWN byte content
+# must avoid the literal grammar, which the printf template does (`[%s]`
+# is two characters between the brackets, not one, so it never matches).
+# shellcheck disable=SC2317,SC2329
+set -euo pipefail
+
+# Hermetic conf env (temperloop#501): fixture tests must never resolve boards
+# through the repo's or host's real boards.conf.
+export BOARDS_CONF_REPO_LOCAL=/dev/null
+export BOARDS_CONF_MACHINE=/dev/null
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# shellcheck source=workflows/scripts/build/state-graph.sh
+source "$HERE/../state-graph.sh"
+
+fail() { echo "FAIL: $1" >&2; exit 1; }
+
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+
+# Never touch the real knowledge-store read-log from a fixture run (mirrors
+# workflows/scripts/lib/tests/test_knowledge_store.sh's own isolation).
+export KNOWLEDGE_READ_LOG="$TMP/knowledge-reads.log"
+
+BOARD=4          # Towheads/foundation, per board.sh's built-in map
+
+# =============================================================================
+# source: plan_notes (PlanItem nodes, depends_on/after edges, pr/pushed_sha)
+# =============================================================================
+
+# --- plan_notes: ok -----------------------------------------------------
+# Three items in one approved note: alpha (no edges), beta (depends-on
+# alpha, pr:/pushed_sha:), gamma (after beta) — exercises both edge types
+# and the orchestrator-written fields in one fixture.
+export KNOWLEDGE_STORE_ROOT="$TMP/ks-ok"
+mkdir -p "$KNOWLEDGE_STORE_ROOT/Plans"
+cat > "$KNOWLEDGE_STORE_ROOT/Plans/2026-01-01 test - foo.md" <<'EOF'
+---
+tags: [plan, project/test]
+date: 2026-01-01
+status: approved
+---
+
+# Test plan
+
+## Items
+
+- [x] **Alpha** `slug: alpha` — first
+  - branch: `feat/alpha`
+  - size: S
+  - acceptance:
+    - does a thing
+
+- [~] **Beta** `slug: beta` — second
+  - branch: `feat/beta`
+  - size: S
+  - depends-on: alpha
+  - pr: 42
+  - pushed_sha: deadbeef1
+  - acceptance:
+    - does another thing
+
+- [ ] **Gamma** `slug: gamma` — third
+  - branch: `feat/gamma`
+  - size: S
+  - after: beta
+  - acceptance:
+    - does a third thing
+EOF
+out="$(_sg_read_plan_notes "$BOARD")"
+[ "$(jq -r .status <<<"$out")" = "ok" ] || fail "plan_notes ok status (got: $out)"
+[ "$(jq '[.nodes[] | select(.type=="PlanItem")] | length' <<<"$out")" -eq 3 ] \
+  || fail "plan_notes ok did not emit three PlanItem nodes (got: $out)"
+[ "$(jq -r '.nodes[] | select(.slug=="alpha") | .state' <<<"$out")" = "[x]" ] \
+  || fail "plan_notes ok alpha sentinel state (got: $out)"
+[ "$(jq -r '.nodes[] | select(.slug=="beta") | .pr' <<<"$out")" = "42" ] \
+  || fail "plan_notes ok beta pr: field (got: $out)"
+[ "$(jq -r '.nodes[] | select(.slug=="beta") | .pushed_sha' <<<"$out")" = "deadbeef1" ] \
+  || fail "plan_notes ok beta pushed_sha: field (got: $out)"
+[ "$(jq -c '[.edges[] | select(.type=="depends_on")] | length' <<<"$out")" = "1" ] \
+  || fail "plan_notes ok missing depends_on edge (got: $out)"
+case "$(jq -r '.edges[] | select(.type=="depends_on") | .to' <<<"$out")" in
+  *:alpha) ;;
+  *) fail "plan_notes ok depends_on edge does not target alpha (got: $out)" ;;
+esac
+[ "$(jq -c '[.edges[] | select(.type=="after")] | length' <<<"$out")" = "1" ] \
+  || fail "plan_notes ok missing after edge (got: $out)"
+echo "PASS: plan_notes source ok — PlanItem nodes, depends_on/after edges, pr/pushed_sha fields"
+
+# --- plan_notes: absent (no store) ---------------------------------------
+export KNOWLEDGE_STORE_ROOT="$TMP/ks-no-such-store"
+out="$(_sg_read_plan_notes "$BOARD")"
+[ "$(jq -r .status <<<"$out")" = "absent" ] || fail "plan_notes absent (missing store) status (got: $out)"
+echo "PASS: plan_notes source absent — the knowledge store does not exist"
+
+# --- plan_notes: absent (store exists, no note is approved/executing) ---
+export KNOWLEDGE_STORE_ROOT="$TMP/ks-draft-only"
+mkdir -p "$KNOWLEDGE_STORE_ROOT/Plans"
+cat > "$KNOWLEDGE_STORE_ROOT/Plans/2026-01-02 test - draft.md" <<'EOF'
+---
+status: draft
+---
+
+## Items
+
+- [ ] **X** `slug: x` — not live work yet
+EOF
+out="$(_sg_read_plan_notes "$BOARD")"
+[ "$(jq -r .status <<<"$out")" = "absent" ] || fail "plan_notes absent (no matching note) status (got: $out)"
+echo "PASS: plan_notes source absent — no note's status is approved/executing"
+
+# --- plan_notes: error (checkbox sentinel not in the ontology registry) -
+export KNOWLEDGE_STORE_ROOT="$TMP/ks-bad-sentinel"
+mkdir -p "$KNOWLEDGE_STORE_ROOT/Plans"
+{
+  printf -- '---\nstatus: approved\n---\n\n## Items\n\n'
+  # Built via printf, not a literal line — see the file header comment.
+  printf -- '- [%s] **Bad** `slug: bogus` — an unregistered sentinel\n' 'q'
+  printf -- '  - branch: `fix/bogus`\n  - size: S\n'
+} > "$KNOWLEDGE_STORE_ROOT/Plans/2026-01-03 test - bad.md"
+out="$(_sg_read_plan_notes "$BOARD")"
+[ "$(jq -r .status <<<"$out")" = "error" ] || fail "plan_notes error status (got: $out)"
+echo "PASS: plan_notes source error — checkbox sentinel not a state:plan-sentinel row"
+
+# =============================================================================
+# source: journal (Session nodes, step outcomes)
+# =============================================================================
+
+# --- journal: ok ----------------------------------------------------------
+export SPEND_TRANSCRIPT_ROOT="$TMP/tr-ok"
+mkdir -p "$SPEND_TRANSCRIPT_ROOT/proj1/11111111-1111-1111-1111-111111111111/subagents"
+cat > "$SPEND_TRANSCRIPT_ROOT/proj1/11111111-1111-1111-1111-111111111111/subagents/agent-w1.jsonl" <<'JSONL'
+{"type":"assistant","sessionId":"11111111-1111-1111-1111-111111111111"}
+{"sessionId":"11111111-1111-1111-1111-111111111111","step":"pr-open","outcome":"PR_OPENED"}
+JSONL
+out="$(_sg_read_journal "$BOARD")"
+[ "$(jq -r .status <<<"$out")" = "ok" ] || fail "journal ok status (got: $out)"
+[ "$(jq -r '.nodes[0].id' <<<"$out")" = "Session:11111111-1111-1111-1111-111111111111" ] \
+  || fail "journal ok Session node id (got: $out)"
+[ "$(jq -c '.nodes[0].steps' <<<"$out")" = '[{"step":"pr-open","outcome":"PR_OPENED"}]' ] \
+  || fail "journal ok step-outcome not recorded (got: $out)"
+echo "PASS: journal source ok — Session node + step outcome from an agent-*.jsonl transcript"
+
+# --- journal: absent (missing transcript root) -----------------------------
+export SPEND_TRANSCRIPT_ROOT="$TMP/tr-no-such-root"
+out="$(_sg_read_journal "$BOARD")"
+[ "$(jq -r .status <<<"$out")" = "absent" ] || fail "journal absent (missing root) status (got: $out)"
+echo "PASS: journal source absent — a missing transcript directory"
+
+# --- journal: absent (root exists, no matching files) ----------------------
+export SPEND_TRANSCRIPT_ROOT="$TMP/tr-empty"
+mkdir -p "$SPEND_TRANSCRIPT_ROOT"
+out="$(_sg_read_journal "$BOARD")"
+[ "$(jq -r .status <<<"$out")" = "absent" ] || fail "journal absent (no files) status (got: $out)"
+echo "PASS: journal source absent — transcript root exists but holds no agent-*.jsonl files"
+
+# --- journal: error (malformed JSON line) ----------------------------------
+export SPEND_TRANSCRIPT_ROOT="$TMP/tr-bad"
+mkdir -p "$SPEND_TRANSCRIPT_ROOT/proj1/22222222-2222-2222-2222-222222222222/subagents"
+printf 'not json at all\n' > "$SPEND_TRANSCRIPT_ROOT/proj1/22222222-2222-2222-2222-222222222222/subagents/agent-w2.jsonl"
+out="$(_sg_read_journal "$BOARD")"
+[ "$(jq -r .status <<<"$out")" = "error" ] || fail "journal error status (got: $out)"
+echo "PASS: journal source error — a malformed (non-JSON) journal line"
+
+# =============================================================================
+# source: tmux (Marker nodes, marked_by edges)
+# =============================================================================
+
+# --- tmux: absent (no tmux binary or no server) ----------------------------
+_sg_tmux() { return 1; }
+out="$(_sg_read_tmux "$BOARD")"
+[ "$(jq -r .status <<<"$out")" = "absent" ] || fail "tmux absent status (got: $out)"
+echo "PASS: tmux source absent — no tmux binary or no server (never 'no claims held')"
+
+# --- tmux: ok (reachable server, zero claims — must NOT read absent) ------
+_sg_tmux() {
+  case "$1" in
+    list-sessions) return 0 ;;
+    list-windows) printf '%s\t%s\n' '@1' '' ;;
+    *) return 3 ;;
+  esac
+}
+out="$(_sg_read_tmux "$BOARD")"
+[ "$(jq -r .status <<<"$out")" = "ok" ] || fail "tmux ok (zero claims) status (got: $out)"
+[ "$(jq '.nodes | length' <<<"$out")" -eq 0 ] || fail "tmux ok (zero claims) unexpectedly emitted a node (got: $out)"
+echo "PASS: tmux source ok — a reachable server with zero claims held is ok, not absent"
+
+# --- tmux: ok (a marked window) --------------------------------------------
+_sg_tmux() {
+  case "$1" in
+    list-sessions) return 0 ;;
+    list-windows) printf '%s\t%s\n' '@3' '#42 fix thing' ;;
+    *) return 3 ;;
+  esac
+}
+out="$(_sg_read_tmux "$BOARD")"
+[ "$(jq -r .status <<<"$out")" = "ok" ] || fail "tmux ok (marked window) status (got: $out)"
+[ "$(jq -r '.nodes[0].id' <<<"$out")" = "Marker:@3" ] || fail "tmux ok Marker node id (got: $out)"
+[ "$(jq -r '.edges[0].type' <<<"$out")" = "marked_by" ] || fail "tmux ok marked_by edge type (got: $out)"
+[ "$(jq -r '.edges[0].from' <<<"$out")" = "Issue:42" ] || fail "tmux ok marked_by edge source (got: $out)"
+[ "$(jq -r '.edges[0].to' <<<"$out")" = "Marker:@3" ] || fail "tmux ok marked_by edge target (got: $out)"
+echo "PASS: tmux source ok — Marker node + marked_by edge from a @claimed_issue window"
+
+# --- tmux: error (list-windows fails after list-sessions succeeded) -------
+_sg_tmux() {
+  case "$1" in
+    list-sessions) return 0 ;;
+    list-windows) return 9 ;;
+    *) return 3 ;;
+  esac
+}
+out="$(_sg_read_tmux "$BOARD")"
+[ "$(jq -r .status <<<"$out")" = "error" ] || fail "tmux error status (got: $out)"
+echo "PASS: tmux source error — list-windows failed on a reachable server"
+
+# =============================================================================
+# stale: the shared read-time transform (ADR 0033) also covers all three new
+# sources — _sg_read_snapshot overrides EVERY source's status uniformly, so
+# one full-snapshot build+age exercises plan_notes/journal/tmux the same way
+# test_state_graph.sh already does for the original four.
+# =============================================================================
+export CACHE_STORE_ROOT="$TMP/cache-stale"
+export BOARDS_CONF_REPO_LOCAL=/dev/null
+export BOARDS_CONF_MACHINE=/dev/null
+_board_gh() {
+  case "$1 $2" in
+    "issue list") echo '[]' ;;
+    "pr list") echo '[]' ;;
+    *) echo "test _board_gh: unhandled '$1 $2'" >&2; return 3 ;;
+  esac
+}
+_sg_git() { echo "worktree /home/x/dev/batch/foundation"; }
+export KNOWLEDGE_STORE_ROOT="$TMP/ks-ok"   # the plan_notes "ok" fixture above
+export SPEND_TRANSCRIPT_ROOT="$TMP/tr-ok"  # the journal "ok" fixture above
+_sg_tmux() {
+  case "$1" in
+    list-sessions) return 0 ;;
+    list-windows) printf '%s\t%s\n' '@3' '#42 fix thing' ;;
+    *) return 3 ;;
+  esac
+}
+
+fresh="$(_sg_build_snapshot "$BOARD")"
+_sg_persist_snapshot "$BOARD" "$fresh" "state-graph" || fail "persist for stale test failed"
+for src in plan_notes journal tmux; do
+  [ "$(jq -r --arg s "$src" '.sources[$s].status' <<<"$fresh")" = "ok" ] \
+    || fail "setup: $src expected ok at build time (got: $fresh)"
+done
+
+meta="$(cache_meta_file "$BOARD" state-graph)"
+old_ts=$(( $(date +%s) - STATE_GRAPH_MAX_AGE_S - 10 ))
+jq -c --argjson ts "$old_ts" '.last_refresh=$ts' "$meta" >"$meta.tmp" && mv "$meta.tmp" "$meta"
+stale_read="$(_sg_read_snapshot "$BOARD" state-graph)"
+for src in plan_notes journal tmux; do
+  [ "$(jq -r --arg s "$src" '.sources[$s].status' <<<"$stale_read")" = "stale" ] \
+    || fail "source $src did not read stale past STATE_GRAPH_MAX_AGE_S (got: $stale_read)"
+done
+echo "PASS: plan_notes source stale — a read past STATE_GRAPH_MAX_AGE_S"
+echo "PASS: journal source stale — a read past STATE_GRAPH_MAX_AGE_S"
+echo "PASS: tmux source stale — a read past STATE_GRAPH_MAX_AGE_S"
+
+echo "ALL PASS: test_state_graph_local.sh"
