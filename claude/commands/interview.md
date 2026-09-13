@@ -201,11 +201,17 @@ Run in parallel; the first two are fatal, the rest degrade legibly:
 5. **Create or adopt the note.** If the `--into` note (or the default)
    exists, adopt it (§ Parameters). Otherwise create `Context/<repo> -
    <topic>.md` with a minimal frontmatter (`tags: [context,
-   project/<repo>]`, `date`, `source_kind: claude-stamped`, and the
-   session/model provenance the kernel's note-provenance convention names
-   when the session id is in context) and the empty `## Shared
-   understanding` skeleton per `claude/design-schema.md` § Shared
-   understanding, with `### Deferrals` reading `(none yet)`. **State the
+   project/<repo>]`, `date`, `source_kind: claude-stamped`,
+   **`record_grammar: delta`**, and the session/model provenance the
+   kernel's note-provenance convention names when the session id is in
+   context) and the empty `## Shared understanding` skeleton per
+   `claude/design-schema.md` § Shared understanding, with `### Deferrals`
+   reading `(none yet)`. Every note this command creates carries the
+   `record_grammar: delta` stamp, because Step 2.6 writes `interview`-kind
+   stop lines into it every round and `claude/design-schema.md` § Record
+   completeness names a record carrying `interview`/`delta` lines with no
+   stamp a defect — the stamp is written once, here, at creation, by the
+   command that created the note, and never edited afterward. **State the
    single-tenant caveat once, here, at this first write, and never again <!-- cite: I.9 class:cross-project-note-collision -->
    at later writes:** the store is one flat corpus per `$HOME`
    (`docs/features/knowledge-store.md` § Limitations) — the default name
