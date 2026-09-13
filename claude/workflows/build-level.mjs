@@ -917,6 +917,36 @@ const PRINCIPLES_SUMMARIES =
     : {};
 const PRINCIPLES_DEFAULT_REPO = input.principlesDefaultRepo || '';
 
+// REVIEWER_ROUTING_TSV — temperloop#1982, the STRUCTURAL close on the relay
+// defect temperloop#1976/#1995 only mitigated. `workflows/scripts/config/
+// reviewer-routing.tsv` is a STATIC repo file: its content is identical on
+// every run and depends on nothing the worktree computes, so routing it
+// through the machinery-executor agent's verbatim-echo contract was never
+// necessary — only the CHANGED-FILE list genuinely has to come from the
+// worktree. Relaying it anyway put a multi-line tab-delimited table in front
+// of an LLM asked to reproduce it byte-for-byte, and it was mangled in three
+// distinct ways across eight observed occurrences: silently omitted; replaced
+// by an English sentence *describing* the table; and (2026-09-13) returned
+// DOUBLE-JSON-ENCODED — surrounding quotes plus literal two-character \t/\n
+// sequences instead of real tabs and newlines, which parses as one row rather
+// than eleven. Note what survived every one of those: `tsv_rows` and
+// `tsv_checksum`, both small integers, were correct in all three shapes. The
+// string field is the unreliable part, not the step.
+//
+// So this rides the SAME Step-0-hand-off seam as principlesSummaries above
+// (DESIGN NOTE 1 — the Workflow runtime has no filesystem access, the
+// orchestrator does): the orchestrator reads the file ONCE and hands the text
+// through as `input.reviewerRoutingTsv`. When present it is authoritative and
+// the agent's copy is never consulted, removing the agent from this data's
+// path entirely rather than adding a fourth guard behind it. Absent (an older
+// orchestrator, or a consuming-repo caller that has not wired the hand-off)
+// the previous relay + retry + row/checksum-gap path stands unchanged, so
+// this is additive and cannot regress an un-migrated caller.
+const REVIEWER_ROUTING_TSV =
+  typeof input.reviewerRoutingTsv === 'string' && input.reviewerRoutingTsv.trim()
+    ? input.reviewerRoutingTsv
+    : '';
+
 // PRINCIPLES_KERNEL_FALLBACK — last-resort degradation, used ONLY when the
 // orchestrator supplied no `principlesSummaries` at all this run (an older
 // orchestrator, or a consuming-repo caller that has not wired the hand-off —
@@ -3083,7 +3113,7 @@ async function runReviewers(item, wt) {
   // re-run the SAME diff-fetch command once before treating it as a genuine
   // failure, so determineReviewers() is never called with an empty table for
   // a worktree that actually ships a real one.
-  if (reviewDiffTsvGap(diffOut, files)) {
+  if (!REVIEWER_ROUTING_TSV && reviewDiffTsvGap(diffOut, files)) {
     diffOut = await fetchReviewDiff(stagePhase(STAGE_REVIEW));
     if (machineryDenied(diffOut)) {
       return { escalation: await deniedOrQuota(item.slug, { step: 'review-diff', out: diffOut }, wt) };
@@ -3099,7 +3129,10 @@ async function runReviewers(item, wt) {
       return { escalation: escalate(item.slug, 'review-diff-error', gap) };
     }
   }
-  const tsvText = typeof diffOut.tsv === 'string' ? diffOut.tsv : '';
+  // The orchestrator-supplied table wins outright when present (#1982);
+  // `diffOut.tsv` is the legacy relay path, kept for an un-migrated caller.
+  const tsvText = REVIEWER_ROUTING_TSV
+    || (typeof diffOut.tsv === 'string' ? diffOut.tsv : '');
   const routes = determineReviewers(item, files, tsvText);
   if (routes.length === 0) {
     return { summary: '', notes: '', sections: [], blocking: [], ran: [], skipped: [] };
