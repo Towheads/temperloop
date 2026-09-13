@@ -648,9 +648,11 @@ Every external call has a named failure path; none is silent:
   names a ref via `Other`, or the facilitator files it — board `capture`
   for a gap, a `Decisions/`/`Context/` note for a design seam — and the
   `### Deferrals` bullet is write-ahead persisted the moment the ref is
-  in hand, ahead of the round's rewrite, so a crash cannot re-file it;
-  if that write itself exhausts its retries the stop line names the
-  minted ref and § Resume asks for it rather than re-filing. An `Other`
+  in hand, ahead of the round's rewrite, so a crash **after it** cannot
+  re-file it (2.6 names the one window that stays open, and why it is
+  accepted rather than closed); if that write itself exhausts its retries
+  the stop line names the minted ref and § Resume asks for it rather than
+  re-filing. An `Other`
   ref that also fails to resolve is not accepted — the facilitator files
   it, stated once, never a second ask. A bare "later" is never persisted.
   **`capture` unavailable** (no board, `gh` down) **or `capture` fails
