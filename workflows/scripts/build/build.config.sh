@@ -1051,7 +1051,17 @@ fi
 # net +1; no subtraction pass ran, one bullet already being the minimum this
 # mirror can cost. Reseeded to build.md's measured size, zero headroom, same
 # convention as every raise since temperloop#956.
-: "${PROSE_BUDGET_TIER2_FILE_CAP:=1183}"
+#
+# RAISED 1183 -> 1186 (2026-09-12, temperloop#1910 L6 "state-graph-queries"):
+# Step 0.5 grew the state-graph cross-check call (one prose sentence + the
+# build/query resume call line) and Step 6's summary grew the matching
+# per-source tally bullet — the item's own acceptance bar asks for exactly
+# this call line plus one sentence, nothing more. Measured net +3 (the new
+# Step 0.5 paragraph's blank-line separator + sentence-and-call line, plus
+# the one Step 6 bullet); no subtraction pass ran, three lines already being
+# the minimum this wiring can cost. Reseeded to build.md's measured size,
+# zero headroom, same convention as every raise since temperloop#956.
+: "${PROSE_BUDGET_TIER2_FILE_CAP:=1186}"
 
 # ── Pipeline spend profiler (temperloop#958) ───────────────────────────────
 # Settings for `workflows/scripts/pipeline-spend-report.sh` and its

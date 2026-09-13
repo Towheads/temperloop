@@ -40,6 +40,61 @@
 #   state-graph.sh build --board <N>            build + persist + print
 #   state-graph.sh clean --board <N>             remove ONE repo's snapshot
 #   state-graph.sh bench --scale <N> --board <N>  synthetic N-scale timing run
+#   state-graph.sh query <name> --board <N>      read a query over the snapshot
+#
+# QUERY (temperloop#1910 L6, this item): five named, PURE functions of a
+# snapshot JSON blob — `_sg_query_*` — reused verbatim by `cmd_query` (reads
+# the persisted snapshot via `_sg_read_snapshot`, building a fresh one only
+# when none is persisted yet) and by test_state_graph_queries.sh (feeds a
+# synthetic snapshot literal directly — no board/gh/git mocking needed for
+# these tests, unlike the seven readers above). Every query answers the
+# LITERAL STRING `"unknown"` for a part that depends on a source currently
+# `error` or `stale` — never a bare empty array standing in for "nothing
+# found" when the truth is "couldn't tell" (ADR 0033's own status typing,
+# extended from per-source to per-query-part). `absent` is NOT degraded —
+# it is source.sh's own "legitimately nothing here" signal, so a query
+# answers its ordinary empty-but-real result for it.
+#
+#   status-drift       Issue nodes whose `fnd:status:*` and `claimed_by`
+#                       edge disagree (board source only).
+#   stale-claims        `claimed_by` edges naming a Session absent from the
+#                       journal source (board + journal).
+#   unlinked-prs        open PR nodes with no `closes` edge (pr_list only).
+#   orphan-worktrees     Worktree nodes with no live (`[~]`/`[m]`/`[>]`)
+#                       PlanItem of the same slug (worktrees + plan_notes).
+#   resume              per-PlanItem resume verdict — see below.
+#
+# RESUME implements Step 0.5's authority ordering (claude/commands/build.md
+# § Step 0.5 item 4) as a RANKED MERGE, highest tier first, each decisive
+# tier short-circuiting every lower one:
+#
+#   1 plan     the PlanItem's own sentinel + `pr:`/`pushed_sha:` sub-fields
+#              (the plan-note store itself — the authority table's own tier
+#              1 groups these together). A TERMINAL sentinel (`[x]`/`[-]`/
+#              `[v]`) decides `already-done` and can NEVER be reversed by a
+#              lower tier — the authority table's own load-bearing
+#              invariant. A non-terminal sentinel carrying `pr:` decides
+#              `adopt` (there is a recorded PR to reattach to).
+#   2 journal  a Session step-outcome tagged with this item's `slug` (an
+#              optional passthrough field on the journal source's step
+#              records — see `_sg_read_journal`) decides `adopt`
+#              (`PR_OPENED`) or `fresh` (`PUSHED`, no PR yet).
+#   3 git      a linked Worktree whose path's slug matches decides `fresh`
+#              (work is in flight, no PR/journal evidence yet).
+#   4 board    the fallback default `fresh` — gated, not positive: this
+#              tier has no PlanItem->Issue join key in the current schema,
+#              so it contributes no per-item fact, only a GATE on the
+#              tier-4 default (see below).
+#
+# A tier's source being `error`/`stale` at the point it would be consulted
+# answers that item's route `probe-failed` (the route alphabet's own "a
+# read failed for a non-404 reason" token — the alphabet-compliant stand-in
+# for "unknown" here, since resume's routes are drawn from
+# workflows/scripts/config/ontology-registry.tsv's `state:route` axis, the
+# SAME alphabet issue-state.sh's `resolve` emits — never a bare "unknown"
+# string that would break that contract). `absent` at a tier that was never
+# actually needed to decide (e.g. board is absent but tier 1 already
+# decided) never taints the item.
 #
 # Two overridable command seams, mirroring board.sh's own `_board_gh`
 # (sourced below and reused as-is for the board/board_edges/pr_list sources —
@@ -80,7 +135,14 @@ source "$_SG_HERE/../lib/knowledge_store.sh"
 ONTOLOGY_REGISTRY_FILE="${ONTOLOGY_REGISTRY_FILE:-$_SG_HERE/../config/ontology-registry.tsv}"
 
 usage() {
-  echo "usage: state-graph.sh build --board <N> | clean --board <N> | bench --scale <N> --board <N>" >&2
+  cat >&2 <<'USAGE'
+usage: state-graph.sh build --board <N>
+       state-graph.sh clean --board <N>
+       state-graph.sh bench --scale <N> --board <N>
+       state-graph.sh query <name> --board <N>
+                (name: status-drift | stale-claims | unlinked-prs |
+                       orphan-worktrees | resume)
+USAGE
 }
 
 # --- overridable command seams ---------------------------------------------
@@ -507,7 +569,13 @@ _sg_read_journal() {
         continue
       fi
       sid="$(_sg_normalize_session_id "$sid")"
-      outcome="$(jq -c '{step:.step, outcome:.outcome}' <<<"$line")"
+      # `slug` is an OPTIONAL passthrough (present only when the producing
+      # line already carries one) — never a required field, and its absence
+      # changes nothing about this object's shape (see the `resume` query
+      # header comment above, tier 2). Kept additive so the exact-equality
+      # assertion in test_state_graph_local.sh (a line with no `slug`) still
+      # gets back exactly `{"step":...,"outcome":...}`, byte for byte.
+      outcome="$(jq -c '{step:.step, outcome:.outcome} + (if ((.slug // "") | tostring) != "" then {slug: .slug} else {} end)' <<<"$line")"
       by_sid="$(jq -c --arg sid "$sid" --argjson step "$outcome" \
         '.[$sid] = ((.[$sid] // []) + [$step])' <<<"$by_sid")"
     done < "$f"
@@ -667,6 +735,198 @@ _sg_read_snapshot() {
   fi
 }
 
+# --- queries (temperloop#1910 L6) -------------------------------------------
+# Each `_sg_query_*` is a PURE function of a snapshot JSON string — no board/
+# gh/git access of its own — so tests feed a synthetic snapshot literal
+# directly. See the header comment above for what each answers and the
+# absent-vs-degraded convention every one of them follows.
+
+# _sg_source_status <snapshot> <source-name> -> that source's recorded status
+# ("ok"/"absent"/"error"/"stale"), or "absent" if the source key is missing
+# entirely (a snapshot built before a source existed, or a hand-written test
+# fixture that omits an irrelevant source) — never a jq null propagating into
+# a case statement.
+_sg_source_status() {
+  jq -r --arg s "$2" '.sources[$s].status // "absent"' <<<"$1"
+}
+
+# _sg_degraded <status> -> 0 (true) iff error/stale — the shared "can't tell,
+# never silently answer empty" predicate every query below applies to the
+# source(s) it depends on.
+_sg_degraded() {
+  case "$1" in
+    error | stale) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+_sg_query_status_drift() {
+  local snap="$1" st
+  st="$(_sg_source_status "$snap" board)"
+  if _sg_degraded "$st"; then
+    jq -cn --arg st "$st" '{query:"status-drift", status:"unknown", reason:("board source is "+$st), findings:"unknown"}'
+    return 0
+  fi
+  jq -c '
+    (.nodes | map(select(.type=="Issue"))) as $issues
+    | (.edges | map(select(.type=="claimed_by")) | map(.from)) as $claimed
+    | {
+        query: "status-drift",
+        status: "ok",
+        findings: (
+          [ $issues[] | .id as $iid | select(.status == "fnd:status:in-progress" and (($claimed | index($iid)) == null))
+            | {id:$iid, kind:"in_progress_no_claim"} ]
+          + [ $issues[] | .id as $iid | select(.status != "fnd:status:in-progress" and (($claimed | index($iid)) != null))
+              | {id:$iid, kind:"claimed_not_in_progress"} ]
+        )
+      }' <<<"$snap"
+}
+
+_sg_query_stale_claims() {
+  local snap="$1" bst jst
+  bst="$(_sg_source_status "$snap" board)"
+  jst="$(_sg_source_status "$snap" journal)"
+  if _sg_degraded "$bst"; then
+    jq -cn --arg st "$bst" '{query:"stale-claims", status:"unknown", reason:("board source is "+$st), findings:"unknown"}'
+    return 0
+  fi
+  if _sg_degraded "$jst"; then
+    jq -cn --arg st "$jst" '{query:"stale-claims", status:"unknown", reason:("journal source is "+$st), findings:"unknown"}'
+    return 0
+  fi
+  jq -c '
+    (.edges | map(select(.type=="claimed_by"))) as $claims
+    | (.nodes | map(select(.type=="Session")) | map(.id)) as $sessions
+    | { query:"stale-claims", status:"ok",
+        findings: [ $claims[] | .to as $sid | select(($sessions | index($sid)) == null) | {issue:.from, session:$sid} ] }
+  ' <<<"$snap"
+}
+
+_sg_query_unlinked_prs() {
+  local snap="$1" st
+  st="$(_sg_source_status "$snap" pr_list)"
+  if _sg_degraded "$st"; then
+    jq -cn --arg st "$st" '{query:"unlinked-prs", status:"unknown", reason:("pr_list source is "+$st), findings:"unknown"}'
+    return 0
+  fi
+  jq -c '
+    (.nodes | map(select(.type=="PR"))) as $prs
+    | (.edges | map(select(.type=="closes")) | map(.from)) as $closing
+    | { query:"unlinked-prs", status:"ok",
+        findings: [ $prs[] | .id as $pid | select(($closing | index($pid)) == null) | {id:$pid, number:.number} ] }
+  ' <<<"$snap"
+}
+
+_sg_query_orphan_worktrees() {
+  local snap="$1" wst pst
+  wst="$(_sg_source_status "$snap" worktrees)"
+  pst="$(_sg_source_status "$snap" plan_notes)"
+  if _sg_degraded "$wst"; then
+    jq -cn --arg st "$wst" '{query:"orphan-worktrees", status:"unknown", reason:("worktrees source is "+$st), findings:"unknown"}'
+    return 0
+  fi
+  if _sg_degraded "$pst"; then
+    jq -cn --arg st "$pst" '{query:"orphan-worktrees", status:"unknown", reason:("plan_notes source is "+$st), findings:"unknown"}'
+    return 0
+  fi
+  jq -c '
+    (.nodes | map(select(.type=="Worktree"))) as $wts
+    | (.nodes | map(select(.type=="PlanItem" and (.state=="[~]" or .state=="[m]" or .state=="[>]"))) | map(.slug)) as $live_slugs
+    | { query:"orphan-worktrees", status:"ok",
+        findings: [ $wts[] | (.path | split("/") | last) as $slug
+                    | select(($live_slugs | index($slug)) == null)
+                    | {id:.id, path:.path, slug:$slug} ] }
+  ' <<<"$snap"
+}
+
+# resume: see the header comment's "RESUME implements..." section for the
+# tier walk this jq program encodes 1:1. `route` is ALWAYS one of the
+# ontology registry's `state:route` tokens (never a bare "unknown" — see
+# that header comment for why); `authority` names which tier decided.
+_sg_query_resume() {
+  local snap="$1" jst wst bst
+  jst="$(_sg_source_status "$snap" journal)"
+  wst="$(_sg_source_status "$snap" worktrees)"
+  bst="$(_sg_source_status "$snap" board)"
+  jq -c --arg jst "$jst" --arg wst "$wst" --arg bst "$bst" '
+    def degraded($s): ($s == "error" or $s == "stale");
+    (.nodes | map(select(.type=="Session"))) as $sessions
+    | (.nodes | map(select(.type=="Worktree")) | map(.path | split("/") | last)) as $wt_slugs
+    | (.nodes | map(select(.type=="PlanItem"))) as $items
+    | {
+        query: "resume",
+        status: "ok",
+        items: [ $items[] | . as $it |
+          ($it.state) as $s
+          | (($it.pr // "") | tostring) as $pr
+          | (
+              if ($s == "[x]" or $s == "[-]" or $s == "[v]") then
+                {id:$it.id, slug:$it.slug, route:"already-done", authority:"plan"}
+              elif ($pr != "") then
+                {id:$it.id, slug:$it.slug, route:"adopt", authority:"plan"}
+              elif degraded($jst) then
+                {id:$it.id, slug:$it.slug, route:"probe-failed", authority:"journal"}
+              else
+                ( [ $sessions[] | (.steps // [])[] | select((.slug // "") == $it.slug) ] ) as $matches
+                | if ($matches | length) > 0 then
+                    (if ($matches | map(.outcome) | index("PR_OPENED")) != null then
+                       {id:$it.id, slug:$it.slug, route:"adopt", authority:"journal"}
+                     else
+                       {id:$it.id, slug:$it.slug, route:"fresh", authority:"journal"}
+                     end)
+                  elif degraded($wst) then
+                    {id:$it.id, slug:$it.slug, route:"probe-failed", authority:"git"}
+                  elif ($wt_slugs | index($it.slug)) != null then
+                    {id:$it.id, slug:$it.slug, route:"fresh", authority:"git"}
+                  elif degraded($bst) then
+                    {id:$it.id, slug:$it.slug, route:"probe-failed", authority:"board"}
+                  else
+                    {id:$it.id, slug:$it.slug, route:"fresh", authority:"board"}
+                  end
+              end
+            )
+        ]
+      }
+  ' <<<"$snap"
+}
+
+cmd_query() {
+  local name="" board=""
+  if [ $# -eq 0 ]; then
+    echo "state-graph.sh: query requires <name> --board <N>" >&2
+    usage
+    exit 2
+  fi
+  name="$1"; shift
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --board) board="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+      *) echo "state-graph.sh: query: unknown arg '$1'" >&2; usage; exit 2 ;;
+    esac
+  done
+  [ -n "$board" ] || { echo "state-graph.sh: query requires --board <N>" >&2; usage; exit 2; }
+  case "$name" in
+    status-drift | stale-claims | unlinked-prs | orphan-worktrees | resume) ;;
+    *)
+      echo "state-graph.sh: query: unknown query '$name' (expected status-drift|stale-claims|unlinked-prs|orphan-worktrees|resume)" >&2
+      usage
+      exit 2
+      ;;
+  esac
+
+  local snapshot
+  if ! snapshot="$(_sg_read_snapshot "$board" 2>/dev/null)"; then
+    snapshot="$(_sg_build_snapshot "$board")"
+  fi
+  case "$name" in
+    status-drift) _sg_query_status_drift "$snapshot" ;;
+    stale-claims) _sg_query_stale_claims "$snapshot" ;;
+    unlinked-prs) _sg_query_unlinked_prs "$snapshot" ;;
+    orphan-worktrees) _sg_query_orphan_worktrees "$snapshot" ;;
+    resume) _sg_query_resume "$snapshot" ;;
+  esac
+}
+
 # --- commands ----------------------------------------------------------------
 cmd_build() {
   local board=""
@@ -759,6 +1019,7 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
     build) cmd_build "$@" ;;
     clean) cmd_clean "$@" ;;
     bench) cmd_bench "$@" ;;
+    query) cmd_query "$@" ;;
     -h|--help) usage; exit 0 ;;
     *)
       echo "state-graph.sh: unknown subcommand '$cmd'" >&2

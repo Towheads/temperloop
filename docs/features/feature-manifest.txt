@@ -113,6 +113,13 @@ build-machinery claude/plan-schema.md
 build-machinery claude/workflows/build-level.mjs
 build-machinery workflows/scripts/build/*
 build-machinery workflows/scripts/validate-activation-registry.sh
+# validate-state-graph-call.sh + its own test (temperloop#1910 L6): the
+# presence-lint for /build Step 0.5's state-graph resume cross-check call.
+# Neither lives under workflows/scripts/build/* (that glob already claims
+# state-graph.sh itself and its query tests), so each needs its own
+# explicit line, same convention as validate-activation-registry.sh above.
+build-machinery workflows/scripts/validate-state-graph-call.sh
+build-machinery workflows/scripts/tests/test_state_graph_call.sh
 build-machinery workflows/scripts/tests/test_plan_approval_drain.sh
 # graph.sh (L0-a, epic #1910 "graph of record"): the shared graph-traversal
 # library plan.sh's toposort, cycle-check.sh (board-adapter), and

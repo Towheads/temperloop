@@ -407,6 +407,35 @@ else
   ok "reattach with missing args exits non-zero"
 fi
 
+# ── shared route-alphabet fixture consumption (temperloop#1910 L6) ─────────
+# The ONE enum, ONE drift check the state-graph-queries item ships:
+# workflows/scripts/build/tests/fixtures/state-graph-routes.json (consumed by
+# test_state_graph_queries.sh's `resume` query tests too) must equal
+# `resolve`'s own published route enum — the SAME set check-ontology-
+# registry.sh already reconciles against workflows/scripts/config/ontology-
+# registry.tsv's `state:route` axis, so this is a second, independent read of
+# that same contract rather than a new one.
+echo "--- shared route-alphabet fixture (temperloop#1910 L6) ---"
+ROUTES_FIXTURE="$HERE/fixtures/state-graph-routes.json"
+if [ ! -f "$ROUTES_FIXTURE" ]; then
+  bad "routes.fixture.present" "shared route fixture missing: $ROUTES_FIXTURE"
+else
+  FIXTURE_ROUTES="$(jq -c '.routes | sort' "$ROUTES_FIXTURE")"
+  # Same extraction workflows/scripts/config/ontology-registry.tsv's own doc
+  # comment says check-ontology-registry.sh performs: the usage block's
+  # `"route": "a|b|...|z"` line, split on `|`.
+  RESOLVER_ROUTES="$(tr '\n' ' ' <"$CLI" | grep -oE '"route": "[^"]*"' | head -1 \
+    | sed -E 's/^"route": "//; s/"$//' | tr '|' '\n' | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' \
+    | grep -v '^$' | jq -Rsc 'split("\n") | map(select(length>0)) | sort')"
+  if [ -z "$RESOLVER_ROUTES" ] || [ "$RESOLVER_ROUTES" = "[]" ]; then
+    bad "routes.fixture.resolver" "could not extract a route enum from $CLI's usage text"
+  elif [ "$FIXTURE_ROUTES" = "$RESOLVER_ROUTES" ]; then
+    ok "shared route fixture equals resolve's published route enum"
+  else
+    bad "routes.fixture.equal" "fixture ($FIXTURE_ROUTES) != resolve's enum ($RESOLVER_ROUTES)"
+  fi
+fi
+
 # ── summary ────────────────────────────────────────────────────────────────
 echo
 echo "issue-state resolve tests: $pass passed, $fail failed"

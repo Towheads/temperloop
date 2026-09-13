@@ -1,0 +1,14 @@
+{
+  "_comment": "state-graph-routes.json — the ONE shared contract fixture for the route alphabet (temperloop#1910 L6). Sourced from workflows/scripts/config/ontology-registry.tsv's `state:route` axis (col 2, alphabet 4 of 4) — the SAME alphabet issue-state.sh's `resolve` emits (checked for set-equality against issue-state.sh's own usage text by workflows/scripts/config/check-ontology-registry.sh). This file is consumed by BOTH test_state_graph_queries.sh (state-graph.sh query resume's per-item `route` field must be drawn from this set) and issue-state.sh's own test suite (test_issue_state_resolve.sh asserts this set equals resolve's published route enum) — one enum, one drift check, per the acceptance bullet this item ships. Both consumers re-derive the registry's own token set at test time and assert it EQUALS the `routes` array below (never just trust this file blindly) — so an edit to the registry's state:route rows with no matching edit here fails loudly in both suites, and an edit here with no matching registry row does too. Sorted alphabetically for a stable diff. Regenerate with: awk -F'\\t' '$1==\"state:route\" && $2!=\"\" {print $2}' workflows/scripts/config/ontology-registry.tsv | jq -Rsc 'split(\"\\n\") | map(select(length>0)) | sort'",
+  "routes": [
+    "adopt",
+    "already-done",
+    "ambiguous",
+    "claimed-elsewhere",
+    "fresh",
+    "not-an-issue",
+    "not-found",
+    "probe-failed",
+    "question-first"
+  ]
+}
