@@ -1136,6 +1136,27 @@ fi
 # the same idiom capture.sh's self-healing `fnd:` labels use, so no third repo needs a
 # manual onboarding step here at all.
 
+# ── State graph (temperloop#1910, epic "graph of record", ADR 0033) ────────
+# workflows/scripts/build/state-graph.sh derives one typed nodes+edges
+# snapshot per repo from the board, open PRs, and worktrees (later: plan
+# notes, the workflow journal, tmux markers), stored through the namespaced
+# board cache library (lib/cache.sh, kind=state-graph). Both settings are
+# named symbolically everywhere outside this file — never re-valued in prose
+# (§ Named-setting convention) — including in state-graph.sh's own comments,
+# the ontology registry, and ADR 0033.
+#
+# Age past which a `read` of the on-disk snapshot (a query, or state-graph.sh's
+# own internal read helper) reports every source `stale` rather than the
+# status recorded at build time, so a consumer never silently acts on data
+# this run has already outgrown (ADR 0033). `build` itself always performs a
+# fresh live fetch and is therefore never stale at the moment it writes.
+: "${STATE_GRAPH_MAX_AGE_S:=300}"
+# Wall-clock threshold, in milliseconds, past which `state-graph.sh query
+# <name>` (a later item) or `bench` flags a run as slow — the measured
+# trigger for the eventual JSON-snapshot-to-SQLite migration ADR 0033 names
+# as a follow-on, never a design-time judgment call.
+: "${STATE_GRAPH_QUERY_SLOW_MS:=500}"
+
 # ── Comparison-statistics library (temperloop#1249, epic #1225 "model
 #    comparison harness") ───────────────────────────────────────────────────
 # workflows/scripts/model-comparison/stats.sh: bootstrap confidence intervals,
@@ -1547,6 +1568,7 @@ export BUILD_QUOTA_PAUSE_PCT BUILD_QUOTA_CACHE BUILD_QUOTA_WAIT_BUFFER \
        BUILD_HEADLESS_POLL_TIMEOUT \
        BUILD_MERGE_BACKEND BUILD_COMBINED_TREE_PRECHECK BUILD_MERGE_AS_YOU_GO \
        PIPELINE_DRIVE_CONCURRENCY EPIC_MIN_SUBUNITS DISPLAY_TZ \
+       STATE_GRAPH_MAX_AGE_S STATE_GRAPH_QUERY_SLOW_MS \
        ASSESS_POLL_FIRST_WAKE ASSESS_POLL_CADENCE ASSESS_POLL_BUDGET \
        TRIAGE_INTAKE_EXCLUDE_LABELS \
        NEXT_SEQ_STALE_AFTER TIDY_SYNC_WAIT TIDY_LOCK_STALE_AFTER CHECKIN_PRUNE_DAYS \
