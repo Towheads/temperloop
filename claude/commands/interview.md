@@ -75,10 +75,13 @@ so a renamed flag desyncs them with no runtime error to catch it.
 - **`--check-questions <block>`** — up to **three** caller questions
   appended to the understanding-check call (Step 3) after the interview's
   own question, so the whole check stays one call of at most four. Each is
-  a fully formed question in the same shape. Their answers are recorded in
-  the call's working-notes entry and returned to the caller verbatim; the
-  caller decides what they mean (the pending `/workshop` caller is
-  designed to use them for the review tier).
+  a fully formed question in the same shape. Their answers are recorded
+  verbatim in the check call's working-notes entry — the `answer:` field
+  of each question line (§ Output), their only durable record, since a
+  check question produces no `D<n>` bullet — and returned to the caller;
+  the caller decides what they mean (the pending `/workshop` caller is
+  designed to use them for the review tier) and, after a crash, reads
+  them back from that entry rather than from a return that never arrived.
 
 Absent parameters take their defaults; a parameter this spec does not name
 is an error to surface, not to guess at.
@@ -183,6 +186,10 @@ Run in parallel; the first two are fatal, the rest degrade legibly:
    empty body from `gh issue view` (a mistyped number, a deleted issue, a
    repo the token cannot see) exactly like an unavailable `gh`: ask the
    operator to paste the issue text, never proceed on the number alone.
+   A pointer note that does not resolve (`Read` fails, or the path names
+   nothing in the store) is handled the same way: ask the operator for the
+   right path or the topic in their own words — never proceed on a path
+   alone, and never guess a nearby note.
    Read the project's instruction files
    (`CLAUDE.md`, `AGENTS.md` where present) for terminology, so questions
    use the repo's own names for things.
@@ -217,8 +224,14 @@ Run in parallel; the first two are fatal, the rest degrade legibly:
    `record_grammar: delta` stamp, because Step 2.6 writes `interview`-kind
    stop lines into it every round and `claude/design-schema.md` § Record
    completeness names a record carrying `interview`/`delta` lines with no
-   stamp a defect — the stamp is written once, here, at creation, by the
-   command that created the note, and never edited afterward. **State the
+   stamp a defect — the stamp is written once, at the note's first
+   interview write, and never edited afterward. For a note created here,
+   that write is this creation; for an **adopted** note whose frontmatter
+   lacks the field (a pre-existing `Context/` note, a caller-created note
+   the caller forgot to stamp), the adoption write adds `record_grammar:
+   delta` — the grammar enters the note with the interview, so the stamp
+   enters with it; an adopted note that already carries the field is left
+   as it is. **State the
    single-tenant caveat once, here, at this first write, and never again <!-- cite: I.9 class:cross-project-note-collision -->
    at later writes:** the store is one flat corpus per `$HOME`
    (`docs/features/knowledge-store.md` § Limitations) — the default name
@@ -253,6 +266,18 @@ restarts or renumbers.
    found land in `### Facts found (facilitator, not asked)` at the round's
    persist. With no subagent available, do the lookup inline at the
    session tier and say so once — the fact is still found, not asked.
+   **A probe that errors, throws, or never returns is the same case, one
+   step later:** a probe result is waited for at most **one retry** — no
+   probe-wait setting exists in `build.config.sh`, so the bound is stated
+   here as a count, not a duration — i.e. a probe that errors or has not
+   returned by the time every non-dependent question in the round is
+   answered is dispatched once more with the same prompt; if that second
+   dispatch also errors or does not return, do the lookup inline at the
+   session tier, say so on one line naming the fact, and only then compose
+   the dependent question. A dependent question never waits past the
+   retry, is never dropped from the frontier, and is never asked as if the
+   fact were known (the "nothing usable" row in § Failure modes covers the
+   probe that returns but finds nothing).
 3. **Compose the questions.** One `AskUserQuestion` question per frontier
    decision, at most four per call, each carrying inside its own block:
    - the decision in plain terms and why it matters now;
@@ -291,8 +316,27 @@ restarts or renumbers.
      the supersession inline (`D4 … — superseded by D11`);
    - any new facts under `### Facts found (facilitator, not asked)`;
    - any deferral the operator chose (`Other: "later"` on a decision, or
-     an option that explicitly defers) under `### Deferrals`, each with
-     the tracking ref it names — `(none yet)` stays until the first one;
+     an option that explicitly defers) under `### Deferrals`, each as
+     `deferred → <ref>` with the tracking ref it names — `(none yet)`
+     stays until the first one. **A bare "later" is never persisted.**
+     `claude/design-schema.md` § Shared understanding requires every
+     deferral bullet to name a ref, and a standalone `Context/` note has
+     no validator over it (§ Output), so this step is the only place the
+     requirement is met. When the deferring answer names no ref, or names
+     one that does not resolve to an open tracking item (`gh issue view`
+     / a `Read` of the named note fails), ask once, in the same turn and
+     before this persist, as one more call of the round (2.4 pending
+     line, 2.5): *"What should track this deferral?"* with options `File
+     it for me (Recommended)` and `Other` for an existing ref. `File it`
+     routes by the kernel's defect-vs-enhancement split
+     (`claude/CLAUDE.kernel.md` § Task workflow): a gap that should
+     already exist goes to the board via the adapter's `capture` and the
+     ref is the issue number it returns; a deferred design seam goes to a
+     `Decisions/` or `Context/` note written now, under the same
+     read-back policy as every note write here, and the ref is that
+     note's wikilink. When `capture` is unavailable (no board for this
+     repo, `gh` down), fall through to the note form and say so; the
+     bullet is written only once a ref is in hand;
    - any risk the answers surfaced under `### Risks` as `R<n>`, premortem-
      framed with its kill condition inline;
    - the round's `### Interview record` line: `round N: D<a>–D<b>
@@ -310,9 +354,17 @@ restarts or renumbers.
      § Challenge record);
    - the call entries replacing the `round N pending:` line under
      `### Interview calls` (§ Output).
-   Then **read the note back** and confirm the round's `D<n>` lines and
-   call entries are present, under the retry-once policy in § Operating
-   principles.
+   Then **read the note back** and confirm every slice this write
+   carried is present — the round's `D<n>` lines, its call entries, its
+   `interview`-kind stop line(s) under `### Challenge record`, and, on
+   the round that wrote the record's first stop line, the
+   `challenge-record-start:` marker — under the retry-once policy in
+   § Operating principles. The stop lines are checked by name because
+   they are the one slice a validator reads (a `Designs/` brief) or
+   nothing reads (a `Context/` note): a write that landed the decisions
+   but dropped the record would otherwise pass as persisted, and
+   `claude/design-schema.md` § Challenge record names a marker with no
+   stop lines behind it a defect.
 7. **Recompute and continue.** Answers settle prerequisites and may add
    nodes (an `Other` answer often opens a decision the tree did not have).
    Recompute the frontier; if it is non-empty, round `N+1` opens **in this
@@ -331,12 +383,21 @@ restarts or renumbers.
    questions (at most three) follow in the same call; their answers are
    recorded in the call entry and returned to the caller. Persist a `round
    N pending:` line for this call like any other (2.4).
-3. **`One fix` reopens a round.** The fix is recorded as a new decision
-   (`D<n>`, verbatim), superseding whichever it changes; if it opens new
-   frontier, Step 2 runs again for it; then the check re-renders and
-   re-asks (2 above). `Understood` records the check's call entry, writes
-   the final `### Interview record` line for the check round, persists
-   with read-back, and returns.
+3. **`One fix` reopens a round.** The fix arrives via `Other`, so it is
+   a round of its own, persisted like any other **before the next check
+   call opens**: the check's call entry replaces its pending line, and
+   the fix is recorded as a new decision (`D<n>`, verbatim), superseding
+   whichever it changes, with its `operator-edited — response:
+   "<verbatim>"` stop line under `### Challenge record` and its own
+   `### Interview record` line — all in one 2.6 full-file rewrite with
+   read-back. Only then: if the fix opens new frontier, Step 2 runs again
+   for it (2.1 onward, its own rounds and persists); either way the check
+   re-renders and re-asks (2 above, with a fresh pending line). Several
+   fixes before `Understood` are several persisted rounds, so a crash
+   mid-check loses at most the one answer in flight (§ Resume), never an
+   earlier fix. `Understood` records the check's call entry, writes the
+   final `### Interview record` line for the check round, persists with
+   read-back, and returns.
 
 ## Step 4 — Return
 
@@ -346,9 +407,12 @@ Return to the caller (or, on a hand-run, end) with:
 - the `--first-question` answer and the `--check-questions` answers,
   verbatim;
 - the **run tally**, computed from the persisted call entries, never from
-  memory: calls; questions; decisions taken against the recommendation;
-  verbatim (`Other`) responses; **acknowledgement-only calls (must be
-  zero)** — a question with fewer than two options and no free-text ask;
+  memory — every component below is read from a named field of those
+  entries (§ Output): calls; questions; decisions taken against the
+  recommendation (`chosen: alternative`); verbatim responses (`chosen:
+  other` and `chosen: free-text`, each with its `answer:`);
+  **acknowledgement-only calls (must be zero)** — a question with fewer
+  than two options and no free-text ask;
   per-call timestamps, from which the chunk-accept latency (the gap
   between one call's timestamp and the next) and the wall-clock from the
   first question to `Understood` are read.
@@ -378,18 +442,30 @@ Two surfaces, both in the note named by `--into`:
    ```
    ### Interview calls
    - call 1 · round 1 · 2026-09-12T18:04:11Z · 4 questions
-     - Q1 "<question text>" · options: 3 · recommended: yes
-     - Q2 "<question text>" · options: 2 · recommended: yes
-     - Q3 "<question text>" · options: 0 · free-text ask
-     - Q4 "<question text>" · options: 4 · recommended: yes · answered via Other
+     - Q1 "<question text>" · options: 3 · recommended: yes · chosen: recommended · answer: "<option text>"
+     - Q2 "<question text>" · options: 2 · recommended: yes · chosen: alternative · answer: "<option text>"
+     - Q3 "<question text>" · options: 0 · free-text ask · chosen: free-text · answer: "<verbatim>"
+     - Q4 "<question text>" · options: 4 · recommended: yes · chosen: other · answer: "<verbatim>"
    - call 2 · round 2 · 2026-09-12T18:09:40Z · 2 questions
      …
    - call 4 · understanding check · 2026-09-12T18:21:02Z · 3 questions
    ```
 
-   Each question line carries its text, its option count, and whether a
-   recommended option was marked (or `free-text ask`); an `Other` answer is
-   flagged. Timestamps are ISO-8601 UTC — a stored record, not a display
+   Each question line carries its text, its option count, whether a
+   recommended option was marked (or `free-text ask`), **which kind of
+   answer was given** — `chosen: recommended | alternative | other |
+   free-text` — and **the answer itself**: the chosen option's text, or
+   the operator's verbatim words for `other` and `free-text`. The
+   `answer:` field is what makes a `--check-questions` answer durable —
+   those questions produce no `D<n>` bullet, so this line is their only
+   record, and a caller resuming after a crash reads them from here
+   rather than from a return value that never arrived. The `chosen:`
+   field is what Step 4's "against the recommendation" count is read
+   from (`alternative`), so that tally is literally computable from
+   these entries; it must agree with the `### Challenge record`'s
+   `challenged` verdicts for the same round, and a disagreement on
+   read-back is a persist mismatch under the retry-once policy.
+   Timestamps are ISO-8601 UTC — a stored record, not a display
    (`claude/CLAUDE.kernel.md` § Communication conventions' store-in-UTC
    carve-out). A `round N pending:` line lives in this same subsection
    between its write and the round's persist, and is gone once the call
@@ -401,6 +477,12 @@ Re-running `/interview` against a note that already carries a
 `## Shared understanding` section adopts it and reads its state from the
 note alone:
 
+- **no `### Interview calls` entries and no `### Interview record` line at
+  all** — Step 1.5 wrote the skeleton but no round ever opened (a crash
+  between the skeleton write and the first `round 1 pending:` line): this
+  is the base case, not a resume. Rebuild the design tree per Step 1.4
+  from the seed and begin at round 1 (2.1); `N` is 1 and nothing is
+  re-asked because nothing was asked;
 - a **`round N pending:` line present** means round `N`'s call was opened
   but its answers were never persisted (a crash or an aborted turn): tell
   the operator it is a re-ask after an interrupted round, re-ask exactly
@@ -437,9 +519,26 @@ Every external call has a named failure path; none is silent:
   stated once at the first probe.
 - **No subagent available for a probe** → look the fact up inline, stated
   once; the fact is still found rather than asked.
+- **Probe errors, throws, or never returns** → one retry with the same
+  prompt (2.2), then the inline lookup at the session tier, stated on one
+  line naming the fact; the dependent question is composed only after
+  that, never dropped and never asked as if the fact were known.
+- **A deferring answer names no tracking ref, or a ref that does not
+  resolve** → one follow-up call in the same round (2.6): the operator
+  names a ref via `Other`, or the facilitator files it — board `capture`
+  for a gap, a `Decisions/`/`Context/` note for a design seam — and the
+  `### Deferrals` bullet is written only with the ref in hand. A bare
+  "later" is never persisted. **`capture` unavailable** (no board, `gh`
+  down) → the note form, stated once; a failing note write is the
+  note-write row above.
+- **Outside a git repo** (Step 0.5) → ask the operator for the `<repo>`
+  prefix of the default note name; never invent one.
 - **`gh` unavailable with an issue-number seed, or `gh issue view` exits
   non-zero or returns an empty body** → ask the operator to paste the
   issue text; never interview over a bare number.
+- **Pointer seed does not resolve** → ask the operator for the right path
+  or the topic in their words (Step 1.1); never interview over a bare
+  path, never guess a nearby note.
 - **Probe returns nothing usable** → the affected question is asked with
   the gap stated inside its block ("I could not confirm X; the options
   assume Y"), so the operator answers knowing what was not found — never
