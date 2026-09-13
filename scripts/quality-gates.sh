@@ -133,6 +133,12 @@ KERNEL_GATES=(
   # test_state_graph`, and `--list` prints only the literal command strings
   # in this array, never a comment (temperloop#1934).
   "bash workflows/scripts/build/tests/test_state_graph.sh"
+  # Host-local state-graph sources (state-graph-build-local, temperloop#1918):
+  # plan_notes/journal/tmux, alongside the four core sources just above.
+  # test_state_graph_local.sh is already glob-covered by `make test-build`
+  # above, but registered here too as its own explicit gate line — same
+  # by-name-registration convention as test_state_graph.sh's own entry.
+  "bash workflows/scripts/build/tests/test_state_graph_local.sh"
   "make test-build-workflow"
   "make test-hooks"
   # Write-jail guard COVERAGE-LOSS gate (foundation#1367). Runs

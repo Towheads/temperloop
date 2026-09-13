@@ -52,6 +52,18 @@ fail() { echo "FAIL: $1" >&2; exit 1; }
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
+# Host-local sources (state-graph-build-local, temperloop#1918: plan_notes /
+# journal / tmux) must never read this RUNNER's real knowledge store,
+# transcript root, or tmux server — this file's own four-source suite (and
+# its exact node/edge counts, e.g. the bench assertions below) stays
+# deterministic regardless of what plan notes, journals, or tmux windows
+# happen to exist on the host actually running the test. Isolated exactly
+# like the BOARDS_CONF_* hermetic-env pair above; test_state_graph_local.sh
+# is the dedicated suite for these three sources' own behavior.
+export KNOWLEDGE_STORE_ROOT="$TMP/no-such-knowledge-store"
+export SPEND_TRANSCRIPT_ROOT="$TMP/no-such-transcripts"
+_sg_tmux() { return 1; }
+
 # Every test gets its own cache root so cases never see each other's state.
 fresh_cache() { export CACHE_STORE_ROOT="$TMP/cache-$1"; }
 
@@ -344,11 +356,12 @@ echo "$bench_out" | grep -E 'build_ms=[0-9]+' >/dev/null || fail "bench did not 
 echo "PASS: bench --scale N generates a synthetic N-scaled snapshot and prints build time"
 
 # =============================================================================
-# the reader table is extensible (state-graph-build-local adds three sources
-# without touching these four)
+# the reader table is extensible (state-graph-build-local, temperloop#1918,
+# added plan_notes/journal/tmux without touching these four core sources —
+# see test_state_graph_local.sh for their own ok/absent/error/stale coverage)
 # =============================================================================
-[ "$_SG_SOURCES" = "board board_edges pr_list worktrees" ] \
-  || fail "reader table drifted from the four core sources (got: $_SG_SOURCES)"
-echo "PASS: the reader table names exactly the four core sources and nothing else"
+[ "$_SG_SOURCES" = "board board_edges pr_list worktrees plan_notes journal tmux" ] \
+  || fail "reader table drifted from the seven known sources (got: $_SG_SOURCES)"
+echo "PASS: the reader table names exactly the seven known sources and nothing else"
 
 echo "ALL PASS: test_state_graph.sh"

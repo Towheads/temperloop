@@ -178,6 +178,7 @@ make test-build	workflows/scripts/build/** workflows/scripts/board/** workflows/
 # the make test-build glob coverage above) needs its own row too, since
 # check-gate-paths.sh requires exactly one row per gate command.
 bash workflows/scripts/build/tests/test_state_graph.sh	workflows/scripts/build/state-graph.sh workflows/scripts/build/tests/test_state_graph.sh workflows/scripts/board/lib/cache.sh workflows/scripts/board/lib/board.sh workflows/scripts/config/ontology-registry.tsv workflows/scripts/config/join-keys-lib.sh
+bash workflows/scripts/build/tests/test_state_graph_local.sh	workflows/scripts/build/state-graph.sh workflows/scripts/build/tests/test_state_graph_local.sh workflows/scripts/board/lib/cache.sh workflows/scripts/board/lib/board.sh workflows/scripts/config/ontology-registry.tsv workflows/scripts/config/join-keys-lib.sh workflows/scripts/lib/knowledge_store.sh
 make test-build-workflow	workflows/scripts/build/** claude/workflows/** workflows/scripts/lib/portable-timeout.sh
 bash workflows/scripts/tests/test_ready_pr_sweep.sh	workflows/scripts/ready-pr-sweep.sh workflows/scripts/board/** workflows/scripts/tests/test_ready_pr_sweep.sh
 make test-env-hygiene-report	workflows/scripts/env-hygiene-report.sh workflows/scripts/build/env-reconcile.sh workflows/scripts/tests/test_env_hygiene_report.sh
