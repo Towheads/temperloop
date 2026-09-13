@@ -345,13 +345,16 @@ restarts or renumbers.
    `ks_write` on the plain-files backend, the vault's write-small append
    on an Obsidian-backed one, both followed by a read-back under the
    retry-once policy in § Operating principles). Only then open the call.
-   A crash between the write and the answer leaves a note that says
-   exactly which questions were in flight (§ Resume).
+   A round's pending lines **accumulate, one per call** — a later call
+   never overwrites an earlier one, and 2.6 replaces them all at once —
+   so a crash leaves the whole round's questions in the note, not only
+   the last call's (§ Resume).
 5. **Ask.** Open the `AskUserQuestion` call. When the frontier needs
    another call in this round, open it in the same turn as soon as the
    previous one returns — no chat prose, no persist, between them.
 6. **Record and persist the round — full-file rewrite + read-back.** With
-   the round's answers in hand, rewrite the note in one write carrying:
+   the round's answers in hand, rewrite the note in one write carrying
+   (the deferral bullet excepted — it is already persisted, below):
    - in round 1 only, when Step 1.3 asked the problem statement as a
      free-text Q1: its answer written **verbatim under `### Problem
      (operator's words)`**, replacing the `(asked in round 1)` placeholder
@@ -401,7 +404,10 @@ restarts or renumbers.
      written and read back — that `### Deferrals` bullet is written
      immediately, in its own targeted write under the retry-once policy,
      ahead of this round's batched rewrite, so a crash in between cannot
-     re-file the same deferral (§ Resume);
+     re-file the same deferral (§ Resume). Should that targeted write
+     itself exhaust its retries, the ref is minted but unrecorded: the
+     stop line **names it** so it is not lost, and § Resume asks the
+     operator for it rather than re-filing;
    - any risk the answers surfaced under `### Risks` as `R<n>`, premortem-
      framed with its kill condition inline;
    - the round's `### Interview record` line: `round N: D<a>–D<b>
@@ -424,8 +430,8 @@ restarts or renumbers.
      stop line, the `challenge-record-start: <date>` marker is written in
      the **same** write, never ahead of it (`claude/design-schema.md`
      § Challenge record);
-   - the call entries replacing the `round N pending:` line under
-     `### Interview calls` (§ Output).
+   - the call entries replacing **every** `round N pending:` line this
+     round wrote, under `### Interview calls` (§ Output).
    Then **read the note back** and confirm every slice this write
    carried is present — the round's `D<n>` lines, its call entries, its
    `interview`-kind stop line(s) under `### Challenge record`, and, on
@@ -550,9 +556,9 @@ Two surfaces, both in the note named by `--into`:
    read-back is a persist mismatch under the retry-once policy.
    Timestamps are ISO-8601 UTC — a stored record, not a display
    (`claude/CLAUDE.kernel.md` § Communication conventions' store-in-UTC
-   carve-out). A `round N pending:` line lives in this same subsection
-   between its write and the round's persist, and is gone once the call
-   entries replace it.
+   carve-out). A round's `round N pending:` lines — one per call — live
+   in this same subsection between their writes and the round's persist,
+   and are gone once the call entries replace them.
 
 ## Resume
 
@@ -566,17 +572,21 @@ note alone:
   is the base case, not a resume. Rebuild the design tree per Step 1.4
   from the seed and begin at round 1 (2.1); `N` is 1 and nothing is
   re-asked because nothing was asked;
-- a **`round N pending:` line present** means round `N`'s call was opened
-  but its answers were never persisted (a crash or an aborted turn): tell
-  the operator it is a re-ask after an interrupted round, re-ask exactly
-  the questions the line names, and continue from 2.6. Answers not in the
-  note were never recorded; re-asking is the honest recovery, not a
-  duplicate. **The one exception is a deferral the note already carries a
-  `deferred → <ref>` bullet for**: that ref was write-ahead persisted
-  (2.6) and re-filing would mint a second one for the same deferral, so
-  the re-ask covers the round's decision questions and skips that
-  deferral's tracking-ref sub-call, stated on one line — the note is the
-  record, never a board search for a maybe-existing issue;
+- **one or more `round N pending:` lines present** mean round `N`'s calls
+  were opened but its answers were never persisted (a crash or an aborted
+  turn): tell the operator it is a re-ask after an interrupted round,
+  re-ask exactly the questions those lines name — they accumulate per
+  call (2.4), so they carry the whole round — and continue from 2.6.
+  Answers not in the note were never recorded; re-asking is the honest
+  recovery, not a duplicate. **The one exception is the tracking-ref
+  sub-call (2.6), whose `File it` arm is non-idempotent.** Where the note
+  already carries that deferral's `deferred → <ref>` bullet, the ref was
+  write-ahead persisted: skip the sub-call, stated on one line. Where a
+  pending line names the sub-call and no bullet answers it, a ref may
+  have been minted and lost to the write that stopped the run: ask the
+  operator for it via `Other`, offering `File it for me` only if they
+  have none. Never re-file blind, and never search the board for a
+  maybe-existing issue — the note is the record;
 - **no pending line and a non-empty frontier**: first rebuild the design
   tree per Step 1.4 from the seed plus every persisted `D<n>` (the tree
   lives in working memory and is gone with the session that built it —
@@ -599,8 +609,8 @@ Every external call has a named failure path; none is silent:
 
 - **Knowledge store unreachable** → stop at Step 0 (no note, no
   interview). **Note write fails or read-back mismatches twice** → stop
-  with the note path and the round in flight; the `round N pending:` line
-  (if the pending write itself landed) is the resume point.
+  with the note path and the round in flight; the `round N pending:`
+  line(s) that landed are the resume point.
 - **`AskUserQuestion` unavailable** → stop at Step 0: operator-present
   only.
 - **`build.config.sh` absent** → continue; probes run at the session tier,
@@ -616,14 +626,15 @@ Every external call has a named failure path; none is silent:
   names a ref via `Other`, or the facilitator files it — board `capture`
   for a gap, a `Decisions/`/`Context/` note for a design seam — and the
   `### Deferrals` bullet is write-ahead persisted the moment the ref is
-  in hand, ahead of the round's rewrite, so a crash cannot re-file it
-  (§ Resume); an `Other`
+  in hand, ahead of the round's rewrite, so a crash cannot re-file it;
+  if that write itself exhausts its retries the stop line names the
+  minted ref and § Resume asks for it rather than re-filing. An `Other`
   ref that also fails to resolve is not accepted — the facilitator files
-  it, stated once, never a second ask. A bare
-  "later" is never persisted. **`capture` unavailable** (no board, `gh`
-  down) **or `capture` fails mid-call** (non-zero exit, error, timeout,
-  no issue number returned) → the note form, stated once; a failing note
-  write is the note-write row above.
+  it, stated once, never a second ask. A bare "later" is never persisted.
+  **`capture` unavailable** (no board, `gh` down) **or `capture` fails
+  mid-call** (non-zero exit, error, timeout, no issue number returned) →
+  the note form, stated once; a failing note write is the note-write row
+  above.
 - **Outside a git repo** (Step 0.5) → ask the operator for the `<repo>`
   prefix of the default note name; never invent one.
 - **Note existence probe errors** (Step 1.5) → retried once; a second
