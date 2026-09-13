@@ -245,6 +245,20 @@ out="$(_sg_query_resume "$SNAP_TIER1_PR")"
 [ "$(_sg_authority_of "$out" PlanItem:p:gamma)" = "plan" ] || fail "tier1 pr: authority was not 'plan' (got: $out)"
 echo "PASS: resume tier 1 (plan) — a recorded pr: field decides adopt"
 
+# --- tier 1 (plan): pushed_sha: with no pr: decides fresh, before tier 2 -
+# Journal is deliberately error here — if pushed_sha were NOT consulted at
+# tier 1, this would fall through to the degraded-journal probe-failed path
+# (tier 2) instead of the correct tier-1 fresh/plan verdict.
+SNAP_TIER1_SHA='{
+  "sources": {"board":{"status":"ok"},"journal":{"status":"error"},"worktrees":{"status":"ok"}},
+  "nodes": [ {"type":"PlanItem","id":"PlanItem:p:theta","slug":"theta","state":"[~]","pushed_sha":"abc123"} ],
+  "edges": []
+}'
+out="$(_sg_query_resume "$SNAP_TIER1_SHA")"
+[ "$(_sg_route_of "$out" PlanItem:p:theta)" = "fresh" ] || fail "tier1 pushed_sha: (no pr:) did not decide fresh (got: $out)"
+[ "$(_sg_authority_of "$out" PlanItem:p:theta)" = "plan" ] || fail "tier1 pushed_sha: authority was not 'plan' (got: $out)"
+echo "PASS: resume tier 1 (plan) — a recorded pushed_sha: (no pr:) decides fresh, even with journal degraded"
+
 # --- tier 2 (journal): a slug-tagged PR_OPENED/PUSHED step decides -------
 SNAP_TIER2='{
   "sources": {"board":{"status":"ok"},"journal":{"status":"ok"},"worktrees":{"status":"ok"}},
@@ -313,10 +327,58 @@ while IFS= read -r r; do
   route_in_alphabet "$r" || fail "resume emitted route '$r' not in the shared route-alphabet fixture"
 done < <(_sg_query_resume "$SNAP_INVARIANT" | jq -r '.items[].route'; \
          _sg_query_resume "$SNAP_TIER1_PR" | jq -r '.items[].route'; \
+         _sg_query_resume "$SNAP_TIER1_SHA" | jq -r '.items[].route'; \
          _sg_query_resume "$SNAP_TIER2" | jq -r '.items[].route'; \
          _sg_query_resume "$SNAP_TIER3" | jq -r '.items[].route'; \
          _sg_query_resume "$SNAP_TIER4" | jq -r '.items[].route'; \
          _sg_query_resume "$(jq -c '.sources.journal.status="error"' <<<"$SNAP_UNTOUCHED")" | jq -r '.items[].route')
 echo "PASS: every route resume emits (decided and degraded alike) is a member of the shared route-alphabet fixture"
+
+# =============================================================================
+# cmd_query CLI dispatch — invoked as a real subprocess (`bash state-graph.sh
+# query …`), not the sourced `_sg_query_*`/`cmd_query` functions the tests
+# above call in-process. Covers: unknown query name, missing --board, and
+# the no-persisted-snapshot fallback-to-live-build path. Zero network: the
+# board/git/tmux seams are overridden and `export -f`'d so the CHILD bash
+# process inherits them exactly like the sourced-function tests above
+# inherit them in-process (mirrors test_state_graph.sh's own _board_gh/
+# _sg_git seam-override convention).
+# =============================================================================
+STATE_GRAPH_BIN="$HERE/../state-graph.sh"
+CLI_TMP="$(mktemp -d)"
+trap 'rm -rf "$CLI_TMP"' EXIT
+
+echo "── cmd_query CLI: unknown query name exits 2 ──"
+rc=0; out="$(bash "$STATE_GRAPH_BIN" query bogus-query --board 4 2>&1)" || rc=$?
+[ "$rc" -eq 2 ] || fail "unknown query name did not exit 2 (got rc=$rc, out: $out)"
+printf '%s' "$out" | grep -F "unknown query" >/dev/null || fail "unknown query name error did not name the bad query (got: $out)"
+echo "PASS: cmd_query CLI — unknown query name exits 2"
+
+echo "── cmd_query CLI: missing --board exits 2 ──"
+rc=0; out="$(bash "$STATE_GRAPH_BIN" query resume 2>&1)" || rc=$?
+[ "$rc" -eq 2 ] || fail "missing --board did not exit 2 (got rc=$rc, out: $out)"
+echo "PASS: cmd_query CLI — missing --board exits 2"
+
+echo "── cmd_query CLI: no persisted snapshot falls back to a live build ──"
+export CACHE_STORE_ROOT="$CLI_TMP/cache"            # fresh — nothing persisted yet
+export KNOWLEDGE_STORE_ROOT="$CLI_TMP/no-such-ks"   # plan_notes -> absent
+export SPEND_TRANSCRIPT_ROOT="$CLI_TMP/no-such-tr"  # journal -> absent
+_board_gh() {
+  case "$1 $2" in
+    "issue list") echo '[]' ;;
+    "pr list") echo '[]' ;;
+    *) echo "test _board_gh: unhandled '$1 $2'" >&2; return 3 ;;
+  esac
+}
+_sg_git() { echo "worktree /home/x/dev/batch/foundation"; }
+_sg_tmux() { return 1; }
+export -f _board_gh _sg_git _sg_tmux
+rc=0; out="$(bash "$STATE_GRAPH_BIN" query resume --board 4)" || rc=$?
+[ "$rc" -eq 0 ] || fail "CLI fallback-build did not exit 0 (got rc=$rc, out: $out)"
+[ "$(jq -r '.query' <<<"$out")" = "resume" ] || fail "CLI fallback-build resume payload missing query field (got: $out)"
+[ "$(jq -r '.status' <<<"$out")" = "ok" ] || fail "CLI fallback-build resume payload status was not ok (got: $out)"
+jq -e '.items | type == "array"' <<<"$out" >/dev/null || fail "CLI fallback-build resume payload items was not an array (got: $out)"
+unset -f _board_gh _sg_git _sg_tmux
+echo "PASS: cmd_query CLI — no persisted snapshot falls back to a live build and returns a valid resume payload"
 
 echo "ALL PASS: test_state_graph_queries.sh"

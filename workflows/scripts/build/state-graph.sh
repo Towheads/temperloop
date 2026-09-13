@@ -74,7 +74,10 @@
 #              `[v]`) decides `already-done` and can NEVER be reversed by a
 #              lower tier — the authority table's own load-bearing
 #              invariant. A non-terminal sentinel carrying `pr:` decides
-#              `adopt` (there is a recorded PR to reattach to).
+#              `adopt` (there is a recorded PR to reattach to); one carrying
+#              `pushed_sha:` but no `pr:` yet decides `fresh` (pushed, not
+#              yet PR'd — still a tier-1 fact, decided before tier 2 is
+#              ever consulted).
 #   2 journal  a Session step-outcome tagged with this item's `slug` (an
 #              optional passthrough field on the journal source's step
 #              records — see `_sg_read_journal`) decides `adopt`
@@ -859,11 +862,14 @@ _sg_query_resume() {
         items: [ $items[] | . as $it |
           ($it.state) as $s
           | (($it.pr // "") | tostring) as $pr
+          | (($it.pushed_sha // "") | tostring) as $sha
           | (
               if ($s == "[x]" or $s == "[-]" or $s == "[v]") then
                 {id:$it.id, slug:$it.slug, route:"already-done", authority:"plan"}
               elif ($pr != "") then
                 {id:$it.id, slug:$it.slug, route:"adopt", authority:"plan"}
+              elif ($sha != "") then
+                {id:$it.id, slug:$it.slug, route:"fresh", authority:"plan"}
               elif degraded($jst) then
                 {id:$it.id, slug:$it.slug, route:"probe-failed", authority:"journal"}
               else
