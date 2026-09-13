@@ -6,9 +6,9 @@ argument-hint: "--epic <N> [--board <N> | --project <name>] [--no-poll] [--overr
 You are running the **assess** command. Goal: take one **already-triaged epic** and work out *how it builds safely* — decompose it to the **seam**, compute merge-safety (`depends-on`) and logical-order (`after:`) edges and dependency levels, and emit a structured plan note that `/build` can execute. This is the **technical-judgment** stage of the pipeline (logical grouping already happened in `/triage`):
 
 ```
-/triage   cull → group → epic + sub-issues (Backlog→Ready)          ┐
-/workshop   intake → coverage walk → review pass → ratify → materialize ┼─► epic (## Contract)
-                                                                        │
+/triage   cull → group → epic + sub-issues (Backlog→Ready)                          ┐
+/workshop   interview → unattended coverage → delta approval → ratify → materialize ┼─► epic (## Contract)
+                                                                                    │
                                                     └─► /assess --epic N   epic → decompose to seams → edges/levels → Plans/ note (draft)
                                                               └─► /build   execute → claim → merge → close children → close epic (Done)
 ```

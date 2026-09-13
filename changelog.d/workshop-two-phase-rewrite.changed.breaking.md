@@ -16,7 +16,10 @@
   checkpoint on a third re-presentation. **Phase 3** ratifies (the call now
   also asks "was any chunk of the delta report a rubber stamp?"),
   materializes unchanged, and prints a per-run tally whose
-  acknowledgement-only count must be zero.
+  acknowledgement-only count must be zero. The pipeline diagrams in the two
+  peer front-door specs `/workshop`'s cross-references name —
+  `claude/commands/triage.md` and `claude/commands/assess.md` — now name the
+  new phases instead of the removed walk.
 
   **Removed in this release** (the BREAKING half — documented steps drop,
   per `VERSIONING.md` § The contract surface): the per-dimension coverage

@@ -10,7 +10,7 @@ capture.sh (bugs) ┐
 sweeps / audits   ┼─► /triage      cull → collapse → group → epic + sub-issues (Backlog→Ready)
 loose Backlog     ┘
                                                                     │
-a design conversation ──► /workshop   intake → coverage walk → review pass → ratify → materialize
+a design conversation ──► /workshop   interview → unattended coverage → delta approval → ratify → materialize
                                                                     │
                                                                     ▼
                                               board epic (## Contract, design-brief: marker)

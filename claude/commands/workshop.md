@@ -898,9 +898,11 @@ in chat, in about **two chunks**, with one verdict per dimension.
      chunk>`, and record the answer verbatim in Step 6's tally. This is the
      command's own falsification probe, not a satisfaction survey: a "yes"
      says the delta report has drifted back into the gist-approval failure
-     it replaced. One "yes" sharpens the rendering rule (3.7.2); three runs
-     answering "yes" is the kill condition on record — fall back to
-     drafting the brief first and clarifying it afterwards.
+     it replaced. One "yes" sharpens the rendering rule (3.7.2). Beyond
+     that it is **operator judgment, not a tracked threshold** — the
+     answer is printed in the per-run tally, stored nowhere, and each run
+     is a fresh session — so if *you* answer "yes" run after run, fall
+     back to drafting the brief first and clarifying it afterwards.
 4. **On approval:** flip the note's frontmatter `status: draft → ratified` <!-- cite: W.7 class:frontmatter-patch-silent-drop -->
    and update `last_verified`, via a **full-file rewrite** (`vault_write`,
    or the plain-files equivalent) — never a `vault_patch` frontmatter-scalar
