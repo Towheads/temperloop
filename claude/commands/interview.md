@@ -220,7 +220,13 @@ Run in parallel; the first two are fatal, the rest degrade legibly:
    kernel's note-provenance convention names when the session id is in
    context) and the empty `## Shared understanding` skeleton per
    `claude/design-schema.md` § Shared understanding, with `### Deferrals`
-   reading `(none yet)`. Every note this command creates carries the
+   reading `(none yet)` and **`### Problem (operator's words)` filled in
+   this same write** with Step 1.3's quote whenever the seed carried the
+   operator's own framing; when the problem is instead asked as round 1's
+   free-text Q1 (a facilitator-written seed), the heading is written here
+   reading `(asked in round 1)` and round 1's persist fills it (2.6) — the
+   section never ships with that heading silently empty, and no other
+   step owns it. Every note this command creates carries the
    `record_grammar: delta` stamp, because Step 2.6 writes `interview`-kind
    stop lines into it every round and `claude/design-schema.md` § Record
    completeness names a record carrying `interview`/`delta` lines with no
@@ -292,7 +298,14 @@ restarts or renumbers.
      own words` option so a free-text answer is always reachable;
    - a free-text ask (a question with no options, answered in prose) only
      where the honest option set is genuinely open — the problem statement
-     of a facilitator-written seed, a name the operator alone can supply.
+     of a facilitator-written seed, a name the operator alone can supply;
+   - the **Routing** slot the Question block template requires: one
+     short line inside the call — in the first question's block, once per
+     call, not repeated per question — naming the note the answers land
+     in (the `--into` path), so the operator knows where their words are
+     recorded without leaving the block. The block's three required
+     slots are then all composed: Context (the decision and why now),
+     Options (the recommended-first set), Routing (the note).
    Group related decisions into one call where they fit; never split one
    decision across calls.
 4. **Persist `round N pending:` before the call.** Under `## Working notes`
@@ -309,6 +322,12 @@ restarts or renumbers.
    previous one returns — no chat prose, no persist, between them.
 6. **Record and persist the round — full-file rewrite + read-back.** With
    the round's answers in hand, rewrite the note in one write carrying:
+   - in round 1 only, when Step 1.3 asked the problem statement as a
+     free-text Q1: its answer written **verbatim under `### Problem
+     (operator's words)`**, replacing the `(asked in round 1)` placeholder
+     from Step 1.5. The problem statement is not a decision — it gets no
+     `D<n>` bullet and no stop line, only its call entry (§ Output);
+     every other answered question is a decision and gets both;
    - one `D<n>` bullet per answered question under `### Decisions — round
      N (<date>)`: `D<n> **<short title>.** <the chosen option's text, or
      the operator's verbatim words quoted when they used Other>`; a
@@ -347,8 +366,12 @@ restarts or renumbers.
      `### Challenge record`, one per decision (clustered where the verdict
      is identical), `source` always the literal `operator`: a recommended
      option chosen is `accepted`; a non-recommended option chosen is
-     `challenged → revised ×1`; an `Other` answer is `operator-edited —
-     response: "<verbatim>"`. When this round writes the record's first
+     `challenged → revised ×1`; an `Other` answer **or a free-text ask's
+     answer** (both `answer:` kinds the operator wrote themselves —
+     `chosen: other`, `chosen: free-text`) is `operator-edited —
+     response: "<verbatim>"` — the vocabulary is that section's three
+     verdicts and nothing else, so every `D<n>` maps to one of them and
+     none is left without a stop line. When this round writes the record's first
      stop line, the `challenge-record-start: <date>` marker is written in
      the **same** write, never ahead of it (`claude/design-schema.md`
      § Challenge record);
@@ -376,7 +399,8 @@ restarts or renumbers.
    stands in the note — problem, facts, every `D<n>`, deferrals, risks,
    the interview record — so the operator confirms the text itself, not a
    gist of it.
-2. **One call, at most four questions.** Q1 is the interview's own:
+2. **One call, at most four questions, composed per 2.3** (Routing slot
+   included). Q1 is the interview's own:
    *"Is this the shared understanding?"* with options `Understood
    (Recommended)` and `One fix — I will say what` (the fix arrives via
    `Other`, in the operator's words). The `--check-questions` block's
