@@ -87,14 +87,10 @@ so a renamed flag desyncs them with no runtime error to catch it.
 
 Absent parameters take their defaults; a parameter this spec does not name
 is an error to surface, not to guess at. A named parameter carrying a
-**malformed block** is the same error, raised at Step 0 before any call
-opens: a question with fewer than two or more than four options that is
-not a free-text ask, options with no `(Recommended)` first, more than
-three `--check-questions`, or a `then:` naming an action the caller's
-own spec does not define — each is rejected with one line naming the
-defect, never passed through to `AskUserQuestion` and never repaired by
-guessing the caller's intent (an acknowledgement-only block would
-otherwise slip in under the caller's name).
+**malformed block** is the same error, checked and rejected at Step 0.6
+before any call opens — never passed through to `AskUserQuestion` and
+never repaired by guessing the caller's intent (an acknowledgement-only
+block would otherwise slip in under the caller's name).
 
 ## Invocation contract
 
@@ -166,7 +162,7 @@ and the check-question answers.
 
 ## Step 0 — Validate
 
-Run in parallel; the first two are fatal, the rest degrade legibly:
+Run in parallel; items 1, 2 and 6 are fatal, the rest degrade legibly:
 
 1. **Knowledge store reachable.** Resolve the store per
    `workflows/scripts/lib/knowledge_store.contract.md` (a plain-files
@@ -191,6 +187,12 @@ Run in parallel; the first two are fatal, the rest degrade legibly:
 5. **Repo name.** `basename "$(git rev-parse --show-toplevel)"`, used for
    the default note name; outside a git repo, ask the operator for the
    `<repo>` prefix rather than inventing one.
+6. **Caller parameter block well-formed** (only when one was passed).
+   Check each `--first-question` / `--check-questions` block against
+   § Parameters: two to four options unless it is a free-text ask,
+   `(Recommended)` on the first option, at most three
+   `--check-questions`, every `then:` naming an action the caller's own
+   spec defines. Any defect stops here with one line naming it.
 
 ## Step 1 — Intake
 
@@ -373,10 +375,9 @@ restarts or renumbers.
      one that does not resolve to an open tracking item (`gh issue view`
      / a `Read` of the named note fails), ask once, in the same turn and
      before this persist, as one more call of the round (composed per
-     2.3, 2.4 pending line, 2.5 — every `AskUserQuestion` call in this
-     spec is composed per 2.3, this one included): *"What should track
-     this deferral?"* with options `File
-     it for me (Recommended)` and `Other` for an existing ref. An `Other`
+     2.3, 2.4 pending line, 2.5, like every call in this spec): *"What
+     should track this deferral?"* with options `File it for me
+     (Recommended)` and `Other` for an existing ref. An `Other`
      ref is re-checked the same way; when it too does not resolve, it is
      **not** taken at face value — the round falls through to the `File
      it` arm, stated on one line ("<ref> does not resolve; filing it"),
@@ -392,10 +393,15 @@ restarts or renumbers.
      repo, `gh` down) **or the call itself fails** (a non-zero exit, an
      error, a timeout after the request was sent — with no issue number
      returned, the item is treated as not filed), fall through to the
-     note form and say so on one line; the bullet is written only once a
-     ref is in hand, so a failed capture can never strand the deferral
-     silently — it either becomes a note-backed ref in this same round or
-     stops the round under the note-write policy;
+     note form and say so on one line; a failed capture therefore never
+     strands the deferral silently. Filing is a **non-idempotent external
+     side effect**, so the ref is **write-ahead persisted** exactly as
+     `round N pending:` is (§ Operating principles): the moment one is in
+     hand — `capture` returned an issue number, or the seam note was
+     written and read back — that `### Deferrals` bullet is written
+     immediately, in its own targeted write under the retry-once policy,
+     ahead of this round's batched rewrite, so a crash in between cannot
+     re-file the same deferral (§ Resume);
    - any risk the answers surfaced under `### Risks` as `R<n>`, premortem-
      framed with its kill condition inline;
    - the round's `### Interview record` line: `round N: D<a>–D<b>
@@ -565,7 +571,12 @@ note alone:
   the operator it is a re-ask after an interrupted round, re-ask exactly
   the questions the line names, and continue from 2.6. Answers not in the
   note were never recorded; re-asking is the honest recovery, not a
-  duplicate;
+  duplicate. **The one exception is a deferral the note already carries a
+  `deferred → <ref>` bullet for**: that ref was write-ahead persisted
+  (2.6) and re-filing would mint a second one for the same deferral, so
+  the re-ask covers the round's decision questions and skips that
+  deferral's tracking-ref sub-call, stated on one line — the note is the
+  record, never a board search for a maybe-existing issue;
 - **no pending line and a non-empty frontier**: first rebuild the design
   tree per Step 1.4 from the seed plus every persisted `D<n>` (the tree
   lives in working memory and is gone with the session that built it —
@@ -604,7 +615,9 @@ Every external call has a named failure path; none is silent:
   resolve** → one follow-up call in the same round (2.6): the operator
   names a ref via `Other`, or the facilitator files it — board `capture`
   for a gap, a `Decisions/`/`Context/` note for a design seam — and the
-  `### Deferrals` bullet is written only with the ref in hand; an `Other`
+  `### Deferrals` bullet is write-ahead persisted the moment the ref is
+  in hand, ahead of the round's rewrite, so a crash cannot re-file it
+  (§ Resume); an `Other`
   ref that also fails to resolve is not accepted — the facilitator files
   it, stated once, never a second ask. A bare
   "later" is never persisted. **`capture` unavailable** (no board, `gh`
@@ -620,7 +633,7 @@ Every external call has a named failure path; none is silent:
   one line naming it; a ratified record is never edited in place — the
   caller supersedes it and passes the new brief.
 - **A caller-supplied question block is malformed** (§ Parameters) →
-  rejected at Step 0 with one line naming the defect; never passed to
+  rejected at Step 0.6 with one line naming the defect; never passed to
   `AskUserQuestion`, never repaired by guessing.
 - **`gh` unavailable with an issue-number seed, or `gh issue view` exits
   non-zero or returns an empty body** → ask the operator to paste the
