@@ -338,9 +338,9 @@ _board_gh() {
 }
 _sg_git() { echo "worktree /home/x/dev/batch/foundation"; }
 bench_out="$(cmd_bench --scale 5 --board "$BOARD")"
-echo "$bench_out" | grep -q 'scale=5' || fail "bench did not report the requested scale (got: $bench_out)"
-echo "$bench_out" | grep -qE 'nodes=5( |$)' || fail "bench did not scale node count 5x the 1-node base (got: $bench_out)"
-echo "$bench_out" | grep -qE 'build_ms=[0-9]+' || fail "bench did not print a build_ms figure (got: $bench_out)"
+echo "$bench_out" | grep 'scale=5' >/dev/null || fail "bench did not report the requested scale (got: $bench_out)"
+echo "$bench_out" | grep -E 'nodes=5( |$)' >/dev/null || fail "bench did not scale node count 5x the 1-node base (got: $bench_out)"
+echo "$bench_out" | grep -E 'build_ms=[0-9]+' >/dev/null || fail "bench did not print a build_ms figure (got: $bench_out)"
 echo "PASS: bench --scale N generates a synthetic N-scaled snapshot and prints build time"
 
 # =============================================================================

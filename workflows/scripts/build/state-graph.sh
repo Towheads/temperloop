@@ -391,7 +391,7 @@ cmd_build() {
   local board=""
   while [ $# -gt 0 ]; do
     case "$1" in
-      --board) board="${2:-}"; shift 2 ;;
+      --board) board="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
       *) echo "state-graph.sh: build: unknown arg '$1'" >&2; usage; exit 2 ;;
     esac
   done
@@ -408,7 +408,7 @@ cmd_clean() {
   local board=""
   while [ $# -gt 0 ]; do
     case "$1" in
-      --board) board="${2:-}"; shift 2 ;;
+      --board) board="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
       *) echo "state-graph.sh: clean: unknown arg '$1'" >&2; usage; exit 2 ;;
     esac
   done
@@ -426,8 +426,8 @@ cmd_bench() {
   local board="" scale=""
   while [ $# -gt 0 ]; do
     case "$1" in
-      --board) board="${2:-}"; shift 2 ;;
-      --scale) scale="${2:-}"; shift 2 ;;
+      --board) board="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+      --scale) scale="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
       *) echo "state-graph.sh: bench: unknown arg '$1'" >&2; usage; exit 2 ;;
     esac
   done
