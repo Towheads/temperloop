@@ -127,6 +127,47 @@ out="$(_sg_read_board "$BOARD")"
 [ "$(jq -r .status <<<"$out")" = "error" ] || fail "board error status on board_resolve failure (got: $out)"
 echo "PASS: board source error — board_resolve failure"
 
+# --- board: closed-issue residue (temperloop#1978, acceptance criterion 2) --
+# A DIRECT, DISTINCT `_board_gh api "repos/.../issues" -f state=closed ...`
+# call (never `gh issue list` — that shape collides with the OPEN-issue mock
+# arm every other case in this file uses) surfaces a closed issue still
+# wearing an `fnd:status:*` label as its own Issue node with `state:"closed"`
+# — #158's own shape from this item's day-1 soak evidence. #160 carries only
+# an `fnd:host/session:*` label (no status label) and is correctly excluded
+# — this read's scope is fnd:status:* residue only (acceptance criterion 2),
+# never the closed-issue claim-stamp half.
+_board_gh() {
+  case "$1 $2" in
+    "issue list") echo '[{"number":1,"title":"x","labels":[{"name":"fnd:status:ready"}]}]' ;;
+    "api repos/$REPO/issues")
+      echo '[{"number":158,"title":"y","labels":[{"name":"fnd:status:backlog"}]},{"number":160,"title":"z","labels":[{"name":"fnd:host/session:mini-1:abcd1234"}]}]'
+      ;;
+    *) echo "test _board_gh: unhandled '$1 $2'" >&2; return 3 ;;
+  esac
+}
+out="$(_sg_read_board "$BOARD")"
+[ "$(jq -r .status <<<"$out")" = "ok" ] || fail "board ok status with closed residue present (got: $out)"
+[ "$(jq -c '[.nodes[] | select(.id=="Issue:158")] | .[0] | {status,state}' <<<"$out")" = '{"status":"fnd:status:backlog","state":"closed"}' ] \
+  || fail "board closed-residue node #158 shape mismatch (got: $out)"
+[ "$(jq '[.nodes[] | select(.id=="Issue:160")] | length' <<<"$out")" = 0 ] \
+  || fail "board closed residue must NOT surface a host/session-only label as a status node (#160, got: $out)"
+[ "$(jq '.nodes | length' <<<"$out")" = 2 ] || fail "board closed-residue node count (open #1 + closed #158) mismatch (got: $out)"
+echo "PASS: board source — a closed issue still wearing an fnd:status:* label surfaces as its own residue Issue node"
+
+# --- board: closed-issue residue read fails -> FAIL-SOFT, never errors the
+# whole board source (the primary open-issue read still succeeded) ----------
+_board_gh() {
+  case "$1 $2" in
+    "issue list") echo '[{"number":1,"title":"x","labels":[{"name":"fnd:status:ready"}]}]' ;;
+    "api repos/$REPO/issues") return 1 ;;
+    *) echo "test _board_gh: unhandled '$1 $2'" >&2; return 3 ;;
+  esac
+}
+out="$(_sg_read_board "$BOARD" 2>/dev/null)"
+[ "$(jq -r .status <<<"$out")" = "ok" ] || fail "a failing closed-residue read must not error the whole board source (got: $out)"
+[ "$(jq '.nodes | length' <<<"$out")" = 1 ] || fail "a failing closed-residue read should contribute zero extra nodes (got: $out)"
+echo "PASS: board source — a failing closed-residue read degrades to zero extra nodes, never a hard error on the whole source"
+
 # =============================================================================
 # source: board_edges (sub_issue_of, blocked_by)
 # =============================================================================

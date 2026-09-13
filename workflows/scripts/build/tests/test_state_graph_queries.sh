@@ -101,6 +101,30 @@ for st in error stale; do
 done
 echo "PASS: status-drift answers unknown (never []) when board is error/stale"
 
+# --- closed-issue residue (temperloop#1978): a CLOSED Issue node still
+# wearing a residual fnd:status:* label surfaces as its own finding kind,
+# `closed_with_status_label` — never conflated with the two OPEN-domain
+# kinds above (an open in-progress issue #1 with a live claim, and #4 a
+# CLOSED node carrying "fnd:status:backlog" — the #158 shape from this
+# item's own day-1 soak evidence). An ordinary OPEN issue's node never
+# carries a `.state` field at all (SNAP_STATUS_DRIFT above), so this is
+# purely additive: the golden fixture's findings are unaffected by nodes
+# that never set `.state`.
+SNAP_STATUS_DRIFT_CLOSED='{
+  "sources": {"board":{"status":"ok"}},
+  "nodes": [
+    {"type":"Issue","id":"Issue:1","number":1,"status":"fnd:status:in-progress"},
+    {"type":"Issue","id":"Issue:4","number":4,"status":"fnd:status:backlog","state":"closed"}
+  ],
+  "edges": [
+    {"type":"claimed_by","from":"Issue:1","to":"Session:s1"}
+  ]
+}'
+GOLDEN_STATUS_DRIFT_CLOSED='{"query":"status-drift","status":"ok","findings":[{"id":"Issue:4","kind":"closed_with_status_label"}]}'
+out="$(_sg_query_status_drift "$SNAP_STATUS_DRIFT_CLOSED")"
+[ "$out" = "$GOLDEN_STATUS_DRIFT_CLOSED" ] || fail "status-drift closed-residue golden mismatch (got: $out)"
+echo "PASS: status-drift — a closed issue still wearing an fnd:status:* label surfaces as closed_with_status_label, not conflated with the open-domain kinds"
+
 # =============================================================================
 # stale-claims — claimed_by edges naming a Session absent from the journal
 # source (board + journal)
