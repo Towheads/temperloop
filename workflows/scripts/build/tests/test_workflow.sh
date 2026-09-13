@@ -8303,6 +8303,60 @@ grep -qiE 'every HIGH|all HIGH' "$REPO_ROOT/claude/agents/workflow-reviewer.md" 
   || fail "#1970: the workflow-reviewer seat must be instructed to enumerate EVERY HIGH in one pass — the bound alone only truncates serial discovery, it does not fix it"
 echo "PASS: #1970 convergence-bound guards — the bound is enforced at both blocking sites from a named setting, tallied per run, and the reviewer seat is told to enumerate every HIGH in one pass"
 
+# --- K1970 REPORT-SURFACE lockstep guards (the tally's declared READER) ------
+# The guards above pin the tally's PRODUCER (build-level.mjs emits
+# review.residual_blocking). A per-run tally is only an execution signal if the
+# human-facing report DECLARED to read it actually names it — the exact failure
+# class mandatory-step-registry.tsv's own header names, and the one this item
+# exists to fix. Without these, an item that shipped a PR with an UNRESOLVED
+# HIGH reads byte-identically to a clean one in every orchestrator summary and
+# the only trace is buried in that one PR's ## Review notes.
+#
+# SECTION-SCOPED on purpose: a stray `residual_blocking` mention anywhere else
+# in the spec must not satisfy the guard, so each check is confined to the
+# report step's own line range (heading -> next `## ` heading, or EOF).
+k1970_section() { # <file> <heading-regex> -> that section's text on stdout
+  local _f="$1" _h="$2" _start _end
+  _start="$(grep -nE "$_h" "$_f" | head -1 | cut -d: -f1)"
+  [ -n "$_start" ] || return 1
+  _end="$(awk -v s="$_start" 'NR>s && /^## /{print NR-1; exit}' "$_f")"
+  [ -n "$_end" ] || _end="$(wc -l <"$_f")"
+  sed -n "${_start},${_end}p" "$_f"
+}
+
+K1970_BUILD_MD="$REPO_ROOT/claude/commands/build.md"
+[ -f "$K1970_BUILD_MD" ] \
+  || fail "#1970: claude/commands/build.md is missing — the report-surface half of this contract pair cannot be verified"
+K1970_STEP6="$(k1970_section "$K1970_BUILD_MD" '^## Step 6 — Final summary')" \
+  || fail "#1970: build.md '## Step 6 — Final summary' heading not found — the tally's declared reader cannot be section-scoped"
+printf '%s\n' "$K1970_STEP6" | grep 'residual_blocking' >/dev/null \
+  || fail "#1970: build.md Step 6's summary must name residual_blocking — a tally the .mjs emits and the Step 6 prose never renders is a signal that dead-ends, which is exactly the defect this item fixes"
+printf '%s\n' "$K1970_STEP6" | grep 'max_rounds' >/dev/null \
+  || fail "#1970: build.md Step 6's residual_blocking case must name each affected item's round/max_rounds, not just a count"
+printf '%s\n' "$K1970_STEP6" | grep '## Review notes' >/dev/null \
+  || fail "#1970: build.md Step 6's residual_blocking case must tell the operator to read the PR's ## Review notes before merging — that is where the carried findings live"
+
+K1970_SWEEP_MD="$REPO_ROOT/claude/commands/sweep.md"
+[ -f "$K1970_SWEEP_MD" ] \
+  || fail "#1970: claude/commands/sweep.md is missing — the report-surface half of this contract pair cannot be verified"
+K1970_SWEEP_REPORT="$(k1970_section "$K1970_SWEEP_MD" '^## Step 4 — Report')" \
+  || fail "#1970: sweep.md '## Step 4 — Report' heading not found — the tally's declared reader cannot be section-scoped"
+printf '%s\n' "$K1970_SWEEP_REPORT" | grep 'residual_blocking' >/dev/null \
+  || fail "#1970: sweep.md Step 4's report must name residual_blocking — /sweep passes reviewBlockingMaxRounds, so it can strand a residual HIGH exactly like /build"
+printf '%s\n' "$K1970_SWEEP_REPORT" | grep '## Review notes' >/dev/null \
+  || fail "#1970: sweep.md Step 4's residual_blocking block must point at the PR's ## Review notes"
+
+K1970_FIX_MD="$REPO_ROOT/claude/commands/fix.md"
+[ -f "$K1970_FIX_MD" ] \
+  || fail "#1970: claude/commands/fix.md is missing — the report-surface half of this contract pair cannot be verified"
+K1970_FIX_REPORT="$(k1970_section "$K1970_FIX_MD" '^## Step 7 — Report the terminal disposition')" \
+  || fail "#1970: fix.md '## Step 7 — Report the terminal disposition' heading not found — the tally's declared reader cannot be section-scoped"
+printf '%s\n' "$K1970_FIX_REPORT" | grep 'residual_blocking' >/dev/null \
+  || fail "#1970: fix.md Step 7's report must name residual_blocking — /fix passes reviewBlockingMaxRounds, so it can strand a residual HIGH exactly like /build"
+printf '%s\n' "$K1970_FIX_REPORT" | grep '## Review notes' >/dev/null \
+  || fail "#1970: fix.md Step 7's residual_blocking line must point at the PR's ## Review notes"
+echo "PASS: #1970 report-surface guards — build.md Step 6, sweep.md Step 4 and fix.md Step 7 each render the residual_blocking tally the .mjs emits, section-scoped"
+
 # ============================================================================
 # TEST (K1970-e2e): the round counter's GENERATED SHELL, executed for real
 #   against a REAL LINKED worktree.
