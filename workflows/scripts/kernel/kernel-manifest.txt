@@ -221,6 +221,12 @@ kernel workflows/scripts/build/*
 # no org/personal content).
 kernel workflows/scripts/build/issue-state.sh
 kernel workflows/scripts/build/lib/pr-linkage.sh
+# state-graph.sh + its test (temperloop#1910, ADR 0033) are already covered
+# by the build/* catch-all above; explicit by-name lines requested for the
+# new derived-state-graph builder, same convention as issue-state.sh just
+# above (generic build-machinery tooling, no org/personal content).
+kernel workflows/scripts/build/state-graph.sh
+kernel workflows/scripts/build/tests/test_state_graph.sh
 # test_rework_snapshot.sh tests workflows/scripts/rework-snapshot.sh, which is
 # overlay (personal telemetry pipeline, see the flat-files block below) — a
 # kernel-only checkout has nothing for this test to exercise. Single-file

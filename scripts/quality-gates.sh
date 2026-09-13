@@ -125,6 +125,14 @@ KERNEL_GATES=(
   # test_*.sh file already follows) — this comment is the explicit
   # by-name registration the activation proof greps for.
   "make test-build"
+  # State graph core build (temperloop#1910, ADR 0033): test_state_graph.sh
+  # is already glob-covered by `make test-build` above (same convention as
+  # test_ci_poll_retry.sh just above), but is ALSO registered here as its
+  # own explicit gate line — not just a comment — because this item's
+  # activation proof runs `scripts/quality-gates.sh --list | grep -q
+  # test_state_graph`, and `--list` prints only the literal command strings
+  # in this array, never a comment (temperloop#1934).
+  "bash workflows/scripts/build/tests/test_state_graph.sh"
   "make test-build-workflow"
   "make test-hooks"
   # Write-jail guard COVERAGE-LOSS gate (foundation#1367). Runs
