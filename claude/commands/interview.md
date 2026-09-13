@@ -130,10 +130,13 @@ and the check-question answers.
   round's results are written as a full-file rewrite followed by a
   read-back (Step 2.6). A write's OK return is not proof it landed; a
   crashed round must be locatable from the note alone (§ Resume). One
-  retry policy covers every note write in this spec: a read-back mismatch
-  is retried once, and a second mismatch stops the interview with a
-  one-line error naming the note — never continue asking over a write the
-  note does not carry.
+  retry policy covers every note write in this spec, and both ways a
+  write can fail: a write call that errors outright (permission denied,
+  disk full, a backend timeout — no read-back is possible) and a
+  read-back that does not match are each retried once, and a second
+  failure of either kind stops the interview with a one-line error naming
+  the note and the round in flight — never continue asking over a write
+  the note does not carry.
 - **The operator's words are the record.** A decision the operator gave in
   their own words (via `Other`) is quoted verbatim in its `D<n>` line and
   its `interview` record line, never paraphrased. Where the operator picked
@@ -344,8 +347,10 @@ restarts or renumbers.
      requirement is met. When the deferring answer names no ref, or names
      one that does not resolve to an open tracking item (`gh issue view`
      / a `Read` of the named note fails), ask once, in the same turn and
-     before this persist, as one more call of the round (2.4 pending
-     line, 2.5): *"What should track this deferral?"* with options `File
+     before this persist, as one more call of the round (composed per
+     2.3, 2.4 pending line, 2.5 — every `AskUserQuestion` call in this
+     spec is composed per 2.3, this one included): *"What should track
+     this deferral?"* with options `File
      it for me (Recommended)` and `Other` for an existing ref. `File it`
      routes by the kernel's defect-vs-enhancement split
      (`claude/CLAUDE.kernel.md` § Task workflow): a gap that should
@@ -354,14 +359,21 @@ restarts or renumbers.
      `Decisions/` or `Context/` note written now, under the same
      read-back policy as every note write here, and the ref is that
      note's wikilink. When `capture` is unavailable (no board for this
-     repo, `gh` down), fall through to the note form and say so; the
-     bullet is written only once a ref is in hand;
+     repo, `gh` down) **or the call itself fails** (a non-zero exit, an
+     error, a timeout after the request was sent — with no issue number
+     returned, the item is treated as not filed), fall through to the
+     note form and say so on one line; the bullet is written only once a
+     ref is in hand, so a failed capture can never strand the deferral
+     silently — it either becomes a note-backed ref in this same round or
+     stops the round under the note-write policy;
    - any risk the answers surfaced under `### Risks` as `R<n>`, premortem-
      framed with its kill condition inline;
    - the round's `### Interview record` line: `round N: D<a>–D<b>
-     [interview] operator: <k> asked, <k> answered<, notes>` (the notes
-     name decisions taken against the recommendation and any operator-
-     edited answer);
+     [interview] operator: <k> asked, <k> answered<, notes>` — `<k>`
+     counts every question the round's calls asked, the round-1 problem
+     statement included, while `D<a>–D<b>` names decisions only (the
+     notes name decisions taken against the recommendation and any
+     operator-edited answer);
    - the `interview`-kind stop lines under `## Working notes` →
      `### Challenge record`, one per decision (clustered where the verdict
      is identical), `source` always the literal `operator`: a recommended
@@ -402,8 +414,12 @@ restarts or renumbers.
 2. **One call, at most four questions, composed per 2.3** (Routing slot
    included). Q1 is the interview's own:
    *"Is this the shared understanding?"* with options `Understood
-   (Recommended)` and `One fix — I will say what` (the fix arrives via
-   `Other`, in the operator's words). The `--check-questions` block's
+   (Recommended)` and `One fix — I will say what`. The fix's content is
+   the operator's words via `Other`; `One fix` chosen as a bare option,
+   with no words, is not a terminal answer — it is followed in the same
+   turn by one free-text call asking for the fix (composed per 2.3, 2.4
+   pending line), so the fix round (3.3) always opens holding verbatim
+   text. The `--check-questions` block's
    questions (at most three) follow in the same call; their answers are
    recorded in the call entry and returned to the caller. Persist a `round
    N pending:` line for this call like any other (2.4).
@@ -553,8 +569,9 @@ Every external call has a named failure path; none is silent:
   for a gap, a `Decisions/`/`Context/` note for a design seam — and the
   `### Deferrals` bullet is written only with the ref in hand. A bare
   "later" is never persisted. **`capture` unavailable** (no board, `gh`
-  down) → the note form, stated once; a failing note write is the
-  note-write row above.
+  down) **or `capture` fails mid-call** (non-zero exit, error, timeout,
+  no issue number returned) → the note form, stated once; a failing note
+  write is the note-write row above.
 - **Outside a git repo** (Step 0.5) → ask the operator for the `<repo>`
   prefix of the default note name; never invent one.
 - **`gh` unavailable with an issue-number seed, or `gh issue view` exits
