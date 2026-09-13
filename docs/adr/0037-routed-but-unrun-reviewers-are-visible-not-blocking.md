@@ -8,14 +8,17 @@ Accepted
 
 ## Context
 
-`/build` §3e's pre-push review is a **mandatory** pipeline step, and the
+`/build` §3e's pre-push review — Step 3e of `claude/commands/build.md`, the
+reviewer pass that runs before a worker's branch is pushed — is a **mandatory**
+pipeline step, and the
 per-item tally `review: { ran, skipped, mandatory_ok }` that `park()` returns
 is its declared **execution signal** under `claude/CLAUDE.kernel.md`
 § Mandatory-step birth rule.
 
 That signal covered one route out of twelve. `determineReviewers()` in
 `claude/workflows/build-level.mjs` sets `mandatory: true` only for
-`workflow-reviewer` on a `claude/commands/*.md` diff (foundation#1007); every
+`workflow-reviewer` on a `claude/commands/*.md` diff (foundation#1007 — the
+command-doc mandatory route); every
 reviewer routed by the extension axis of
 `workflows/scripts/config/reviewer-routing.tsv` — `shell-reviewer` for `.sh`,
 `typescript-reviewer` for `.mjs`, and the rest — was never flagged mandatory.
@@ -23,14 +26,15 @@ So `mandatory_ok` read `true` even when a routed reviewer resolved and then did
 not run: the gate reported clean while the shell diff went unreviewed.
 
 This was live, not theoretical. In one session the §3e shell review failed to
-run six times across three items (temperloop#1982), and every instance was
+run six times across three items (temperloop#1982 — six unrun shell reviews),
+and every instance was
 caught by a human reading the reviewer roster — never by the tally. A signal
 that cannot go false for eleven of the twelve routes it covers is not
 discharging the birth rule; it is the narrower version of the failure the rule
 exists against, something observable that proves the step ran for one reviewer
 and silently vouches for the rest.
 
-issue: Towheads/temperloop#1984.
+issue: Towheads/temperloop#1984 — mandatory_ok misses tsv-routed reviewers.
 
 ## Decision
 
@@ -51,12 +55,14 @@ review summary line renders it beside the existing `mandatory_ok` line.
 The `claude/commands/*.md` → `workflow-reviewer` mandatory rule is untouched:
 `determineReviewers()` still sets `mandatory: true` for exactly that route, and
 `mandatory_ok: !skipped.some((s) => s.mandatory)` is unchanged, character for
-character (it is the registered ANCHOR of this step's row in
+character (it is the registered ANCHOR — the literal substring the registry's
+validator matches to detect a reworded declaration — of this step's row in
 `workflows/scripts/config/mandatory-step-registry.tsv`).
 
 **Rejected: marking every tsv-routed reviewer mandatory.** This is the stronger
-signal, and it was rejected on kernel principle 7 (advisory over enforced
-discipline — weigh a hard gate's own cost before making it one). A per-language
+signal, and it was rejected on kernel principle 7 (`claude/engineering-principles.md` § 7,
+Advisory over enforced discipline — weigh a hard gate's own cost before making
+it one). A per-language
 reviewer is *routinely* absent by design: ADR 0007 ships the seven-language
 roster as an **inert kernel catalog**, and a consuming checkout activates only
 the reviewers it opts into. Under option 1, the very first `.py` or `.go` file

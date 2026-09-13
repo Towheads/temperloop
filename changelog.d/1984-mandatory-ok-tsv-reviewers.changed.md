@@ -2,7 +2,7 @@
   reviewer** (#1984). `park()`'s `review` record gains a `routed_not_run` field
   alongside `ran`/`skipped`/`mandatory_ok`, and `/build`'s Step 6 summary
   renders it. `mandatory_ok` covers only the `claude/commands/*.md` →
-  `workflow-reviewer` rule (foundation#1007), so an extension-axis reviewer
+  `workflow-reviewer` rule (foundation#1007 — the workflow-reviewer mandatory rule), so an extension-axis reviewer
   routed by `reviewer-routing.tsv` — `shell-reviewer` for a `.sh` diff, say —
   could resolve, be skipped, and still leave the tally reading fully clean.
   `routed_not_run` is non-empty exactly when `skipped` is. It is a visibility
