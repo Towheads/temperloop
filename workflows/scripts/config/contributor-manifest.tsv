@@ -147,6 +147,7 @@ claude/commands/build.md	frontmatter:description	command-listing	harness-auto
 claude/commands/check-in.md	frontmatter:description	command-listing	harness-auto
 claude/commands/fix.md	frontmatter:description	command-listing	harness-auto
 claude/commands/init.md	frontmatter:description	command-listing	harness-auto
+claude/commands/interview.md	frontmatter:description	command-listing	harness-auto
 claude/commands/next.md	frontmatter:description	command-listing	harness-auto
 claude/commands/pipeline-drive-merge.md	frontmatter:description	command-listing	harness-auto
 claude/commands/pipeline-drive.md	frontmatter:description	command-listing	harness-auto
