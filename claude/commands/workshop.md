@@ -617,7 +617,7 @@ produced was actually disposed of.
 2. **Apply clear wins directly.** A finding that clearly improves a
    dimension's content — no judgment call, no disagreement with the
    brief's existing stance — is folded into that dimension's body **now**,
-   using Step 2.6's write primitive for this backend. A finding that
+   using Step 2.4's write primitive for this backend. A finding that
    surfaces a real gap the operator chooses not to resolve now converts
    that dimension's disposition to `deferred → <tracking ref>` rather than
    leaving it `filled` with an unaddressed critique.
@@ -672,7 +672,7 @@ delta report, quoted against the dimensions it concerns.
    in `claude/design-schema.md` § Congruence seams — that section owns the
    seams, what must agree at each, and its floor-not-ceiling extension
    rule. **Apply it by reference; never restate the table here**, the same
-   discipline Step 2.3 applies to the disposition grammar. The checklist is
+   discipline Step 2.2 applies to the disposition grammar. The checklist is
    **facilitator-run and unconditional**: no agent, no probe, no network —
    so it runs on every brief in every checkout, including one where item
    2's lens is unavailable. Record each seam as **held** or **flagged**; a
