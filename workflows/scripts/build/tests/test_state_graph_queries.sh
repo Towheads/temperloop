@@ -3,14 +3,15 @@
 # Tests for `state-graph.sh query <name>` — the five named queries over the
 # derived state graph (temperloop#1910 L6): status-drift, stale-claims,
 # unlinked-prs, orphan-worktrees, resume. Sibling of test_state_graph.sh /
-# test_state_graph_local.sh, which cover the seven `_sg_read_*` SOURCES this
+# test_state_graph_local.sh, which cover the eight `_sg_read_*` SOURCES this
 # file's queries read FROM — this file never re-covers those sources, it
 # feeds each `_sg_query_*` a synthetic, hand-written SNAPSHOT literal
-# (matching `_sg_build_snapshot`'s own schema_version/board/repo/built_at/
-# sources/nodes/edges shape) directly. Every `_sg_query_*` is a PURE
+# (matching `_sg_build_snapshot`'s own schema_version/board/repo/host/
+# built_at/sources/nodes/edges shape) directly. Every `_sg_query_*` is a PURE
 # function of that one JSON string — no board/gh/git access of its own — so
 # these tests need none of the seam-overriding the source-level tests do.
-# Fixtures are entirely synthetic: no real host names, session ids, or paths.
+# Fixtures are entirely synthetic: no real host names, session ids, or paths
+# (mnemonic placeholders like "mini-1"/"otherbox" only).
 #
 # Covers:
 #   - route-alphabet contract: the shared fixture
@@ -19,6 +20,11 @@
 #     axis — the ONE enum, ONE drift check the acceptance bullet asks for.
 #   - one GOLDEN (exact-JSON) fixture per query: status-drift, stale-claims,
 #     unlinked-prs, orphan-worktrees, resume.
+#   - stale-claims's STATUS gate (temperloop#1980 round 4 HIGH): `$claims`
+#     only ever considers a `claimed_by` edge whose Issue node is currently
+#     `fnd:status:in-progress`, matching reconcile.sh's own producer — a
+#     Ready-status issue still wearing its claim stamp (the ordinary "Park,
+#     don't abandon" residue) answers findings:[], never a stale finding.
 #   - resume's ranked-merge authority ordering (plan > journal > git >
 #     board): one fixture per tier deciding, PLUS the invariant fixture — a
 #     terminal `[x]` sentinel is never reversed even when a lower tier
@@ -126,33 +132,138 @@ out="$(_sg_query_status_drift "$SNAP_STATUS_DRIFT_CLOSED")"
 echo "PASS: status-drift — a closed issue still wearing an fnd:status:* label surfaces as closed_with_status_label, not conflated with the open-domain kinds"
 
 # =============================================================================
-# stale-claims — claimed_by edges naming a Session absent from the journal
-# source (board + journal)
+# stale-claims — claimed_by edges, gated to THIS HOST, naming an Issue with
+# no live transcript (board + transcripts; temperloop#1980 round 3 —
+# transcripts is the liveness oracle, the SAME per-session mtime evidence
+# reconcile.sh's own `_reconcile_session_live` checks, never tmux markers and
+# never the journal's step-outcome ledger)
 # =============================================================================
 
 SNAP_STALE_CLAIMS='{
-  "sources": {"board":{"status":"ok"},"journal":{"status":"ok"}},
+  "host": "mini-1",
+  "sources": {"board":{"status":"ok"},"transcripts":{"status":"ok"}},
   "nodes": [
-    {"type":"Session","id":"Session:live1"}
+    {"type":"Transcript","id":"Transcript:live1","sess8":"live1"},
+    {"type":"Issue","id":"Issue:1","number":1,"status":"fnd:status:in-progress"},
+    {"type":"Issue","id":"Issue:2","number":2,"status":"fnd:status:in-progress"}
   ],
   "edges": [
-    {"type":"claimed_by","from":"Issue:1","to":"Session:live1"},
-    {"type":"claimed_by","from":"Issue:2","to":"Session:ghost2"}
+    {"type":"claimed_by","from":"Issue:1","to":"Session:mini-1:live1"},
+    {"type":"claimed_by","from":"Issue:2","to":"Session:mini-1:ghost2"}
   ]
 }'
-GOLDEN_STALE_CLAIMS='{"query":"stale-claims","status":"ok","findings":[{"issue":"Issue:2","session":"Session:ghost2"}]}'
+GOLDEN_STALE_CLAIMS='{"query":"stale-claims","status":"ok","findings":[{"issue":"Issue:2","session":"Session:mini-1:ghost2"}]}'
 out="$(_sg_query_stale_claims "$SNAP_STALE_CLAIMS")"
 [ "$out" = "$GOLDEN_STALE_CLAIMS" ] || fail "stale-claims golden mismatch (got: $out)"
-echo "PASS: stale-claims golden fixture — a claim naming a session absent from the journal"
+echo "PASS: stale-claims golden fixture — a claim naming an issue with no live transcript"
 
-# --- degraded (board, then journal) -> unknown ---------------------------
+# --- degraded (board, then transcripts) -> unknown ------------------------
 out="$(_sg_query_stale_claims "$(jq -c '.sources.board.status="error"' <<<"$SNAP_STALE_CLAIMS")")"
 [ "$(jq -r .status <<<"$out")" = "unknown" ] || fail "stale-claims board=error did not answer unknown (got: $out)"
 [ "$(jq -r .findings <<<"$out")" = "unknown" ] || fail "stale-claims board=error findings not 'unknown' (got: $out)"
-out="$(_sg_query_stale_claims "$(jq -c '.sources.journal.status="stale"' <<<"$SNAP_STALE_CLAIMS")")"
-[ "$(jq -r .status <<<"$out")" = "unknown" ] || fail "stale-claims journal=stale did not answer unknown (got: $out)"
-[ "$(jq -r .findings <<<"$out")" = "unknown" ] || fail "stale-claims journal=stale findings not 'unknown' (got: $out)"
-echo "PASS: stale-claims answers unknown (never []) when board or journal is error/stale"
+out="$(_sg_query_stale_claims "$(jq -c '.sources.transcripts.status="stale"' <<<"$SNAP_STALE_CLAIMS")")"
+[ "$(jq -r .status <<<"$out")" = "unknown" ] || fail "stale-claims transcripts=stale did not answer unknown (got: $out)"
+[ "$(jq -r .findings <<<"$out")" = "unknown" ] || fail "stale-claims transcripts=stale findings not 'unknown' (got: $out)"
+echo "PASS: stale-claims answers unknown (never []) when board or transcripts is error/stale"
+
+# --- transcripts ABSENT (temperloop#1980 round 3) --------------------------
+# transcripts is stale-claims's liveness ORACLE: "no transcript directory at
+# all" means liveness cannot be established, not "nothing is live" — so an
+# `absent` transcripts source must answer `unknown`, never a concrete
+# findings set computed against zero known-live sessions (which would flag
+# every live claim as stale — the same shape of bug #1980 was originally
+# filed over, one source over).
+SNAP_STALE_CLAIMS_ABSENT="$(jq -c '.sources.transcripts.status="absent"' <<<"$SNAP_STALE_CLAIMS")"
+out="$(_sg_query_stale_claims "$SNAP_STALE_CLAIMS_ABSENT")"
+[ "$(jq -r .status <<<"$out")" = "unknown" ] || fail "stale-claims transcripts=absent did not answer unknown (got: $out)"
+[ "$(jq -r .findings <<<"$out")" = "unknown" ] || fail "stale-claims transcripts=absent findings not the literal string 'unknown' (got: $out)"
+case "$(jq -r .reason <<<"$out")" in
+  *transcripts*) ;;
+  *) fail "stale-claims transcripts=absent reason does not name the transcripts source (got: $out)" ;;
+esac
+echo "PASS: stale-claims transcripts=absent answers unknown with a transcripts-naming reason, never a set computed against zero known-live sessions"
+
+# --- the round-2 HIGH's reproduction, repointed at round 3's actual oracle:
+# a live session that has written NO journal step-outcome record must never
+# be reported as stale, even when the journal source itself reads "ok"
+# overall (because some OTHER session wrote a record) — the exact false-
+# positive shape from the issue's live evidence. Repoints the round-2
+# assertion (tmux-marker-keyed) at transcripts-keyed evidence, the actual
+# oracle round 3 introduced, so this stays a genuinely-covered case rather
+# than a golden-fixture rehash.
+SNAP_STALE_CLAIMS_NO_STEP_OUTCOME='{
+  "host": "mini-1",
+  "sources": {"board":{"status":"ok"},"transcripts":{"status":"ok"},"journal":{"status":"ok"}},
+  "nodes": [
+    {"type":"Transcript","id":"Transcript:live1","sess8":"live1"},
+    {"type":"Issue","id":"Issue:1","number":1,"status":"fnd:status:in-progress"},
+    {"type":"Session","id":"Session:mini-1:other","steps":[{"step":"pr-open","outcome":"PR_OPENED"}]}
+  ],
+  "edges": [
+    {"type":"claimed_by","from":"Issue:1","to":"Session:mini-1:live1"}
+  ]
+}'
+out="$(_sg_query_stale_claims "$SNAP_STALE_CLAIMS_NO_STEP_OUTCOME")"
+[ "$(jq -c '.findings' <<<"$out")" = '[]' ] || fail "stale-claims live-claim regression: a live session (fresh transcript) with NO journal step-outcome record — journal itself 'ok' via an unrelated session — must never appear in findings (got: $out)"
+echo "PASS: stale-claims — a live session holding a claim with no step-outcome record is not reported as stale (liveness is decided by the transcript alone, never the journal)"
+
+# --- host gate (temperloop#1980 round 3 HIGH 2): a claim stamped to ANOTHER
+# host is excluded from findings entirely, never confidently reported stale
+# from THIS host's own transcript directory, which cannot speak to a foreign
+# host's liveness at all — reconcile.sh's own claim-liveness lens gates the
+# exact same way before ever checking liveness. Reproduces the reviewer's
+# own repro: a foreign-host claim must never read agree:false against a
+# false stale finding.
+SNAP_STALE_CLAIMS_FOREIGN_HOST='{
+  "host": "mini-1",
+  "sources": {"board":{"status":"ok"},"transcripts":{"status":"ok"}},
+  "nodes": [
+    {"type":"Issue","id":"Issue:41","number":41,"status":"fnd:status:in-progress"}
+  ],
+  "edges": [
+    {"type":"claimed_by","from":"Issue:41","to":"Session:otherbox:remote77"}
+  ]
+}'
+out="$(_sg_query_stale_claims "$SNAP_STALE_CLAIMS_FOREIGN_HOST")"
+[ "$(jq -r .status <<<"$out")" = "ok" ] || fail "stale-claims host gate: foreign-host-only input must still read status:ok (got: $out)"
+[ "$(jq -c '.findings' <<<"$out")" = '[]' ] || fail "stale-claims host gate: a claim stamped to another host must never be reported stale from this host's own transcript evidence (got: $out)"
+echo "PASS: stale-claims — a claim stamped to another host is excluded from findings entirely (host-gated, matches reconcile.sh's own gating)"
+
+# --- STATUS gate (temperloop#1980 round 4 HIGH): a claim stamped on an
+# issue that has since moved OFF In Progress (a Ready-status issue still
+# wearing its claim stamp — the ordinary "Park, don't abandon" residue:
+# board_set_status never clears the claim stamp, only release.sh does) is
+# excluded from findings entirely — matching reconcile.sh's own producer,
+# which emits its "stale claims (In Progress...)" class ONLY for an
+# In-Progress issue (reconcile.sh:876-879). Reproduces the reviewer's own
+# live repro (`"drift_query_set":[21],"reconcile_set":[]`) at the query
+# level: no live transcript for the claimed session, so absent this gate
+# the claim would read stale.
+SNAP_STALE_CLAIMS_NOT_IN_PROGRESS='{
+  "host": "mini-1",
+  "sources": {"board":{"status":"ok"},"transcripts":{"status":"ok"}},
+  "nodes": [
+    {"type":"Issue","id":"Issue:21","number":21,"status":"fnd:status:ready"}
+  ],
+  "edges": [
+    {"type":"claimed_by","from":"Issue:21","to":"Session:mini-1:ghost21"}
+  ]
+}'
+out="$(_sg_query_stale_claims "$SNAP_STALE_CLAIMS_NOT_IN_PROGRESS")"
+[ "$(jq -r .status <<<"$out")" = "ok" ] || fail "stale-claims status gate: a Ready-status claimed issue must still read status:ok (got: $out)"
+[ "$(jq -c '.findings' <<<"$out")" = '[]' ] || fail "stale-claims status gate: a claim on an issue no longer In Progress must never be reported stale (got: $out)"
+echo "PASS: stale-claims — a claim stamped on an issue that has moved off In Progress is excluded from findings entirely (status-gated, matches reconcile.sh's own In-Progress-only producer)"
+
+# --- scoping regression: status-drift's own board=absent reading is
+# UNCHANGED by the local transcripts-liveness carve-out above (temperloop#1980
+# acceptance: "_sg_degraded is NOT widened ... status-drift ... keep today's
+# 'absent = nothing found' semantics"). board=absent is not error/stale, so
+# status-drift must still compute a normal `ok` result, never `unknown` —
+# proving `_sg_degraded` itself was never touched.
+out="$(_sg_query_status_drift "$(jq -c '.sources.board.status="absent"' <<<"$SNAP_STATUS_DRIFT")")"
+[ "$(jq -r .status <<<"$out")" = "ok" ] || fail "status-drift board=absent must stay 'ok' (unchanged semantics) — got: $out"
+[ "$out" = "$GOLDEN_STATUS_DRIFT" ] || fail "status-drift board=absent golden mismatch — the #1980 fix must not touch status-drift (got: $out)"
+echo "PASS: status-drift's board=absent ('nothing found') reading is unchanged by the stale-claims-local #1980 fix"
 
 # =============================================================================
 # unlinked-prs — open PR nodes with no closes edge (pr_list only)
@@ -449,6 +560,7 @@ echo "── cmd_query in-process: a fallback live build is persisted so a secon
 export CACHE_STORE_ROOT="$CLI_TMP/cache-fallback"
 export KNOWLEDGE_STORE_ROOT="$CLI_TMP/no-such-ks"   # plan_notes -> absent
 export SPEND_TRANSCRIPT_ROOT="$CLI_TMP/no-such-tr"  # journal -> absent
+export CLAUDE_PROJECTS_DIR="$CLI_TMP/no-such-projects"  # transcripts -> absent
 GH_CALL_LOG="$CLI_TMP/gh-call.log"
 : >"$GH_CALL_LOG"
 _board_gh() {

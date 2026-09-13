@@ -1,17 +1,18 @@
 #!/usr/bin/env bash
 #
-# Tests for the three HOST-LOCAL sources state-graph-build-local
-# (temperloop#1918, epic #1910) added to workflows/scripts/build/state-
-# graph.sh's reader table — plan_notes, journal, tmux — alongside the four
-# core sources test_state_graph.sh already covers (board / board_edges /
-# pr_list / worktrees, untouched by this item). Same fixture discipline as
-# that file: this test `source`s state-graph.sh (whose source-guard skips
-# the CLI dispatch) and overrides each new source's own seam — no network,
-# no real tmux server, no real knowledge store / transcript root on the
-# host running the test. Fixtures are entirely synthetic: no real host
-# names, session ids, or paths.
+# Tests for the four HOST-LOCAL sources state-graph-build-local
+# (temperloop#1918, epic #1910; transcripts added by temperloop#1980 round 3)
+# added to workflows/scripts/build/state-graph.sh's reader table —
+# plan_notes, journal, tmux, transcripts — alongside the four core sources
+# test_state_graph.sh already covers (board / board_edges / pr_list /
+# worktrees, untouched by this item). Same fixture discipline as that file:
+# this test `source`s state-graph.sh (whose source-guard skips the CLI
+# dispatch) and overrides each new source's own seam — no network, no real
+# tmux server, no real knowledge store / transcript root / Claude Code
+# projects directory on the host running the test. Fixtures are entirely
+# synthetic: no real host names, session ids, or paths.
 #
-# Twelve cases (ok/absent/error/stale, one per state, per source):
+# Sixteen cases (ok/absent/error/stale, one per state, per source):
 #   - plan_notes: ok (an approved note's PlanItem nodes + depends_on/after
 #     edges + pr:/pushed_sha: fields, from the knowledge store), absent (no
 #     store, and separately no note whose status is approved/executing),
@@ -25,6 +26,11 @@
 #     edge, AND separately a reachable server with zero claims — this must
 #     read `ok`, never `absent`), absent (no tmux binary or no server),
 #     error (list-windows fails after list-sessions succeeded), stale
+#   - transcripts: ok (a fresh `$CLAUDE_PROJECTS_DIR/*/<sess>*.jsonl`
+#     transcript emits a Transcript node, AND separately a reachable
+#     directory with zero/only-stale sessions — this must read `ok`, never
+#     `absent`), absent (no transcript directory at all), error (directory
+#     exists but is not readable — permission denied), stale
 #
 # The deliberately-INVALID plan-sentinel fixture (the error case) is built
 # via `printf '...[%s]...' 'q'` rather than a literal `- [q] ` markdown
@@ -53,6 +59,19 @@ fail() { echo "FAIL: $1" >&2; exit 1; }
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
+
+# `touch -t` stamp for <n> seconds ago, for the transcripts source's mtime
+# fixtures below — mirrors test_worktree_concurrency.sh's own `past_stamp`
+# exactly (BSD `date -v-Ns` vs. GNU `date -d "-N seconds"`, feature-detected
+# rather than chained, for the same reason the code under test feature-
+# detects `stat`).
+past_stamp() {
+  if date -v-1S '+%Y' >/dev/null 2>&1; then
+    date -v-"$1"S '+%Y%m%d%H%M.%S'          # BSD/macOS
+  else
+    date -d "-$1 seconds" '+%Y%m%d%H%M.%S'  # GNU coreutils
+  fi
+}
 
 # Never touch the real knowledge-store read-log from a fixture run (mirrors
 # workflows/scripts/lib/tests/test_knowledge_store.sh's own isolation).
@@ -250,10 +269,122 @@ out="$(_sg_read_tmux "$BOARD")"
 echo "PASS: tmux source error — list-windows failed on a reachable server"
 
 # =============================================================================
-# stale: the shared read-time transform (ADR 0033) also covers all three new
+# source: transcripts (Transcript nodes — stale-claims's liveness oracle,
+# temperloop#1980 round 3). No seam like tmux's `_sg_tmux`: mirrors journal's
+# own precedent (real files under an env-var-named directory, no command to
+# shim) — see _sg_read_transcripts's own header comment.
+# =============================================================================
+
+# --- transcripts: ok (a fresh per-session transcript) -----------------------
+export CLAUDE_PROJECTS_DIR="$TMP/cp-ok"
+mkdir -p "$CLAUDE_PROJECTS_DIR/proj1"
+: > "$CLAUDE_PROJECTS_DIR/proj1/33333333-3333-3333-3333-333333333333.jsonl"
+out="$(_sg_read_transcripts)"
+[ "$(jq -r .status <<<"$out")" = "ok" ] || fail "transcripts ok status (got: $out)"
+[ "$(jq -r '.nodes[0].id' <<<"$out")" = "Transcript:33333333" ] || fail "transcripts ok Transcript node id (got: $out)"
+[ "$(jq -r '.nodes[0].sess8' <<<"$out")" = "33333333" ] || fail "transcripts ok sess8 field (got: $out)"
+echo "PASS: transcripts source ok — a fresh per-session transcript emits a Transcript node keyed by its 8-char session id"
+
+# --- transcripts: ok (directory exists, zero sessions — must NOT read absent) -
+export CLAUDE_PROJECTS_DIR="$TMP/cp-empty"
+mkdir -p "$CLAUDE_PROJECTS_DIR"
+out="$(_sg_read_transcripts)"
+[ "$(jq -r .status <<<"$out")" = "ok" ] || fail "transcripts ok (zero sessions) status (got: $out)"
+[ "$(jq '.nodes | length' <<<"$out")" -eq 0 ] || fail "transcripts ok (zero sessions) unexpectedly emitted a node (got: $out)"
+echo "PASS: transcripts source ok — a reachable directory with zero sessions is ok, not absent"
+
+# --- transcripts: ok (a transcript past the cutoff emits NO node — "dead" is
+# the ordinary empty case, mirroring _reconcile_session_live's own "no
+# transcript -> dead" reading, never `absent`) ------------------------------
+export CLAUDE_PROJECTS_DIR="$TMP/cp-stale-file"
+mkdir -p "$CLAUDE_PROJECTS_DIR/proj1"
+: > "$CLAUDE_PROJECTS_DIR/proj1/44444444-4444-4444-4444-444444444444.jsonl"
+touch -t "$(past_stamp 7200)" "$CLAUDE_PROJECTS_DIR/proj1/44444444-4444-4444-4444-444444444444.jsonl"
+out="$(RECONCILE_STALE_AFTER_SECS=3600 _sg_read_transcripts)"
+[ "$(jq -r .status <<<"$out")" = "ok" ] || fail "transcripts ok (stale file) status (got: $out)"
+[ "$(jq '.nodes | length' <<<"$out")" -eq 0 ] || fail "transcripts: a transcript past RECONCILE_STALE_AFTER_SECS must emit no node (got: $out)"
+echo "PASS: transcripts source — a transcript older than RECONCILE_STALE_AFTER_SECS emits no node (dead, not absent)"
+
+# --- transcripts: "now" is seamed (_sg_now), pinned exactly ON the cutoff --
+# boundary (temperloop#1980 round 4 MEDIUM 1). The source's whole claim is
+# equivalence with reconcile.sh's `_reconcile_session_live`, whose own
+# `(now - newest) <= RECONCILE_STALE_AFTER_SECS` this file's awk reduction
+# mirrors — a transcript aged EXACTLY the cutoff must still emit a node
+# (`<=`, not `<`). `epoch_stamp` (below) turns a FIXED epoch into a
+# `touch -t` stamp so the file's mtime and `_sg_now`'s pinned return value
+# are related by an exact, race-free subtraction — no reliance on real wall
+# time elapsing between computing the stamp and touching the file (unlike
+# `past_stamp`'s "N seconds ago from actual now", which cannot land exactly
+# on a boundary). Mutating the awk comparison to `<` makes this fixture
+# fail: (now - mt) == cutoff is no longer `< cutoff`.
+epoch_stamp() { # <epoch-seconds> -> touch -t stamp, local time
+  if date -r 0 '+%Y' >/dev/null 2>&1; then
+    date -r "$1" '+%Y%m%d%H%M.%S'          # BSD/macOS
+  else
+    date -d "@$1" '+%Y%m%d%H%M.%S'         # GNU coreutils
+  fi
+}
+FIXED_NOW=1700000000
+CUTOFF=3600
+_sg_now() { echo "$FIXED_NOW"; }
+export CLAUDE_PROJECTS_DIR="$TMP/cp-cutoff-boundary"
+mkdir -p "$CLAUDE_PROJECTS_DIR/proj1"
+BOUNDARY_FILE="$CLAUDE_PROJECTS_DIR/proj1/55555555-5555-5555-5555-555555555555.jsonl"
+: > "$BOUNDARY_FILE"
+touch -t "$(epoch_stamp $((FIXED_NOW - CUTOFF)))" "$BOUNDARY_FILE"
+out="$(RECONCILE_STALE_AFTER_SECS=$CUTOFF _sg_read_transcripts)"
+[ "$(jq -r .status <<<"$out")" = "ok" ] || fail "transcripts cutoff-boundary status (got: $out)"
+[ "$(jq '.nodes | length' <<<"$out")" -eq 1 ] || fail "transcripts: a transcript aged EXACTLY RECONCILE_STALE_AFTER_SECS must still emit a node (<=, not <) (got: $out)"
+[ "$(jq -r '.nodes[0].sess8' <<<"$out")" = "55555555" ] || fail "transcripts cutoff-boundary sess8 (got: $out)"
+_sg_now() { date +%s; }  # restore the real seam for every test after this one
+echo "PASS: transcripts source — a transcript aged EXACTLY RECONCILE_STALE_AFTER_SECS still emits a node (<=, boundary-pinned via the _sg_now seam)"
+
+# --- transcripts: newest-mtime-per-session reduction, not last-wins --------
+# (temperloop#1980 round 4 MEDIUM 2). A real session routinely has SEVERAL
+# transcript files across project dirs (Claude Code starts a fresh file per
+# project directory for the same session); the awk reduction must keep the
+# NEWEST mtime among them all, mirroring _reconcile_session_live's own "max
+# mtime among any matching file". Two files for one sess8 in two project
+# dirs — one aged past the cutoff, one fresh — must still resolve to exactly
+# one live Transcript node. Mutating the reduction to last-wins
+# (`{ max[$1] = $2 }`, unconditional) makes this fixture non-deterministic/
+# fail: whichever file the glob happens to visit LAST decides liveness, and
+# the older-file-last ordering below would then read dead.
+export CLAUDE_PROJECTS_DIR="$TMP/cp-multi-file-session"
+mkdir -p "$CLAUDE_PROJECTS_DIR/proj-old" "$CLAUDE_PROJECTS_DIR/proj-fresh"
+: > "$CLAUDE_PROJECTS_DIR/proj-old/66666666-6666-6666-6666-666666666666.jsonl"
+touch -t "$(past_stamp 7200)" "$CLAUDE_PROJECTS_DIR/proj-old/66666666-6666-6666-6666-666666666666.jsonl"
+: > "$CLAUDE_PROJECTS_DIR/proj-fresh/66666666-6666-6666-6666-666666666666.jsonl"
+out="$(RECONCILE_STALE_AFTER_SECS=3600 _sg_read_transcripts)"
+[ "$(jq -r .status <<<"$out")" = "ok" ] || fail "transcripts multi-file-session status (got: $out)"
+[ "$(jq '.nodes | length' <<<"$out")" -eq 1 ] || fail "transcripts: two files for one sess8 (one stale, one fresh) must reduce to exactly one Transcript node (got: $out)"
+[ "$(jq -r '.nodes[0].sess8' <<<"$out")" = "66666666" ] || fail "transcripts multi-file-session sess8 (got: $out)"
+echo "PASS: transcripts source — the newest mtime among several files for one session decides liveness (max reduction, not last-wins)"
+
+# --- transcripts: absent (no such directory) --------------------------------
+export CLAUDE_PROJECTS_DIR="$TMP/cp-no-such-dir"
+out="$(_sg_read_transcripts)"
+[ "$(jq -r .status <<<"$out")" = "absent" ] || fail "transcripts absent status (got: $out)"
+echo "PASS: transcripts source absent — no transcript directory at all (liveness cannot be checked)"
+
+# --- transcripts: error (directory exists but is not readable) -------------
+if [ "$(id -u)" -ne 0 ]; then
+  export CLAUDE_PROJECTS_DIR="$TMP/cp-unreadable"
+  mkdir -p "$CLAUDE_PROJECTS_DIR"
+  chmod 000 "$CLAUDE_PROJECTS_DIR"
+  out="$(_sg_read_transcripts)"
+  chmod 755 "$CLAUDE_PROJECTS_DIR"   # restore before the EXIT trap's rm -rf
+  [ "$(jq -r .status <<<"$out")" = "error" ] || fail "transcripts error status (got: $out)"
+  echo "PASS: transcripts source error — directory exists but is not readable (permission denied)"
+else
+  echo "SKIP: transcripts source error (permission-denied case) — running as root, chmod 000 is not enforced"
+fi
+
+# =============================================================================
+# stale: the shared read-time transform (ADR 0033) also covers all four new
 # sources — _sg_read_snapshot overrides EVERY source's status uniformly, so
-# one full-snapshot build+age exercises plan_notes/journal/tmux the same way
-# test_state_graph.sh already does for the original four.
+# one full-snapshot build+age exercises plan_notes/journal/tmux/transcripts
+# the same way test_state_graph.sh already does for the original four.
 # =============================================================================
 export CACHE_STORE_ROOT="$TMP/cache-stale"
 export BOARDS_CONF_REPO_LOCAL=/dev/null
@@ -268,6 +399,7 @@ _board_gh() {
 _sg_git() { echo "worktree /home/x/dev/batch/foundation"; }
 export KNOWLEDGE_STORE_ROOT="$TMP/ks-ok"   # the plan_notes "ok" fixture above
 export SPEND_TRANSCRIPT_ROOT="$TMP/tr-ok"  # the journal "ok" fixture above
+export CLAUDE_PROJECTS_DIR="$TMP/cp-ok"    # the transcripts "ok" fixture above
 _sg_tmux() {
   case "$1" in
     list-sessions) return 0 ;;
@@ -278,7 +410,7 @@ _sg_tmux() {
 
 fresh="$(_sg_build_snapshot "$BOARD")"
 _sg_persist_snapshot "$BOARD" "$fresh" "state-graph" || fail "persist for stale test failed"
-for src in plan_notes journal tmux; do
+for src in plan_notes journal tmux transcripts; do
   [ "$(jq -r --arg s "$src" '.sources[$s].status' <<<"$fresh")" = "ok" ] \
     || fail "setup: $src expected ok at build time (got: $fresh)"
 done
@@ -287,12 +419,13 @@ meta="$(cache_meta_file "$BOARD" state-graph)"
 old_ts=$(( $(date +%s) - STATE_GRAPH_MAX_AGE_S - 10 ))
 jq -c --argjson ts "$old_ts" '.last_refresh=$ts' "$meta" >"$meta.tmp" && mv "$meta.tmp" "$meta"
 stale_read="$(_sg_read_snapshot "$BOARD" state-graph)"
-for src in plan_notes journal tmux; do
+for src in plan_notes journal tmux transcripts; do
   [ "$(jq -r --arg s "$src" '.sources[$s].status' <<<"$stale_read")" = "stale" ] \
     || fail "source $src did not read stale past STATE_GRAPH_MAX_AGE_S (got: $stale_read)"
 done
 echo "PASS: plan_notes source stale — a read past STATE_GRAPH_MAX_AGE_S"
 echo "PASS: journal source stale — a read past STATE_GRAPH_MAX_AGE_S"
 echo "PASS: tmux source stale — a read past STATE_GRAPH_MAX_AGE_S"
+echo "PASS: transcripts source stale — a read past STATE_GRAPH_MAX_AGE_S"
 
 echo "ALL PASS: test_state_graph_local.sh"
