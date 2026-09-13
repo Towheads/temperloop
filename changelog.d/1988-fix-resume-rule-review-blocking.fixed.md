@@ -12,3 +12,11 @@
   uncommitted edits; anything else — including a check that will not resolve —
   is kept, and its path reported on the issue, so parking can no longer
   quietly destroy work.
+  The same fact now also gates the *other* half of the hazard: **starting** a
+  drive force-clears the worktree just as deleting it would, so every path
+  that re-enters a drive — answering the parked question, answering a
+  `question-first` target, adopting an issue whose PR vanished, overriding a
+  dependency block — checks for a commit first and resumes against the
+  preserved build instead of rebuilding over it. And the comment `/fix` leaves
+  on a parked issue now says which of the two will happen, so it can no longer
+  point the operator at the action that throws the work away.
