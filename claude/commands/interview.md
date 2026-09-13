@@ -361,8 +361,12 @@ restarts or renumbers.
      free-text Q1: its answer written **verbatim under `### Problem
      (operator's words)`**, replacing the `(asked in round 1)` placeholder
      from Step 1.5. The problem statement is not a decision — it gets no
-     `D<n>` bullet and no stop line, only its call entry (§ Output);
-     every other answered question is a decision and gets both;
+     `D<n>` bullet and no stop line, only its call entry (§ Output). The
+     tracking-ref sub-call below is the one other exception — bookkeeping
+     over a decision already taken, so its answer yields its
+     `### Deferrals` bullet and its call entry, never a `D<n>` of its own
+     (which would shift the numbering its own question quotes). Every
+     other answered question is a decision and gets both;
    - one `D<n>` bullet per answered question under `### Decisions — round
      N (<date>)`: `D<n> **<short title>.** <the chosen option's text, or
      the operator's verbatim words quoted when they used Other>`; a
@@ -409,11 +413,18 @@ restarts or renumbers.
      hand — `capture` returned an issue number, or the seam note was
      written and read back — that `### Deferrals` bullet is written
      immediately, in its own targeted write under the retry-once policy,
-     ahead of this round's batched rewrite, so a crash in between cannot
+     ahead of this round's batched rewrite, so a crash after it cannot
      re-file the same deferral (§ Resume). Should that targeted write
      itself exhaust its retries, the ref is minted but unrecorded: the
      stop line **names it** so it is not lost, and § Resume asks the
-     operator for it rather than re-filing;
+     operator for it rather than re-filing. One window stays open and is
+     **accepted, not closed**: a hard crash between `capture`'s return
+     and the targeted write emits no stop line, so neither the note nor
+     the operator knows a ref was minted, and the resume may file a
+     second. Closing it would need a board search for a maybe-existing
+     issue, which this spec deliberately does not do — the note is the
+     record. The write-ahead shrinks that window to one write; it does
+     not eliminate it;
    - any risk the answers surfaced under `### Risks` as `R<n>`, premortem-
      framed with its kill condition inline;
    - the round's `### Interview record` line: `round N: D<a>–D<b>
@@ -587,7 +598,11 @@ note alone:
   recovery, not a duplicate. **The one exception is the tracking-ref
   sub-call (2.6), whose `File it` arm is non-idempotent.** Where the note
   already carries that deferral's `deferred → <ref>` bullet, the ref was
-  write-ahead persisted: skip the sub-call, stated on one line. Where a
+  write-ahead persisted, so **the decision it came from is settled**:
+  skip that frontier question *and* its sub-call — re-asking the question
+  would either orphan the bullet against a non-deferring answer or
+  re-enter 2.6's trigger and file a second ref — and say so on one line
+  naming the `D<n>`. Where a
   pending line names the sub-call (its question names the `D<n>`, and
   only one is ever in flight — 2.6) and no bullet answers it, a ref may
   have been minted and lost to the write that stopped the run: ask the
