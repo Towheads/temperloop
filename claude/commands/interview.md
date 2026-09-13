@@ -354,7 +354,9 @@ restarts or renumbers.
    previous one returns — no chat prose, no persist, between them.
 6. **Record and persist the round — full-file rewrite + read-back.** With
    the round's answers in hand, rewrite the note in one write carrying
-   (the deferral bullet excepted — it is already persisted, below):
+   (excepting only a deferral bullet the filing sub-call below already
+   write-ahead persisted — a directly-resolving ref is written here, in
+   the batch, like everything else):
    - in round 1 only, when Step 1.3 asked the problem statement as a
      free-text Q1: its answer written **verbatim under `### Problem
      (operator's words)`**, replacing the `(asked in round 1)` placeholder
@@ -379,8 +381,12 @@ restarts or renumbers.
      / a `Read` of the named note fails), ask once, in the same turn and
      before this persist, as one more call of the round (composed per
      2.3, 2.4 pending line, 2.5, like every call in this spec): *"What
-     should track this deferral?"* with options `File it for me
-     (Recommended)` and `Other` for an existing ref. An `Other`
+     should track this deferral — `D<n>`, <its short title>?"* with
+     options `File it for me (Recommended)` and `Other` for an existing
+     ref. Where a round defers more than once, these sub-calls are asked
+     **one at a time, each persisted before the next opens**, so at most
+     one is ever in flight and the decision it belongs to is named in
+     its own pending line (§ Resume pairs them by that name). An `Other`
      ref is re-checked the same way; when it too does not resolve, it is
      **not** taken at face value — the round falls through to the `File
      it` arm, stated on one line ("<ref> does not resolve; filing it"),
@@ -582,7 +588,8 @@ note alone:
   sub-call (2.6), whose `File it` arm is non-idempotent.** Where the note
   already carries that deferral's `deferred → <ref>` bullet, the ref was
   write-ahead persisted: skip the sub-call, stated on one line. Where a
-  pending line names the sub-call and no bullet answers it, a ref may
+  pending line names the sub-call (its question names the `D<n>`, and
+  only one is ever in flight — 2.6) and no bullet answers it, a ref may
   have been minted and lost to the write that stopped the run: ask the
   operator for it via `Other`, offering `File it for me` only if they
   have none. Never re-file blind, and never search the board for a
