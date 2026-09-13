@@ -181,11 +181,22 @@ follow-up can be a comparison rather than an impression (see
 [`claude/CLAUDE.kernel.md`](../claude/CLAUDE.kernel.md) § Measure the delta,
 don't assume it):
 
-**Baseline — 2026-09-13: 3 reviewer findings on fragment audience, across 2
-items, in one day.** A `docs-reviewer` MEDIUM on temperloop#1988; on
+**Baseline — 2026-09-13: 4 findings on fragment audience raised by reviewers,
+across 3 items, in one day.** A `docs-reviewer` MEDIUM on temperloop#1988; on
 temperloop#1958 both a `docs-reviewer` HIGH and a `workflow-reviewer`
-MEDIUM. Two reviewers converging independently on the same fragment is what
-made this look systemic rather than like one author's slip.
+MEDIUM; and a fourth — an advisory finding raised in temperloop#1988's own
+review loop, left unactioned when that loop was bounded and carried forward
+as temperloop#2012 — landing on the temperloop#1988 fragment a second time,
+for naming an internal route the adopter cannot look up. Two reviewers
+converging independently on the same fragment is what made this look
+systemic rather than like one author's slip; the fourth finding landing on
+the fragment of the very change whose review surfaced the pattern is what
+made it look unfixable by attention alone.
+
+The fourth is counted here deliberately. It was known at the time this
+section was written and recorded as 3/2 anyway, which would have flattered
+the follow-up comparison by exactly one instance — so the number was
+corrected (temperloop#2012) before any re-check could be run against it.
 
 Re-check the rate once this section has been in the authoring path for a
 while. If it has not moved, the next lever is a lint — which temperloop#2007
