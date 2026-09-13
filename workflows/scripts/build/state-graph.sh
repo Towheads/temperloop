@@ -71,11 +71,6 @@ source "$_SG_HERE/build.config.sh"
 # to the real repo-shipped one.
 ONTOLOGY_REGISTRY_FILE="${ONTOLOGY_REGISTRY_FILE:-$_SG_HERE/../config/ontology-registry.tsv}"
 
-die() {
-  echo "state-graph.sh: $1" >&2
-  exit 1
-}
-
 usage() {
   echo "usage: state-graph.sh build --board <N> | clean --board <N> | bench --scale <N> --board <N>" >&2
 }
