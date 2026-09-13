@@ -14,6 +14,418 @@ reads that marker; a stranger greps for it before pulling.
 
 ## [Unreleased]
 
+## [0.39.0] - 2026-09-13
+
+### Added
+
+- **The comparison report now carries inferential statistics on the quality axis, not just descriptive means** (#1609). Quality was two arm means and nothing else, while the cost axis got a bootstrap CI, an MDE and a verdict — so a future A/B claiming "quality +3%" was uninterpretable. `quality_comparison` now runs the **same `stats.sh` library** over the paired judge deltas (candidate minus baseline, in judge points), publishing the CI, the MDE, the observed standard deviation, and a **power projection**: how many outcomes judged in both arms would be needed to detect a difference of `MODEL_COMPARISON_QUALITY_TARGET_EFFECT_PCT`. On the #1656 A/A data that reads *132 judged pairs needed against 18 observed* — i.e. both validation runs were read against a 5% bar neither had the power to enforce, which is now stated on the report rather than left to be worked out by hand. **This axis mints no winner**: #1609 ships the statistics, and moving the verdict onto them is #1606 layered on top, so publishing an interval and deciding a comparison on it stay separable acts.
+- **The quality axis publishes both of its bases and discloses when they disagree** (#1744). The arms rarely judge the same records, so a **paired** figure (judged in both arms) and an **unpaired** one (each arm's own judged rows) both exist and can differ materially — on the #1656 A/A run, −6.31% paired against −2.89% unpaired, **straddling the 5% A/A bar** on a run whose true effect is zero by construction. Publishing whichever happened to be computed is how a run clears a sanity bar on one quantity while reporting another. Both are now emitted, each labelled with its own record set, relative deltas computed against the baseline mean of their own basis, and a disclosure fires when they differ by more than `MODEL_COMPARISON_QUALITY_BASIS_DISAGREEMENT_PCT` percentage points. All statistics run on the paired basis, because a per-record delta exists only there.
+- **An arm that judged nothing degrades the quality axis alone, not the whole report** (#1609). The relative-delta computation guarded its denominator (the baseline mean) but not its numerator, so a batch whose candidate legs are every one an integration-error record — no `judge` block at all — hit `null - 70` and aborted the entire derivation, taking the cost axis and every honesty disclosure down with it. The quality axis now reports null means and a named `statistics_unavailable_reason` while the cost axis pairs normally.
+
+- **`batch.sh` can replay several corpus records at a time** (#1682). `--concurrency N` (default `1`, from `MODEL_COMPARISON_BATCH_CONCURRENCY`, clamped to `MODEL_COMPARISON_BATCH_MAX_CONCURRENCY`) runs up to N records concurrently, each record's two legs still sequential in their counterbalanced order. The cost of not having it was measured rather than assumed: the #1656 validation run took 29 min/leg, projecting **~27 hours for a 28-record comparison**, about a third of it not model time at all but the in-worktree `quality-gates.sh` run — enough to make the module impractical for the repeated comparisons it exists to support. Concurrency is deliberately **across records only, never within a pair**: #1571 stamps every leg with an `execution_order.position` that is meaningless if a record's two legs overlap, so parallelising inside a pair would silently undo that fix and re-open the arm-vs-position confound #1606 was filed against. Because the arm-order rule is a pure function of the record index, widening a batch cannot change *what* is measured — the same corpus and seed produce the same arm order and the same records in both arms at any N, and the summary's new `concurrency` block publishes the **measured** wall clock against the serial sum so the speedup is a number rather than a claim. The scheduler is a new module-local `batch-pool.sh` that borrows `lib/gate-pool.sh`'s mechanics (slot table, atomic done-markers, the `set -m` fork) but not its fail-closed gate verdict layer, its trap ownership, or its run-everything dispatch — all three of which a spend-bearing batch needs to differ; its header records why. One behaviour genuinely differs at N > 1 and the summary now says so rather than leaving it to be inferred: the **circuit breaker stops dispatch, not execution**, so records already running are allowed to finish rather than lose spend already committed, and `circuit_breaker.records_in_flight_when_dispatch_stopped` reports how many did. There is deliberately no `auto` width — the binding constraint is the provider's rate limit, which nothing local can read, and #1554's 28-leg outage happened on a strictly *sequential* run.
+
+- **The order-effect decomposition now discloses whether it survives its own outliers** (#1741). `arm_effect` and `order_effect` are two **means** over a heavy-tailed cost-delta distribution, and the clean/not-clean verdict is a ratio between them — so the ratio is outlier-sensitive in a way nothing in the report admitted. On the #1656 A/A run the headline read `arm 6,596 / order 330,525`, a reassuring 50x that says *position is doing the work, not the model*. **Drop the single largest-|delta| record from each order group and it inverts to `arm 131,144 / order 47,696`** — the tidy near-zero arm effect was coincidental cancellation, and +131,144 on a run whose true arm effect is zero by construction is nearly the magnitude of #1262's false winner. A new `robustness` block recomputes the same estimator without those two records and states plainly whether the verdict flips. It is a **disclosure, not a gate**: it withholds nothing, changes no verdict, and says so — and a decomposition that *does* survive its outliers reports that positively, so the field is a finding rather than a permanent alarm. `comparable_rule` now warns that a near-zero arm effect can be cancellation rather than evidence of no arm effect.
+
+- **Duplicate-entry lint on both governance manifests, plus a generalised
+  two-manifest pre-claim contract** (#1801). `check-kernel-manifest.sh` and
+  `validate-feature-docs.sh` (`DUPLICATE-CLAIM`) now each fail on a glob
+  claimed by more than one manifest line — the residue a missed pre-claim
+  leaves behind. The pre-claim convention is hoisted out of ADR-0000's
+  ADR-only scope: any new-subtree pre-claim MUST add its claim to both
+  `docs/features/feature-manifest.txt` and
+  `workflows/scripts/kernel/kernel-manifest.txt` in the same change
+  (canonical statement in feature-manifest.txt's header; ADR-0000
+  § Manifest registration now defers to it). The two pre-existing
+  kernel-manifest duplicates (`workflows/scripts/model-comparison/*`,
+  `workflows/scripts/testbed/*`) are removed.
+
+- **`build-level.mjs` reports a session-quota death as its own `quota-exhausted`
+  escalation kind** (#1819), never collapsing it into `machinery-denied`/
+  `SPINE_DENIED` (whose cure is rewriting the command) or a bare `worker-error`
+  "agent returned null" (whose cure is re-driving from scratch — destructive,
+  since a quota death usually leaves finished work intact in the worktree). The
+  thrown-error-text shape is matched directly and carries the harness's reset
+  time in the payload's `reset_time`; the bare-null shape — which carries no
+  text at all — is classified by an agent-liveness canary (a classifier denial
+  is per-command, a quota death kills every spawn), which re-probes on every
+  bare-null and memoizes only a DEAD verdict — an alive reading is never
+  cached, so a quota that dies late in a level cannot be misrouted through a
+  stale early "alive". The payload states
+  `worktree_left_intact: true`, and `claude/commands/build.md` documents the
+  kind's wait-for-reset-then-resume disposition in the 3d-esc escalation-kind
+  list plus an orchestrator-side `<failures>`-block cross-check.
+
+- **`/fix` now probes native `blocked_by` edges before driving a target** (#1843).
+  Step 2's state probe gains a dependency-block gate on the drive routes
+  (`fresh` / `adopt` / `ambiguous`): `board_blocked_by_open` runs on the resolved
+  target in the pipefail discriminating shape, and a target with open blockers is
+  surfaced modally — blocker numbers named, with drive-anyway /
+  drive-the-blocker-first / stop offered — never silently driven. An errored read
+  is surfaced too, never treated as "unblocked." Aligns the third driving
+  consumer with `/next`'s NX.3 skip and `/sweep`'s pool gate (#1835): the native
+  `blocked_by` edge is the dependency-block representation. Both the new
+  **blocked-stopped** stop and the pre-existing **epic-refused** stop (Step 3)
+  now emit the Step 6 run-telemetry record with `--reported-no-op 1` — closing
+  the absent-signal gap (the #1103/#1591 class) where a gate stop left no
+  record the run happened at all.
+
+- **`/build` Step 0.5 (resume reconcile) now records what it recovers** (#1908). A new
+  `resume-recovery` raw-lake stream (`workflows/scripts/emit-resume-recovery.sh`,
+  `meta/data/raw/resume-recovery-<YYYY-MM>.jsonl`) appends one record per
+  `/build` resume that recovers or flags a Step 0.5 divergence — an orphaned
+  worktree, a PR/sentinel mismatch, a self-claim reclaim, a workflow-journal
+  `pr:`/`pushed_sha:` recovery, or a board/sentinel drift. This is a baseline
+  instrument for the graph-of-record work; a `/build` resume is not a drive
+  and never writes a `command-run`, so it gets its own stream rather than a
+  new `command-runs` field. Presence-lint
+  `workflows/scripts/validate-resume-recovery-emit.sh` (wired into
+  `scripts/quality-gates.sh`) fails CI if the emitter disappears or its
+  Step 0.5 call is removed from `claude/commands/build.md`.
+
+- **Added the join-key registry** (`workflows/scripts/config/join-keys.tsv`),
+  declaring every cross-stream join key the lake consumers use (session id
+  forms, GitHub Actions run id, PR number, message id, plan-note stem) with
+  its exact normalization rule and absent-versus-zero semantics, backed by
+  one shell loader (`join-keys-lib.sh`) and one Python loader
+  (`join_keys.py`) — the only two places a session id or other join key is
+  normalized. `pr-linkage.sh`'s `Closes #N` probe now reads its
+  closing-keyword pattern through the shared loader instead of restating the
+  regex inline. A new config checker (`check-join-keys.sh`, wired into
+  `scripts/quality-gates.sh`) lints the registry's structure and confirms
+  both loaders agree on every fixture (#1910).
+
+- **One ontology registry for the tracker and plan vocabularies** —
+  ADR 0032 (ontology registry is source of truth); epic #1910 (graph-of-record
+  ontology work), level 0.
+  `workflows/scripts/config/ontology-registry.tsv` is now the single source
+  of truth for the node types, edge types, the four state
+  alphabets (issue-status `fnd:status:*` labels, plan sentinels, PR merge
+  state + decision baton, the `issue-state.sh resolve` route enum) and the
+  `source` axis naming every store the state graph reads. A new `checks` gate,
+  `check-ontology-registry.sh`, scans the tracked tree for any `fnd:` label or
+  plan sentinel the registry does not list (a shrink-only
+  `ontology-grandfather-allowlist.tsv` absorbs adoption-day legacy tokens; the
+  `x-` personal prefix is exempt), holds the route alphabet set-equal to
+  `issue-state.sh`'s published enum, and fails a contract doc that drops its
+  pointer or restates a vocabulary table. `ISSUES-ONLY-BACKEND.md`,
+  `plan-schema.md`, `decision-queue-contract.md` and `work-class-policy.md`
+  now carry a one-line pointer where each restated its table.
+
+- **`state-graph.sh query <name> --board N` — five named queries over the
+  derived state graph** (epic #1910, ADR 0033): `status-drift`,
+  `stale-claims`, `unlinked-prs`, `orphan-worktrees`, and `resume`. Every
+  query answers the literal string `"unknown"` for a part that depends on a
+  source currently `error`/`stale`, never a bare empty result standing in
+  for "nothing found". `resume` implements `/build` Step 0.5's authority
+  ordering as a ranked merge (plan-note sentinel over workflow journal over
+  git over board) and emits, per plan item, a route drawn from
+  `ontology-registry.tsv`'s `state:route` alphabet — the same alphabet
+  `issue-state.sh resolve` emits, now shared with both suites via one
+  fixture (`tests/fixtures/state-graph-routes.json`). `/build` Step 0.5
+  runs `build` then `query resume` beside the existing prose authority
+  table for a soak comparison, non-authoritative at this level.
+
+- **`state-graph.sh soak --board N` — the fourteen-day cross-check made
+  mechanical** (epic #1910, ADR 0033): runs a fresh `build`, reads `query
+  status-drift` off that same snapshot, separately runs `reconcile.sh
+  --status` through a new overridable `_sg_reconcile` seam, reduces each
+  side to a comparable sorted set of flagged issue numbers, and appends one
+  `{day, drift_query_set, reconcile_set, diff}` record to a soak log kept
+  through `lib/cache.sh`'s own path accessors (kind=`state-graph-soak`).
+  Either set — and `diff` — reads the literal string `"unknown"`, never a
+  false empty agreement, when its own side is degraded (a board-source
+  error, or a failing `reconcile.sh` invocation). `soak --count --board N`
+  prints the number of distinct days recorded; `soak --audit --board N
+  --items <file>` logs a hand-audited item set against today for a human to
+  compare against the mechanical diff. `bench --scale N` now also times
+  each of the five named queries against its synthetic snapshot and appends
+  one `{day, type:"bench", scale, query_ms, slow_queries}` record to the
+  same log, naming the queries whose elapsed time exceeds
+  `STATE_GRAPH_QUERY_SLOW_MS` at that scale.
+
+- **Added a triples extractor over the registries and the raw lake**
+  (`workflows/scripts/knowledge/triples.sh build|query`, #1910). `build`
+  derives `{s, p, o, provenance}` records from the citation registry's
+  `<!-- cite: ... -->` markers, the issue-touches/claims lake streams
+  (session ids normalized through `join-keys-lib.sh`), and `docs/adr/*.md`'s
+  own `## Status` supersession chain, appending them to the new
+  `triples-<YYYY-MM>.jsonl` raw-lake stream (documented in
+  `meta/data/raw/README.md`) — idempotently, so re-running `build` never
+  doubles the lake. Every predicate is drawn from
+  `workflows/scripts/config/ontology-registry.tsv`'s `edge` axis; an
+  unlisted predicate is a hard error. `query cites <rule-id>`, `query
+  touched_by <issue>`, and `query supersedes <adr-ref>` read the derived
+  graph back.
+
+- **`state-graph.sh build --board N`** derives one typed nodes+edges JSON
+  snapshot per repo from exactly four sources — the board (`fnd:status:*`
+  state and `claimed_by` claim-stamp edges), native `sub_issue_of` /
+  `blocked_by` edges, open PRs (`closes` edges parsed from a bare
+  `Closes #N` body line), and linked git worktrees (#1917, epic #1910, ADR
+  0033). Every source is typed `ok`/`absent`/`error`/`stale`, never
+  collapsed into an untyped empty result; the snapshot is written and
+  invalidated through `lib/cache.sh`'s namespaced store (`kind=state-graph`).
+  `clean --board N` removes one repo's snapshot; `bench --scale N` times a
+  synthetic N-scaled build. Two new settings, `STATE_GRAPH_MAX_AGE_S` and
+  `STATE_GRAPH_QUERY_SLOW_MS`, govern read-time staleness and the future
+  query-speed threshold.
+
+- **`state-graph.sh build --board N` now reads three HOST-LOCAL sources
+  alongside the four `gh`/git-backed ones** (#1918, epic #1910, ADR 0033):
+  `plan_notes` (approved/in-progress `Plans/` notes in the knowledge store,
+  emitting `PlanItem` nodes with their sentinel state, `depends_on`/`after`
+  edges, and `pr:`/`pushed_sha:` fields), `journal` (the Workflow runtime's
+  `agent-<id>.jsonl` transcripts, emitting `Session` nodes with recorded
+  step outcomes), and `tmux` (the per-window `@claimed_issue` claim marker,
+  emitting `Marker` nodes and `marked_by` edges). Each is typed
+  `ok`/`absent`/`error`/`stale` exactly like the original four sources — a
+  host with no tmux binary or server is `absent`, but a reachable server
+  holding zero claims is `ok`, never conflated with "nothing to report".
+
+- **Added `/interview`** (`claude/commands/interview.md`, temperloop#1938): a standalone frontier-round interview that turns a topic, a knowledge-store pointer, or an issue number into a `## Shared understanding` section — the problem in the operator's words, facts the facilitator looked up itself, `D<n>` decisions in the operator's verbatim words where given, deferrals, risks — by asking the design tree's whole frontier each round through `AskUserQuestion` calls of at most four questions, recommended option first, the next call opening in the same turn as the previous answer. Designed as `/workshop`'s Phase-1 caller seam via the `--into` / `--first-question` / `--check-questions` parameter block (registered as one frozen row in `claude/presentation-plane.md`) — provisional, pending the workshop rewrite (temperloop#1958, `workshop-two-phase-rewrite`); until that lands `/interview` is hand-run only, and a hand-run lands the same section in `Context/<repo> - <topic>.md` with no brief created around it. Operator-present only.
+
+- **Added the `INTERVIEW_PROBE_MODEL` setting** (`workflows/scripts/build/build.config.sh`,
+  registered in `workflows/scripts/config/setting-registry.tsv`), naming the
+  model tier for `/interview`'s fact-probe subagent — a `: "${VAR:=}"` seam
+  defaulting to the same mechanical tier as `PIPELINE_DRIVE_MODEL`, so a
+  personal or per-host override never touches the tracked file (#1938).
+
+### Changed
+
+- **The comparison's `winner` is now minted from the QUALITY axis; cost is descriptive** (#1606). The #1262 A/A run put the **same model in both arms** — so any winner is a false positive by construction — and the cost verdict minted one: paired delta −142,771 with a bootstrap CI excluding zero, ~80% of it cache_read volume, i.e. ordinary within-model variance in session length that a record-paired bootstrap reads as signal. #1741 then ruled out the obvious repairs: against the #1656 A/A deltas **every** robust estimator tested (trimmed mean, bootstrap median, sign test, Wilcoxon) minted a *confident false winner* where the raw mean correctly withheld, because the large outliers are the counterweight cancelling a tilt in the other 14 of 18 rather than contamination to discard. On that same known-zero data the **quality** deltas withhold under every one of those estimators and under all five per-dimension sub-scores. A winner now requires **three** independent conditions, any one of which withholds: the quality verdict names a direction, the run is at or above the sample floor, and the order-effect check **computed on the quality deltas** reads clean — never inherited from the cost axis, which pairs a different record set and can be clean where quality is confounded. The `winner` key keeps its documented location inside `comparison`, with a new `winner_axis` naming what decided.
+- **The quality verdict is translated out of the statistics library's polarity** (#1606). `stats.sh` assumes **lower is better** — right for cost, backwards for quality. Confirmed against the library: `stats.sh verdict --deltas '[8,9,10]'` returns `baseline_better` on three deltas meaning the candidate scored 8–10 points *better*. Reading it straight through would have named the **loser** on every run. Both forms are published — `library_verdict` raw, `verdict` translated — with the delta array kept in quality polarity (positive = candidate better) so a reader can still re-run `stats.sh` over exactly what the report fed it.
+
+- **`/check-in`'s environment-hygiene "acts" remedy no longer names `make install-kiosk`** (#1786). That worked example was a consumer-specific target being deleted downstream (foundation#1812); the remedy now leads with the consumer-neutral `launchctl bootstrap gui/$(id -u) <plist>` and refers generically to a checkout's own installer target where one exists.
+
+- **`deploy-mini.sh` now auto-heals only cron/kernel-role checkouts** (#1828).
+  Each checkout's role resolves through `env-reconcile.sh`'s role registry (the
+  kernel's detection substrate, honoring `ENV_RECONCILE_CRON_CHECKOUTS` /
+  `ENV_RECONCILE_OPERATOR_CHECKOUTS`); the mutating operations (HEAD switch,
+  ff-merge, merged-branch prune, worktree prune) run only on cron/kernel-role
+  checkouts. An operator/consumer-role checkout — or one in neither registry —
+  gets its drift (non-main branch, dirty tree, behind-ness) printed on a
+  `DRIFT (operator role — report-only)` line and is never mutated, conforming
+  the session-start sweep to CLAUDE.kernel.md § Environment hygiene's
+  aggressive-in-lane / report-cross-lane policy.
+
+- **`cache.sh`'s path accessors and staleness/invalidation API now take an
+  optional trailing `kind` argument** (`cache_repo_dir`, `cache_snapshot_file`,
+  `cache_meta_file`, `cache_stale`, `cache_dirty`, `cache_clear`), defaulting
+  to `issues` (#1910). A second store `kind` (e.g. a future state-graph
+  snapshot) can now share `$CACHE_STORE_ROOT` with its own top-level directory
+  and its own `meta.json`, without invalidating or clearing the issue cache.
+  Every existing call site passes no `kind` and is unaffected.
+
+- **The three separately-written graph traversals now share one library**
+  (epic #1910, L0-a). `workflows/scripts/lib/graph.sh` (bash 3.2 + jq) answers
+  `levels` (Kahn's-algorithm level partition), `cycle` (targeted BFS
+  reachability, path-returning), and `reachable` (plain BFS) over one shared
+  edge-list JSON shape. `plan.sh`'s toposort (previously an awk Kahn),
+  `cycle-check.sh` (previously a hand-rolled bash BFS), and
+  `sweep-pool-cycle-detect.sh` (previously a bespoke jq Kahn) are now thin
+  wrappers over it — every caller's command line and output grammar is
+  unchanged.
+
+- **`validate-design-brief.sh`'s challenge-record completeness bar is now stamp-gated on frontmatter `record_grammar`, and `MISSING-WALK-VERDICT` retires** (temperloop#1938, `brief-validator-delta-rule`). A ratified brief whose frontmatter carries `record_grammar: delta` must now carry a `delta` stop line for every kernel dimension 0..16 (`MISSING-DELTA-VERDICT`, replacing the old unconditional `walk`-keyed check) rather than a `walk` line; a brief with no `record_grammar` field is legacy and exempt from the per-dimension bar entirely, whatever stop-line kinds its record carries. A new `delta`/`interview` stop line in a brief whose frontmatter lacks the `record_grammar: delta` stamp is flagged `RECORD-GRAMMAR-UNSTAMPED`, independent of `status`. `walk`/`walkthrough` stay valid, parsable kinds; `/workshop` Step 4.1c's ratify gate reuses the identical rule so the two can never diverge. **Compatibility:** legacy (unstamped) ratified briefs keep validating unchanged — only a brief that opts in via the `record_grammar: delta` stamp is held to the new bar.
+
+- **`design-schema.md` gains a `## Shared understanding` section grammar and two new `## Challenge record` stop-line kinds, `delta` and `interview`** (temperloop#1938). `/interview`'s decisions (`D<n>`, verbatim operator words where given, facts found, deferrals, risks) now have a documented home at the top of a brief, ahead of dimension 0; the Challenge record's `dim-list` gains a `D<n>` decision-ref form for an `interview` line, and a `delta` line's `source` is always the literal `operator` — never a review lens, closing the fail-open gap a clustered `walkthrough` line would otherwise leave in the operator gate. § Record completeness documents the target rule for a stamped brief (`record_grammar: delta` in frontmatter): every kernel dimension needs a `delta` line, keyed on that frontmatter stamp rather than a ship-date constant (an earlier date-keyed draft, ADR 0036, broke a vendored adopter who kept ratifying walk-grammar briefs after the date; see the section's own provisional note). § Disposition grammar documents the `facilitator-drafted, not from interview` flag's required position — a line *after* the disposition line, never before it, since the validator reads the first non-blank line under a heading as the disposition. The Worked example now demonstrates the new grammar end to end.
+- `workflows/scripts/validate-design-brief.sh`'s `CHALLENGE_STOP_RE` widens additively to parse the two new kinds and the `D<n>` dim-ref — **no change to the completeness bar**, which still requires a `walk` line per dimension pending a separate, dependent follow-on item; every pre-existing fixture and `test_validate_design_brief.sh` pass unchanged.
+
+### Fixed
+
+- **A green `validate-model-usage-emit.sh` run in CI now says which checks it did *not* run** (#1511). `meta/data/raw/*` is gitignored, so CI always sees an empty lake and always takes the legal-empty early return — meaning the **content** rules the script is named for (strict JSON parse, field shapes, model/provider enums, the no-cross-repo-identifier rule) never execute against a live record in CI at all. The early return was honest about what it did not *find*, and silent about what it therefore did not *check*, so a green run invited exactly the wrong inference. It now emits a `note` naming the skipped checks, stating that their CI coverage comes from the fixtures in `test_model_usage_emit.sh` and nothing else, and that a green run is not evidence about live record content. The note is **absent** when records were present, so it is a statement about the run rather than boilerplate. #1511 asked for a decision between "accepted gap" and "real gap": resolved as **accepted gap**, with the reasoning now in the validator's own header — a committed sample lake would be fixture data too, so it would relocate fixture coverage into a second file without validating a live record either. Live records are validated by an operator running the gate on a host that has done real replay work.
+
+- **A comparison report no longer accuses itself of a wiring defect on every clean run** (#1534). `emit_coverage` collapsed three different situations into one hard `0%` under a disclosure asserting *"an emit-CAPABLE seat ran and did not write a record — a defect with a declared owner"*: an **unread** attribution stream, a **read** stream containing no emit-feasible seat, and the genuine defect. A standalone comparison always produces the middle case — `replay-candidate` and `replay-judge` are deliberately excluded from the numerator, so a run driving no `/build` pipeline work observes 0 of 3 seats *by construction* — so a reader following the report's own guidance concluded a defect existed every single time. The three are now distinct: an unread stream reports a **null** percentage with `unavailable_reason` naming the directory it could not read (an unread stream is not evidence of a wiring defect, and rounding it to zero manufactures one out of a missing file); a structural zero reports `zero_is_structural: true` with a statement saying the defect framing does not describe the run; and a real figure is unchanged. A new `lake` block publishes what the stream itself looked like — directory, files read, record count — so a reader can tell the cases apart without inferring. All existing disclosures remain on every run, per the issue's own constraint that unconditional honesty not be weakened to fix this; `below_100_means` now states its precondition rather than asserting a defect unconditionally.
+
+- **`prompt_sha256` can now actually detect a prompt divergence between arms** (#1582). `replay.sh` embedded the per-leg worktree path in the worker prompt and hashed the result — and `$wt` is unique per leg by construction, so the hash **differed between the two arms of every pair, always**, even on byte-identical item content. Measured on the 2026-08-14 A/A run: **21 records, 0 identical hashes, 21 differing**. The field's one job, per its own comment, is comparability between replay legs; saturated at 100% noise it gave a **false negative on every genuine divergence** — a corpus record that changed between legs, a truncated acceptance list — while a reader who trusted the comment got nothing. The prompt is now rendered twice from **one generator**: once with the real path (what is **sent** — unchanged, since #1376 established that prompt prose plus the spawn cwd is how isolation is communicated) and once with a fixed `<REPLAY_WORKTREE>` token, which is what gets hashed. Sharing the generator is what keeps the hash sensitive: a change to the template text still moves it, as do title, scope, source and every acceptance bullet. The seam is documented where the field is defined.
+
+- **The pre-flight fallback literal's "how low is it" figure no longer rots in config prose** (#1604). The block stated the literal was *"~1.49x LOW"* against a measured `699,963` from an n=14 batch. On this host it is now **~2.2x low on a 59-record basis** — the gap **widens** as the corpus grows, so a transcribed figure is stale the moment the next batch runs. That number is gone; the prose now points at where the live answer is published on **every** run (`replay.sh preflight | jq .observed_replay_cost`, plus `tokens_per_replay_basis` naming which figure is in force), and keeps the 2.2x only as a calibration datum with its provenance. The literal itself is **deliberately not retuned**: the block already argued that a second hand-transcribed constant would rot exactly as the n=1 one did, and that reasoning stands — the derive path is the fix, and this stays the honest unmeasured-host fallback. #1604's two fix directions both turn out to be **already built by #1555**: the derive-from-observed-records path, and a post-run drift nudge (`batch.sh`'s `spend_reconciliation` block raises `drift_alert` past `MODEL_COMPARISON_SPEND_DRIFT_ALERT_PCT` and prints a stderr notice, covered by tests S3/S4).
+
+- **A truncated judge reply is now named, evidenced and retried instead of silently costing the run a quality row** (#1605). In the #1262 A/A run the judge returned a reply that **begins** as the contracted JSON object and is cut mid-string; it was classed `response-unparseable` — the same bucket as a judge that answered in prose — with only a head-300 excerpt, so an operator could not see *where* parsing failed, and there was no way to ask for another attempt. One lost judgment out of 56 flipped the whole batch to `BATCH_DEGRADED`. Three changes: a reply that begins as the contracted object is now `response-truncated`, a **distinct** diagnosis from `response-unparseable`; the notice carries the reply **length and TAIL** as well as the head (the head of a truncated reply looks perfect, which is exactly why head-only evidence was useless); and `MODEL_COMPARISON_JUDGE_MAX_ATTEMPTS` (default 2) retries a **reply-shaped** failure — truncated, unparseable, schema-invalid, or empty. A **structural** failure (no envelope, no usable `modelUsage`) is never retried: re-running cannot fix it and the attempt costs real spend. A recovered row carries `attempts`; a first-attempt row is byte-identical to before, so `attempts` means "this row was recovered" rather than a `1` on every record. Deliberately **no salvage** — reconstructing a score from a truncated rationale would fabricate a judgment the run never obtained.
+
+- **The attribution validator now admits `model: "unknown"` on an unobservable spawn, and only there** (#1643). The emitter writes `usage_source: "unavailable"` with `provider`, `tokens` and `weighted_units` all null when a seat spawned and nothing about it could be observed — but it must still write *some* model, and the validator rejected the `unknown` sentinel it uses. Both halves ship in this repo, so one was wrong. **The epic settles it rather than taste**: #1225 Produces #1 requires "every kernel-spawned seat emits one record per run", and the emit-coverage percentage is computed from those records *existing* — suppressing one would hide the spawn rather than report it honestly. So the validator moved. The exemption is **narrow and discriminating**: the same `unknown` on a `cli-envelope` record still **fails**, because an observed call returned a real envelope, so a model *was* resolvable and the emitter failed to resolve it — a defect, not degradation. The rule is stated in `docs/features/telemetry.md` rather than living only in code. On a host with real replay history this takes `validate-model-usage-emit.sh` from **41 failures to 0**, and `test_model_usage_emit.sh` to 209/209 against the real lake.
+
+- **The pre-flight spend gate no longer derives its per-replay cost from fixture output** (#1657). A stubbed replay emits a real attribution record into the same lake as live spend, carrying one hardcoded token block, and the derive filter keyed only on `seat` + `usage_source` — so on the host that surfaced this, **18 of 32 basis records were `recorded-stub-model`**, deflating the estimate 2.27x to a figure *further from truth than the 470,000 literal the derive path was built to replace*, while publishing a "DERIVED from this host's own observed records" provenance string that reads as a measurement. Records whose `model` matches `REPLAY_PREFLIGHT_STUB_MODEL_PATTERNS` are now excluded and **counted** as `excluded_stub_records_n`, and `tokens_per_replay_basis` states the exclusion, the count and the governing setting — or says positively that nothing was excluded. Measured on the real lake: basis **77 → 59 records**, mean **802,919 → 1,046,509**, and `spread_ratio` **913.59 → 17.79** — the 913x "observed spread" was almost entirely the gap between the stub block and real records, not variance the operator should have been sizing against. `REPLAY_PREFLIGHT_DERIVE_MIN_N` is applied to the **filtered** count, so fixture records can no longer lift a thin host over the floor. A denylist rather than an allowlist, so a new cross-vendor model is never silently excluded. The writer-side half — stubbed runs not reaching the production lake at all — is #1747 and is not fixed here.
+
+- **A leg killed by the candidate timeout is recoverable instead of permanently stranded** (#1693). `--retry-failed` re-drives only `cannot-evaluate` legs, so an `integration-error` leg matched neither retry arm and fell through to `legs_done` — unrecoverable against its state dir, with no way to say "re-drive that one at a longer wall" short of discarding the whole batch. That conservatism is right for `envelope-parse` or `vendor-error`, where the candidate may already have run and been billed, but wrong for `candidate-timeout`, which is a leg cut off by **our own configured** `REPLAY_CANDIDATE_TIMEOUT_SECS`. The cost was concrete: on the #1656 A/A run 10 of 28 records lost a leg, and because a timed-out leg carries no token envelope the whole record dropped out of the paired set — 18 paired outcomes against a floor of 20, so the report returned `inconclusive` on sample size for a reason unrelated to what it was measuring. New repeatable **`--retry-stage <stage>`** names the failure class to re-drive (`batch.sh run … --retry-stage candidate-timeout`), leaving every other class protected exactly as today; the already-scored partner leg keeps its terminal state and is not re-spent, since the resume gate is per-leg. A stage name outside replay.sh's vocabulary is **refused with exit 2 and the valid list**, never accepted-and-ignored — a silent no-op there is indistinguishable from "there was nothing to retry".
+
+- **The spend ceiling's stated real-terms loosening is corrected from ~5.4x to ~34x, and is now checkable** (#1710). The block above `REPLAY_PREFLIGHT_CEILING_TOKENS` exists to state the loosening plainly, and it stated it **~6x too small** — then contradicted itself six lines later. `5.4x` is `8,000,000 / 1,489,000`: the loosening of merely *reinterpreting* the old raw-token numeral in the new cost-weighted unit, **not** of the 50,000,000 actually set on the next line. The true figure, from the same block's own measured replay (`raw 2,506,371 → cost-weighted 466,530`, ratio `0.1861`), is `50,000,000 / 1,489,000 ≈ **33.6x**`. The section closes by telling an operator to lower the ceiling deliberately *"with those two numbers in view"* — so the wrong number was handed over at exactly the moment it was load-bearing, and understating a spend-ceiling relaxation is the wrong direction to be wrong in. The arithmetic is now spelled out inline, and a new check recomputes the multiplier **from the figures the block itself publishes**, so a future `SPEND_WEIGHT_*` retune or ceiling change that leaves the prose behind fails a test instead of misinforming someone.
+
+- **`score.sh` no longer leaks a scratch directory per call — the mechanism was a subshell, not a missing trap** (#1724). The issue was filed with the mechanism deliberately unestablished, because the `trap _score_cleanup EXIT` at `score.sh:210` exists and is correctly wired, so the obvious diagnosis was wrong. The real cause: `scratch` is used as `x="$(scratch n.jsonl)"`, and **a command substitution is a subshell** — so the lazy `_SCORE_TMPDIR=...` assignment inside it ran in the subshell and never reached the parent. Two consequences, both invisible: the parent's variable stayed empty so the EXIT trap removed nothing, and every subsequent call found it empty and created **another** dir, so one `score` invocation leaked ~9 rather than 1. Pinned by an isolated repro — 3 calls → 3 dirs, parent variable empty, each call returning a path under a *different* directory. Creation now happens in `_score_ensure_tmpdir`, called directly (never inside `$( )`) once at the top of `cmd_score`, and `scratch` only reads the variable and fails closed. **Measured: one run of `test_replay_score.sh` went from leaking 174 dirs to 0**, and the 171,773 accumulated on the host took inode use from 56% to 1%.
+
+- **A non-Anthropic candidate provider is now refused at preflight instead of writing a disclosure-log entry for a send that cannot happen** (#1743). `_CS_PROVIDER_TABLE` registers a key var for `openai`/`google`/`gemini`, but the live spawn is hardcoded to `${CLAUDE_BIN:-claude}`, which speaks Anthropic's API alone — so selecting a non-default provider passed preflight on the strength of a set API key, caused `replay.sh` to write a disclosure entry **attesting a cross-vendor send**, and then ran the Claude CLI anyway. The log whose entire job is truthful provider-exposure record-keeping (ADR 0028) was the thing producing the false record, and its pairing validator could not catch it: the allowlist↔log pairing was intact, it was the *send* that was fictional. The provider table gains a third **runner** column; an empty runner means "registered, but nothing here can run it" and `candidate_session_preflight` refuses — **before** the disclosure write, which `test_provider_runner_gate.sh` pins byte-for-byte on the log file rather than by reasoning about call order. The runner gate deliberately precedes the key gate, so an operator is never sent to supply a credential that was not what was missing. Per-provider *dispatch* remains unbuilt (spawn still execs `CLAUDE_BIN`), and a mutation guard fails the suite if a runner column is filled in without it. The gate is scoped to the **live** path via a new `preflight --execution live|recorded`: a `--candidate-runner` / `--judge-runner` IS a runner and never reaches a vendor, so refusing it would break every fixture while preventing nothing. Both call sites derive the mode from the same `$runner` the spawn dispatches on, so the gate cannot disagree with the path actually taken; an omitted `--execution` defaults to the strict gate, so a missed call site fails closed. The same fix covers **judge rotation**, which spawns through the identical seam — a rotated non-Anthropic judge was equally unable to reach its named vendor.
+
+- **A stubbed replay no longer seeds the production attribution lake, and residue already there can be swept** (#1747). `emit-model-usage.sh` resolves its output dir from **its own location** (`raw_root="$here/../.."`), *not* from `--repo-root` — so a recorded run with no `MODEL_USAGE_RAW_DIR` wrote fixture tokens into the lake of whatever checkout the script lives in. 36 such records reached this repo's own lake on 2026-08-14, and three consumers read them as observed cost: the pre-flight derive basis priced batches off them (#1657), `validate-model-usage-emit.sh` rejected them on MODEL-ENUM and took `test_model_usage_emit.sh` down with it, and `test_replay_preflight.sh`'s verdict moved with the lake's contents (#1642). Because `meta/data/raw/*` is gitignored, **CI was always green on all three** — only hosts that actually run the harness went red, the inverse of where coverage is wanted. Three changes: `replay.sh` now **refuses to emit** on a recorded run with no explicit lake (a live run always emits — that spend is real), announcing the refusal rather than redirecting somewhere unnamed; new `lake-sweep.sh` removes residue already on disk, dry-run by default, keeping the original as `.pre-sweep-<n>.bak` and never dropping an unparseable line; and `validate-model-usage-emit.sh` reports a residue record as **`FIXTURE-RESIDUE` with the sweep command**, instead of as a bad model id that sends the reader to audit an emitter that is working correctly.
+
+- **The attribution validator no longer rejects real models, and can express cross-vendor ones** (#1756). `validate-model-usage-emit.sh` gated `model` on a hand-kept family enum — `("opus", "sonnet", "haiku")` behind a required `claude-` prefix — on the premise that the family token is "the stable, enumerable part of a Claude model id". It isn't: **`claude-fable-5` is a real, current model this repo has replayed with, and all 14 of its records hard-FAILED a required gate**. The check was stricter than reality, so its failure mode was rejecting good data, and the reflex it trains ("the enum is stale, just add the family") is exactly wrong the day an id genuinely is malformed. Worse, the `claude-` prefix **cannot survive the module it guards**: epic #1225 exists to compare non-Anthropic candidates and #1743 adds the runner, so the enum would reject the attribution records of every cross-vendor comparison the harness was built to run. The check is now **structural** — lowercase alphanumeric segments joined by `-` `.` `_` or `/` — so `claude-fable-5`, `gpt-4.1-mini` and `meta-llama/llama-3` validate while `"Claude Opus"`, `"not a model"`, `claude-` and `x` still fail. The `unknown` sentinel gets its **own** `MODEL-UNRESOLVED` verdict naming #1643, rather than being swallowed into a malformed-id failure with a different owner and a different fix. Worth recording for the next reader: deriving the accepted set from configured model settings — this issue's original proposal — **would not have worked**, because `claude-fable-5` appears in no setting; it was chosen at run time via `--candidate-model`, and runtime candidate selection is the harness.
+
+- **Leg state files are written atomically, so an interrupt can no longer turn a paid-for leg into an unrecoverable failure** (#1764). All five writes used a plain `>` redirect — truncate first, write second — and the resume path read the result with `jq ... 2>/dev/null`. An interrupt in between left a **torn file**, which parsed to no `.state`, matched none of the retryable arms, and fell into the generic failure branch: counted `legs_failed` with the reason *"no reason recorded"*, never re-driven by any resume, and potentially inconsistent with an arm file that already held the leg's record. A leg that genuinely **scored** — real money spent — could be reported as a knowable failure on nothing worse than a Ctrl-C landing in a millisecond-wide window. Not hypothetical: the #1656 run was killed by ENOSPC mid-flight and its 49 leg state files were all valid JSON *by luck*. Writes now go through `bd_write_state`, which writes a temp file in the **same directory**, parse-checks it, and renames it into place — so the only two states on disk are the old one and a well-formed new one. A torn file that is nonetheless found (an older state dir, or damage from elsewhere) is now reported under its **own** reason saying the outcome is genuinely unknown, is not re-spent by default because the candidate may already have been billed, and is recoverable through `--retry-failed` as a deliberate operator choice. Also satisfies **#1682 Produces #3**, removing one sub-unit from that parked epic.
+
+- **`prune-merged-branches.sh` deletion now honors the `origin/main` classification it reports** (#1775). Previously a branch classified merged-into-`$base` could still be refused by `git branch -d` — which checks against HEAD, not `$base` — on a checkout whose local default branch is behind origin, silently under-deleting and mislabeling the refusal "skipped (in use / worktree-bound)". A `-d` refusal now escalates to `-D` only after re-confirming the branch merged into `$base` (tip is an ancestor of `$base`, or the merge-queue-safe helper confirmed its PR merged); an unconfirmed branch is still refused, and the in-use/worktree-bound skip is printed only when `-D` itself refuses — which git does only for a branch genuinely in use.
+
+- **The `pending`-milestone workaround on the six retro trackers is unwound**
+  (#1814, follow-up to the #1614 intake exclusion). The hand-applied `pending`
+  milestone is cleared from trackers #851 #1346 #1361 #1396 #1576 #1598 (board
+  write via `board_set_milestone`, precondition-checked per issue), now that the
+  `retro-pending` process-record label exclusion keeps them out of `/triage`
+  intake on its own. `/triage`'s inactive-milestone example no longer cites
+  `pending` as a kernel-board milestone — `pending` is not a release phase, and
+  citing it implied the superseded workaround. The `pending` milestone itself is
+  left in place (other issues still carry it); `/build` 4d-retro already mints
+  trackers with no milestone, unchanged.
+
+- **`cache.sh` now paginates the per-issue comments fetch** (#1820).
+  `cache_refresh_details` called `issues/<n>/comments` unpaginated, so any
+  issue past GitHub's default page size of 30 comments was silently truncated
+  in the durable corpus store (`details/<n>.json`). The fetch now uses
+  `per_page=100` + `--paginate` (the same discipline as the bulk list fetch),
+  and each record is stamped `commentsPaginated: true`; records written by the
+  unpaginated code lack the marker and self-heal via a one-time re-fetch on
+  the next details refresh, even when their `updatedAt` is unchanged.
+
+- **`pr-enqueue --help` no longer leaks `set -euo pipefail` into the usage
+  text** (#1821). The usage printer's hardcoded sed line range (`2,60p`) was
+  off by one against the header comment block; it now prints the header
+  structurally — every comment line after the shebang, stopping at the first
+  non-comment line — so header growth or shrink can never re-introduce the
+  leak. A regression test asserts `--help` ends at the header's exit-status
+  lines with no trailing code line.
+
+- **Raw-lake writers and the telemetry-brief reader now resolve the same
+  directory by default** (#1822). `claim.sh`'s `CLAIMS_RAW_DIR_DEFAULT` and
+  `capture.sh`'s `ISSUE_TOUCHES_RAW_DIR_DEFAULT` no longer pin the absolute
+  `$HOME/dev/foundation/meta/data/raw` path — they resolve checkout-relative
+  (git toplevel of the script's own resolved dir, then `meta/data/raw`), the
+  same lake `telemetry-brief.sh` and `emit-issue-touch.sh` already resolve. A
+  non-foundation checkout previously reported 0 claims and a fraction of its
+  issue-touches (its own capture records all landed in the foreign pinned
+  lake), and a bare kernel checkout silently grew a phantom
+  `~/dev/foundation/` tree. Per-stream env overrides (`CLAIMS_RAW_DIR`,
+  `ISSUE_TOUCHES_RAW_DIR`) still win when set; the deeper single-owner-of-
+  resolution question for the issue-touches stream's two writers stays split
+  to its follow-up, #1902.
+
+- **Every claim-stamp derivation now routes through `board_own_stamp` /
+  `board_host_label`** (#1823, completing #1220's centralization at 6/6 call
+  sites). `issue-state.sh resolve` hand-rolled the stamp with no `:manual`
+  arm, so a claim made by a session-id-less (manual) run read back as
+  `by_me: false` / `claimed-elsewhere`; it, `release.sh`'s duplicate
+  `release_own_stamp`, and `board-mirror.sh`'s two inline derivations now all
+  call the single `lib/board.sh` owner, and a regression test covers the
+  `<host>:manual` self-claim case.
+
+- **`temperloop uninstall` now fails loudly when the manifest's `.paths` cannot
+  be read, instead of reporting `done (no-op)`** (#1824). `manifest_load`
+  validates that `.paths` exists and is an object — a malformed manifest
+  (missing `.paths`, `null`, an array, or a string) is refused with a message
+  naming the problem and a non-zero exit, so a manifest the build never
+  actually understood can no longer read as "nothing was ever installed".
+  `uninstall.sh` also checks the exit status of its `.paths` enumeration
+  (previously discarded by a process substitution) as a second belt. A
+  genuinely-empty `{}` paths object remains the legitimate no-op state.
+
+- **The setting registry now validates that every setting name is a legal
+  shell identifier** (`[A-Za-z_][A-Za-z0-9_]*`), and `temperloop config list`
+  refuses loudly (exit 1, a `MALFORMED` diagnostic naming the row and its
+  source file) when the kernel table or an operator-authored
+  `setting-registry.overlay.tsv` carries an illegal name — e.g. hyphenated or
+  leading-digit (#1825). Previously such a row slipped through
+  `setting_registry_validate` and the `${!name}` indirect-expansion sites in
+  `config list` silently dropped it while still exiting 0. Other
+  malformations (unknown type/layer, bad op) keep the existing
+  warn-and-continue best-effort union, but the diagnostics are now printed to
+  stderr instead of being swallowed.
+
+- **`milestone list` now exits 0 on a successful listing when every open
+  milestone is active** (#1826). The inactive-section conditional
+  (`[ -n "$inactive_out" ] && printf …`) was the function's last command, so an
+  all-active board made a complete, correct listing return 1 — tripping any
+  `set -e` caller. Printed output is unchanged in all three truth-table cases
+  (all-active, mixed, all-inactive), each now covered by a fixture-replay test
+  asserting exit 0.
+
+- **`/build` no longer drops a CI-fix round's §3e review findings from the PR
+  body** (#1846). The body suffix was rendered once at 3f from the original
+  review round while the Step-6 tally merged every round — so a reviewer that
+  ran only against the CI-fix diff (e.g. shell-reviewer on PR #1845, three real
+  findings) was affirmatively omitted from the body's `ran:` line and
+  `## Review notes`. `build-level.mjs` now renders both surfaces through one
+  `reviewBodySuffix()` (the `ran:` line is the round-union of reviewers, every
+  round's findings section is spliced — a repeat reviewer keeps both blocks,
+  relabeled `(ci-fix round N)`), and a new 3g.5 step re-renders the open PR's
+  body after CI resolves via `pr.sh open --update-pr <n>` — the same
+  `assemble_body` path as create, backed by `gh pr edit`.
+
+- **`issue_marker_probe`'s live gh fallback now verifies each search hit's
+  body against the literal marker before returning it** (#1875). GitHub's
+  `--search "<marker> in:body"` is tokenized, so a query for one marker could
+  return an issue carrying a different marker sharing tokens (the
+  #1849-vs-#1847 shape); an unverified hit made idempotency-guarded callers
+  silently skip creations. The fallback now applies the same `grep -F`
+  literal-body check the corpus path already used, so both paths agree on
+  precision.
+
+- **`/build` 4d's `emit-item-efficiency` step now passes every `build-level.mjs`
+  invocation's wf id — comma-separated via `--build-run <WF[,WF...]>` — not just
+  the initial one** (#1877). The bullet previously named "the wf_ id" (singular)
+  of the invocation that drove the level, so on a level with 3d-esc
+  escalation-continuation rounds each re-invocation's spend was structurally
+  unattributed. The wording now matches `emit-item-efficiency.sh`'s own
+  usage-header contract, and `test_item_efficiency.sh`'s prose-rot guard
+  asserts the multi-invocation form so a drift back to a single wf id fails
+  the gate.
+
+- **A `/build` worker adding a new gate or validator script is now told to
+  register it before running its own gate check** (temperloop#1931).
+  Previously a worker could add a new check script without registering it
+  anywhere the gate system would notice, so the omission surfaced only later,
+  in the slower full-suite gate.
+
+- **`/build`'s §3e.5 acceptance gate now runs on a worktree rebased onto
+  current `origin/main`** (temperloop#1937). Previously a long-running or
+  parallel-level item's worktree could fall behind `origin/main` by the time
+  the gate ran, so a validator that ratchets against `origin/main` read rows
+  main gained in the meantime as this item's own regression and lost a full
+  gate round.
+
+- **`/build`, `/fix`, and `/sweep` now print a dynamic launch/return line around every `build-level.mjs` Workflow invocation** (temperloop#1941), naming the caller, repo, item count, each item's slug and issue number, and the round number. Previously the only run-identifying text was the Workflow tool's static `meta.description`, so three concurrent drives — and a `/fix` single-item run in particular, which the wording claimed was "one dependency level" — were indistinguishable in the transcript.
+
+- **The `/build` pre-push review's reviewer-routing table can no longer be silently dropped in transit** (temperloop#1976). The diff-fetch step's JSON result is hand-copied by a separate relay agent, and that relay has been observed dropping the (large) routing-table field while leaving the changed-file list intact, so the routing decision silently ran against an empty table and collapsed the reviewer roster to `docs-reviewer` alone. Previously nothing distinguished that drop from a worktree that genuinely ships no routing table, so it was never even retried. The diff-fetch step now also reports the table's own row count; a missing or undercounted table on a non-empty diff is retried once, and a still-incomplete table escalates instead of computing a roster from it.
+
+- **`state-graph.sh soak` now compares PER CLASS instead of one flat set
+  diff** (#1978). The soak is the one independent cross-check over the
+  derived state graph (ADR 0033,
+  `docs/adr/0033-derived-state-graph-composes-one-way-with-one-independent-cross-check.md`,
+  which defines the query classes named below): it diffs the graph's own
+  queries against `reconcile.sh --status`, a separately-derived view of the
+  same board. Previously it compared the two as one flat set of issue
+  numbers, so a hit that each side classified differently read as a
+  disagreement even when both were right. Now each class is compared against
+  its own counterpart — `status-drift` (issues whose board status label and
+  claim state disagree) against reconcile.sh's status-label classes, and
+  `stale-claims` (claims stamped to a session that is no longer live)
+  against its claim-liveness classes. `unlinked-prs` / `orphan-worktrees`,
+  which reconcile.sh never reports on, read the literal string
+  `"not-covered"` rather than a false empty-set agreement.
+- The appended soak record is now `{day, type:"run", schema:2,
+  classes:{...}}`. A pre-existing flat-schema record (no `type` field) is
+  excluded from `soak --count`'s day tally rather than misread as a
+  per-class one. Practically: every day whose only record predates this
+  rewrite drops out of `--count`, so the fourteen-day independence check
+  restarts from zero and needs fourteen new `schema:2` days before it is
+  trustworthy again — an expected reset, not a regression.
+- The state-graph board source also now reads closed issues that still carry
+  an `fnd:status:*` label (Done on the issues-only backend means closed with
+  *no* status label) as their own residue nodes, so `status-drift` can flag
+  that residue directly. This is scoped entirely to state-graph's own board
+  source; `board.sh`'s `--state open` active-set convention is unchanged.
+
+- **A `/build` worker whose item carries a class-A `activation:` block now sees
+  its own reachability check spelled out verbatim in its brief**
+  (temperloop#1934). Previously the worker never saw the check it would be
+  gated on, so a correctly built and wired feature could still fail the gate
+  over a name only the check's author had chosen.
+
 ## [0.38.0] - 2026-08-27 — BREAKING
 
 ### Added
