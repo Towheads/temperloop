@@ -345,7 +345,7 @@ done
 SHIM_PATH="$SHIM_BIN:$PATH"
 
 echo "── soak CLI: --help prints usage naming --count (THE class-A activation predicate, run verbatim) ──"
-PATH="$SHIM_PATH" bash "$STATE_GRAPH_BIN" soak --help 2>/dev/null | grep -q -- '--count' \
+PATH="$SHIM_PATH" bash "$STATE_GRAPH_BIN" soak --help 2>/dev/null | grep -- '--count' >/dev/null \
   || fail "the exact activation-gate predicate (soak --help | grep -q -- '--count') failed"
 echo "PASS: soak CLI — --help satisfies the class-A activation predicate verbatim"
 
