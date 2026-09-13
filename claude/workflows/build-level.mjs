@@ -2785,7 +2785,33 @@ function reviewDiffCmd(wt) {
     `files_json="$(git diff --name-only "origin/$default...HEAD" 2>/dev/null | jq -R -s -c 'split("\\n") | map(select(length>0))')"`,
     `[ -n "$files_json" ] || files_json='[]'`,
     `if [ -f ${sq(tsvPath)} ]; then`,
-    `  tsv_json="$(jq -R -s -c . < ${sq(tsvPath)})"`,
+    // RELAY ONLY THE DATA ROWS (temperloop#1982 round 3). The field crosses a
+    // machinery-executor agent, which is specified to return the command's JSON
+    // line verbatim and has instead been observed omitting this one field
+    // outright, and once replacing it with an English sentence describing the
+    // table ("The reviewer-routing.tsv file contains 11 data rows routing files
+    // to review subagents…"). Rounds 1 and 2 added receiving-end checks — a row
+    // count, then a position-weighted checksum — which detect the substitution
+    // but cannot prevent it: no check on this side stops a model on the other
+    // side from paraphrasing. What CAN be reduced is the bait. The raw file is
+    // 3,834 bytes of which 699 are data (11 rows); the other 82% is comment
+    // prose, i.e. the executor was being handed ~4KB of mostly-English text and
+    // asked to echo it. Sending `rowFilterAwk`'s output instead ships only the
+    // rows the routing decision actually reads.
+    //
+    // Invariant-neutral by construction, which is why this needs no JS or test
+    // change: BOTH receiving-end readers already apply this same filter before
+    // they compute anything — parseTsvRows() drops blank/`#` lines, and
+    // tsvChecksum() canonicalises with the identical trimmed-emptiness rule —
+    // so filtering here is idempotent and every gap check yields the same value
+    // it did on the unfiltered text. The filter itself is `rowFilterAwk`, the
+    // SAME expression the checksum below already uses, so this adds no second
+    // implementation of the row rule to drift against.
+    //
+    // MITIGATION, NOT A PROOF: a model can still paraphrase 699 bytes. The
+    // structural fix — keeping the table out of the relay entirely, or emitting
+    // parsed rows the executor has no prose reading of — stays open on #1982.
+    `  tsv_json="$(awk ${sq(rowFilterAwk)} ${sq(tsvPath)} | jq -R -s -c .)"`,
     `  tsv_rows="$(awk 'BEGIN{c=0} { l=$0; sub(/\\r$/,"",l); t=l; gsub(/^[ \\t]+|[ \\t]+$/,"",t); if (t != "" && substr(t,1,1) != "#") c++ } END{print c+0}' ${sq(tsvPath)})"`,
     // POSITION-WEIGHTED (temperloop#1982 round 2): `n` is a running counter
     // over EVERY byte of the row-filtered stream, NOT reset between od's own
