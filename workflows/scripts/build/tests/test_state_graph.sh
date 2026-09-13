@@ -53,15 +53,18 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
 # Host-local sources (state-graph-build-local, temperloop#1918: plan_notes /
-# journal / tmux) must never read this RUNNER's real knowledge store,
-# transcript root, or tmux server — this file's own four-source suite (and
-# its exact node/edge counts, e.g. the bench assertions below) stays
-# deterministic regardless of what plan notes, journals, or tmux windows
-# happen to exist on the host actually running the test. Isolated exactly
-# like the BOARDS_CONF_* hermetic-env pair above; test_state_graph_local.sh
-# is the dedicated suite for these three sources' own behavior.
+# journal / tmux; temperloop#1980 round 3: transcripts) must never read this
+# RUNNER's real knowledge store, transcript root, tmux server, or Claude
+# Code projects directory — this file's own four-source suite (and its exact
+# node/edge counts, e.g. the bench assertions below) stays deterministic
+# regardless of what plan notes, journals, tmux windows, or session
+# transcripts happen to exist on the host actually running the test.
+# Isolated exactly like the BOARDS_CONF_* hermetic-env pair above;
+# test_state_graph_local.sh is the dedicated suite for these four sources'
+# own behavior.
 export KNOWLEDGE_STORE_ROOT="$TMP/no-such-knowledge-store"
 export SPEND_TRANSCRIPT_ROOT="$TMP/no-such-transcripts"
+export CLAUDE_PROJECTS_DIR="$TMP/no-such-projects"
 _sg_tmux() { return 1; }
 
 # Every test gets its own cache root so cases never see each other's state.
@@ -639,11 +642,12 @@ echo "PASS: bench --scale N generates a synthetic N-scaled snapshot and prints b
 
 # =============================================================================
 # the reader table is extensible (state-graph-build-local, temperloop#1918,
-# added plan_notes/journal/tmux without touching these four core sources —
-# see test_state_graph_local.sh for their own ok/absent/error/stale coverage)
+# added plan_notes/journal/tmux, and temperloop#1980 round 3 added
+# transcripts, without touching these four core sources — see
+# test_state_graph_local.sh for their own ok/absent/error/stale coverage)
 # =============================================================================
-[ "$_SG_SOURCES" = "board board_edges pr_list worktrees plan_notes journal tmux" ] \
-  || fail "reader table drifted from the seven known sources (got: $_SG_SOURCES)"
-echo "PASS: the reader table names exactly the seven known sources and nothing else"
+[ "$_SG_SOURCES" = "board board_edges pr_list worktrees plan_notes journal tmux transcripts" ] \
+  || fail "reader table drifted from the eight known sources (got: $_SG_SOURCES)"
+echo "PASS: the reader table names exactly the eight known sources and nothing else"
 
 echo "ALL PASS: test_state_graph.sh"

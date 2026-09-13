@@ -32,10 +32,14 @@
 # HOST-LOCAL sources the same way — plan_notes (knowledge-store `Plans/`
 # notes), journal (the Workflow runtime's `agent-<id>.jsonl` transcripts),
 # and tmux (the per-window `@claimed_issue` claim marker) — without touching
-# the original four or the assembly loop that calls them. "Host-local" means
-# exactly that: unlike the four `gh`-backed/git sources above, these three
-# describe the state of the MACHINE running `build`, not the repo/board, so
-# a snapshot built on two different hosts can legitimately disagree on them.
+# the original four or the assembly loop that calls them. temperloop#1980
+# round 3 appended an eighth the same way — transcripts (Claude Code's own
+# per-session `~/.claude/projects/*/<sess>*.jsonl` mtime) — as `stale-
+# claims`'s liveness oracle; see that query's own header comment below.
+# "Host-local" means exactly that: unlike the four `gh`-backed/git sources
+# above, these four describe the state of the MACHINE running `build`, not
+# the repo/board, so a snapshot built on two different hosts can legitimately
+# disagree on them.
 #
 #   state-graph.sh build --board <N>            build + persist + print
 #   state-graph.sh clean --board <N>             remove ONE repo's snapshot
@@ -74,10 +78,19 @@
 #                 acceptance criterion 2), and `orphaned In-Progress` (the
 #                 exact same "in-progress, no owner stamp" computation
 #                 status-drift's own board source already makes).
-#   stale-claims  <-> reconcile's CLAIM-LIVENESS classes: `stale claims`
+#   stale-claims  <-> reconcile's `stale claims (In Progress...)` class ALONE
 #                 (In Progress, stamped to a dead same-host session — this
-#                 item's day-1 #1225/#1111/#1048/#1047) and `stranded claim
-#                 stamps on closed issues`.
+#                 item's day-1 #1225/#1111/#1048/#1047). `stranded claim
+#                 stamps on closed issues` is DELIBERATELY excluded
+#                 (temperloop#1980 round 3 MEDIUM): the board source's
+#                 closed-issue residue read (`_sg_read_board`) never attaches
+#                 a `claimed_by` edge to a closed Issue node — its edge loop
+#                 walks the OPEN issue set only — so that reconcile class can
+#                 only ever land in `only_in_reconcile`, never `agree`. A
+#                 class that can structurally never agree is not a
+#                 cross-check, it is a standing false disagreement, so it is
+#                 mapped to no class at all, the same way foreign/foreign-
+#                 stale/unresolved already are (below).
 #   unlinked-prs / orphan-worktrees  <-> reconcile.sh has NO matching class
 #                 for either (it never examines PRs or worktrees) — their
 #                 `reconcile_set`/`diff` read the literal string
@@ -87,8 +100,9 @@
 #                 exists to stop manufacturing).
 #
 # reconcile's `foreign`/`foreign-stale` claims (another host — unverifiable
-# from here) and `unresolved` (a state LOOKUP failure, not a status/claim
-# verdict) map to NEITHER class and are never diffed — folding them into
+# from here), `unresolved` (a state LOOKUP failure, not a status/claim
+# verdict), and `stranded claim stamps on closed issues` (see stale-claims
+# above) map to NEITHER class and are never diffed — folding any of them into
 # either set would manufacture a comparison this file cannot actually back.
 #
 # One `soak --board N` run: fresh `build`; the four queries above off that
@@ -166,28 +180,54 @@
 #                       label", workflows/scripts/board/ISSUES-ONLY-
 #                       BACKEND.md — the board source's own closed-issue
 #                       residue read, see `_sg_read_board`).
-#   stale-claims        `claimed_by` edges naming an Issue with no matching
-#                       `marked_by` edge (board + tmux). tmux — the per-
-#                       window `@claimed_issue` marker source, Marker nodes /
-#                       `marked_by` edges — is this query's LIVENESS ORACLE
-#                       (temperloop#1980 round 2): the SAME source
-#                       reconcile.sh's own claim-liveness lens checks, so the
-#                       two independent derivations can actually agree. The
-#                       journal (step-outcome ledger) is NOT this oracle and
-#                       is no longer consulted by this query at all — round 1
-#                       used the journal instead and that was the round-2 bug:
-#                       the journal records WORK DONE, not a SESSION
-#                       EXISTING, so a genuinely live session that had not yet
-#                       written a step-outcome line produced no journal
-#                       Session node and was flagged a confident false
-#                       positive (the exact live evidence temperloop#1980 was
-#                       filed over). Unlike every other consumer of
-#                       `_sg_degraded`/absent-as-empty, an `absent` tmux
-#                       source (no tmux binary or no server reachable —
+#   stale-claims        `claimed_by` edges, GATED TO THIS HOST, naming an
+#                       Issue with no currently-live transcript (board +
+#                       transcripts). transcripts — Claude Code's own
+#                       per-session `~/.claude/projects/*/<sess>*.jsonl`
+#                       mtime, source 8 below — is this query's LIVENESS
+#                       ORACLE (temperloop#1980 round 3): the SAME evidence
+#                       reconcile.sh's own `_reconcile_session_live` checks
+#                       (newest matching transcript's mtime within
+#                       `RECONCILE_STALE_AFTER_SECS` of "now" — reconcile's
+#                       own setting, reused verbatim rather than a second
+#                       literal), so the two independent derivations can
+#                       actually agree. Neither round 1's journal (step-
+#                       outcome ledger — records WORK DONE, not a SESSION
+#                       EXISTING) nor round 2's tmux `@claimed_issue` markers
+#                       (a per-ISSUE proxy the comparison target never
+#                       invokes) is this oracle, and neither is consulted by
+#                       this query any more — both produced their own false
+#                       disagreement against the actual comparison target,
+#                       `reconcile.sh --status`, which `_sg_soak_run` calls
+#                       (`status_reconcile_main` -> `_reconcile_session_live`
+#                       for its `stale claims (In Progress...)` class; it
+#                       never touches tmux at all — that lens lives only in
+#                       `reconcile_main`'s separate `markers` mode, whose own
+#                       `board-without-marker` class is report-only and is
+#                       never diffed by the soak either).
+#                       GATED ON HOST (temperloop#1980 round 3 HIGH 2): a
+#                       claim's `.to` carries `Session:<host>:<sess8-or-
+#                       manual>` (`_sg_normalize_claimed_by`). reconcile's
+#                       own claim-liveness lens gates on host FIRST
+#                       (`reconcile.sh`'s `[ "$shost" = "$HOST" ]`) and maps
+#                       a foreign host's claim to no class at all (`foreign`/
+#                       `foreign-stale`, never diffed — see the soak header
+#                       comment above); this query does the same before
+#                       computing liveness — a claim stamped to another host
+#                       is excluded from `findings` entirely, never
+#                       confidently reported stale from evidence (this HOST's
+#                       own transcript directory) that cannot speak to a
+#                       foreign host's liveness at all. `host` is resolved
+#                       once at `build` time (`board_host_label`) and carried
+#                       on the snapshot's own top-level `.host` field, so this
+#                       query stays a pure function of the snapshot.
+#                       Unlike every other consumer of `_sg_degraded`/absent-
+#                       as-empty, an `absent` transcripts source (no
+#                       `~/.claude/projects`-shaped directory at all —
 #                       "nothing found" for every OTHER query) is treated
 #                       here as "liveness cannot be determined" and answers
-#                       `unknown`, never a set computed against an empty
-#                       marker list (which would flag every live claim as
+#                       `unknown`, never a set computed against zero known-
+#                       live sessions (which would flag every live claim as
 #                       stale). This carve-out is local to this one query —
 #                       `_sg_degraded` itself, and status-drift's use of it,
 #                       are unchanged.
@@ -921,12 +961,75 @@ _sg_read_tmux() {
   _sg_source_result ok "$nodes" "$edges" ""
 }
 
+# --- source 8: transcripts (Transcript nodes — stale-claims's liveness -----
+# oracle, temperloop#1980 round 3) ------------------------------------------
+# Reimplements `reconcile.sh`'s own `_reconcile_session_live` read-only, so
+# `stale-claims` can decide liveness from the EXACT same evidence: the
+# newest `$CLAUDE_PROJECTS_DIR/*/<sess>*.jsonl` (Claude Code's own per-
+# session transcript — NOT the Workflow-runtime `agent-*.jsonl` files the
+# journal source above reads; a different file family that happens to share
+# `journal`'s own default root) mtime, within `RECONCILE_STALE_AFTER_SECS`
+# of "now" — BOTH settings named identically to reconcile.sh's own (never a
+# second literal; check-setting-registry.sh's "byte-identical duplicate seam
+# in a non-owning file" allowance is exactly this shape). No seam like
+# `_sg_git`/`_sg_tmux`: mirrors the journal source's own precedent (no
+# command to shim, only files — tests point `CLAUDE_PROJECTS_DIR` at a
+# fixture directory with `touch -t`-controlled mtimes, exactly like
+# `SPEND_TRANSCRIPT_ROOT` for journal).
+#
+# `absent` = no transcript directory at all (nothing to check liveness
+# against — matches tmux's prior "no server" cannot-determine case, and
+# `_sg_query_stale_claims`'s own local carve-out treats it as `unknown`,
+# never a confident empty set). `ok` = the directory was read, emitting a
+# `Transcript` node for every session whose newest matching file is within
+# the cutoff — a session with NO transcript, or whose transcript is stale
+# beyond the cutoff, legitimately emits no node ("dead" is the ordinary
+# empty case here, mirroring `_reconcile_session_live`'s own "no transcript
+# -> dead" reading, never `absent`). `error` = the directory exists but
+# could not be read (permission denied) — a genuine fault, distinct from
+# absence.
+_sg_read_transcripts() {
+  local dir now cutoff nodes='[]' raw live sess8 mt f base
+  dir="${CLAUDE_PROJECTS_DIR:-$HOME/.claude/projects}"
+  [ -d "$dir" ] || { _sg_source_result absent '[]' '[]' "no transcript directory"; return 0; }
+  [ -r "$dir" ] || { _sg_source_result error '[]' '[]' "transcript directory not readable"; return 0; }
+  now="$(date +%s)"
+  cutoff="${RECONCILE_STALE_AFTER_SECS:-86400}"
+  # one <sess8>\t<mtime> row per transcript file — portable mtime (GNU
+  # `stat -c` / BSD `stat -f`, the same fallback `_reconcile_session_live`
+  # itself uses).
+  raw="$(
+    shopt -s nullglob
+    for f in "$dir"/*/*.jsonl; do
+      base="$(basename "$f" .jsonl)"
+      sess8="${base:0:8}"
+      [ -n "$sess8" ] || continue
+      mt="$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null)" || continue
+      printf '%s\t%s\n' "$sess8" "$mt"
+    done
+  )"
+  # collapse to the NEWEST mtime per sess8 (mirrors _reconcile_session_live's
+  # own "max mtime among any matching file" reduction), keeping only those
+  # within the cutoff — a live session emits a node, a dead one emits none.
+  live="$(printf '%s\n' "$raw" | awk -F'\t' -v now="$now" -v cutoff="$cutoff" '
+    NF != 2 { next }
+    $2 > max[$1] { max[$1] = $2 }
+    END { for (s in max) if ((now - max[s]) <= cutoff) print s"\t"max[s] }
+  ')"
+  while IFS=$'\t' read -r sess8 mt; do
+    [ -n "$sess8" ] || continue
+    nodes="$(jq -c --arg id "Transcript:$sess8" --arg s8 "$sess8" --argjson mt "$mt" \
+      '. + [{type:"Transcript", id:$id, sess8:$s8, mtime:$mt}]' <<<"$nodes")"
+  done <<<"$live"
+  _sg_source_result ok "$nodes" '[]' ""
+}
+
 # --- the extensible reader table (acceptance criterion 1) -------------------
-_SG_SOURCES="board board_edges pr_list worktrees plan_notes journal tmux"
+_SG_SOURCES="board board_edges pr_list worktrees plan_notes journal tmux transcripts"
 
 # --- assemble one full snapshot (live, always fresh) ------------------------
 _sg_build_snapshot() {
-  local board="$1" repo built_at r_board r_board_edges r_pr r_wt r_plan r_journal r_tmux
+  local board="$1" repo built_at host r_board r_board_edges r_pr r_wt r_plan r_journal r_tmux r_transcripts
   repo="$(board_repo "$board" 2>/dev/null)" || repo=""
   r_board="$(_sg_read_board "$board")"
   r_board_edges="$(_sg_read_board_edges "$board" "$r_board")"
@@ -935,18 +1038,26 @@ _sg_build_snapshot() {
   r_plan="$(_sg_read_plan_notes "$board")"
   r_journal="$(_sg_read_journal "$board")"
   r_tmux="$(_sg_read_tmux "$board")"
+  r_transcripts="$(_sg_read_transcripts)"
   built_at="$(date +%s)"
+  # Resolved ONCE here, never per-query (stale-claims's host gate,
+  # temperloop#1980 round 3 HIGH 2, reads this field so it stays a pure
+  # function of the snapshot rather than shelling out to `hostname` itself).
+  host="$(board_host_label)"
 
   jq -cn \
-    --arg board "$board" --arg repo "$repo" --argjson built_at "$built_at" --argjson sv 1 \
+    --arg board "$board" --arg repo "$repo" --arg host "$host" \
+    --argjson built_at "$built_at" --argjson sv 1 \
     --argjson board_r "$r_board" --argjson board_edges_r "$r_board_edges" \
     --argjson pr_r "$r_pr" --argjson wt_r "$r_wt" \
-    --argjson plan_r "$r_plan" --argjson journal_r "$r_journal" --argjson tmux_r "$r_tmux" '
+    --argjson plan_r "$r_plan" --argjson journal_r "$r_journal" --argjson tmux_r "$r_tmux" \
+    --argjson transcripts_r "$r_transcripts" '
     def src($r): {status: $r.status, detail: $r.detail, n_nodes: ($r.nodes|length), n_edges: ($r.edges|length)};
     {
       schema_version: $sv,
       board: $board,
       repo: $repo,
+      host: $host,
       built_at: $built_at,
       sources: {
         board: src($board_r),
@@ -955,12 +1066,13 @@ _sg_build_snapshot() {
         worktrees: src($wt_r),
         plan_notes: src($plan_r),
         journal: src($journal_r),
-        tmux: src($tmux_r)
+        tmux: src($tmux_r),
+        transcripts: src($transcripts_r)
       },
       nodes: ($board_r.nodes + $board_edges_r.nodes + $pr_r.nodes + $wt_r.nodes
-              + $plan_r.nodes + $journal_r.nodes + $tmux_r.nodes),
+              + $plan_r.nodes + $journal_r.nodes + $tmux_r.nodes + $transcripts_r.nodes),
       edges: ($board_r.edges + $board_edges_r.edges + $pr_r.edges + $wt_r.edges
-              + $plan_r.edges + $journal_r.edges + $tmux_r.edges)
+              + $plan_r.edges + $journal_r.edges + $tmux_r.edges + $transcripts_r.edges)
     }'
 }
 
@@ -1075,35 +1187,47 @@ _sg_query_status_drift() {
 }
 
 _sg_query_stale_claims() {
-  local snap="$1" bst tst
+  local snap="$1" bst trst host
   bst="$(_sg_source_status "$snap" board)"
-  tst="$(_sg_source_status "$snap" tmux)"
+  trst="$(_sg_source_status "$snap" transcripts)"
+  host="$(jq -r '.host // ""' <<<"$snap")"
   if _sg_degraded "$bst"; then
     jq -cn --arg st "$bst" '{query:"stale-claims", status:"unknown", reason:("board source is "+$st), findings:"unknown"}'
     return 0
   fi
-  if _sg_degraded "$tst"; then
-    jq -cn --arg st "$tst" '{query:"stale-claims", status:"unknown", reason:("tmux source is "+$st), findings:"unknown"}'
+  if _sg_degraded "$trst"; then
+    jq -cn --arg st "$trst" '{query:"stale-claims", status:"unknown", reason:("transcripts source is "+$st), findings:"unknown"}'
     return 0
   fi
-  # LOCAL carve-out (temperloop#1980 round 2): tmux is this query's liveness
-  # ORACLE, so — unlike every other consumer of the tmux source, where
-  # `absent` legitimately means "no markers held" — `absent` here means
-  # "cannot determine liveness", not "nothing is live". Scoped to this query
-  # only; `_sg_degraded` stays error|stale (see its own header comment) and
-  # status-drift's "absent = nothing found" reading of the board source is
-  # untouched. SUPERSEDES round 1's journal-absent carve-out: the journal
-  # source is no longer consulted by this query at all (see the header
-  # comment above and the PR body).
-  if [ "$tst" = "absent" ]; then
-    jq -cn '{query:"stale-claims", status:"unknown", reason:"tmux source is absent (no tmux binary or no server - liveness cannot be established)", findings:"unknown"}'
+  # LOCAL carve-out (temperloop#1980 round 3): transcripts is this query's
+  # liveness ORACLE, so — unlike every other consumer of the transcripts
+  # source, where `absent` legitimately means "no live sessions found" —
+  # `absent` here means "cannot determine liveness", not "nothing is live".
+  # Scoped to this query only; `_sg_degraded` stays error|stale (see its own
+  # header comment) and status-drift's "absent = nothing found" reading of
+  # the board source is untouched. SUPERSEDES round 2's tmux-absent carve-
+  # out: tmux is no longer consulted by this query at all (see the header
+  # comment above and the PR body) — round 2 keyed liveness off a source the
+  # comparison target, reconcile.sh --status, never actually invokes.
+  if [ "$trst" = "absent" ]; then
+    jq -cn '{query:"stale-claims", status:"unknown", reason:"transcripts source is absent (no transcript directory found - liveness cannot be established)", findings:"unknown"}'
     return 0
   fi
-  jq -c '
-    (.edges | map(select(.type=="claimed_by"))) as $claims
-    | (.edges | map(select(.type=="marked_by")) | map(.from)) as $marked
+  # HOST GATE FIRST (temperloop#1980 round 3 HIGH 2): a claim stamped to
+  # another host is excluded from `$claims` entirely, before liveness is
+  # even considered — this host's own transcript directory cannot speak to
+  # a foreign host's liveness, and reconcile.sh's own claim-liveness lens
+  # gates the exact same way (`[ "$shost" = "$HOST" ]`) before ever
+  # reaching `_reconcile_session_live`.
+  jq -c --arg host "$host" '
+    (.nodes | map(select(.type=="Transcript")) | map(.sess8)) as $live8
+    | (.edges | map(select(.type=="claimed_by"))
+              | map(select((.to | split(":")[1]) == $host))) as $claims
     | { query:"stale-claims", status:"ok",
-        findings: [ $claims[] | .from as $iid | select(($marked | index($iid)) == null) | {issue:$iid, session:.to} ] }
+        findings: [ $claims[] | .from as $iid
+                    | (.to | split(":")[2]) as $sess8
+                    | select(($live8 | index($sess8)) == null)
+                    | {issue:$iid, session:.to} ] }
   ' <<<"$snap"
 }
 
@@ -1305,7 +1429,12 @@ _sg_reconcile_class_set() {
     /^residual status labels on closed issues/     { sec="status-drift"; next }
     /^orphaned In-Progress/                         { sec="status-drift"; next }
     /^stale claims \(In Progress/                   { sec="stale-claims"; next }
-    /^stranded claim stamps on closed issues/       { sec="stale-claims"; next }
+    # NOT mapped (temperloop#1980 round 3 MEDIUM): the board-source closed-
+    # issue residue read never attaches a claimed_by edge to a closed Issue
+    # node, so this reconcile class can only ever land in only_in_reconcile
+    # — see the header comment above (the stale-claims <-> reconcile
+    # mapping) for the full rationale.
+    /^stranded claim stamps on closed issues/       { sec=""; next }
     /^foreign claims \(In Progress on another host/ { sec=""; next }
     /^foreign claims \(STALE/                       { sec=""; next }
     /^unresolved \(state not found/                 { sec=""; next }
