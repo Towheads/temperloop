@@ -41,45 +41,108 @@
 #   state-graph.sh clean --board <N>             remove ONE repo's snapshot
 #   state-graph.sh bench --scale <N> --board <N>  synthetic N-scale timing run
 #   state-graph.sh query <name> --board <N>      read a query over the snapshot
-#   state-graph.sh soak --board <N>              build + query status-drift +
+#   state-graph.sh soak --board <N>              build + PER-CLASS query vs.
 #                                                 reconcile.sh --status, append
-#                                                 one dated diff record
+#                                                 one dated per-class diff record
 #   state-graph.sh soak --count --board <N>      print distinct days recorded
 #   state-graph.sh soak --audit --board <N> --items <file>
 #                                                 record a hand-audited item set
 #                                                 against today
 #
-# SOAK (temperloop#1910, this item): the fourteen-day cross-check ADR 0033's
-# independence claim rests on — "one derivation (`build`) plus one
-# INDEPENDENT read (`reconcile.sh --status`, which never touches this file's
-# own snapshot store) should keep agreeing" — made MECHANICAL rather than a
-# human diffing two command outputs by eye every day. `soak --board N` runs a
-# fresh `build`, reads `query status-drift` off that SAME snapshot (no second
-# live build), separately shells out to `reconcile.sh --status` through the
-# overridable `_sg_reconcile` seam (mirrors `_sg_git`/`_sg_tmux` — reconcile.sh
-# is a SEPARATE script, not sourced, so it gets its own seam rather than a
-# hand-rolled subprocess call), reduces each side to a comparable SET of
-# flagged issue numbers, and appends one `{day, drift_query_set,
-# reconcile_set, diff}` record to a soak log kept through cache.sh's own path
-# accessors (kind=state-graph-soak — never a hand-rolled path, same
-# discipline as `_sg_persist_snapshot`). `day` is UTC (`_sg_soak_day`,
-# overridable) per the stored/parsed-timestamps-stay-UTC convention. Either
-# side reads "unknown" (the same never-a-bare-empty-set convention `query`
-# itself follows) when its source is degraded — `drift_query_set` when
-# status-drift's own status is "unknown", `reconcile_set` when the
-# `_sg_reconcile` invocation itself fails — and `diff` is "unknown" whenever
-# either side is, never a false agreement/disagreement computed over a set
-# that couldn't actually be read. `--count` prints the number of distinct
-# `day` values recorded (any record type). `--audit --items <file>` appends a
-# `{day, type:"audit", audited_items}` record — a hand-reviewed item set (one
-# issue number per line, `#N`/`Issue:N`/bare digits all accepted) logged
-# against today, for a human to compare against the same day's mechanical
-# diff. `bench --scale N` also appends one `{day, type:"bench", ...}` record
-# per invocation timing each of the five named queries against its synthetic
-# snapshot, so running it at scale 1, then 10, then 100 (the doc convention
-# used throughout this file for "one of these values", see the `query`
-# name enum above) leaves a trail a soak reviewer scans for the first scale
-# whose `query_ms` first exceeds `STATE_GRAPH_QUERY_SLOW_MS`.
+# SOAK (temperloop#1910; PER-CLASS scope rewrite temperloop#1978): the
+# fourteen-day cross-check ADR 0033's independence claim rests on — "one
+# derivation (`build`) plus one INDEPENDENT read (`reconcile.sh --status`,
+# which never touches this file's own snapshot store) should keep agreeing"
+# — made MECHANICAL rather than a human diffing two command outputs by eye
+# every day.
+#
+# PER-CLASS, never one flat set diff (temperloop#1978): status-drift and
+# reconcile.sh --status have different SCOPE — status-drift only ever
+# computes the board source's own in-progress/claimed_by disagreement, while
+# reconcile.sh --status prints EIGHT distinct drift classes in one report
+# (status labels, claim liveness, AND cross-host/lookup-failure signals all
+# mixed together). Comparing status-drift's one narrow query against
+# reconcile's WHOLE report manufactured false disagreement whenever
+# reconcile flagged something status-drift was never designed to compute
+# (a dead-session claim stamp) — a SCOPE ARTIFACT, not a real cross-check
+# failure. `soak` instead runs ONE comparison per state-graph query that has
+# a reconcile.sh counterpart:
+#
+#   status-drift  <-> reconcile's STATUS-LABEL classes: `terminal-but-not-
+#                 Done`, `residual status labels on closed issues` (the
+#                 closed-issue board-source read below's own residue —
+#                 acceptance criterion 2), and `orphaned In-Progress` (the
+#                 exact same "in-progress, no owner stamp" computation
+#                 status-drift's own board source already makes).
+#   stale-claims  <-> reconcile's CLAIM-LIVENESS classes: `stale claims`
+#                 (In Progress, stamped to a dead same-host session — this
+#                 item's day-1 #1225/#1111/#1048/#1047) and `stranded claim
+#                 stamps on closed issues`.
+#   unlinked-prs / orphan-worktrees  <-> reconcile.sh has NO matching class
+#                 for either (it never examines PRs or worktrees) — their
+#                 `reconcile_set`/`diff` read the literal string
+#                 "not-covered", never an empty set standing in for a domain
+#                 reconcile.sh structurally never reports on (that would be
+#                 exactly the false-agreement/disagreement this rewrite
+#                 exists to stop manufacturing).
+#
+# reconcile's `foreign`/`foreign-stale` claims (another host — unverifiable
+# from here) and `unresolved` (a state LOOKUP failure, not a status/claim
+# verdict) map to NEITHER class and are never diffed — folding them into
+# either set would manufacture a comparison this file cannot actually back.
+#
+# One `soak --board N` run: fresh `build`; the four queries above off that
+# SAME snapshot (no second live build); ONE `reconcile.sh --status` call
+# through the overridable `_sg_reconcile` seam (mirrors `_sg_git`/`_sg_tmux`
+# — reconcile.sh is a SEPARATE script, not sourced, so it gets its own seam;
+# ONE call, its report reused for every mapped class, never one call per
+# class), parsed into per-class issue-number sets anchored on the SAME
+# line-leading `  #N` shape reconcile.sh's own marker parse uses
+# (reconcile.sh:468) — a `#N` embedded mid-line in a flagged item's TITLE is
+# never mistaken for a ref. Appends one `{day, type:"run", schema:2,
+# classes:{<name>: {drift_query_set, reconcile_set, diff}, ...}}` record —
+# `classes` covers exactly the four names above; `diff` is EITHER
+# `{only_in_drift_query, only_in_reconcile, agree}` (`agree` is now PER
+# CLASS — there is no single flat top-level `agree` any more, state this
+# plainly since it is this item's own acceptance semantics), the literal
+# string "unknown" (either side's own source is `error`/`stale`, or the
+# `_sg_reconcile` invocation itself failed — never a false empty-set
+# agreement computed over a side that couldn't actually be read), or the
+# literal string "not-covered" (unlinked-prs / orphan-worktrees: nothing on
+# reconcile's side to diff against, ever). `day` is UTC (`_sg_soak_day`,
+# overridable) per the stored/parsed-timestamps-stay-UTC convention.
+#
+# SCHEMA VERSIONING (acceptance criterion 4): a run record now carries
+# `type:"run"` and `schema:2` — both absent from every pre-temperloop#1978
+# record already on disk (the OLD flat shape: `{day, drift_query_set,
+# reconcile_set, diff}`, no `type` field at all). Rather than rewrite a live
+# production soak log this checkout cannot even see, `schema:2` marks the
+# boundary instead: `--count` counts a `day` only from a record that is
+# unambiguously CURRENT-schema-comparable — `type:"audit"` / `type:"bench"`
+# (unaffected by this rewrite, counted exactly as before) or `type:"run"`
+# WITH `schema:2` — so a pre-existing flat-schema run record silently drops
+# out of the count instead of being misread as a per-class one. (The PR body
+# for this change states this choice and why explicitly, per that
+# criterion.)
+#
+# Practically: every day whose only record predates this rewrite drops out
+# of `--count`, so the fourteen-day independence check restarts from zero
+# and needs fourteen new `schema:2` days before it is trustworthy again. An
+# operator watching `--count` fall after this deploys should read that as
+# this expected reset, not a regression.
+#
+# `--count` prints the number of distinct `day` values recorded (any
+# comparable record type, per the schema rule above). `--audit --items
+# <file>` appends a `{day, type:"audit", audited_items}` record — a hand-
+# reviewed item set (one issue number per line, `#N`/`Issue:N`/bare digits
+# all accepted) logged against today, for a human to compare against the
+# same day's mechanical diff. `bench --scale N` also appends one `{day,
+# type:"bench", ...}` record per invocation timing each of the five named
+# queries against its synthetic snapshot, so running it at scale 1, then 10,
+# then 100 (the doc convention used throughout this file for "one of these
+# values", see the `query` name enum above) leaves a trail a soak reviewer
+# scans for the first scale whose `query_ms` first exceeds
+# `STATE_GRAPH_QUERY_SLOW_MS`.
 #
 # QUERY (temperloop#1910 L6, this item): five named, PURE functions of a
 # snapshot JSON blob — `_sg_query_*` — reused verbatim by `cmd_query` (reads
@@ -96,7 +159,13 @@
 # answers its ordinary empty-but-real result for it.
 #
 #   status-drift       Issue nodes whose `fnd:status:*` and `claimed_by`
-#                       edge disagree (board source only).
+#                       edge disagree (board source only) — PLUS (temperloop
+#                       #1978) a CLOSED issue node still wearing an
+#                       `fnd:status:*` label (the `closed_with_status_label`
+#                       finding kind; Done here is "closed + no status
+#                       label", workflows/scripts/board/ISSUES-ONLY-
+#                       BACKEND.md — the board source's own closed-issue
+#                       residue read, see `_sg_read_board`).
 #   stale-claims        `claimed_by` edges naming a Session absent from the
 #                       journal source (board + journal).
 #   unlinked-prs        open PR nodes with no `closes` edge (pr_list only).
@@ -190,8 +259,9 @@ usage: state-graph.sh build --board <N>
                 (name: status-drift | stale-claims | unlinked-prs |
                        orphan-worktrees | resume)
        state-graph.sh soak --board <N>
-                build + query status-drift + reconcile.sh --status; append
-                one dated {day, drift_query_set, reconcile_set, diff} record
+                build + PER-CLASS status-drift/stale-claims/unlinked-prs/
+                orphan-worktrees vs. reconcile.sh --status; append one dated
+                {day, type:"run", schema:2, classes:{...}} record
        state-graph.sh soak --count --board <N>
                 print the number of distinct days recorded in the soak log
        state-graph.sh soak --audit --board <N> --items <file>
@@ -301,8 +371,55 @@ _sg_source_result() {
 # derived status token is not a `state:issue-status` row in the ontology
 # registry (acceptance criterion 1's "a node state not in the ontology
 # registry makes that source error").
+#
+# CLOSED-ISSUE RESIDUE (temperloop#1978, this item's acceptance criterion 2):
+# `board_resolve`/`board_item_list` (board.sh ~637/~1446) are a deliberate
+# OPEN-only active-set convention other callers rely on — never widened here
+# (principle 6, blast radius). So a closed issue that still carries an
+# `fnd:status:*` label (Done on this backend is "closed + NO status label",
+# workflows/scripts/board/ISSUES-ONLY-BACKEND.md; residue like a closed
+# issue still wearing fnd:status:backlog) is structurally invisible to the
+# primary read above. This source closes that
+# gap ITSELF, entirely inside this file: one SUPPLEMENTAL, DIRECT `_board_gh
+# api "repos/<repo>/issues" --method GET -f state=closed -f labels=<label>
+# ...` call per `fnd:status:*` label (deliberately NOT `gh issue list` —
+# that shares board.sh's own `_board_gh` call shape at the argv-matching
+# granularity every existing test fixture dispatches on, which would
+# silently replay the OPEN-issue fixture for this closed-issue read too;
+# the distinct `api repos/.../issues` shape can never collide with an
+# `issue list` mock arm), emitted as extra Issue nodes with `state:"closed"`
+# so `_sg_query_status_drift`'s new `closed_with_status_label` finding can
+# see them. This supplemental read is FAIL-SOFT by design, per label — a
+# failure (rate limit/auth/an older test fixture that doesn't mock it)
+# warns on stderr and that label contributes zero extra nodes rather than
+# erroring the WHOLE board source; the primary open-issue read's own
+# ok/absent/error verdict is computed exactly as before, untouched by this
+# addition.
+#
+# Round 2 (temperloop#1978 verdict, live-run findings):
+#
+#   - `--method GET` is REQUIRED on every call here. `gh api` silently
+#     switches to POST the instant any `-f`/`-F` param is present, unless
+#     `--method`/`-X` names GET explicitly — verified live: the round-1 call
+#     (no `--method`) was actually POSTing to the CREATE-an-issue endpoint
+#     (422 "title wasn't supplied", swallowed whole by the fail-soft arm
+#     below, so it silently contributed zero residue nodes every run).
+#
+#   - One page of `per_page=100`, newest-first, with no pagination
+#     structurally cannot reach OLD residue (measured live: one page spans
+#     #1841-#1979). Rather than paginate the entire closed-issue history
+#     (unbounded cost), this queries by LABEL instead: one GET per
+#     `fnd:status:*` label — GitHub's REST `labels` filter is AND, not OR,
+#     so a comma-joined list would wrongly require ALL of them on one
+#     issue, and must be one call per label. The label set is read from the
+#     ontology registry (ADR 0032) via `_sg_issue_status_tokens` — the same
+#     accessor this function already uses above for the primary read's
+#     status-token validation — filtered to the `fnd:status:*` rows (i.e.
+#     excluding the registry's non-label `done` token), so a future label
+#     addition/removal there is picked up here for free rather than
+#     hardcoded.
 _sg_read_board() {
-  local board="$1" items count bad nodes edges stamp norm
+  local board="$1" items count bad nodes edges stamp norm repo closed_raw closed_nodes label extra labels page_count
   if ! board_resolve "$board" >/dev/null 2>&1; then
     _sg_source_result error '[]' '[]' "board_resolve failed"
     return 0
@@ -313,10 +430,15 @@ _sg_read_board() {
     _sg_source_result error '[]' '[]' "unparseable board item list"
     return 0
   fi
-  if [ "$count" -eq 0 ]; then
-    _sg_source_result absent '[]' '[]' ""
-    return 0
-  fi
+
+  # Ontology-registry check — HOISTED ABOVE the closed-issue residue fan-out
+  # below (round-4 verdict, LOW 3): a registry-drift board (a status token
+  # outside the ontology registry) must not spend one live REST call per
+  # `fnd:status:*` label on residue that its own `error` return below would
+  # only discard. `bad` depends only on `$items`, already parsed above —
+  # `bad` over an empty array is 0, so this stays safe ahead of the
+  # `count -eq 0` check too, which stays BELOW the residue read (round-3
+  # hoist preserved: bad check → residue read → count -eq 0).
   bad="$(printf '%s' "$items" | jq --argjson toks "$(_sg_issue_status_tokens | jq -Rsc 'split("\n") | map(select(length>0))')" "
     $_SG_STATUS_TOKEN_JQ
     [ .[] | (.status // \"\") as \$s
@@ -325,6 +447,71 @@ _sg_read_board() {
   ")"
   if [ "${bad:-0}" -gt 0 ]; then
     _sg_source_result error '[]' '[]' "node status not in ontology registry"
+    return 0
+  fi
+
+  # Closed-issue residue supplement — see this function's own header comment
+  # above. HOISTED ABOVE the `count -eq 0` branch below (round-3 verdict,
+  # MEDIUM 3): a board with zero OPEN issues but real closed-with-label
+  # residue is not "absent" — there is board state, it is simply all
+  # closed — so this read must run, and its nodes must reach the `absent`
+  # arm too, rather than being skipped by an early return that used to
+  # precede it. `repo` failing to resolve, or a per-label `_board_gh api`
+  # call itself failing, is never a hard error for this source: it just
+  # means today's snapshot sees no closed-issue residue for that label,
+  # exactly like a repo with none for it.
+  #
+  # Round 3 (temperloop#1978 verdict, reviewer findings):
+  #   - routes through board.sh's `_board_sanitize_control_chars` (its own
+  #     INVARIANT: any new `_board_gh api … | jq` reading issue content must
+  #     route through it first) — one leaked control byte in a returned
+  #     title otherwise breaks jq's parse silently (`2>/dev/null` + the
+  #     `|| extra='[]'` fallback turn it into a clean empty result), the
+  #     same silent-zero-residue failure this whole read exists to fix.
+  #   - `select(has("pull_request") | not)`: GitHub's REST
+  #     `/repos/{o}/{r}/issues` endpoint returns pull requests alongside
+  #     issues, but reconcile.sh's own `gh issue list` side never does — an
+  #     unfiltered read turns a closed, `fnd:status:*`-labeled PR into a
+  #     phantom Issue node reconcile.sh can never agree with.
+  #   - warns (never silently truncates) when a label's own page returns
+  #     exactly `per_page=100`, mirroring reconcile.sh's own
+  #     never-silently-truncate posture at its `STATE_LIMIT` cap — sharding
+  #     by label shrinks the truncation window, it does not close it.
+  repo="$(board_repo "$board" 2>/dev/null)" || repo=""
+  closed_nodes='[]'
+  if [ -n "$repo" ]; then
+    # Captured to a var before the loop (round-3 LOW finding): the loop body
+    # runs a real `_board_gh` child per iteration, which inherits the
+    # process-substitution FD as stdin under `done < <(...)` and could
+    # otherwise consume the remaining labels out from under the producer,
+    # silently truncating the fan-out. `|| true` is load-bearing under
+    # `set -euo pipefail` — the producer's `grep` exits 1 on no match, which
+    # is a legitimate "no fnd:status:* labels in the registry" state, not a
+    # failure.
+    labels="$(_sg_issue_status_tokens | grep '^fnd:status:' || true)"
+    while IFS= read -r label; do
+      [ -n "$label" ] || continue
+      if closed_raw="$(_board_gh api "repos/$repo/issues" --method GET -f state=closed -f "labels=$label" -f per_page=100 2>/dev/null)"; then
+        page_count="$(printf '%s' "$closed_raw" | _board_sanitize_control_chars | jq 'length' 2>/dev/null)" || page_count=""
+        if [ -z "$page_count" ]; then
+          echo "state-graph.sh: warning: closed-issue residue read for board $board repo $repo label $label returned an unparseable page — residue not read for this label this cycle" >&2
+        elif [ "$page_count" -eq 100 ]; then
+          echo "state-graph.sh: warning: closed-issue residue read for board $board repo $repo label $label returned a full page (100) — possible truncation, residue may be incomplete for this label this cycle" >&2
+        fi
+        extra="$(printf '%s' "$closed_raw" | _board_sanitize_control_chars | jq -c --arg lbl "$label" '
+          [ .[]? | select(has("pull_request") | not) | { type:"Issue", id:("Issue:"+(.number|tostring)), number:.number,
+                      status:$lbl, state:"closed" } ]
+        ' 2>/dev/null)" || extra='[]'
+        [ -n "$extra" ] || extra='[]'
+        closed_nodes="$(jq -c --argjson extra "$extra" '. + $extra' <<<"$closed_nodes")"
+      else
+        echo "state-graph.sh: warning: closed-issue residue read failed for board $board repo $repo label $label (gh api rate-limited/auth?) — status-drift will not see closed-with-label residue for this label this cycle" >&2
+      fi
+    done <<<"$labels"
+  fi
+
+  if [ "$count" -eq 0 ]; then
+    _sg_source_result absent "$closed_nodes" '[]' ""
     return 0
   fi
   nodes="$(printf '%s' "$items" | jq -c "
@@ -343,6 +530,9 @@ _sg_read_board() {
     edges="$(jq -c --arg f "Issue:${from_n}" --arg t "Session:${norm}" \
       '. + [{type:"claimed_by", from:$f, to:$t}]' <<<"$edges")"
   done < <(printf '%s' "$items" | jq -r '.[] | select((.["host/Session"] // "") != "") | [ (.content.number|tostring), .["host/Session"] ] | @tsv')
+
+  nodes="$(jq -c --argjson extra "$closed_nodes" '. + $extra' <<<"$nodes")"
+
   _sg_source_result ok "$nodes" "$edges" ""
 }
 
@@ -837,15 +1027,26 @@ _sg_query_status_drift() {
   fi
   jq -c '
     (.nodes | map(select(.type=="Issue"))) as $issues
+    | ($issues | map(select((.state // "open") == "open"))) as $open_issues
+    | ($issues | map(select((.state // "open") == "closed"))) as $closed_issues
     | (.edges | map(select(.type=="claimed_by")) | map(.from)) as $claimed
     | {
         query: "status-drift",
         status: "ok",
         findings: (
-          [ $issues[] | .id as $iid | select(.status == "fnd:status:in-progress" and (($claimed | index($iid)) == null))
+          [ $open_issues[] | .id as $iid | select(.status == "fnd:status:in-progress" and (($claimed | index($iid)) == null))
             | {id:$iid, kind:"in_progress_no_claim"} ]
-          + [ $issues[] | .id as $iid | select(.status != "fnd:status:in-progress" and (($claimed | index($iid)) != null))
+          + [ $open_issues[] | .id as $iid | select(.status != "fnd:status:in-progress" and (($claimed | index($iid)) != null))
               | {id:$iid, kind:"claimed_not_in_progress"} ]
+          # closed-issue residue (temperloop#1978, this board source read —
+          # see _sg_read_board header comment above it): a closed Issue node
+          # only ever appears here carrying a non-empty residual
+          # fnd:status:* label (that presence is the read filter for
+          # emitting the node at all), so status != done is always true in
+          # practice here — kept explicit anyway as the honest reason this
+          # branch fires, not an incidental side effect.
+          + [ $closed_issues[] | .id as $iid | select(.status != "done")
+              | {id:$iid, kind:"closed_with_status_label"} ]
         )
       }' <<<"$snap"
 }
@@ -1018,26 +1219,130 @@ _sg_soak_log_file() {
   printf '%s' "$file"
 }
 
-# One soak run: build + persist a fresh snapshot, run `query status-drift`
-# over that SAME snapshot (no second live build), separately run
-# `reconcile.sh --status` through the `_sg_reconcile` seam, reduce each side
-# to a comparable SORTED-UNIQUE array of issue numbers, and append one dated
-# record. Either set (and `diff`) is the literal string "unknown" — never a
-# bare empty array standing in for "couldn't tell" — when its own source is
-# degraded, mirroring every `_sg_query_*`'s own convention.
+# --- soak: per-class reduction helpers (temperloop#1978) --------------------
+# Reduce one `_sg_query_*` result to a comparable SORTED-UNIQUE JSON array —
+# or the literal string "unknown" when the query's own `status` reads
+# "unknown" (its source is degraded), mirroring every `_sg_query_*`'s own
+# never-a-bare-empty-set convention. One reducer per findings SHAPE (issue-id
+# findings for status-drift/stale-claims, PR-number findings for
+# unlinked-prs, slug findings for orphan-worktrees — orphan-worktrees has no
+# issue-number domain at all, so its set is worktree SLUGS, never compared
+# against reconcile.sh, which has no worktree concept either).
+_sg_soak_reduce_issue_findings() {
+  local qj="$1" field="$2"
+  if [ "$(jq -r '.status' <<<"$qj")" = "unknown" ]; then
+    echo '"unknown"'
+  else
+    jq -c --arg f "$field" '[ .findings[] | .[$f] | ltrimstr("Issue:") | tonumber ] | sort | unique' <<<"$qj"
+  fi
+}
+_sg_soak_reduce_pr_findings() {
+  local qj="$1"
+  if [ "$(jq -r '.status' <<<"$qj")" = "unknown" ]; then
+    echo '"unknown"'
+  else
+    jq -c '[ .findings[].number ] | sort | unique' <<<"$qj"
+  fi
+}
+_sg_soak_reduce_slug_findings() {
+  local qj="$1"
+  if [ "$(jq -r '.status' <<<"$qj")" = "unknown" ]; then
+    echo '"unknown"'
+  else
+    jq -c '[ .findings[].slug ] | sort | unique' <<<"$qj"
+  fi
+}
+
+# Reconcile-side per-class extraction (temperloop#1978): reconcile.sh's
+# --status report prints several section headers, each covering a distinct
+# drift class (reconcile.sh's own `status_reconcile_main`) — see this file's
+# own header comment for the full class->domain mapping this implements.
+# Anchored on the report's line-leading `  #N` shape reconcile.sh uses for
+# its own marker parse (`sed -n 's/^#\([0-9][0-9]*\).*/\1/p'`,
+# reconcile.sh:468), so a `#N` embedded mid-line in a flagged item's TITLE is
+# never mistaken for a ref. `<class>` is `status-drift` or `stale-claims`;
+# any other value returns an empty set (there is nothing to map it to).
+_sg_reconcile_class_set() {
+  local text="$1" class="$2" nums
+  nums="$(awk -v want="$class" '
+    /^terminal-but-not-Done/                       { sec="status-drift"; next }
+    /^residual status labels on closed issues/     { sec="status-drift"; next }
+    /^orphaned In-Progress/                         { sec="status-drift"; next }
+    /^stale claims \(In Progress/                   { sec="stale-claims"; next }
+    /^stranded claim stamps on closed issues/       { sec="stale-claims"; next }
+    /^foreign claims \(In Progress on another host/ { sec=""; next }
+    /^foreign claims \(STALE/                       { sec=""; next }
+    /^unresolved \(state not found/                 { sec=""; next }
+    /^In sync:/                                     { sec=""; next }
+    /^[[:space:]]*$/                                { next }
+    /^[[:space:]]*#[0-9]+[[:space:]]/ {
+      if (sec == want) {
+        n = $0
+        sub(/^[[:space:]]*#/, "", n)
+        sub(/[^0-9].*/, "", n)
+        print n
+      }
+      next
+    }
+    { sec = "" }
+  ' <<<"$text" | sort -n | uniq)"
+  printf '%s' "$nums" | jq -Rsc 'split("\n") | map(select(length>0) | tonumber)'
+}
+
+# One per-class {drift_query_set, reconcile_set, diff} entry. `rset` is
+# either a real (possibly empty) sorted-unique array, the literal string
+# "unknown" (reconcile.sh itself failed this run), or the literal string
+# "not-covered" (unlinked-prs / orphan-worktrees: reconcile.sh has no
+# matching class, ever — see this file's header comment). `diff` is
+# "unknown" whenever EITHER side is (never a false empty-set agreement
+# computed over a side that couldn't actually be read — checked first, so a
+# degraded drift-query side still reads "unknown" even against a
+# structurally not-covered reconcile side), else "not-covered" when the
+# reconcile side has nothing to compare against, else the real per-class
+# `{only_in_drift_query, only_in_reconcile, agree}` object.
+_sg_soak_class_entry() {
+  local dset="$1" rset="$2" diff
+  if [ "$dset" = '"unknown"' ] || [ "$rset" = '"unknown"' ]; then
+    diff='"unknown"'
+  elif [ "$rset" = '"not-covered"' ]; then
+    diff='"not-covered"'
+  else
+    diff="$(jq -cn --argjson a "$dset" --argjson b "$rset" '
+      { only_in_drift_query: ($a - $b), only_in_reconcile: ($b - $a),
+        agree: (($a - $b) == [] and ($b - $a) == []) }')"
+  fi
+  jq -cn --argjson dq "$dset" --argjson rc "$rset" --argjson diff "$diff" \
+    '{drift_query_set:$dq, reconcile_set:$rc, diff:$diff}'
+}
+
+# One soak run: build + persist a fresh snapshot, run all four board/PR/
+# worktree-comparable queries — status-drift, stale-claims, unlinked-prs,
+# orphan-worktrees — over that SAME snapshot (no second live build),
+# separately run ONE `reconcile.sh --status` through the `_sg_reconcile` seam
+# (its report reused for every mapped class, never one call per class), and
+# append one PER-CLASS dated record. See this file's own header comment for
+# the full class->reconcile-class mapping and the unknown/not-covered
+# semantics `_sg_soak_class_entry` implements.
 _sg_soak_run() {
-  local board="$1" snapshot dq_json dq_set rc_out rc_rc=0 reconcile_set diff day logf record
+  local board="$1" snapshot day logf record
+  local dq_status dq_stale dq_pr dq_wt
+  local status_set stale_set pr_set wt_set
+  local rc_out rc_rc=0 rc_status_set rc_stale_set
+  local status_entry stale_entry pr_entry wt_entry
 
   snapshot="$(_sg_build_snapshot "$board")"
   _sg_persist_snapshot "$board" "$snapshot" "state-graph" ||
     echo "state-graph.sh: warning: soak snapshot persist failed for board $board (disk/permission?)" >&2
 
-  dq_json="$(_sg_query_status_drift "$snapshot")"
-  if [ "$(jq -r '.status' <<<"$dq_json")" = "unknown" ]; then
-    dq_set='"unknown"'
-  else
-    dq_set="$(jq -c '[ .findings[].id | ltrimstr("Issue:") | tonumber ] | sort | unique' <<<"$dq_json")"
-  fi
+  dq_status="$(_sg_query_status_drift "$snapshot")"
+  dq_stale="$(_sg_query_stale_claims "$snapshot")"
+  dq_pr="$(_sg_query_unlinked_prs "$snapshot")"
+  dq_wt="$(_sg_query_orphan_worktrees "$snapshot")"
+
+  status_set="$(_sg_soak_reduce_issue_findings "$dq_status" id)"
+  stale_set="$(_sg_soak_reduce_issue_findings "$dq_stale" issue)"
+  pr_set="$(_sg_soak_reduce_pr_findings "$dq_pr")"
+  wt_set="$(_sg_soak_reduce_slug_findings "$dq_wt")"
 
   # stdout only (`2>/dev/null`) — reconcile.sh's flagged lines carry the
   # item's TITLE on the same line, and titles routinely contain `#N`
@@ -1047,36 +1352,39 @@ _sg_soak_run() {
   # disagreement — the one thing this cross-check exists to avoid.
   rc_out="$(_sg_reconcile --board "$board" --status 2>/dev/null)" || rc_rc=$?
   if [ "$rc_rc" -ne 0 ]; then
-    reconcile_set='"unknown"'
+    rc_status_set='"unknown"'
+    rc_stale_set='"unknown"'
   else
-    # Anchored on the report's line-leading item shape — the same shape
-    # reconcile.sh uses for its own marker parse (`sed -n
-    # 's/^#\([0-9][0-9]*\).*/\1/p'`, reconcile.sh:468) — so a `#N` embedded
-    # mid-line in a title is never mistaken for a flagged item ref. `sed`
-    # (unlike `grep -oE`) exits 0 on zero matches, so no pipefail absorption
-    # is needed for an "In sync" report with nothing flagged.
-    reconcile_set="$(printf '%s' "$rc_out" | sed -nE 's/^[[:space:]]*#([0-9]+)[[:space:]].*/\1/p' | sort -n | uniq | jq -Rsc 'split("\n") | map(select(length>0) | tonumber)')"
+    rc_status_set="$(_sg_reconcile_class_set "$rc_out" status-drift)"
+    rc_stale_set="$(_sg_reconcile_class_set "$rc_out" stale-claims)"
   fi
 
-  if [ "$dq_set" = '"unknown"' ] || [ "$reconcile_set" = '"unknown"' ]; then
-    diff='"unknown"'
-  else
-    diff="$(jq -cn --argjson a "$dq_set" --argjson b "$reconcile_set" '
-      { only_in_drift_query: ($a - $b), only_in_reconcile: ($b - $a),
-        agree: (($a - $b) == [] and ($b - $a) == []) }')"
-  fi
+  status_entry="$(_sg_soak_class_entry "$status_set" "$rc_status_set")"
+  stale_entry="$(_sg_soak_class_entry "$stale_set" "$rc_stale_set")"
+  pr_entry="$(_sg_soak_class_entry "$pr_set" '"not-covered"')"
+  wt_entry="$(_sg_soak_class_entry "$wt_set" '"not-covered"')"
 
   day="$(_sg_soak_day)"
   logf="$(_sg_soak_log_file "$board")" || { echo "state-graph.sh: soak: could not resolve soak log path" >&2; return 1; }
-  record="$(jq -cn --arg day "$day" --argjson dq "$dq_set" --argjson rc "$reconcile_set" --argjson diff "$diff" \
-    '{day:$day, drift_query_set:$dq, reconcile_set:$rc, diff:$diff}')"
+  record="$(jq -cn --arg day "$day" \
+    --argjson sd "$status_entry" --argjson sc "$stale_entry" \
+    --argjson pr "$pr_entry" --argjson wt "$wt_entry" \
+    '{day:$day, type:"run", schema:2,
+      classes: {"status-drift":$sd, "stale-claims":$sc,
+                "unlinked-prs":$pr, "orphan-worktrees":$wt}}')"
   printf '%s\n' "$record" >>"$logf"
   printf '%s\n' "$record"
 }
 
 # `soak --count --board N`: the number of DISTINCT `day` values across every
-# record in the log (soak-run records and audit/bench records alike) — a
-# missing or empty log prints 0, never an error (nothing recorded yet).
+# CURRENT-SCHEMA-COMPARABLE record in the log — a missing or empty log
+# prints 0, never an error (nothing recorded yet). `type:"audit"` /
+# `type:"bench"` records are unaffected by the temperloop#1978 per-class
+# rewrite and always count; a `type:"run"` record counts only at `schema:2`
+# — the OLD flat-schema run record (temperloop#1910: `{day,
+# drift_query_set, reconcile_set, diff}`, no `type` field at all) is
+# deliberately EXCLUDED rather than misread as a per-class one (acceptance
+# criterion 4; see this file's header comment's SCHEMA VERSIONING section).
 _sg_soak_count() {
   local board="$1" logf
   logf="$(_sg_soak_log_file "$board")" || { echo "state-graph.sh: soak: could not resolve soak log path" >&2; return 1; }
@@ -1088,7 +1396,8 @@ _sg_soak_count() {
   # already makes this pipeline (and, as the function's last command, the
   # whole script) exit non-zero — discarding jq's stderr left that exit code
   # legible but its REASON silent. Surface it instead of a bare rc.
-  jq -r '.day' "$logf" | sort -u | wc -l | tr -d ' ' ||
+  jq -r 'select(.type == "audit" or .type == "bench" or (.type == "run" and .schema == 2)) | .day' "$logf" |
+    sort -u | wc -l | tr -d ' ' ||
     { echo "state-graph.sh: soak --count: unreadable soak log $logf" >&2; return 1; }
 }
 

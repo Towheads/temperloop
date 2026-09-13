@@ -127,6 +127,288 @@ out="$(_sg_read_board "$BOARD")"
 [ "$(jq -r .status <<<"$out")" = "error" ] || fail "board error status on board_resolve failure (got: $out)"
 echo "PASS: board source error — board_resolve failure"
 
+# --- board: closed-issue residue (temperloop#1978 round 2, acceptance
+# criterion 2) --------------------------------------------------------------
+# ONE `_board_gh api "repos/.../issues" --method GET -f state=closed -f
+# labels=<label> ...` call PER `fnd:status:*` label (never `gh issue list` —
+# that shape collides with the OPEN-issue mock arm every other case in this
+# file uses; never a single unfiltered call either — GitHub's `labels`
+# filter is server-side AND-only, so this must be one call per label).
+# `fnd:status:backlog`'s own call returns #158 (this item's day-1 soak
+# evidence); `fnd:status:ready` and `fnd:status:in-progress` return empty
+# pages, mirroring the live label inventory having zero closed residue for
+# those two labels today.
+_board_gh() {
+  case "$1 $2" in
+    "issue list") echo '[{"number":1,"title":"x","labels":[{"name":"fnd:status:ready"}]}]' ;;
+    "api repos/$REPO/issues")
+      case " $* " in
+        *" labels=fnd:status:backlog "*) echo '[{"number":158,"title":"y","labels":[{"name":"fnd:status:backlog"}]}]' ;;
+        *) echo '[]' ;;
+      esac
+      ;;
+    *) echo "test _board_gh: unhandled '$1 $2'" >&2; return 3 ;;
+  esac
+}
+out="$(_sg_read_board "$BOARD")"
+[ "$(jq -r .status <<<"$out")" = "ok" ] || fail "board ok status with closed residue present (got: $out)"
+[ "$(jq -c '[.nodes[] | select(.id=="Issue:158")] | .[0] | {status,state}' <<<"$out")" = '{"status":"fnd:status:backlog","state":"closed"}' ] \
+  || fail "board closed-residue node #158 shape mismatch (got: $out)"
+[ "$(jq '.nodes | length' <<<"$out")" = 2 ] || fail "board closed-residue node count (open #1 + closed #158, found via its own label's call) mismatch (got: $out)"
+echo "PASS: board source — a closed issue still wearing an fnd:status:* label surfaces as its own residue Issue node, via that label's own filtered GET"
+
+# --- board: closed-issue residue call is a GET, never a POST (temperloop#1978
+# round 2, Finding 1 + required structural defense) -------------------------
+# `gh api` silently switches from GET to POST the instant ANY `-f`/`-F`
+# param is present, unless `--method`/`-X` names GET explicitly — this is
+# exactly the round-1 regression (a live 422 against the create-an-issue
+# endpoint, swallowed whole by the fail-soft arm). A mock that only replays
+# a canned BODY back is structurally blind to this (dispatches on "$1 $2"
+# regardless of method), so this one instead RECORDS the full argv of every
+# closed-residue call — to a FILE, since `_sg_read_board` invokes `_board_gh`
+# through `$(...)` command substitution, a subshell an in-memory array
+# mutation would not survive — and asserts `--method GET` (or `-X GET`) is
+# present on EACH recorded call: asserting on the REQUEST SHAPE, not the
+# response.
+_SG_TEST_CALLS_FILE="$TMP/closed-residue-calls"
+: > "$_SG_TEST_CALLS_FILE"
+_board_gh() {
+  case "$1 $2" in
+    "issue list") echo '[{"number":1,"title":"x","labels":[{"name":"fnd:status:ready"}]}]' ;;
+    "api repos/$REPO/issues")
+      printf '%s\n' "$*" >> "$_SG_TEST_CALLS_FILE"
+      echo '[]'
+      ;;
+    *) echo "test _board_gh: unhandled '$1 $2'" >&2; return 3 ;;
+  esac
+}
+out="$(_sg_read_board "$BOARD")"
+[ -s "$_SG_TEST_CALLS_FILE" ] || fail "closed-residue read made zero _board_gh api calls (expected one per fnd:status:* label)"
+while IFS= read -r call; do
+  case " $call " in
+    *" --method GET "*|*" -X GET "*) : ;;
+    *) fail "closed-residue call regressed off an explicit GET (gh api would silently POST to the create-issue endpoint): $call" ;;
+  esac
+done < "$_SG_TEST_CALLS_FILE"
+echo "PASS: board source — every closed-residue call carries an explicit --method GET (never a bare -f call that gh would silently POST)"
+
+# --- board: closed-issue residue read fails -> FAIL-SOFT, never errors the
+# whole board source (the primary open-issue read still succeeded) ----------
+_board_gh() {
+  case "$1 $2" in
+    "issue list") echo '[{"number":1,"title":"x","labels":[{"name":"fnd:status:ready"}]}]' ;;
+    "api repos/$REPO/issues") return 1 ;;
+    *) echo "test _board_gh: unhandled '$1 $2'" >&2; return 3 ;;
+  esac
+}
+out="$(_sg_read_board "$BOARD" 2>/dev/null)"
+[ "$(jq -r .status <<<"$out")" = "ok" ] || fail "a failing closed-residue read must not error the whole board source (got: $out)"
+[ "$(jq '.nodes | length' <<<"$out")" = 1 ] || fail "a failing closed-residue read should contribute zero extra nodes (got: $out)"
+echo "PASS: board source — a failing closed-residue read degrades to zero extra nodes, never a hard error on the whole source"
+
+# --- board: closed-issue residue routes through board.sh's sanitize stage
+# (temperloop#1978 round 3, HIGH 3) -- a literal control byte in a returned
+# issue's title must not silently zero out that label's residue the way an
+# unsanitized `… | jq` would (the parse fails, `2>/dev/null` swallows it,
+# `|| extra='[]'` turns it into a clean empty result — the exact silent-
+# zero-residue failure this whole read exists to prevent, reached by
+# another path).
+_ctrl="$(printf '\001')"
+_board_gh() {
+  case "$1 $2" in
+    "issue list") echo '[{"number":1,"title":"x","labels":[{"name":"fnd:status:ready"}]}]' ;;
+    "api repos/$REPO/issues")
+      case " $* " in
+        *" labels=fnd:status:backlog "*) printf '[{"number":159,"title":"bad%sbyte","labels":[{"name":"fnd:status:backlog"}]}]\n' "$_ctrl" ;;
+        *) echo '[]' ;;
+      esac
+      ;;
+    *) echo "test _board_gh: unhandled '$1 $2'" >&2; return 3 ;;
+  esac
+}
+out="$(_sg_read_board "$BOARD" 2>/dev/null)"
+[ "$(jq -r .status <<<"$out")" = "ok" ] || fail "a control byte in a closed-residue title must not error the whole board source (got: $out)"
+[ "$(jq '[.nodes[] | select(.id=="Issue:159")] | length' <<<"$out")" = 1 ] \
+  || fail "a control byte in a closed-residue issue's title must not silently drop that label's residue — the sanitize stage must run before jq parses it (got: $out)"
+echo "PASS: board source — the closed-issue residue read routes through _board_sanitize_control_chars before jq, surviving a leaked control byte"
+
+# --- board: closed-issue residue excludes pull requests (temperloop#1978
+# round 3, MEDIUM 1) -- GitHub's REST /repos/{o}/{r}/issues endpoint returns
+# PRs alongside issues; reconcile.sh's own `gh issue list` side never does,
+# so an unfiltered read would turn a closed, labeled PR into a phantom
+# residue Issue node reconcile.sh can never agree with.
+_board_gh() {
+  case "$1 $2" in
+    "issue list") echo '[{"number":1,"title":"x","labels":[{"name":"fnd:status:ready"}]}]' ;;
+    "api repos/$REPO/issues")
+      case " $* " in
+        *" labels=fnd:status:backlog "*) echo '[{"number":160,"title":"a PR","pull_request":{"url":"x"},"labels":[{"name":"fnd:status:backlog"}]}]' ;;
+        *) echo '[]' ;;
+      esac
+      ;;
+    *) echo "test _board_gh: unhandled '$1 $2'" >&2; return 3 ;;
+  esac
+}
+out="$(_sg_read_board "$BOARD" 2>/dev/null)"
+[ "$(jq -r .status <<<"$out")" = "ok" ] || fail "a closed PR on the residue endpoint must not error the whole board source (got: $out)"
+[ "$(jq '.nodes | length' <<<"$out")" = 1 ] || fail "a closed PR carrying an fnd:status:* label must never become a residue Issue node (got: $out)"
+echo "PASS: board source — the closed-issue residue read excludes pull requests via select(has(\"pull_request\") | not)"
+
+# --- board: closed-issue residue warns (never silently truncates) when a
+# label's page returns exactly per_page=100 (temperloop#1978 round 3,
+# MEDIUM 2) -- mirrors reconcile.sh's own never-silently-truncate posture
+# at its STATE_LIMIT cap.
+_full_page="$(jq -cn '[range(100) | {number:(2000+.), title:"x", labels:[{name:"fnd:status:backlog"}]}]')"
+_board_gh() {
+  case "$1 $2" in
+    "issue list") echo '[{"number":1,"title":"x","labels":[{"name":"fnd:status:ready"}]}]' ;;
+    "api repos/$REPO/issues")
+      case " $* " in
+        *" labels=fnd:status:backlog "*) printf '%s\n' "$_full_page" ;;
+        *) echo '[]' ;;
+      esac
+      ;;
+    *) echo "test _board_gh: unhandled '$1 $2'" >&2; return 3 ;;
+  esac
+}
+_sg_read_board "$BOARD" >/dev/null 2>"$TMP/full-page-stderr"
+grep -q "returned a full page (100)" "$TMP/full-page-stderr" \
+  || fail "a closed-residue label page returning exactly 100 items must warn about possible truncation (stderr: $(cat "$TMP/full-page-stderr"))"
+echo "PASS: board source — a closed-residue label page returning exactly per_page=100 warns rather than silently truncating"
+
+# --- board: closed-issue residue label list is captured before the loop
+# (temperloop#1978 round 3, LOW) -- under set -euo pipefail, the producer's
+# `grep '^fnd:status:'` exits 1 whenever the registry carries zero
+# fnd:status:* rows; without the `|| true` fallback the bare assignment
+# would abort the whole function instead of degrading to "no labels to
+# query".
+_orig_sg_issue_status_tokens="$(declare -f _sg_issue_status_tokens)"
+_sg_issue_status_tokens() { printf 'done\n'; }
+_board_gh() {
+  case "$1 $2" in
+    "issue list") echo '[]' ;;
+    *) echo "test _board_gh: unhandled '$1 $2'" >&2; return 3 ;;
+  esac
+}
+out="$(_sg_read_board "$BOARD" 2>/dev/null)"
+[ "$(jq -r .status <<<"$out")" = "absent" ] || fail "a zero-fnd:status:*-label registry must not abort the board source (got: $out)"
+[ "$(jq '.nodes | length' <<<"$out")" = 0 ] || fail "a zero-fnd:status:*-label registry should contribute zero residue nodes, not error (got: $out)"
+echo "PASS: board source — an empty fnd:status:* label set (grep finds no match) degrades cleanly under set -euo pipefail via the captured-labels || true fallback"
+eval "$_orig_sg_issue_status_tokens"
+
+# --- board: closed-issue residue is reachable when the board has zero OPEN
+# issues (temperloop#1978 round 3, MEDIUM 3) -- hoisted above the `count -eq
+# 0` branch: a board with no open issues but real closed-with-label residue
+# is not "absent", it simply has all-closed state, so the absent arm must
+# still carry residue nodes rather than short-circuiting past the read.
+_board_gh() {
+  case "$1 $2" in
+    "issue list") echo '[]' ;;
+    "api repos/$REPO/issues")
+      case " $* " in
+        *" labels=fnd:status:backlog "*) echo '[{"number":161,"title":"z","labels":[{"name":"fnd:status:backlog"}]}]' ;;
+        *) echo '[]' ;;
+      esac
+      ;;
+    *) echo "test _board_gh: unhandled '$1 $2'" >&2; return 3 ;;
+  esac
+}
+out="$(_sg_read_board "$BOARD" 2>/dev/null)"
+[ "$(jq -r .status <<<"$out")" = "absent" ] || fail "zero open issues plus residue must stay 'absent' status, not ok/error (got: $out)"
+[ "$(jq '.nodes | length' <<<"$out")" = 1 ] || fail "closed-issue residue must be reachable when the board has zero OPEN issues (got: $out)"
+[ "$(jq -c '.nodes[0] | {status,state}' <<<"$out")" = '{"status":"fnd:status:backlog","state":"closed"}' ] \
+  || fail "residue node shape mismatch on a zero-open-issue board (got: $out)"
+echo "PASS: board source — closed-issue residue is reachable even when the board has zero OPEN issues (the 'absent' arm carries residue nodes)"
+
+# --- board: an empty-but-exit-0 closed-residue page must not abort
+# _sg_read_board (temperloop#1978 round 4, MEDIUM 1) -- jq exits 0 with NO
+# output on empty input (it is not an error, there is simply no JSON value
+# to filter), so the pre-fix `|| extra='[]'` guard never fires and `extra`
+# stays the empty string; `--argjson extra ""` then errors (invalid JSON,
+# jq exit 2), which under set -euo pipefail aborted the WHOLE board source
+# rather than degrading to zero extra nodes for that one label.
+_board_gh() {
+  case "$1 $2" in
+    "issue list") echo '[{"number":1,"title":"x","labels":[{"name":"fnd:status:ready"}]}]' ;;
+    "api repos/$REPO/issues")
+      case " $* " in
+        *" labels=fnd:status:backlog "*) : ;;  # exit 0, empty stdout — the exact input jq treats as "no value"
+        *) echo '[]' ;;
+      esac
+      ;;
+    *) echo "test _board_gh: unhandled '$1 $2'" >&2; return 3 ;;
+  esac
+}
+out="$(_sg_read_board "$BOARD" 2>/dev/null)" \
+  || fail "an empty-but-successful closed-residue page aborted _sg_read_board (rc=$?) instead of producing a result"
+[ "$(jq -r .status <<<"$out")" = "ok" ] || fail "an empty-but-successful closed-residue page must still produce an ok board result (got: $out)"
+[ "$(jq '.nodes | length' <<<"$out")" = 1 ] || fail "an empty-but-successful closed-residue page must contribute zero extra nodes, not abort (got: $out)"
+echo "PASS: board source — an empty-but-exit-0 residue page degrades to zero extra nodes rather than aborting _sg_read_board (extra is never passed empty to --argjson)"
+
+# --- board: an unparseable closed-residue page WARNS and is distinguishable
+# from a short (non-truncated) page (temperloop#1978 round 4, MEDIUM 2) --
+# `${page_count:-0}` used to collapse a failed parse to 0, which reads as "a
+# short page, definitely not truncated" when the truth is "could not tell";
+# the same input also fails the extra-nodes jq, so residue silently vanished
+# with ZERO stderr output. A truncated body and a non-JSON error-page body
+# (both bodies a `gh api` call can plausibly hand back on a proxy/edge
+# failure with a 2xx-looking wrapper) must each warn.
+_board_gh() {
+  case "$1 $2" in
+    "issue list") echo '[{"number":1,"title":"x","labels":[{"name":"fnd:status:ready"}]}]' ;;
+    "api repos/$REPO/issues")
+      case " $* " in
+        *" labels=fnd:status:backlog "*) printf '[{"number":170,"title":"trunc"' ;;  # truncated: invalid JSON
+        *) echo '[]' ;;
+      esac
+      ;;
+    *) echo "test _board_gh: unhandled '$1 $2'" >&2; return 3 ;;
+  esac
+}
+: > "$TMP/unparseable-page-stderr"
+_sg_read_board "$BOARD" >/dev/null 2>"$TMP/unparseable-page-stderr"
+grep -q "unparseable page" "$TMP/unparseable-page-stderr" \
+  || fail "a truncated closed-residue page must warn 'unparseable page' on stderr (stderr: $(cat "$TMP/unparseable-page-stderr"))"
+echo "PASS: board source — a truncated closed-residue page warns 'unparseable page' rather than silently reading as not-truncated"
+
+_board_gh() {
+  case "$1 $2" in
+    "issue list") echo '[{"number":1,"title":"x","labels":[{"name":"fnd:status:ready"}]}]' ;;
+    "api repos/$REPO/issues")
+      case " $* " in
+        *" labels=fnd:status:backlog "*) echo '<html>Bad Gateway</html>' ;;  # non-JSON error body
+        *) echo '[]' ;;
+      esac
+      ;;
+    *) echo "test _board_gh: unhandled '$1 $2'" >&2; return 3 ;;
+  esac
+}
+: > "$TMP/unparseable-page-stderr-2"
+_sg_read_board "$BOARD" >/dev/null 2>"$TMP/unparseable-page-stderr-2"
+grep -q "unparseable page" "$TMP/unparseable-page-stderr-2" \
+  || fail "a non-JSON error-body closed-residue page must warn 'unparseable page' on stderr (stderr: $(cat "$TMP/unparseable-page-stderr-2"))"
+echo "PASS: board source — a non-JSON error-body closed-residue page warns 'unparseable page' rather than silently reading as not-truncated"
+
+# --- board: the ontology `bad` check runs BEFORE the closed-issue residue
+# fan-out (temperloop#1978 round 4, LOW 3) -- a registry-drift board (a
+# status token outside the ontology registry) must return `error` while
+# spending ZERO REST calls on residue its own error return would only
+# discard. `count -eq 0` must stay BELOW the residue read (round-3 hoist
+# preserved): bad check -> residue read -> count -eq 0.
+_SG_TEST_RESIDUE_CALLED_FILE="$TMP/residue-called-on-bad-ontology"
+rm -f "$_SG_TEST_RESIDUE_CALLED_FILE"
+_board_gh() {
+  case "$1 $2" in
+    "issue list") echo '[{"number":1,"title":"x","labels":[{"name":"fnd:status:x-bogus"}]}]' ;;
+    "api repos/$REPO/issues") touch "$_SG_TEST_RESIDUE_CALLED_FILE"; echo '[]' ;;
+    *) echo "test _board_gh: unhandled '$1 $2'" >&2; return 3 ;;
+  esac
+}
+out="$(_sg_read_board "$BOARD" 2>/dev/null)"
+[ "$(jq -r .status <<<"$out")" = "error" ] || fail "a registry-drift board must still return error (got: $out)"
+[ -e "$_SG_TEST_RESIDUE_CALLED_FILE" ] && fail "the ontology bad-token error return must precede the residue fan-out — a REST call was made anyway"
+echo "PASS: board source — the ontology bad-token check runs before the closed-issue residue fan-out, spending zero REST calls on residue it would only discard"
+
 # =============================================================================
 # source: board_edges (sub_issue_of, blocked_by)
 # =============================================================================

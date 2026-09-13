@@ -1,28 +1,49 @@
 #!/usr/bin/env bash
 #
 # Tests for `state-graph.sh soak` — the mechanical fourteen-day cross-check
-# between `query status-drift` and the INDEPENDENT `reconcile.sh --status`
-# read ADR 0033's independence claim rests on (temperloop#1910, this item).
-# Sibling of test_state_graph.sh / test_state_graph_local.sh / test_state_
-# graph_queries.sh, which cover the seven `_sg_read_*` sources and the five
-# `_sg_query_*` functions this file never re-covers — it feeds `_sg_soak_run`
-# real (mocked) board/reconcile inputs through the SAME `_board_gh`/`_sg_git`/
+# between the four board/PR/worktree-comparable queries and the INDEPENDENT
+# `reconcile.sh --status` read ADR 0033's independence claim rests on
+# (temperloop#1910; PER-CLASS scope rewrite temperloop#1978). Sibling of
+# test_state_graph.sh / test_state_graph_local.sh / test_state_graph_queries
+# .sh, which cover the seven `_sg_read_*` sources and the five `_sg_query_*`
+# functions this file never re-covers — it feeds `_sg_soak_run` real
+# (mocked) board/reconcile inputs through the SAME `_board_gh`/`_sg_git`/
 # `_sg_tmux`/`_sg_reconcile` seams, plus this file's own deterministic
 # `_sg_soak_day`/`_sg_now_ms` overrides. Fixtures are entirely synthetic: no
 # real host names, session ids, issue numbers, or paths.
 #
 # Covers:
-#   - a MATCHING day: both `query status-drift` and `reconcile.sh --status`
-#     independently flag the SAME issue — diff.agree=true, both only_in_*
-#     empty.
-#   - a DIFFERING day: the two sides flag DIFFERENT issues — diff.agree=false,
-#     each only_in_* names the issue the other side missed.
+#   - a MATCHING day (status-drift class): both `query status-drift` and
+#     reconcile.sh's `orphaned In-Progress` class independently flag the SAME
+#     issue — classes["status-drift"].diff.agree=true, both only_in_* empty.
+#   - a DIFFERING day (status-drift class): the two sides flag DIFFERENT
+#     issues — diff.agree=false, each only_in_* names the issue the other
+#     side missed.
+#   - a dead-session claim stamp (temperloop#1978, this item's day-1
+#     #1225/#1111/#1048/#1047 shape): surfaces in the stale-claims class
+#     (both sides agree) and is correctly ABSENT from status-drift's own
+#     drift_query_set — a claimed, in-progress issue trips neither of
+#     status-drift's own open-domain finding kinds.
+#   - a closed issue still wearing an fnd:status:* label (temperloop#1978,
+#     this item's day-1 #158 shape): surfaces in the status-drift class on
+#     BOTH sides (the board source's own closed-issue residue read vs.
+#     reconcile's `residual status labels on closed issues`) — agree:true.
+#   - unlinked-prs / orphan-worktrees: reconcile.sh has no matching class for
+#     either, so their reconcile_set/diff always read the literal string
+#     "not-covered" — never an empty-set false agreement/disagreement.
 #   - "never a false agreement over unknown": a degraded board source makes
-#     drift_query_set (and diff) the literal string "unknown", never an
-#     empty array that would read as false agreement; a failing
-#     `_sg_reconcile` does the same to reconcile_set/diff independently.
-#   - `--count` counts DISTINCT `day` values across every record in the log
-#     (soak-run and audit records alike), 0 on an empty/missing log.
+#     status-drift's drift_query_set (and diff) the literal string
+#     "unknown", never an empty array that would read as false agreement; a
+#     failing `_sg_reconcile` does the same to BOTH mapped classes'
+#     reconcile_set/diff independently of the board source (one reconcile.sh
+#     call covers both classes, so it degrades them together) — while
+#     unlinked-prs/orphan-worktrees stay "not-covered" regardless, since
+#     nothing about them was ever going to be compared against reconcile.
+#   - `--count` counts DISTINCT `day` values across every CURRENT-SCHEMA-
+#     COMPARABLE record in the log (`type:"audit"`/`type:"bench"`, or
+#     `type:"run"` at `schema:2`), 0 on an empty/missing log — and correctly
+#     EXCLUDES a pre-temperloop#1978 flat-schema run record (no `type` field
+#     at all) from the count (acceptance criterion 4).
 #   - `--audit --items <file>` appends a `{day, type:"audit",
 #     audited_items}` record, extracting one issue number per line
 #     (bare/`#N`/`Issue:N` all accepted); a zero-issue file is a legitimate
@@ -77,8 +98,11 @@ REPO="Towheads/foundation"
 declare -F _sg_reconcile >/dev/null || fail "_sg_reconcile seam missing — soak has no independent reconcile.sh invocation point"
 echo "PASS: state-graph.sh defines the _sg_reconcile seam (mirrors _sg_git/_sg_tmux)"
 
+# A small accessor: read one class's field out of a soak run record.
+class_field() { jq -c --arg c "$1" --arg f "$2" '.classes[$c][$f]' <<<"$3"; }
+
 # =============================================================================
-# a MATCHING day — both sides independently flag issue #10
+# a MATCHING day (status-drift class) — both sides independently flag #10
 # =============================================================================
 fresh_cache matching
 _board_gh() {
@@ -87,6 +111,7 @@ _board_gh() {
     "api repos/$REPO/issues/10/sub_issues") echo '[]' ;;
     "api repos/$REPO/issues/10/dependencies/blocked_by") echo '[]' ;;
     "pr list") echo '[]' ;;
+    "api repos/$REPO/issues") echo '[]' ;;
     *) echo "test _board_gh: unhandled '$1 $2'" >&2; return 3 ;;
   esac
 }
@@ -102,16 +127,25 @@ EOT
 }
 _sg_soak_day() { echo "2026-01-01"; }
 record="$(_sg_soak_run "$BOARD")"
-[ "$(jq -c '.drift_query_set' <<<"$record")" = '[10]' ] || fail "matching-day drift_query_set (got: $record)"
-[ "$(jq -c '.reconcile_set' <<<"$record")" = '[10]' ] || fail "matching-day reconcile_set (got: $record)"
-[ "$(jq -r '.diff.agree' <<<"$record")" = "true" ] || fail "matching-day diff.agree should be true (got: $record)"
-[ "$(jq -c '.diff.only_in_drift_query' <<<"$record")" = '[]' ] || fail "matching-day only_in_drift_query should be empty (got: $record)"
-[ "$(jq -c '.diff.only_in_reconcile' <<<"$record")" = '[]' ] || fail "matching-day only_in_reconcile should be empty (got: $record)"
+[ "$(jq -r '.type' <<<"$record")" = "run" ] || fail "matching-day record missing type:run (got: $record)"
+[ "$(jq -r '.schema' <<<"$record")" = "2" ] || fail "matching-day record missing schema:2 (got: $record)"
+[ "$(class_field status-drift drift_query_set "$record")" = '[10]' ] || fail "matching-day status-drift drift_query_set (got: $record)"
+[ "$(class_field status-drift reconcile_set "$record")" = '[10]' ] || fail "matching-day status-drift reconcile_set (got: $record)"
+[ "$(jq -r '.classes["status-drift"].diff.agree' <<<"$record")" = "true" ] || fail "matching-day status-drift diff.agree should be true (got: $record)"
+[ "$(jq -c '.classes["status-drift"].diff.only_in_drift_query' <<<"$record")" = '[]' ] || fail "matching-day only_in_drift_query should be empty (got: $record)"
+[ "$(jq -c '.classes["status-drift"].diff.only_in_reconcile' <<<"$record")" = '[]' ] || fail "matching-day only_in_reconcile should be empty (got: $record)"
 [ "$(jq -r '.day' <<<"$record")" = "2026-01-01" ] || fail "matching-day record day mismatch (got: $record)"
-echo "PASS: soak — a matching day (both sides flag the same issue) records agree:true"
+# unlinked-prs / orphan-worktrees: reconcile.sh has no matching class for
+# either — reconcile_set/diff always read "not-covered", never an empty-set
+# false agreement.
+[ "$(class_field unlinked-prs reconcile_set "$record")" = '"not-covered"' ] || fail "unlinked-prs reconcile_set should be 'not-covered' (got: $record)"
+[ "$(class_field unlinked-prs diff "$record")" = '"not-covered"' ] || fail "unlinked-prs diff should be 'not-covered' (got: $record)"
+[ "$(class_field orphan-worktrees reconcile_set "$record")" = '"not-covered"' ] || fail "orphan-worktrees reconcile_set should be 'not-covered' (got: $record)"
+[ "$(class_field orphan-worktrees diff "$record")" = '"not-covered"' ] || fail "orphan-worktrees diff should be 'not-covered' (got: $record)"
+echo "PASS: soak — a matching day (status-drift class, both sides flag the same issue) records agree:true; unlinked-prs/orphan-worktrees read not-covered"
 
 # =============================================================================
-# a DIFFERING day — the two sides flag DIFFERENT issues
+# a DIFFERING day (status-drift class) — the two sides flag DIFFERENT issues
 # =============================================================================
 _sg_reconcile() {
   cat <<'EOT'
@@ -121,18 +155,18 @@ EOT
 }
 _sg_soak_day() { echo "2026-01-02"; }
 record="$(_sg_soak_run "$BOARD")"
-[ "$(jq -c '.drift_query_set' <<<"$record")" = '[10]' ] || fail "differing-day drift_query_set (got: $record)"
-[ "$(jq -c '.reconcile_set' <<<"$record")" = '[99]' ] || fail "differing-day reconcile_set (got: $record)"
-[ "$(jq -r '.diff.agree' <<<"$record")" = "false" ] || fail "differing-day diff.agree should be false (got: $record)"
-[ "$(jq -c '.diff.only_in_drift_query' <<<"$record")" = '[10]' ] || fail "differing-day only_in_drift_query (got: $record)"
-[ "$(jq -c '.diff.only_in_reconcile' <<<"$record")" = '[99]' ] || fail "differing-day only_in_reconcile (got: $record)"
-echo "PASS: soak — a differing day (each side flags a distinct issue) records agree:false with per-side diffs"
+[ "$(class_field status-drift drift_query_set "$record")" = '[10]' ] || fail "differing-day status-drift drift_query_set (got: $record)"
+[ "$(class_field status-drift reconcile_set "$record")" = '[99]' ] || fail "differing-day status-drift reconcile_set (got: $record)"
+[ "$(jq -r '.classes["status-drift"].diff.agree' <<<"$record")" = "false" ] || fail "differing-day status-drift diff.agree should be false (got: $record)"
+[ "$(jq -c '.classes["status-drift"].diff.only_in_drift_query' <<<"$record")" = '[10]' ] || fail "differing-day only_in_drift_query (got: $record)"
+[ "$(jq -c '.classes["status-drift"].diff.only_in_reconcile' <<<"$record")" = '[99]' ] || fail "differing-day only_in_reconcile (got: $record)"
+echo "PASS: soak — a differing day (status-drift class, each side flags a distinct issue) records agree:false with per-side diffs"
 
 # =============================================================================
 # a matching day whose reconcile.sh report embeds `#N` inside a flagged
 # line's TITLE (and a `#M` inside a stderr warning) — neither may inflate
-# reconcile_set into a phantom disagreement (over-broad #[0-9]+ extraction
-# over merged stdout+stderr).
+# the status-drift reconcile_set into a phantom disagreement (over-broad
+# #[0-9]+ extraction over merged stdout+stderr).
 # =============================================================================
 _sg_reconcile() {
   echo "warning: #50 could not be labeled Backlog" >&2
@@ -143,40 +177,124 @@ EOT
 }
 _sg_soak_day() { echo "2026-01-05"; }
 record="$(_sg_soak_run "$BOARD")"
-[ "$(jq -c '.reconcile_set' <<<"$record")" = '[10]' ] || fail "a #N inside a title or stderr warning must never inflate reconcile_set (got: $record)"
-[ "$(jq -r '.diff.agree' <<<"$record")" = "true" ] || fail "a #N inside a title or stderr warning must never manufacture a false disagreement (got: $record)"
+[ "$(class_field status-drift reconcile_set "$record")" = '[10]' ] || fail "a #N inside a title or stderr warning must never inflate status-drift reconcile_set (got: $record)"
+[ "$(jq -r '.classes["status-drift"].diff.agree' <<<"$record")" = "true" ] || fail "a #N inside a title or stderr warning must never manufacture a false disagreement (got: $record)"
 echo "PASS: soak — a #N embedded in a flagged line's TITLE or a stderr warning is never mistaken for a flagged item ref"
+
+# =============================================================================
+# a dead-session claim stamp (temperloop#1978, this item's day-1
+# #1225/#1111/#1048/#1047 shape): surfaces in stale-claims on BOTH sides and
+# is correctly ABSENT from status-drift's own drift_query_set — a claimed,
+# in-progress issue trips neither of status-drift's own open-domain finding
+# kinds (it is neither unclaimed-in-progress nor claimed-but-not-in-progress).
+# =============================================================================
+_board_gh() {
+  case "$1 $2" in
+    "issue list")
+      echo '[{"number":20,"title":"x","labels":[{"name":"fnd:status:in-progress"},{"name":"fnd:host/session:mini-1:deadbeef"}]}]'
+      ;;
+    "api repos/$REPO/issues/20/sub_issues") echo '[]' ;;
+    "api repos/$REPO/issues/20/dependencies/blocked_by") echo '[]' ;;
+    "pr list") echo '[]' ;;
+    "api repos/$REPO/issues") echo '[]' ;;
+    *) echo "test _board_gh: unhandled '$1 $2'" >&2; return 3 ;;
+  esac
+}
+# No journal Session node named "mini-1:deadbeef" -> stale-claims (board +
+# journal) flags #20 as a claim naming a session absent from the journal.
+_sg_reconcile() {
+  cat <<'EOT'
+stale claims (In Progress, stamped to a dead same-host session — park by hand):
+  #20 — stamped 'mini-1:deadbeef' but that session is not live on this host 'mini-1' — some title
+EOT
+}
+_sg_soak_day() { echo "2026-01-06"; }
+record="$(_sg_soak_run "$BOARD")"
+[ "$(class_field stale-claims drift_query_set "$record")" = '[20]' ] || fail "dead-session stale-claims drift_query_set (got: $record)"
+[ "$(class_field stale-claims reconcile_set "$record")" = '[20]' ] || fail "dead-session stale-claims reconcile_set (got: $record)"
+[ "$(jq -r '.classes["stale-claims"].diff.agree' <<<"$record")" = "true" ] || fail "dead-session stale-claims diff.agree should be true (got: $record)"
+[ "$(class_field status-drift drift_query_set "$record")" = '[]' ] || fail "a claimed in-progress issue must NOT surface in status-drift's drift_query_set (got: $record)"
+[ "$(class_field status-drift reconcile_set "$record")" = '[]' ] || fail "a dead-session claim stamp line must NOT be attributed to status-drift's reconcile_set (got: $record)"
+echo "PASS: soak — a dead-session claim stamp surfaces in stale-claims (both sides agree) and is absent from status-drift on either side"
+
+# =============================================================================
+# a closed issue still wearing an fnd:status:* label (temperloop#1978, this
+# item's day-1 #158 shape): surfaces in status-drift on BOTH sides — the
+# board source's own closed-issue residue read vs. reconcile's own "residual
+# status labels on closed issues" class.
+# =============================================================================
+_board_gh() {
+  case "$1 $2" in
+    # a real, unrelated OPEN issue alongside the closed one — the primary
+    # open-issue read stays "ok" (never "absent"), the branch the closed-
+    # issue residue supplement is actually wired into (_sg_read_board).
+    "issue list") echo '[{"number":1,"title":"other","labels":[{"name":"fnd:status:ready"}]}]' ;;
+    "pr list") echo '[]' ;;
+    # per-label residue read (temperloop#1978 round 2): #158 only shows up on
+    # the fnd:status:backlog label's own call, never the other two labels'.
+    "api repos/$REPO/issues")
+      case " $* " in
+        *" labels=fnd:status:backlog "*) echo '[{"number":158,"title":"x","labels":[{"name":"fnd:status:backlog"}]}]' ;;
+        *) echo '[]' ;;
+      esac
+      ;;
+    *) echo "test _board_gh: unhandled '$1 $2'" >&2; return 3 ;;
+  esac
+}
+_sg_reconcile() {
+  cat <<'EOT'
+residual status labels on closed issues (work complete, tracker label not stripped):
+  #158 — CLOSED but still labeled 'fnd:status:backlog' (Done here is 'closed + no status label') — some title
+  (repair: reconcile.sh --board 4 --labels --apply)
+EOT
+}
+_sg_soak_day() { echo "2026-01-07"; }
+record="$(_sg_soak_run "$BOARD")"
+[ "$(class_field status-drift drift_query_set "$record")" = '[158]' ] || fail "closed-residue status-drift drift_query_set (got: $record)"
+[ "$(class_field status-drift reconcile_set "$record")" = '[158]' ] || fail "closed-residue status-drift reconcile_set (got: $record)"
+[ "$(jq -r '.classes["status-drift"].diff.agree' <<<"$record")" = "true" ] || fail "closed-residue status-drift diff.agree should be true (got: $record)"
+[ "$(class_field stale-claims drift_query_set "$record")" = '[]' ] || fail "a closed status-label residue must NOT surface in stale-claims (got: $record)"
+echo "PASS: soak — a closed issue still wearing an fnd:status:* label surfaces in status-drift on both sides (the #158 shape)"
 
 # =============================================================================
 # "never a false agreement over unknown"
 # =============================================================================
 # board_resolve failure -> status-drift's own status is "unknown" ->
 # drift_query_set/diff must read "unknown", never an empty array that would
-# look like real agreement.
+# look like real agreement. unlinked-prs/orphan-worktrees, which never
+# depend on board, stay "not-covered" regardless.
 _board_gh() { return 7; }
 _sg_reconcile() { echo "In sync: every board item's status matches its GitHub state; no orphaned or stale claims."; }
 _sg_soak_day() { echo "2026-01-03"; }
 record="$(_sg_soak_run "$BOARD")"
-[ "$(jq -r '.drift_query_set' <<<"$record")" = "unknown" ] || fail "degraded board source should make drift_query_set the literal string unknown (got: $record)"
-[ "$(jq -r '.diff' <<<"$record")" = "unknown" ] || fail "degraded board source should make diff the literal string unknown (got: $record)"
-echo "PASS: soak — a degraded board source reads drift_query_set/diff as 'unknown', never a false empty agreement"
+[ "$(class_field status-drift drift_query_set "$record")" = '"unknown"' ] || fail "degraded board source should make status-drift drift_query_set the literal string unknown (got: $record)"
+[ "$(class_field status-drift diff "$record")" = '"unknown"' ] || fail "degraded board source should make status-drift diff the literal string unknown (got: $record)"
+[ "$(class_field stale-claims drift_query_set "$record")" = '"unknown"' ] || fail "degraded board source should make stale-claims drift_query_set the literal string unknown too (got: $record)"
+[ "$(class_field unlinked-prs reconcile_set "$record")" = '"not-covered"' ] || fail "unlinked-prs reconcile_set stays not-covered even when board is degraded (got: $record)"
+echo "PASS: soak — a degraded board source reads each affected class's drift_query_set/diff as 'unknown', never a false empty agreement"
 
-# A failing _sg_reconcile invocation degrades reconcile_set/diff
-# independently of the board source.
+# A failing _sg_reconcile invocation degrades BOTH mapped classes'
+# reconcile_set/diff independently of the board source (one reconcile.sh
+# call covers both classes, so it degrades them together) — while
+# unlinked-prs/orphan-worktrees stay "not-covered" regardless.
 _board_gh() {
   case "$1 $2" in
     "issue list") echo '[]' ;;
     "pr list") echo '[]' ;;
+    "api repos/$REPO/issues") echo '[]' ;;
     *) echo "test _board_gh: unhandled '$1 $2'" >&2; return 3 ;;
   esac
 }
 _sg_reconcile() { echo "reconcile.sh: some fatal error" >&2; return 1; }
 _sg_soak_day() { echo "2026-01-04"; }
 record="$(_sg_soak_run "$BOARD")"
-[ "$(jq -r '.drift_query_set' <<<"$record")" = '[]' ] || fail "an ok board source should still produce a real (empty) drift_query_set (got: $record)"
-[ "$(jq -r '.reconcile_set' <<<"$record")" = "unknown" ] || fail "a failing _sg_reconcile invocation should make reconcile_set 'unknown' (got: $record)"
-[ "$(jq -r '.diff' <<<"$record")" = "unknown" ] || fail "a failing _sg_reconcile invocation should make diff 'unknown' (got: $record)"
-echo "PASS: soak — a failing reconcile.sh invocation reads reconcile_set/diff as 'unknown', independent of the board source"
+[ "$(class_field status-drift drift_query_set "$record")" = '[]' ] || fail "an ok board source should still produce a real (empty) status-drift drift_query_set (got: $record)"
+[ "$(class_field status-drift reconcile_set "$record")" = '"unknown"' ] || fail "a failing _sg_reconcile invocation should make status-drift reconcile_set 'unknown' (got: $record)"
+[ "$(class_field status-drift diff "$record")" = '"unknown"' ] || fail "a failing _sg_reconcile invocation should make status-drift diff 'unknown' (got: $record)"
+[ "$(class_field stale-claims reconcile_set "$record")" = '"unknown"' ] || fail "a failing _sg_reconcile invocation should make stale-claims reconcile_set 'unknown' too (got: $record)"
+[ "$(class_field unlinked-prs reconcile_set "$record")" = '"not-covered"' ] || fail "unlinked-prs reconcile_set stays not-covered even when reconcile.sh itself fails (got: $record)"
+[ "$(class_field unlinked-prs diff "$record")" = '"not-covered"' ] || fail "unlinked-prs diff stays not-covered even when reconcile.sh itself fails (got: $record)"
+echo "PASS: soak — a failing reconcile.sh invocation reads both mapped classes' reconcile_set/diff as 'unknown', independent of the board source; unlinked-prs/orphan-worktrees stay not-covered"
 
 # =============================================================================
 # --count: distinct days, log is append-only through lib/cache.sh
@@ -186,11 +304,24 @@ expect_log="$(cache_snapshot_file "$BOARD" state-graph-soak)"
 [ -d "$expect_dir" ] || fail "soak log directory was not created via cache_repo_dir(kind=state-graph-soak)"
 [ -s "$expect_log" ] || fail "soak log file was not created via cache_snapshot_file(kind=state-graph-soak)"
 lines_before="$(wc -l <"$expect_log" | tr -d ' ')"
-[ "$lines_before" -eq 5 ] || fail "soak log should carry exactly the five runs above (got $lines_before lines)"
+[ "$lines_before" -eq 7 ] || fail "soak log should carry exactly the seven runs above (got $lines_before lines)"
 
 count="$(cmd_soak --count --board "$BOARD")"
-[ "$count" = 5 ] || fail "soak --count should report 5 distinct days (got: $count)"
+[ "$count" = 7 ] || fail "soak --count should report 7 distinct days (got: $count)"
 echo "PASS: soak --count — distinct days recorded, log persisted append-only through lib/cache.sh"
+
+# --count SCHEMA exclusion (temperloop#1978, acceptance criterion 4): a
+# hand-appended pre-temperloop#1978 flat-schema run record (no `type` field
+# at all — the OLD `{day, drift_query_set, reconcile_set, diff}` shape) adds
+# a line to the log but must NOT add to the day count — it is silently
+# excluded as not current-schema-comparable, never misread as a per-class
+# run for a day nothing per-class was ever recorded on.
+printf '%s\n' '{"day":"2025-12-31","drift_query_set":[],"reconcile_set":[],"diff":{"only_in_drift_query":[],"only_in_reconcile":[],"agree":true}}' >>"$expect_log"
+lines_after_legacy="$(wc -l <"$expect_log" | tr -d ' ')"
+[ "$lines_after_legacy" -eq 8 ] || fail "the hand-appended legacy record should still add a line to the log (got $lines_after_legacy lines)"
+count_with_legacy="$(cmd_soak --count --board "$BOARD")"
+[ "$count_with_legacy" = 7 ] || fail "soak --count must exclude a pre-temperloop#1978 flat-schema run record from the day count (got: $count_with_legacy)"
+echo "PASS: soak --count — a pre-temperloop#1978 flat-schema run record (no type field) is excluded from the day count"
 
 # --count on a board with no soak log yet prints 0, never an error.
 fresh_cache empty-count
