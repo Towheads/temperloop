@@ -496,6 +496,7 @@ kernel workflows/scripts/validate-diagnose-queue-emit.sh
 kernel workflows/scripts/validate-feature-docs.sh
 kernel workflows/scripts/validate-issue-touch-emit.sh
 kernel workflows/scripts/validate-resume-recovery-emit.sh
+kernel workflows/scripts/validate-state-graph-call.sh
 kernel workflows/scripts/validate-knowledge-search-emit.sh
 kernel workflows/scripts/validate-provider-disclosure.sh
 # "A check that could not run reports success" gate (temperloop#1476, epic

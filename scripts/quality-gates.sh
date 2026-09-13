@@ -139,6 +139,23 @@ KERNEL_GATES=(
   # above, but registered here too as its own explicit gate line — same
   # by-name-registration convention as test_state_graph.sh's own entry.
   "bash workflows/scripts/build/tests/test_state_graph_local.sh"
+  # `state-graph.sh query <name>` (temperloop#1910 L6): status-drift/
+  # stale-claims/unlinked-prs/orphan-worktrees/resume, each a PURE function
+  # of a snapshot JSON — already glob-covered by `make test-build` above,
+  # registered here too by-name, same convention as the two entries above.
+  "bash workflows/scripts/build/tests/test_state_graph_queries.sh"
+  # The `state-graph.sh query resume` call's presence-lint (temperloop#1910
+  # L6) — build.md Step 0.5 declares this call mandatory on every resume
+  # (mandatory-step-registry.tsv); this guard is that declaration's
+  # execution signal. Direct `bash` form, no Makefile target (the kernel
+  # Makefile stays hand-maintained; matches the validate-model-usage-emit.sh
+  # / validate-diagnose-queue-emit.sh convention for a validator added
+  # without touching it).
+  "bash workflows/scripts/validate-state-graph-call.sh"
+  # test_state_graph_call.sh: this presence-lint's own degenerate-input
+  # coverage (check-surface-registry.tsv: absent/unreadable/empty), same
+  # fixture shape as test_resume_recovery_emit.sh § 10.
+  "bash workflows/scripts/tests/test_state_graph_call.sh"
   "make test-build-workflow"
   "make test-hooks"
   # Write-jail guard COVERAGE-LOSS gate (foundation#1367). Runs

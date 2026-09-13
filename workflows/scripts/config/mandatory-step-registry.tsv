@@ -140,3 +140,11 @@ claude/commands/sweep.md	Step 3.6A — epic-closing-gate (offer/keep-open/pendin
 # again); see workflows/scripts/tests/test_resume_recovery_emit.sh § 10 for
 # the same red/green proof under a fixture rather than the live tree.
 claude/commands/build.md	Step 0.5 item 5 — resume-recovery capture-at-source emit	mandatory whenever this reconcile pass recovered or flagged anything	guard	workflows/scripts/validate-resume-recovery-emit.sh	no longer invokes emit-resume-recovery.sh	make validate-resume-recovery-emit	validate-resume-recovery-emit.sh FAILS when build.md's Step 0.5 item 5 no longer invokes emit-resume-recovery.sh anywhere — proven by removing the call (the guard went red naming the removed wiring, "no longer invokes emit-resume-recovery.sh") and restoring it (green again); test_resume_recovery_emit.sh § 10 exercises this same red/green transition against a disposable fixture copy so the live tree is never tampered with directly.
+
+# ── /build Step 0.5 — the state-graph resume cross-check (temperloop#1910 L6) ─
+# The soak-comparison call (build + query resume, beside the prose authority
+# table) is itself declared mandatory on every resume; the guard is a
+# presence-lint, same shape as the resume-recovery row above, proven by the
+# same red/green transition (remove the call, the guard names it; restore it,
+# green again — see workflows/scripts/build/tests/test_state_graph_call.sh).
+claude/commands/build.md	Step 0.5 — state-graph cross-check (build + query resume)	mandatory on every resume	guard	workflows/scripts/validate-state-graph-call.sh	state-graph.sh query resume	validate-state-graph-call	validate-state-graph-call.sh FAILS when build.md's Step 0.5 no longer invokes `state-graph.sh build` or `state-graph.sh query resume` — proven by removing each call in turn (the guard names the removed wiring) and restoring it (green again); test_state_graph_call.sh exercises this red/green transition against a disposable fixture copy so the live tree is never tampered with directly.

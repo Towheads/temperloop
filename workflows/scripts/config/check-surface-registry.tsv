@@ -217,6 +217,21 @@ workflows/scripts/validate-resume-recovery-emit.sh	absent	covered	workflows/scri
 workflows/scripts/validate-resume-recovery-emit.sh	unreadable	covered	workflows/scripts/tests/test_resume_recovery_emit.sh	and names the non-executable script
 workflows/scripts/validate-resume-recovery-emit.sh	empty	covered	workflows/scripts/tests/test_resume_recovery_emit.sh	and names the removed wiring
 
+# ── validate-state-graph-call.sh (temperloop#1910 L6) — the /build Step 0.5
+#    state-graph cross-check call's own presence-lint. Registered rather
+#    than parked `pending`, same reasoning as validate-resume-recovery-
+#    emit.sh just above (a brand-new surface has nothing at the ratchet base
+#    ref to be grandfathered against, and test_state_graph_call.sh already
+#    drives all three degenerate shapes): ABSENT is state-graph.sh removed
+#    outright; UNREADABLE is state-graph.sh surviving but losing its
+#    executable bit; EMPTY is build.md's required `state-graph.sh build`
+#    invocation line stripped out (the sibling `query resume` empty case is
+#    exercised in the same test file but not separately registered here —
+#    one covered CASE row is what this registry requires). ─────────────────
+workflows/scripts/validate-state-graph-call.sh	absent	covered	workflows/scripts/tests/test_state_graph_call.sh	and names the missing script
+workflows/scripts/validate-state-graph-call.sh	unreadable	covered	workflows/scripts/tests/test_state_graph_call.sh	and names the non-executable script
+workflows/scripts/validate-state-graph-call.sh	empty	covered	workflows/scripts/tests/test_state_graph_call.sh	and names the removed build wiring
+
 # ── check-join-keys.sh (temperloop#1910) — the join-key registry lint. Same
 #    shape as check-reviewer-routing.sh/check-setting-registry.sh above: its
 #    JOIN_KEYS_TSV seam is pointed at a degenerate path by the shared
