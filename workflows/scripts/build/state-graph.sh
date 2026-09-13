@@ -719,7 +719,11 @@ _sg_read_pr_list() {
   # non-integer and falls through to the same hard abort. And `length` is
   # defined on strings (character count), objects (key count) and numbers
   # (absolute value), so `"abc"` / `{"a":1}` / `5` all pass a guard that only
-  # proves "parses, non-zero length" — then fail the `.[]` projection below.
+  # proves "parses, non-zero length". `"abc"` and `5` then fail the `.[]`
+  # projection below — but an OBJECT does NOT: `.[]` iterates an object's
+  # VALUES, so `{"a":{"number":1,"title":"x"}}` projects cleanly into a
+  # FABRICATED PR node and a fabricated closes edge, reported `ok`. The type
+  # clause is the only guard against that class; do not simplify it away.
   # Slurping collapses the whole payload to ONE document and the type test
   # admits only a single top-level array; everything else yields `empty`, so
   # `[ -z "$count" ]` reports the honest `error`. Deliberate consequence: a

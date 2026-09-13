@@ -598,13 +598,18 @@ echo "PASS: pr_list source error — a whitespace-only payload (SPACEs survive s
 #      then errors on a non-integer and evaluates false; the transforms each
 #      emit two documents, and `--argjson` rejects them → the ROUND-1 HARD
 #      ABORT by a third route.
-#   2. NON-ARRAY JSON (`{"a":1}`) — `length` is defined on objects (key count),
-#      strings (character count) and numbers (absolute value), so each passes a
-#      guard that only proves "parses, length non-zero". The `.[]` projection
-#      then fails → round 2's `|| nodes='[]'` default reported `ok` with ZERO PR
-#      nodes: a SILENT WRONG-EMPTY answer, which `_sg_query_unlinked_prs` does
-#      NOT refuse (it refuses only a DEGRADED source), so it would assert "no
-#      unlinked PRs" over a payload it could not read.
+#   2. NON-ARRAY JSON — `length` is defined on objects (key count), strings
+#      (character count) and numbers (absolute value), so each passes a guard
+#      that only proves "parses, length non-zero". The fixture is an OBJECT
+#      WHOSE VALUES ARE PR-SHAPED, deliberately: `.[]` iterates an object's
+#      VALUES, so unlike `"abc"` or `5` it does NOT fail the projection — it
+#      projects cleanly into a FABRICATED PR node and a fabricated closes edge,
+#      which round 2 would have reported `ok`. That makes this case discriminate
+#      the guard's TYPE clause specifically (a length-only guard admits it, and
+#      the honest-error transform arms never fire because nothing fails). A
+#      plainer `{"a":1}` fixture would NOT discriminate it — the arms would
+#      catch that one anyway, leaving the type clause deletable with the suite
+#      still green.
 #   3. ARRAY OF NON-OBJECTS (`["a","b"]`) — a GENUINE array of length 2, so it
 #      passes the arity/type guard LEGITIMATELY and still fails `.[]`. This is
 #      the case the guard fix alone does not close; it discriminates the
@@ -628,7 +633,7 @@ echo "PASS: pr_list source error — a multi-document payload reports error and 
 
 _board_gh() {
   case "$1 $2" in
-    "pr list") printf '{"a":1}' ;;
+    "pr list") printf '{"a":{"number":1,"title":"x","body":"Closes #9\\n"}}' ;;
     *) echo "test _board_gh: unhandled '$1 $2'" >&2; return 3 ;;
   esac
 }
@@ -636,8 +641,9 @@ rc=0
 out="$(_sg_read_pr_list "$BOARD")" || rc=$?
 [ "$rc" -eq 0 ] || fail "pr_list non-array payload must return 0 (rc=$rc, out: $out)"
 jq -e . >/dev/null 2>&1 <<<"$out" || fail "pr_list non-array payload must emit valid JSON (got: $out)"
-[ "$(jq -r .status <<<"$out")" = "error" ] || fail "pr_list non-array JSON must report error, never a confident ok with an empty node set (got: $out)"
-echo "PASS: pr_list source error — non-array JSON reports error, not a wrong-empty ok"
+[ "$(jq -r .status <<<"$out")" = "error" ] || fail "pr_list non-array JSON must report error, never a confident ok over FABRICATED nodes (got: $out)"
+[ "$(jq -c '.nodes' <<<"$out")" = '[]' ] || fail "pr_list non-array JSON must not fabricate PR nodes (got: $out)"
+echo "PASS: pr_list source error — an object whose values are PR-shaped reports error, not a confident ok over fabricated nodes"
 
 _board_gh() {
   case "$1 $2" in
