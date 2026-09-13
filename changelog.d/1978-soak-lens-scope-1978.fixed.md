@@ -6,7 +6,11 @@
   agreement. The appended soak record is now `{day, type:"run", schema:2,
   classes:{...}}` — a pre-existing flat-schema run record (no `type` field)
   is excluded from `soak --count`'s day tally rather than misread as a
-  per-class one. The state-graph board source also now reads closed issues
+  per-class one. Practically: every day whose only record predates this
+  rewrite drops out of `--count`, so the fourteen-day independence check
+  restarts from zero and needs fourteen new `schema:2` days before it is
+  trustworthy again — an expected reset, not a regression. The state-graph
+  board source also now reads closed issues
   that still carry an `fnd:status:*` label (Done on the issues-only backend
   is "closed + no status label") as their own residue nodes, so
   `status-drift` can flag that residue directly — scoped entirely to
