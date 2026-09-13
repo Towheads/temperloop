@@ -78,6 +78,14 @@
 #                 acceptance criterion 2), and `orphaned In-Progress` (the
 #                 exact same "in-progress, no owner stamp" computation
 #                 status-drift's own board source already makes).
+#                 PER-KIND, not whole-query (temperloop#1996): status-drift
+#                 emits THREE finding kinds and only TWO of them have any
+#                 `--status` counterpart at all, so the soak compares only
+#                 the counterparted kinds and names the rest in the class
+#                 entry's own `not_covered_kinds` field — see
+#                 `_SG_SOAK_STATUS_DRIFT_KIND_COUNTERPART` below for the
+#                 audited kind-by-kind table, the gap it closes, and why
+#                 that option was chosen over the two alternatives.
 #   stale-claims  <-> reconcile's `stale claims (In Progress...)` class ALONE
 #                 (In Progress, stamped to a dead same-host session — this
 #                 item's day-1 #1225/#1111/#1048/#1047). `stranded claim
@@ -114,8 +122,13 @@
 # line-leading `  #N` shape reconcile.sh's own marker parse uses
 # (reconcile.sh:468) — a `#N` embedded mid-line in a flagged item's TITLE is
 # never mistaken for a ref. Appends one `{day, type:"run", schema:2,
-# classes:{<name>: {drift_query_set, reconcile_set, diff}, ...}}` record —
-# `classes` covers exactly the four names above; `diff` is EITHER
+# classes:{<name>: {drift_query_set, reconcile_set, not_covered_kinds,
+# diff}, ...}}` record — `classes` covers exactly the four names above;
+# `not_covered_kinds` (temperloop#1996) is the sorted list of that query's
+# own finding kinds the compared reconcile lens structurally cannot report,
+# EXCLUDED from `drift_query_set` rather than left to sit in
+# `only_in_drift_query` forever (`[]` for every class that has no such
+# kind); `diff` is EITHER
 # `{only_in_drift_query, only_in_reconcile, agree}` (`agree` is now PER
 # CLASS — there is no single flat top-level `agree` any more, state this
 # plainly since it is this item's own acceptance semantics), the literal
@@ -144,6 +157,16 @@
 # and needs fourteen new `schema:2` days before it is trustworthy again. An
 # operator watching `--count` fall after this deploys should read that as
 # this expected reset, not a regression.
+#
+# temperloop#1996 stays at `schema:2` DELIBERATELY. It adds a field
+# (`not_covered_kinds`) and narrows what `drift_query_set` contains; it does
+# not change the per-class record SHAPE `--count` keys on, and a `schema:3`
+# would reset the fourteen-day count a second time for a correctness fix
+# that makes the older records MORE comparable, not less (their
+# `only_in_drift_query` entries for an uncounterpartable kind were never a
+# real disagreement in the first place). Same call temperloop#1980 round 4
+# made when its In-Progress gate changed what stale-claims's own set
+# contains: a query-side correctness fix is not a schema break.
 #
 # `--count` prints the number of distinct `day` values recorded (any
 # comparable record type, per the schema rule above). `--audit --items
@@ -1503,6 +1526,79 @@ _sg_soak_log_file() {
   printf '%s' "$file"
 }
 
+# --- soak: per-KIND counterpart table (temperloop#1996) ---------------------
+# The reconcile side of this soak already drops every report section it
+# cannot counterpart (`_sg_reconcile_class_set`'s `sec=""` arms: `stranded
+# claim stamps on closed issues`, `foreign*`, `unresolved`) — a class that
+# can structurally never agree is not a cross-check, it is a standing false
+# disagreement. The DRIFT-QUERY side had no such gate at all, and needed the
+# same one: `_sg_query_status_drift` emits three finding KINDS, and a kind
+# with no `--status` counterpart lands in `only_in_drift_query` on every run
+# it fires, forever, exactly the scope artifact temperloop#1978's per-class
+# rewrite exists to stop manufacturing — one altitude down.
+#
+# THE AUDIT (temperloop#1996 acceptance criterion 4 — every kind, not just
+# the one found). `_sg_query_status_drift`'s kinds against what
+# `status_reconcile_main` (the ONLY lens `_sg_soak_run` invokes) can emit:
+#
+#   in_progress_no_claim      <- reconcile class (c) `orphaned In-Progress`
+#                                (In Progress with an empty Host/Session
+#                                stamp). COUNTERPARTED — the two sides
+#                                compute the same thing independently.
+#   closed_with_status_label  <- reconcile class (k) `residual status labels
+#                                on closed issues` (temperloop#1410's
+#                                closed-issue tail). COUNTERPARTED.
+#   claimed_not_in_progress   <- NOTHING in `--status`. Its real counterpart
+#                                is reconcile class (m), `PARKED claim stamps
+#                                on OPEN issues`, which lives in
+#                                `label_reconcile_main` — the `--labels`
+#                                lens, which `_sg_soak_run` never calls (and
+#                                classes (c)/(d)/(f) all scope themselves to
+#                                In-Progress items, so none of them reaches
+#                                it either). NOT COVERED.
+#
+# So the gap is one kind wide, and it is not a corner case: the kernel's own
+# "Park, don't abandon" flow produces exactly this residue every time
+# (`board_set_status` moves an issue off In Progress without clearing its
+# claim stamp; only `release.sh` clears it, release.sh:175). The table below
+# is the machine-readable form of that audit, and
+# `test_state_graph_soak.sh`'s kind-completeness case fails if a FOURTH kind
+# is ever added to `_sg_query_status_drift` without being dispositioned here
+# — the structural half of not rediscovering this a fourth time.
+#
+# WHY THIS OPTION (temperloop#1996 listed three). Narrowing the QUERY itself
+# was rejected: `claimed_not_in_progress` is a real drift finding `query
+# status-drift` and `_sg_query_resume` consume, and deleting a true finding
+# to make a comparison tidy loses signal outside the soak. Widening the soak
+# to ALSO invoke `reconcile.sh --labels` was rejected for the reason
+# temperloop#1980 round 3 rejected its analogue: a second reconcile
+# invocation and a second report-shape parser add divergence surface in the
+# one place divergence IS the bug. Marking the kind not-covered keeps the
+# query whole, keeps the soak to one reconcile call, and reads the same way
+# unlinked-prs/orphan-worktrees already do (temperloop#1978's precedent) —
+# except per-kind rather than per-class, and NAMED in the record rather than
+# silently dropped, because an unstated narrowing is the same lie as an
+# empty set standing in for a domain nobody checked.
+#
+# kind -> the `reconcile.sh --status` section that is its counterpart, or the
+# literal "not-covered".
+_SG_SOAK_STATUS_DRIFT_KIND_COUNTERPART='{
+  "in_progress_no_claim":     "orphaned In-Progress",
+  "closed_with_status_label": "residual status labels on closed issues",
+  "claimed_not_in_progress":  "not-covered"
+}'
+
+# The sorted kind list a table marks "not-covered" — emitted verbatim on the
+# class entry (`not_covered_kinds`) and used to gate the reducer below. A
+# kind absent from the table is treated as not-covered too: an UNDECLARED
+# kind is exactly the unknown this file never silently compares.
+_sg_soak_not_covered_kinds() {
+  jq -cn --argjson m "$1" '[ $m | to_entries[] | select(.value == "not-covered") | .key ] | sort'
+}
+_sg_soak_counterparted_kinds() {
+  jq -cn --argjson m "$1" '[ $m | to_entries[] | select(.value != "not-covered") | .key ] | sort'
+}
+
 # --- soak: per-class reduction helpers (temperloop#1978) --------------------
 # Reduce one `_sg_query_*` result to a comparable SORTED-UNIQUE JSON array —
 # or the literal string "unknown" when the query's own `status` reads
@@ -1512,10 +1608,20 @@ _sg_soak_log_file() {
 # unlinked-prs, slug findings for orphan-worktrees — orphan-worktrees has no
 # issue-number domain at all, so its set is worktree SLUGS, never compared
 # against reconcile.sh, which has no worktree concept either).
+#
+# `<kinds>` (optional, temperloop#1996) is a JSON array of the finding kinds
+# the compared reconcile lens can actually counterpart: when given, findings
+# of any OTHER kind are dropped before reduction, so they can never land in
+# `only_in_drift_query` against a lens that structurally never reports them.
+# Omitted (stale-claims, whose findings carry no `kind` at all) = compare
+# every finding, exactly as before.
 _sg_soak_reduce_issue_findings() {
-  local qj="$1" field="$2"
+  local qj="$1" field="$2" kinds="${3:-}"
   if [ "$(jq -r '.status' <<<"$qj")" = "unknown" ]; then
     echo '"unknown"'
+  elif [ -n "$kinds" ]; then
+    jq -c --arg f "$field" --argjson k "$kinds" \
+      '[ .findings[] | select((.kind // null) as $kd | $k | index($kd)) | .[$f] | ltrimstr("Issue:") | tonumber ] | sort | unique' <<<"$qj"
   else
     jq -c --arg f "$field" '[ .findings[] | .[$f] | ltrimstr("Issue:") | tonumber ] | sort | unique' <<<"$qj"
   fi
@@ -1589,8 +1695,14 @@ _sg_reconcile_class_set() {
 # structurally not-covered reconcile side), else "not-covered" when the
 # reconcile side has nothing to compare against, else the real per-class
 # `{only_in_drift_query, only_in_reconcile, agree}` object.
+#
+# `<not_covered_kinds>` (optional, default `[]`, temperloop#1996) is the
+# sorted list of the query's OWN finding kinds already excluded from `dset`
+# because the compared reconcile lens cannot report them — carried on the
+# entry so a narrowed comparison always states its own scope, the per-kind
+# analogue of the class-level "not-covered" literal above.
 _sg_soak_class_entry() {
-  local dset="$1" rset="$2" diff
+  local dset="$1" rset="$2" nck="${3:-[]}" diff
   if [ "$dset" = '"unknown"' ] || [ "$rset" = '"unknown"' ]; then
     diff='"unknown"'
   elif [ "$rset" = '"not-covered"' ]; then
@@ -1600,8 +1712,8 @@ _sg_soak_class_entry() {
       { only_in_drift_query: ($a - $b), only_in_reconcile: ($b - $a),
         agree: (($a - $b) == [] and ($b - $a) == []) }')"
   fi
-  jq -cn --argjson dq "$dset" --argjson rc "$rset" --argjson diff "$diff" \
-    '{drift_query_set:$dq, reconcile_set:$rc, diff:$diff}'
+  jq -cn --argjson dq "$dset" --argjson rc "$rset" --argjson nck "$nck" --argjson diff "$diff" \
+    '{drift_query_set:$dq, reconcile_set:$rc, not_covered_kinds:$nck, diff:$diff}'
 }
 
 # One soak run: build + persist a fresh snapshot, run all four board/PR/
@@ -1618,6 +1730,7 @@ _sg_soak_run() {
   local status_set stale_set pr_set wt_set
   local rc_out rc_rc=0 rc_status_set rc_stale_set
   local status_entry stale_entry pr_entry wt_entry
+  local status_kinds status_not_covered
 
   snapshot="$(_sg_build_snapshot "$board")"
   _sg_persist_snapshot "$board" "$snapshot" "state-graph" ||
@@ -1628,7 +1741,15 @@ _sg_soak_run() {
   dq_pr="$(_sg_query_unlinked_prs "$snapshot")"
   dq_wt="$(_sg_query_orphan_worktrees "$snapshot")"
 
-  status_set="$(_sg_soak_reduce_issue_findings "$dq_status" id)"
+  # status-drift is gated PER FINDING KIND (temperloop#1996): only the kinds
+  # `reconcile.sh --status` can actually counterpart are reduced into the
+  # compared set; the rest ride the entry's own `not_covered_kinds` instead
+  # of a permanent `only_in_drift_query` residency. See
+  # `_SG_SOAK_STATUS_DRIFT_KIND_COUNTERPART` above for the audited table.
+  # stale-claims's findings carry no `kind` at all, so it passes no gate.
+  status_kinds="$(_sg_soak_counterparted_kinds "$_SG_SOAK_STATUS_DRIFT_KIND_COUNTERPART")"
+  status_not_covered="$(_sg_soak_not_covered_kinds "$_SG_SOAK_STATUS_DRIFT_KIND_COUNTERPART")"
+  status_set="$(_sg_soak_reduce_issue_findings "$dq_status" id "$status_kinds")"
   stale_set="$(_sg_soak_reduce_issue_findings "$dq_stale" issue)"
   pr_set="$(_sg_soak_reduce_pr_findings "$dq_pr")"
   wt_set="$(_sg_soak_reduce_slug_findings "$dq_wt")"
@@ -1648,7 +1769,7 @@ _sg_soak_run() {
     rc_stale_set="$(_sg_reconcile_class_set "$rc_out" stale-claims)"
   fi
 
-  status_entry="$(_sg_soak_class_entry "$status_set" "$rc_status_set")"
+  status_entry="$(_sg_soak_class_entry "$status_set" "$rc_status_set" "$status_not_covered")"
   stale_entry="$(_sg_soak_class_entry "$stale_set" "$rc_stale_set")"
   pr_entry="$(_sg_soak_class_entry "$pr_set" '"not-covered"')"
   wt_entry="$(_sg_soak_class_entry "$wt_set" '"not-covered"')"
