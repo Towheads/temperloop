@@ -668,6 +668,18 @@ _sg_read_board_edges() {
 # body (own line, any tense, case-insensitive — claude/CLAUDE.kernel.md
 # § Issue linkage), never a backticked or mid-sentence mention, and a body
 # may carry more than one such line (one edge per line).
+#
+# The raw `gh` payload routes through board.sh's `_board_sanitize_control_chars`
+# ONCE, right after the read, so all three downstream jq stages (the `count`
+# guard, `nodes=`, `edges=`) see sanitized text (temperloop#1981). This read
+# projects `title` and `body` — user-controlled fields — and a single literal
+# control byte in ANY one of up to 100 open PRs makes jq exit 5, which the
+# `count` guard turns into a source-wide `error` that persists for as long as
+# that PR stays open; `unlinked-prs` then answers `unknown` on every run for the
+# duration. The stage recovers those runs instead. It must run on the raw TEXT
+# before jq (control chars break jq's parser, so a jq-based sanitizer cannot fix
+# its own input), and `tr` never fails on this input class, so it adds no new
+# error path. Same INVARIANT board.sh's helper header states.
 _sg_read_pr_list() {
   local board="$1" repo raw count nodes edges
   repo="$(board_repo "$board" 2>/dev/null)" || { _sg_source_result error '[]' '[]' "board_repo failed"; return 0; }
@@ -676,6 +688,10 @@ _sg_read_pr_list() {
     return 0
   fi
   [ -n "$raw" ] || raw="[]"
+  # Applied AFTER the empty-output default above, so a payload that is nothing
+  # but control bytes still reaches the `count` guard as unparseable (`error`)
+  # rather than sanitizing down to empty and reporting a false `absent`.
+  raw="$(printf '%s' "$raw" | _board_sanitize_control_chars)"
   count="$(printf '%s' "$raw" | jq 'length' 2>/dev/null)" || { _sg_source_result error '[]' '[]' "unparseable gh pr list output"; return 0; }
   if [ "$count" -eq 0 ]; then
     _sg_source_result absent '[]' '[]' ""

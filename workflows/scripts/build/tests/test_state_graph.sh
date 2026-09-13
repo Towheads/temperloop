@@ -8,7 +8,8 @@
 # network), plus this file's own `_sg_git` seam for `git worktree list`.
 # Fixtures are entirely synthetic: no real host names, session ids, or paths.
 #
-# Covers (sixteen ok/absent/error/stale cases, four per source):
+# Covers (sixteen ok/absent/error/stale cases, four per source, plus one
+# extra pr_list ok case for the control-byte class):
 #   - board:        ok (valid fnd:status:* + a claimed_by edge, session id
 #                    normalized via jk_session8), absent (zero open issues),
 #                    error (a status not in the ontology registry), stale
@@ -20,7 +21,10 @@
 #   - pr_list:      ok (a PR node + a closes edge parsed from a bare
 #                    `Closes #N` line — a backticked / mid-sentence / same-
 #                    line-trailer mention is excluded), absent (no open PRs),
-#                    error (gh pr list fails), stale
+#                    error (gh pr list fails), stale — plus one extra ok case
+#                    (temperloop#1981): a LITERAL control byte in a PR title or
+#                    body is stripped before jq, so the source recovers rather
+#                    than degrading to error for as long as that PR stays open
 #   - worktrees:    ok (a linked `<repo>.wt/<slug>` worktree), absent (no
 #                    linked worktrees), error (git itself fails), stale
 # Plus: the snapshot goes through lib/cache.sh (repo-keyed dir, meta.json,
@@ -498,6 +502,31 @@ _board_gh() {
 out="$(_sg_read_pr_list "$BOARD")"
 [ "$(jq -r .status <<<"$out")" = "error" ] || fail "pr_list error status (got: $out)"
 echo "PASS: pr_list source error — gh pr list failure"
+
+# --- pr_list: a literal control byte in a title/body still parses ------------
+# temperloop#1981. `gh` can leak a raw control byte out of a user-authored PR
+# title or body; jq exits 5 on one, and pre-fix that made the `count` guard
+# report the WHOLE source `error` ("unparseable gh pr list output") for as long
+# as that single PR stayed open — a degrade-instead-of-recover bug that left
+# `unlinked-prs` answering `unknown` on every run for the duration. With the
+# read routed through `_board_sanitize_control_chars` the byte is stripped and
+# the source recovers: `ok`, with the node AND its closes edge intact. The
+# fixture emits 0x01/0x02 LITERALLY (printf '\001'), not as a JSON \u escape —
+# an escape is valid JSON and would not reproduce the failure.
+_board_gh() {
+  case "$1 $2" in
+    "pr list")
+      printf '[{"number":7,"title":"ti\001tle","body":"Closes #10\\nbo\002dy\\n"}]\n'
+      ;;
+    *) echo "test _board_gh: unhandled '$1 $2'" >&2; return 3 ;;
+  esac
+}
+out="$(_sg_read_pr_list "$BOARD")"
+[ "$(jq -r .status <<<"$out")" = "ok" ] || fail "pr_list control-byte status not ok (got: $out)"
+[ "$(jq -c '[.nodes[].id]' <<<"$out")" = '["PR:7"]' ] || fail "pr_list control-byte node set (got: $out)"
+[ "$(jq -r '.nodes[0].title' <<<"$out")" = "title" ] || fail "pr_list control-byte title not stripped (got: $out)"
+[ "$(jq -c '[.edges[].to]' <<<"$out")" = '["Issue:10"]' ] || fail "pr_list control-byte closes edge (got: $out)"
+echo "PASS: pr_list source ok — a literal control byte in a PR title/body is stripped, not degraded to error"
 
 # =============================================================================
 # source: worktrees (Worktree nodes)
