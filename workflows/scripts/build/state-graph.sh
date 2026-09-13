@@ -668,6 +668,21 @@ _sg_read_board_edges() {
 # body (own line, any tense, case-insensitive — claude/CLAUDE.kernel.md
 # § Issue linkage), never a backticked or mid-sentence mention, and a body
 # may carry more than one such line (one edge per line).
+#
+# The raw `gh` payload routes through board.sh's `_board_sanitize_control_chars`
+# ONCE, right after the read, so all three downstream jq stages (the `count`
+# guard, `nodes=`, `edges=`) see sanitized text (temperloop#1981). This read
+# projects `title` and `body` — user-controlled fields — and a single literal
+# control byte in ANY one of up to 100 open PRs makes jq exit 5, which the
+# `count` guard turns into a source-wide `error` that persists for as long as
+# that PR stays open; `unlinked-prs` then answers `unknown` on every run for the
+# duration. The stage recovers those runs instead. It must run on the raw TEXT
+# before jq (control chars break jq's parser, so a jq-based sanitizer cannot fix
+# its own input). `tr` ITSELF never fails on this input class, so it adds no new
+# error path of its own — but the STAGE can still produce EMPTY output (a
+# payload of nothing but control bytes sanitizes down to nothing), and that
+# empty-output case is handled by the `count` guard below, not by `tr`'s exit
+# status. Same INVARIANT board.sh's helper header states.
 _sg_read_pr_list() {
   local board="$1" repo raw count nodes edges
   repo="$(board_repo "$board" 2>/dev/null)" || { _sg_source_result error '[]' '[]' "board_repo failed"; return 0; }
@@ -676,19 +691,80 @@ _sg_read_pr_list() {
     return 0
   fi
   [ -n "$raw" ] || raw="[]"
-  count="$(printf '%s' "$raw" | jq 'length' 2>/dev/null)" || { _sg_source_result error '[]' '[]' "unparseable gh pr list output"; return 0; }
+  # The sanitize stage runs AFTER the `[ -n "$raw" ] || raw="[]"` default above,
+  # and that ordering is load-bearing BECAUSE of the `count` guard below: that
+  # guard treats EMPTY jq output as unparseable and reports `error`. So a
+  # payload of nothing but control bytes — which sanitizes down to nothing —
+  # reports `error`, the honest answer for a page we could not read. Swapped
+  # (sanitize BEFORE the default) the same payload would be rewritten to `[]`,
+  # counted as 0, and reported `absent` — asserting a genuinely empty PR list
+  # when what we actually had was an unreadable one, which is the wrong-empty
+  # answer downstream queries would take at face value.
+  raw="$(printf '%s' "$raw" | _board_sanitize_control_chars)"
+  # `|| count=""` plus the `[ -z "$count" ]` guard, not a bare `||` branch on
+  # jq's exit status: jq can exit ZERO with NO OUTPUT (empty or whitespace-only
+  # input — and SPACE is 0x20, outside `tr -d '\000-\037'`, so a whitespace
+  # payload reaches here intact). An exit-status-only guard leaves `count`
+  # empty, `[ "" -eq 0 ]` errors and evaluates false, and execution falls
+  # through to `_sg_source_result ok "" ""`, whose `jq --argjson` fails hard —
+  # a NON-ZERO return from a `_sg_read_*`, which `_sg_build_snapshot`'s bare
+  # assignment turns into a `set -e` abort of the WHOLE snapshot build. Same
+  # shape `_sg_read_board` already uses above (:515-519); every `_sg_read_*`
+  # in this file returns 0 on every path.
+  #
+  # The program is `jq -s`, not a bare `jq 'length'`, because the guard needs
+  # ARITY and TYPE, not just non-emptiness. Bare `jq 'length'` emits one line
+  # PER INPUT DOCUMENT, so a multi-document payload (`[] []`) yields $'0\n0' —
+  # non-empty, so `[ -z ]` passes, `[ "$count" -eq 0 ]` then errors on a
+  # non-integer and falls through to the same hard abort. And `length` is
+  # defined on strings (character count), objects (key count) and numbers
+  # (absolute value), so `"abc"` / `{"a":1}` / `5` all pass a guard that only
+  # proves "parses, non-zero length". `"abc"` and `5` then fail the `.[]`
+  # projection below — but an OBJECT does NOT: `.[]` iterates an object's
+  # VALUES, so `{"a":{"number":1,"title":"x"}}` projects cleanly into a
+  # FABRICATED PR node and a fabricated closes edge, reported `ok`. The type
+  # clause is the only guard against that class; do not simplify it away.
+  # Slurping collapses the whole payload to ONE document and the type test
+  # admits only a single top-level array; everything else yields `empty`, so
+  # `[ -z "$count" ]` reports the honest `error`. Deliberate consequence: a
+  # `null` payload now reports `error` rather than `absent` — `null` is not a
+  # legitimately empty PR list.
+  count="$(printf '%s' "$raw" | jq -s 'if (length == 1 and (.[0]|type) == "array") then (.[0]|length) else empty end' 2>/dev/null)" || count=""
+  if [ -z "$count" ]; then
+    _sg_source_result error '[]' '[]' "unparseable gh pr list output"
+    return 0
+  fi
   if [ "$count" -eq 0 ]; then
     _sg_source_result absent '[]' '[]' ""
     return 0
   fi
-  nodes="$(printf '%s' "$raw" | jq -c '[ .[] | {type:"PR", id:("PR:"+(.number|tostring)), number:.number, title:(.title // "")} ]')"
+  # These arms are NOT unreachable-on-failure: they are the honest-error path
+  # for a payload that parses as a single top-level array (so the `count` guard
+  # above admits it, legitimately) but whose ELEMENTS are not PR objects —
+  # `["a","b"]` is the worked case. They therefore report `error`, NOT the
+  # belt-and-suspenders `|| extra='[]'` default the closed-residue block uses
+  # (~:583-593). That default is right THERE because `extra` is supplementary
+  # data, where an empty fallback loses only a little context. Here `nodes` IS
+  # the answer, so defaulting it to `[]` would manufacture a confident false
+  # negative: `_sg_query_unlinked_prs` refuses to answer over a DEGRADED source
+  # — that refusal is the safety property — but an `ok` source with zero nodes
+  # does not trigger it, so the query would assert "no unlinked PRs" over a
+  # payload it could not read. That silent wrong-empty is the class
+  # `_board_sanitize_control_chars`'s own header records as worse than a
+  # degrade. The `[ -n ]` belts stay: neither arm may hand an empty string to
+  # `_sg_source_result`'s `--argjson`, and jq can exit zero with no output.
+  nodes="$(printf '%s' "$raw" | jq -c '[ .[] | {type:"PR", id:("PR:"+(.number|tostring)), number:.number, title:(.title // "")} ]' 2>/dev/null)" \
+    || { _sg_source_result error '[]' '[]' "pr_list node transform failed"; return 0; }
+  [ -n "$nodes" ] || { _sg_source_result error '[]' '[]' "pr_list node transform produced no output"; return 0; }
   edges="$(printf '%s' "$raw" | jq -c '
     [ .[] as $pr
       | (($pr.body // "") | split("\n")[]) as $line
       | select($line | test("^[ \t]*(close[sd]?|fix(e[sd])?|resolve[sd]?)[ \t]+#[0-9]+[ \t]*$"; "i"))
       | ($line | capture("#(?<n>[0-9]+)")) as $m
       | {type:"closes", from:("PR:"+($pr.number|tostring)), to:("Issue:"+$m.n)}
-    ]')"
+    ]' 2>/dev/null)" \
+    || { _sg_source_result error '[]' '[]' "pr_list edge transform failed"; return 0; }
+  [ -n "$edges" ] || { _sg_source_result error '[]' '[]' "pr_list edge transform produced no output"; return 0; }
   _sg_source_result ok "$nodes" "$edges" ""
 }
 
