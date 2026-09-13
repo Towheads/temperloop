@@ -360,6 +360,17 @@ globalThis.setWorker = (slug, ...verdicts) => { workerMap.set(slug, verdicts); }
 globalThis.setMergeCheck = (slug, ...states) => { mergeCheckMap.set(slug, states); };
 globalThis.setFreshness = (slug, ...outcomes) => { freshnessMap.set(slug, outcomes); };
 globalThis.setReview = (slug, ...responses) => { reviewMap.set(slug, responses); };
+// tsvRows(text) — temperloop#1976: the harness's OWN independent restatement
+// of reviewDiffCmd's row-count rule (non-blank, non-`#` lines — the same
+// first-stage filter parseTsvRows() applies before its column check),
+// deliberately re-derived here rather than imported from the .mjs, so a
+// fixture's `tsv_rows` is a real count of ITS OWN `tsv` text, not a copy of
+// production's counting code that could silently drift alongside it.
+globalThis.tsvRows = (t) => String(t ?? '')
+  .split('\n')
+  .map((l) => l.replace(/\r$/, ''))
+  .filter((l) => l.trim() && !l.trim().startsWith('#'))
+  .length;
 // reviewResolutionFailure — the SAME two-marker shape machineryAgent()'s own
 // MACHINERY_RESOLUTION_ERR regex matches (temperloop#1014/#1430): agent()
 // rejecting an unresolvable/denied agentType BEFORE any subagent spawns.
@@ -5847,7 +5858,7 @@ $PREAMBLE
 
 setMachinery('cmd-md-item',
   { outcome: 'CREATED', path: '/tmp/repo.wt/cmd-md-item' },
-  { outcome: 'REVIEW_DIFF', files: ['claude/commands/build.md'] },
+  { outcome: 'REVIEW_DIFF', files: ['claude/commands/build.md'], tsv: '', tsv_rows: 0 },
   { outcome: 'GATE_PASS' },
   { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-cmd' },
   { outcome: 'SCAN_CLEAN' },
@@ -5889,7 +5900,7 @@ globalThis.log = (m) => logged.push(String(m));
 
 setMachinery('unavail-item',
   { outcome: 'CREATED', path: '/tmp/repo.wt/unavail-item' },
-  { outcome: 'REVIEW_DIFF', files: ['claude/commands/build.md'] },
+  { outcome: 'REVIEW_DIFF', files: ['claude/commands/build.md'], tsv: '', tsv_rows: 0 },
   { outcome: 'GATE_PASS' },
   { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-un' },
   { outcome: 'SCAN_CLEAN' },
@@ -5919,7 +5930,7 @@ $PREAMBLE
 
 setMachinery('blocking-item',
   { outcome: 'CREATED', path: '/tmp/repo.wt/blocking-item' },
-  { outcome: 'REVIEW_DIFF', files: ['claude/commands/build.md'] },
+  { outcome: 'REVIEW_DIFF', files: ['claude/commands/build.md'], tsv: '', tsv_rows: 0 },
 );
 happyWorker('blocking-item');
 setReview('blocking-item', '## Summary\\n1 finding.\\n\\n## Findings\\n### [HIGH] Silent failure mode in claude/commands/build.md Step 3\\n**Where:** claude/commands/build.md — Step 3\\n**Issue:** x\\n');
@@ -5948,7 +5959,7 @@ const tsv = '.py' + TAB + 'python-reviewer' + TAB + 'claude/agents/reviewers/pyt
 
 setMachinery('routed-item',
   { outcome: 'CREATED', path: '/tmp/repo.wt/routed-item' },
-  { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/foo.py'], tsv },
+  { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/foo.py'], tsv, tsv_rows: tsvRows(tsv) },
   { outcome: 'GATE_PASS' },
   { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-rt' },
   { outcome: 'SCAN_CLEAN' },
@@ -5989,7 +6000,7 @@ const tsv = readFileSync('$REPO_ROOT/workflows/scripts/config/reviewer-routing.t
 
 setMachinery('makefile-item',
   { outcome: 'CREATED', path: '/tmp/repo.wt/makefile-item' },
-  { outcome: 'REVIEW_DIFF', files: ['Makefile'], tsv },
+  { outcome: 'REVIEW_DIFF', files: ['Makefile'], tsv, tsv_rows: tsvRows(tsv) },
   { outcome: 'GATE_PASS' },
   { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-mk' },
   { outcome: 'SCAN_CLEAN' },
@@ -6028,7 +6039,7 @@ if (stripped === live) { console.log(JSON.stringify({ ok: false, reason: 'setup:
 else {
 setMachinery('makefile-item',
   { outcome: 'CREATED', path: '/tmp/repo.wt/makefile-item' },
-  { outcome: 'REVIEW_DIFF', files: ['Makefile'], tsv: stripped },
+  { outcome: 'REVIEW_DIFF', files: ['Makefile'], tsv: stripped, tsv_rows: tsvRows(stripped) },
   { outcome: 'GATE_PASS' },
   { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-mk' },
   { outcome: 'SCAN_CLEAN' },
@@ -6061,7 +6072,7 @@ const tsv = readFileSync('$REPO_ROOT/workflows/scripts/config/reviewer-routing.t
 
 setMachinery('nested-item',
   { outcome: 'CREATED', path: '/tmp/repo.wt/nested-item' },
-  { outcome: 'REVIEW_DIFF', files: ['sub/dir/Makefile'], tsv },
+  { outcome: 'REVIEW_DIFF', files: ['sub/dir/Makefile'], tsv, tsv_rows: tsvRows(tsv) },
   { outcome: 'GATE_PASS' },
   { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-n' },
   { outcome: 'SCAN_CLEAN' },
@@ -6074,7 +6085,7 @@ setReview('nested-item', 'clean');
 
 setMachinery('suffix-item',
   { outcome: 'CREATED', path: '/tmp/repo.wt/suffix-item' },
-  { outcome: 'REVIEW_DIFF', files: ['tools/NotAMakefile'], tsv },
+  { outcome: 'REVIEW_DIFF', files: ['tools/NotAMakefile'], tsv, tsv_rows: tsvRows(tsv) },
   { outcome: 'GATE_PASS' },
   { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-s' },
   { outcome: 'SCAN_CLEAN' },
@@ -6115,7 +6126,7 @@ $PREAMBLE
 
 setMachinery('cifix-clean',
   { outcome: 'CREATED', path: '/tmp/repo.wt/cifix-clean' },
-  { outcome: 'REVIEW_DIFF', files: ['claude/commands/build.md'] },
+  { outcome: 'REVIEW_DIFF', files: ['claude/commands/build.md'], tsv: '', tsv_rows: 0 },
   { outcome: 'GATE_PASS' },
   { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-v1' },
   { outcome: 'SCAN_CLEAN' },
@@ -6123,7 +6134,7 @@ setMachinery('cifix-clean',
   { outcome: 'PR_OPENED', pr_number: 700 },
   { outcome: 'CI_FAILED', failed_run_ids: [1] },
   // The re-review's OWN diff fetch — a SEPARATE machinery call from the first.
-  { outcome: 'REVIEW_DIFF', files: ['claude/commands/build.md'] },
+  { outcome: 'REVIEW_DIFF', files: ['claude/commands/build.md'], tsv: '', tsv_rows: 0 },
   { outcome: 'PUSHED', sha: 'sha-v2', branch: 'build/cifix-clean' },
   { outcome: 'CI_GREEN' },
   // temperloop#1846: the fix round ran a reviewer, so 3g.5 re-renders the PR
@@ -6164,14 +6175,14 @@ $PREAMBLE
 
 setMachinery('cifix-block',
   { outcome: 'CREATED', path: '/tmp/repo.wt/cifix-block' },
-  { outcome: 'REVIEW_DIFF', files: ['claude/commands/build.md'] },
+  { outcome: 'REVIEW_DIFF', files: ['claude/commands/build.md'], tsv: '', tsv_rows: 0 },
   { outcome: 'GATE_PASS' },
   { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-v1' },
   { outcome: 'SCAN_CLEAN' },
   { outcome: 'PUSHED', sha: 'sha-v1', branch: 'build/cifix-block' },
   { outcome: 'PR_OPENED', pr_number: 701 },
   { outcome: 'CI_FAILED', failed_run_ids: [1] },
-  { outcome: 'REVIEW_DIFF', files: ['claude/commands/build.md'] },
+  { outcome: 'REVIEW_DIFF', files: ['claude/commands/build.md'], tsv: '', tsv_rows: 0 },
   // Deliberately NO 'PUSHED' entry after this: if the code wrongly proceeds
   // past a blocking CI-fix review to push, the mock's queue is exhausted and
   // throws 'No mock entry' — a LOUD failure, never a silent pass-through.
@@ -6230,7 +6241,7 @@ const tsv = '.sh' + TAB + 'shell-reviewer' + TAB + 'claude/agents/reviewers/shel
 setMachinery('two-rev',
   { outcome: 'CREATED', path: '/tmp/repo.wt/two-rev' },
   // Original round: an .md-only diff — docs-reviewer alone.
-  { outcome: 'REVIEW_DIFF', files: ['docs/notes.md'] },
+  { outcome: 'REVIEW_DIFF', files: ['docs/notes.md'], tsv: '', tsv_rows: 0 },
   { outcome: 'GATE_PASS' },
   { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-v1' },
   { outcome: 'SCAN_CLEAN' },
@@ -6239,7 +6250,7 @@ setMachinery('two-rev',
   { outcome: 'CI_FAILED', failed_run_ids: [1] },
   // CI-fix round: the fix touches a .sh file too — docs-reviewer AND
   // shell-reviewer (tsv-routed) both run against the fix diff.
-  { outcome: 'REVIEW_DIFF', files: ['docs/notes.md', 'workflows/scripts/thing.sh'], tsv },
+  { outcome: 'REVIEW_DIFF', files: ['docs/notes.md', 'workflows/scripts/thing.sh'], tsv, tsv_rows: tsvRows(tsv) },
   { outcome: 'PUSHED', sha: 'sha-v2', branch: 'build/two-rev' },
   { outcome: 'CI_GREEN' },
   // 3g.5 re-render (the fix under test): pr.sh open --update-pr.
@@ -6296,7 +6307,7 @@ $PREAMBLE
 
 setMachinery('norev-fix',
   { outcome: 'CREATED', path: '/tmp/repo.wt/norev-fix' },
-  { outcome: 'REVIEW_DIFF', files: ['docs/notes.md'] },
+  { outcome: 'REVIEW_DIFF', files: ['docs/notes.md'], tsv: '', tsv_rows: 0 },
   { outcome: 'GATE_PASS' },
   { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-v1' },
   { outcome: 'SCAN_CLEAN' },
@@ -6338,6 +6349,195 @@ grep -q 'reviewBodySuffix(\[review, ...fixRounds\])' "$MJS" \
 grep -q -- '--update-pr' "$MJS" \
   || fail "#1846: the 3g.5 re-render must go through pr.sh open --update-pr (the shared assemble_body path), never regex surgery on the live body"
 echo "PASS: #1846 review-evidence re-render guard — one renderer for 3f and 3g.5, re-render via pr.sh open --update-pr"
+
+# ============================================================================
+# TEST (K1976): the review-diff relay can drop the reviewer-routing tsv while
+#   leaving `files` intact (evidence: wf_cbc556f5-7be — a REVIEW_DIFF result
+#   with files but no `tsv` key at all ran only docs-reviewer, never the
+#   shell-reviewer a later run of the SAME item routed to via an intact tsv).
+#   reviewDiffCmd now also emits `tsv_rows`, computed off the worktree file
+#   itself; runReviewers treats a missing (non-string) `tsv` or
+#   a `parseTsvRows(tsv).length` disagreeing with `tsv_rows` as a relay drop
+#   on any non-empty `files` diff, re-runs the SAME review-diff command once,
+#   and escalates review-diff-error (never computing a roster from an
+#   empty/partial table) if the retry is still incomplete. A worktree that
+#   genuinely ships no tsv (`tsv:''`, `tsv_rows:0`) is unaffected — 0 rows is
+#   a COMPLETE table, not a dropped one.
+# ============================================================================
+run_node_case "K1976 drop: REVIEW_DIFF with no tsv key on a non-empty .sh diff retries once, then escalates review-diff-error naming the missing field — no reviewer roster is ever computed" "
+$PREAMBLE
+
+setMachinery('droptsv-a',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/droptsv-a' },
+  { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/state-graph.sh'] },
+  { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/state-graph.sh'] },
+);
+happyWorker('droptsv-a');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'droptsv-a', branch: 'build/droptsv-a', title: 'Touch a shell script', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+let reason = null;
+const diffCalls = callLog.filter(c => (c.opts.label||'').startsWith('review-diff:droptsv-a'));
+if (diffCalls.length !== 2) reason = 'expected exactly one retry (2 review-diff calls total), got ' + diffCalls.length;
+else if ((result.parked ?? []).length !== 0) reason = 'a missing tsv must never park the item: ' + JSON.stringify(result);
+else if ((result.escalations ?? []).length !== 1) reason = 'expected exactly 1 escalation: ' + JSON.stringify(result.escalations);
+else if (result.escalations[0].kind !== 'review-diff-error') reason = 'wrong escalation kind: ' + result.escalations[0].kind;
+else if (result.escalations[0].payload.missing !== 'tsv') reason = 'escalation payload must name the missing field: ' + JSON.stringify(result.escalations[0].payload);
+const reviewCalls = callLog.filter(c => isReviewCall(c.opts));
+if (!reason && reviewCalls.length !== 0) reason = 'no reviewer roster may ever be computed from a dropped tsv: ' + JSON.stringify(reviewCalls.map(c => c.opts.agentType));
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+run_node_case "K1976 recovered: a retry that returns a complete tsv routes normally — shell-reviewer runs, no escalation" "
+$PREAMBLE
+const TAB = String.fromCharCode(9);
+const tsv = '.sh' + TAB + 'shell-reviewer' + TAB + 'claude/agents/reviewers/shell-reviewer.md\\n';
+
+setMachinery('droptsv-b',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/droptsv-b' },
+  { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/state-graph.sh'] },
+  { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/state-graph.sh'], tsv, tsv_rows: tsvRows(tsv) },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-drb' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'sha-drb', branch: 'build/droptsv-b' },
+  { outcome: 'PR_OPENED', pr_number: 1976 },
+  { outcome: 'CI_GREEN' },
+);
+happyWorker('droptsv-b');
+setReview('droptsv-b', '## Summary\\nclean\\n\\n## Findings\\n(none)\\n');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'droptsv-b', branch: 'build/droptsv-b', title: 'Touch a shell script', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+let reason = null;
+const diffCalls = callLog.filter(c => (c.opts.label||'').startsWith('review-diff:droptsv-b'));
+if (diffCalls.length !== 2) reason = 'expected exactly one retry (2 review-diff calls total), got ' + diffCalls.length;
+else if ((result.parked ?? []).length !== 1) reason = 'expected 1 parked once the retry recovers a complete tsv: ' + JSON.stringify(result);
+else if ((result.escalations ?? []).length !== 0) reason = 'a recovered retry must never escalate: ' + JSON.stringify(result.escalations);
+const rec = (result.parked ?? [])[0];
+if (!reason && (!rec.review || !rec.review.ran.some(r => r.reviewer === 'shell-reviewer')))
+  reason = 'shell-reviewer must have run once the retry recovered a complete tsv: ' + JSON.stringify(rec && rec.review);
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+run_node_case "K1976 mismatch: tsv present but tsv_rows disagrees with its own row count follows the SAME retry-then-escalate path as a missing tsv" "
+$PREAMBLE
+const TAB = String.fromCharCode(9);
+const tsv = '.py' + TAB + 'python-reviewer' + TAB + 'claude/agents/reviewers/python-reviewer.md\\n' +
+            '.rb' + TAB + 'ruby-reviewer' + TAB + 'claude/agents/reviewers/ruby-reviewer.md\\n';
+
+setMachinery('droptsv-c',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/droptsv-c' },
+  { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/foo.py'], tsv, tsv_rows: 0 },
+  { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/foo.py'], tsv, tsv_rows: 0 },
+);
+happyWorker('droptsv-c');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'droptsv-c', branch: 'build/droptsv-c', title: 'Touch a python file', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+let reason = null;
+const diffCalls = callLog.filter(c => (c.opts.label||'').startsWith('review-diff:droptsv-c'));
+if (diffCalls.length !== 2) reason = 'expected exactly one retry (2 review-diff calls total), got ' + diffCalls.length;
+else if ((result.parked ?? []).length !== 0) reason = 'a persistent row-count mismatch must never park the item: ' + JSON.stringify(result);
+else if ((result.escalations ?? []).length !== 1) reason = 'expected exactly 1 escalation: ' + JSON.stringify(result.escalations);
+else if (result.escalations[0].kind !== 'review-diff-error') reason = 'wrong escalation kind: ' + result.escalations[0].kind;
+else {
+  const payload = result.escalations[0].payload;
+  const mm = payload.mismatch;
+  if (!mm || mm.expected !== 2 || mm.got !== 0) reason = 'escalation payload must name the expected/got row counts: ' + JSON.stringify(payload);
+  else if (!Array.isArray(payload.files) || payload.files[0] !== 'workflows/scripts/foo.py') reason = 'escalation payload must carry the changed-file list: ' + JSON.stringify(payload);
+}
+const reviewCalls = callLog.filter(c => isReviewCall(c.opts));
+if (!reason && reviewCalls.length !== 0) reason = 'no reviewer roster may ever be computed from a mismatched tsv: ' + JSON.stringify(reviewCalls.map(c => c.opts.agentType));
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+run_node_case "K1976 mismatch (tsv_rows absent): tsv present with no tsv_rows key follows the same retry-then-escalate path, and 'got' survives JSON serialization as null rather than vanishing as undefined" "
+$PREAMBLE
+const TAB = String.fromCharCode(9);
+const tsv = '.py' + TAB + 'python-reviewer' + TAB + 'claude/agents/reviewers/python-reviewer.md\\n';
+
+setMachinery('droptsv-cc',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/droptsv-cc' },
+  { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/foo.py'], tsv },
+  { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/foo.py'], tsv },
+);
+happyWorker('droptsv-cc');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'droptsv-cc', branch: 'build/droptsv-cc', title: 'Touch a python file', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+let reason = null;
+const diffCalls = callLog.filter(c => (c.opts.label||'').startsWith('review-diff:droptsv-cc'));
+if (diffCalls.length !== 2) reason = 'expected exactly one retry (2 review-diff calls total), got ' + diffCalls.length;
+else if ((result.escalations ?? []).length !== 1) reason = 'expected exactly 1 escalation: ' + JSON.stringify(result.escalations);
+else {
+  const serialized = JSON.parse(JSON.stringify(result.escalations[0].payload));
+  const mm = serialized.mismatch;
+  if (!mm || !('got' in mm) || mm.got !== null) reason = 'got must survive JSON serialization as null, never vanish as undefined: ' + JSON.stringify(serialized);
+  else if (mm.expected !== 1) reason = 'expected must still be the real row count: ' + JSON.stringify(serialized);
+}
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+run_node_case "K1976 no-tsv worktree: tsv:'' with tsv_rows:0 on a .md diff is COMPLETE, not dropped — docs-reviewer runs once, no retry, no escalation" "
+$PREAMBLE
+
+setMachinery('droptsv-d',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/droptsv-d' },
+  { outcome: 'REVIEW_DIFF', files: ['docs/plain.md'], tsv: '', tsv_rows: 0 },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-drd' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'sha-drd', branch: 'build/droptsv-d' },
+  { outcome: 'PR_OPENED', pr_number: 1977 },
+  { outcome: 'CI_GREEN' },
+);
+happyWorker('droptsv-d');
+setReview('droptsv-d', '## Summary\\nclean\\n\\n## Findings\\n(none)\\n');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'droptsv-d', branch: 'build/droptsv-d', title: 'Touch a doc', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+let reason = null;
+const diffCalls = callLog.filter(c => (c.opts.label||'').startsWith('review-diff:droptsv-d'));
+if (diffCalls.length !== 1) reason = 'a genuinely empty tsv must never trigger a retry: ' + diffCalls.length;
+else if ((result.parked ?? []).length !== 1) reason = 'expected 1 parked: ' + JSON.stringify(result);
+else if ((result.escalations ?? []).length !== 0) reason = 'expected 0 escalations: ' + JSON.stringify(result.escalations);
+const reviewCalls = callLog.filter(c => isReviewCall(c.opts));
+if (!reason && (reviewCalls.length !== 1 || reviewCalls[0].opts.agentType !== 'docs-reviewer'))
+  reason = 'expected exactly docs-reviewer to run via the prose fallback, got: ' + JSON.stringify(reviewCalls.map(c => c.opts.agentType));
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+# --- K1976 static lockstep guard: the relay-drop retry-then-escalate wiring --
+grep -q 'function reviewDiffTsvGap' "$MJS" \
+  || fail "#1976: build-level.mjs must define reviewDiffTsvGap() — the missing/mismatched-tsv guard, kept in legible .mjs rather than buried in prompt text"
+grep -q 'tsv_rows' "$MJS" \
+  || fail "#1976: reviewDiffCmd must emit tsv_rows alongside tsv, and runReviewers must check it — the row-count guard against a relay-truncated table"
+grep -q 'fetchReviewDiff(stagePhase(STAGE_REVIEW))' "$MJS" \
+  || fail "#1976: the relay-drop guard must re-run the review-diff step through the SAME fetchReviewDiff() closure, never a re-derived command"
+grep -q "escalate(item.slug, 'review-diff-error', gap)" "$MJS" \
+  || fail "#1976: a still-incomplete tsv after the retry must escalate review-diff-error naming the gap (missing/mismatch)"
+echo "PASS: #1976 review-diff tsv-guard wiring — reviewDiffCmd emits tsv_rows, reviewDiffTsvGap detects a missing/mismatched tsv, runReviewers retries once through the same command before escalating"
 
 # --- K1430 static lockstep guards: §3e mandatory/routed pre-push review ------
 # build.md §3e is the SPEC; build-level.mjs's driveItem is the as-built

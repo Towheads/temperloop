@@ -441,6 +441,11 @@ const SPINE_OUTCOME_SCHEMA = {
     // reviewer-routing.tsv text (empty string when the worktree ships none).
     files: { type: 'array', items: { type: 'string' } },
     tsv: { type: 'string' },
+    // temperloop#1976: the tsv's own non-comment row count, computed by
+    // reviewDiffCmd off the worktree file itself — the guard runReviewers()
+    // uses to detect the relay dropping/truncating `tsv`. Row-count only: it
+    // catches a dropped or truncated table, not a same-length garble.
+    tsv_rows: { type: ['number', 'string'] },
     // 3e.5 sliced-gate fields (temperloop#1021). resumeAt — the 0-based gate
     // index the NEXT slice starts at; failed — failures seen in THIS slice (the
     // driver accumulates); elapsedSecs / budgetSecs — the margin pair that makes
@@ -2707,6 +2712,24 @@ async function deniedOrQuota(slug, payload, worktree) {
 // worktree ships none — a consuming repo that has not vendored it). Mirrors
 // pr.sh's own `default_branch()` fallback chain (origin/HEAD, else
 // main/master) so this never depends on pr.sh being invoked first.
+//
+// temperloop#1976: alongside `tsv` this also emits `tsv_rows` (count of
+// non-blank, non-`#` lines — the SAME first-stage filter parseTsvRows()
+// applies before its column check), computed HERE off the worktree's own
+// file, independently of whatever the machinery-executor relay hands back
+// for `tsv` itself. That independence is the whole point: the relay is a
+// separate agent copying this step's JSON line, and it has been observed
+// dropping the (large) `tsv` field entirely while leaving `files` intact
+// (evidence: wf_cbc556f5-7be). `tsv_rows` gives runReviewers() a cheap
+// row-count check that the `tsv` it received is the SAME one this command
+// actually read, without re-reading the file itself — a ROW-COUNT check
+// only: it catches a dropped or truncated table (a row-count mismatch), not
+// a same-length garble (content corrupted without changing the row count),
+// since the Workflow runtime this command runs under exposes no hashing
+// primitive the script body could compare against. A worktree that
+// genuinely ships no tsv emits `tsv:""`, `tsv_rows:0` — never an omitted
+// `tsv` key — so "missing" stays a signal of the relay dropping the field,
+// not of a legitimate no-tsv worktree.
 function reviewDiffCmd(wt) {
   const tsvPath = `${wt}/workflows/scripts/config/reviewer-routing.tsv`;
   return [
@@ -2720,8 +2743,14 @@ function reviewDiffCmd(wt) {
     `[ -n "$default" ] || default=main`,
     `files_json="$(git diff --name-only "origin/$default...HEAD" 2>/dev/null | jq -R -s -c 'split("\\n") | map(select(length>0))')"`,
     `[ -n "$files_json" ] || files_json='[]'`,
-    `if [ -f ${sq(tsvPath)} ]; then tsv_json="$(jq -R -s -c . < ${sq(tsvPath)})"; else tsv_json='""'; fi`,
-    `printf '{"outcome":"REVIEW_DIFF","files":%s,"tsv":%s}\\n' "$files_json" "$tsv_json"`,
+    `if [ -f ${sq(tsvPath)} ]; then`,
+    `  tsv_json="$(jq -R -s -c . < ${sq(tsvPath)})"`,
+    `  tsv_rows="$(awk 'BEGIN{c=0} { l=$0; sub(/\\r$/,"",l); t=l; gsub(/^[ \\t]+|[ \\t]+$/,"",t); if (t != "" && substr(t,1,1) != "#") c++ } END{print c+0}' ${sq(tsvPath)})"`,
+    `else`,
+    `  tsv_json='""'`,
+    `  tsv_rows=0`,
+    `fi`,
+    `printf '{"outcome":"REVIEW_DIFF","files":%s,"tsv":%s,"tsv_rows":%s}\\n' "$files_json" "$tsv_json" "$tsv_rows"`,
   ].join('\n');
 }
 
@@ -2837,6 +2866,40 @@ function reviewHasBlockingFinding(text) {
   return /^\s*###\s*\[\s*HIGH\b/im.test(String(text ?? ''));
 }
 
+// reviewDiffTsvGap — temperloop#1976: the relay-drop guard. `diffOut.tsv` is
+// hand-copied by the machinery-executor agent from the diff-fetch command's
+// own JSON line, a SEPARATE step from the one that computed `tsv_rows`
+// off the same worktree file — so the two can disagree only if the relay
+// dropped or truncated the (potentially large) `tsv` field on the way
+// through. This is a ROW-COUNT check only — it catches a dropped or
+// truncated table (a row-count mismatch), never a same-length garble
+// (content corrupted without changing the row count): the Workflow runtime
+// this command runs under exposes no hashing primitive the script body could
+// compare against, so there is no cheaper-than-re-reading content check
+// available here. Returns null when `tsv` is trustworthy, else the
+// escalation payload naming what's wrong, always carrying `files` (the
+// changed-file list) so a `review-diff-error` names what would have been
+// routed: `{ missing: 'tsv', files }` when the field isn't even a string
+// (the observed drop — evidence: wf_cbc556f5-7be, where `files` survived the
+// relay but `tsv` vanished entirely), or `{ mismatch: { expected, got },
+// files }` when it IS a string but its own non-comment row count
+// (recomputed via parseTsvRows, the SAME routing-axis reader
+// determineReviewers() uses) disagrees with the `tsv_rows` the diff fetch
+// reported for that same file (`got` is `?? null` since `tsv_rows` can
+// itself be absent, and JSON.stringify silently drops an `undefined` key).
+// Only checked when `files` is non-empty: an empty diff never needs a
+// routing table, so this never fires on the legitimate no-tsv-worktree case
+// (`tsv:''`, `tsv_rows:0`) either, regardless of `files` — a genuinely empty
+// tsv is complete by construction (0 === 0).
+function reviewDiffTsvGap(diffOut, files) {
+  if (!files.length) return null;
+  if (typeof diffOut.tsv !== 'string') return { missing: 'tsv', files };
+  const expected = parseTsvRows(diffOut.tsv).length;
+  const got = Number(diffOut.tsv_rows);
+  if (expected !== got) return { mismatch: { expected, got: diffOut.tsv_rows ?? null }, files };
+  return null;
+}
+
 // runReviewers — the §3e driver. Fetches the routing inputs (one machinery
 // call), resolves the matching reviewer set, and spawns EACH directly via
 // `agent({agentType})` — never delegated to the 3c worker. Returns:
@@ -2851,11 +2914,10 @@ function reviewHasBlockingFinding(text) {
 // surface (the PR body, at the 3f call site) rather than letting it evaporate
 // once the blocking check has read it.
 async function runReviewers(item, wt) {
-  const diffOut = await runMachinery(reviewDiffCmd(wt), {
-    label: `review-diff:${item.slug}`,
-    slug: item.slug,
-    phase: enterStage(STAGE_REVIEW),
-  });
+  const fetchReviewDiff = (phaseTitle) =>
+    runMachinery(reviewDiffCmd(wt), { label: `review-diff:${item.slug}`, slug: item.slug, phase: phaseTitle });
+
+  let diffOut = await fetchReviewDiff(enterStage(STAGE_REVIEW));
   if (machineryDenied(diffOut)) {
     // temperloop#1819: quota death vs genuine denial — see deniedOrQuota.
     return { escalation: await deniedOrQuota(item.slug, { step: 'review-diff', out: diffOut }, wt) };
@@ -2863,7 +2925,28 @@ async function runReviewers(item, wt) {
   if (diffOut.outcome !== 'REVIEW_DIFF') {
     return { escalation: escalate(item.slug, 'review-diff-error', { diffOut }) };
   }
-  const files = Array.isArray(diffOut.files) ? diffOut.files : [];
+  let files = Array.isArray(diffOut.files) ? diffOut.files : [];
+  // temperloop#1976: a dropped/truncated tsv relay is nondeterministic per
+  // copy (the same command, re-run, has been observed to carry it intact) —
+  // re-run the SAME diff-fetch command once before treating it as a genuine
+  // failure, so determineReviewers() is never called with an empty table for
+  // a worktree that actually ships a real one.
+  if (reviewDiffTsvGap(diffOut, files)) {
+    diffOut = await fetchReviewDiff(stagePhase(STAGE_REVIEW));
+    if (machineryDenied(diffOut)) {
+      return { escalation: await deniedOrQuota(item.slug, { step: 'review-diff', out: diffOut }, wt) };
+    }
+    if (diffOut.outcome !== 'REVIEW_DIFF') {
+      return { escalation: escalate(item.slug, 'review-diff-error', { diffOut }) };
+    }
+    files = Array.isArray(diffOut.files) ? diffOut.files : [];
+    const gap = reviewDiffTsvGap(diffOut, files);
+    if (gap) {
+      // Still incomplete after the one retry — escalate rather than let the
+      // routing decision run against a missing/partial table.
+      return { escalation: escalate(item.slug, 'review-diff-error', gap) };
+    }
+  }
   const tsvText = typeof diffOut.tsv === 'string' ? diffOut.tsv : '';
   const routes = determineReviewers(item, files, tsvText);
   if (routes.length === 0) {
