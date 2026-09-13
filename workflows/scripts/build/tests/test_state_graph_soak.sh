@@ -230,7 +230,14 @@ _board_gh() {
     # issue residue supplement is actually wired into (_sg_read_board).
     "issue list") echo '[{"number":1,"title":"other","labels":[{"name":"fnd:status:ready"}]}]' ;;
     "pr list") echo '[]' ;;
-    "api repos/$REPO/issues") echo '[{"number":158,"title":"x","labels":[{"name":"fnd:status:backlog"}]}]' ;;
+    # per-label residue read (temperloop#1978 round 2): #158 only shows up on
+    # the fnd:status:backlog label's own call, never the other two labels'.
+    "api repos/$REPO/issues")
+      case " $* " in
+        *" labels=fnd:status:backlog "*) echo '[{"number":158,"title":"x","labels":[{"name":"fnd:status:backlog"}]}]' ;;
+        *) echo '[]' ;;
+      esac
+      ;;
     *) echo "test _board_gh: unhandled '$1 $2'" >&2; return 3 ;;
   esac
 }

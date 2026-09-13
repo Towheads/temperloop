@@ -374,21 +374,45 @@ _sg_source_result() {
 # workflows/scripts/board/ISSUES-ONLY-BACKEND.md; residue like #158) is
 # structurally invisible to the primary read above. This source closes that
 # gap ITSELF, entirely inside this file: one SUPPLEMENTAL, DIRECT `_board_gh
-# api "repos/<repo>/issues" -f state=closed ...` call (deliberately NOT `gh
-# issue list` — that shares board.sh's own `_board_gh` call shape at the
-# argv-matching granularity every existing test fixture dispatches on, which
-# would silently replay the OPEN-issue fixture for this closed-issue read
-# too; the distinct `api repos/.../issues` shape can never collide with an
-# `issue list` mock arm), filtered client-side to issues carrying an
-# `fnd:status:*` label, emitted as extra Issue nodes with `state:"closed"` so
-# `_sg_query_status_drift`'s new `closed_with_status_label` finding can see
-# them. This supplemental read is FAIL-SOFT by design — a failure (rate
-# limit/auth/an older test fixture that doesn't mock it) warns on stderr and
-# contributes zero extra nodes rather than erroring the WHOLE board source;
-# the primary open-issue read's own ok/absent/error verdict is computed
-# exactly as before, untouched by this addition.
+# api "repos/<repo>/issues" --method GET -f state=closed -f labels=<label>
+# ...` call per `fnd:status:*` label (deliberately NOT `gh issue list` —
+# that shares board.sh's own `_board_gh` call shape at the argv-matching
+# granularity every existing test fixture dispatches on, which would
+# silently replay the OPEN-issue fixture for this closed-issue read too;
+# the distinct `api repos/.../issues` shape can never collide with an
+# `issue list` mock arm), emitted as extra Issue nodes with `state:"closed"`
+# so `_sg_query_status_drift`'s new `closed_with_status_label` finding can
+# see them. This supplemental read is FAIL-SOFT by design, per label — a
+# failure (rate limit/auth/an older test fixture that doesn't mock it)
+# warns on stderr and that label contributes zero extra nodes rather than
+# erroring the WHOLE board source; the primary open-issue read's own
+# ok/absent/error verdict is computed exactly as before, untouched by this
+# addition.
+#
+# Round 2 (temperloop#1978 verdict, live-run findings):
+#
+#   - `--method GET` is REQUIRED on every call here. `gh api` silently
+#     switches to POST the instant any `-f`/`-F` param is present, unless
+#     `--method`/`-X` names GET explicitly — verified live: the round-1 call
+#     (no `--method`) was actually POSTing to the CREATE-an-issue endpoint
+#     (422 "title wasn't supplied", swallowed whole by the fail-soft arm
+#     below, so it silently contributed zero residue nodes every run).
+#
+#   - One page of `per_page=100`, newest-first, with no pagination
+#     structurally cannot reach OLD residue (measured live: one page spans
+#     #1841-#1979). Rather than paginate the entire closed-issue history
+#     (unbounded cost), this queries by LABEL instead: one GET per
+#     `fnd:status:*` label — GitHub's REST `labels` filter is AND, not OR,
+#     so a comma-joined list would wrongly require ALL of them on one
+#     issue, and must be one call per label. The label set is read from the
+#     ontology registry (ADR 0032) via `_sg_issue_status_tokens` — the same
+#     accessor this function already uses above for the primary read's
+#     status-token validation — filtered to the `fnd:status:*` rows (i.e.
+#     excluding the registry's non-label `done` token), so a future label
+#     addition/removal there is picked up here for free rather than
+#     hardcoded.
 _sg_read_board() {
-  local board="$1" items count bad nodes edges stamp norm repo closed_raw closed_nodes
+  local board="$1" items count bad nodes edges stamp norm repo closed_raw closed_nodes label extra
   if ! board_resolve "$board" >/dev/null 2>&1; then
     _sg_source_result error '[]' '[]' "board_resolve failed"
     return 0
@@ -431,22 +455,25 @@ _sg_read_board() {
   done < <(printf '%s' "$items" | jq -r '.[] | select((.["host/Session"] // "") != "") | [ (.content.number|tostring), .["host/Session"] ] | @tsv')
 
   # Closed-issue residue supplement — see this function's own header comment
-  # above. `repo` failing to resolve, or the `_board_gh api` call itself
-  # failing, is never a hard error for this source: it just means today's
-  # snapshot sees no closed-issue residue, exactly like a repo with none.
+  # above. `repo` failing to resolve, or a per-label `_board_gh api` call
+  # itself failing, is never a hard error for this source: it just means
+  # today's snapshot sees no closed-issue residue for that label, exactly
+  # like a repo with none for it.
   repo="$(board_repo "$board" 2>/dev/null)" || repo=""
   closed_nodes='[]'
   if [ -n "$repo" ]; then
-    if closed_raw="$(_board_gh api "repos/$repo/issues" -f state=closed -f per_page=100 2>/dev/null)"; then
-      closed_nodes="$(printf '%s' "$closed_raw" | jq -c '
-        [ .[]? | ((.labels // []) | map(.name) | map(select(test("^fnd:status:")))) as $sl
-          | select(($sl|length) > 0)
-          | { type:"Issue", id:("Issue:"+(.number|tostring)), number:.number,
-              status:$sl[0], state:"closed" } ]
-      ' 2>/dev/null)" || closed_nodes='[]'
-    else
-      echo "state-graph.sh: warning: closed-issue residue read failed for board $board repo $repo (gh api rate-limited/auth?) — status-drift will not see closed-with-label residue this cycle" >&2
-    fi
+    while IFS= read -r label; do
+      [ -n "$label" ] || continue
+      if closed_raw="$(_board_gh api "repos/$repo/issues" --method GET -f state=closed -f "labels=$label" -f per_page=100 2>/dev/null)"; then
+        extra="$(printf '%s' "$closed_raw" | jq -c --arg lbl "$label" '
+          [ .[]? | { type:"Issue", id:("Issue:"+(.number|tostring)), number:.number,
+                      status:$lbl, state:"closed" } ]
+        ' 2>/dev/null)" || extra='[]'
+        closed_nodes="$(jq -c --argjson extra "$extra" '. + $extra' <<<"$closed_nodes")"
+      else
+        echo "state-graph.sh: warning: closed-issue residue read failed for board $board repo $repo label $label (gh api rate-limited/auth?) — status-drift will not see closed-with-label residue for this label this cycle" >&2
+      fi
+    done < <(_sg_issue_status_tokens | grep '^fnd:status:')
   fi
   nodes="$(jq -c --argjson extra "$closed_nodes" '. + $extra' <<<"$nodes")"
 

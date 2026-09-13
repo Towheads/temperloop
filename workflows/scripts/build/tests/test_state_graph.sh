@@ -127,20 +127,25 @@ out="$(_sg_read_board "$BOARD")"
 [ "$(jq -r .status <<<"$out")" = "error" ] || fail "board error status on board_resolve failure (got: $out)"
 echo "PASS: board source error — board_resolve failure"
 
-# --- board: closed-issue residue (temperloop#1978, acceptance criterion 2) --
-# A DIRECT, DISTINCT `_board_gh api "repos/.../issues" -f state=closed ...`
-# call (never `gh issue list` — that shape collides with the OPEN-issue mock
-# arm every other case in this file uses) surfaces a closed issue still
-# wearing an `fnd:status:*` label as its own Issue node with `state:"closed"`
-# — #158's own shape from this item's day-1 soak evidence. #160 carries only
-# an `fnd:host/session:*` label (no status label) and is correctly excluded
-# — this read's scope is fnd:status:* residue only (acceptance criterion 2),
-# never the closed-issue claim-stamp half.
+# --- board: closed-issue residue (temperloop#1978 round 2, acceptance
+# criterion 2) --------------------------------------------------------------
+# ONE `_board_gh api "repos/.../issues" --method GET -f state=closed -f
+# labels=<label> ...` call PER `fnd:status:*` label (never `gh issue list` —
+# that shape collides with the OPEN-issue mock arm every other case in this
+# file uses; never a single unfiltered call either — GitHub's `labels`
+# filter is server-side AND-only, so this must be one call per label).
+# `fnd:status:backlog`'s own call returns #158 (this item's day-1 soak
+# evidence); `fnd:status:ready` and `fnd:status:in-progress` return empty
+# pages, mirroring the live label inventory having zero closed residue for
+# those two labels today.
 _board_gh() {
   case "$1 $2" in
     "issue list") echo '[{"number":1,"title":"x","labels":[{"name":"fnd:status:ready"}]}]' ;;
     "api repos/$REPO/issues")
-      echo '[{"number":158,"title":"y","labels":[{"name":"fnd:status:backlog"}]},{"number":160,"title":"z","labels":[{"name":"fnd:host/session:mini-1:abcd1234"}]}]'
+      case " $* " in
+        *" labels=fnd:status:backlog "*) echo '[{"number":158,"title":"y","labels":[{"name":"fnd:status:backlog"}]}]' ;;
+        *) echo '[]' ;;
+      esac
       ;;
     *) echo "test _board_gh: unhandled '$1 $2'" >&2; return 3 ;;
   esac
@@ -149,10 +154,43 @@ out="$(_sg_read_board "$BOARD")"
 [ "$(jq -r .status <<<"$out")" = "ok" ] || fail "board ok status with closed residue present (got: $out)"
 [ "$(jq -c '[.nodes[] | select(.id=="Issue:158")] | .[0] | {status,state}' <<<"$out")" = '{"status":"fnd:status:backlog","state":"closed"}' ] \
   || fail "board closed-residue node #158 shape mismatch (got: $out)"
-[ "$(jq '[.nodes[] | select(.id=="Issue:160")] | length' <<<"$out")" = 0 ] \
-  || fail "board closed residue must NOT surface a host/session-only label as a status node (#160, got: $out)"
-[ "$(jq '.nodes | length' <<<"$out")" = 2 ] || fail "board closed-residue node count (open #1 + closed #158) mismatch (got: $out)"
-echo "PASS: board source — a closed issue still wearing an fnd:status:* label surfaces as its own residue Issue node"
+[ "$(jq '.nodes | length' <<<"$out")" = 2 ] || fail "board closed-residue node count (open #1 + closed #158, found via its own label's call) mismatch (got: $out)"
+echo "PASS: board source — a closed issue still wearing an fnd:status:* label surfaces as its own residue Issue node, via that label's own filtered GET"
+
+# --- board: closed-issue residue call is a GET, never a POST (temperloop#1978
+# round 2, Finding 1 + required structural defense) -------------------------
+# `gh api` silently switches from GET to POST the instant ANY `-f`/`-F`
+# param is present, unless `--method`/`-X` names GET explicitly — this is
+# exactly the round-1 regression (a live 422 against the create-an-issue
+# endpoint, swallowed whole by the fail-soft arm). A mock that only replays
+# a canned BODY back is structurally blind to this (dispatches on "$1 $2"
+# regardless of method), so this one instead RECORDS the full argv of every
+# closed-residue call — to a FILE, since `_sg_read_board` invokes `_board_gh`
+# through `$(...)` command substitution, a subshell an in-memory array
+# mutation would not survive — and asserts `--method GET` (or `-X GET`) is
+# present on EACH recorded call: asserting on the REQUEST SHAPE, not the
+# response.
+_SG_TEST_CALLS_FILE="$TMP/closed-residue-calls"
+: > "$_SG_TEST_CALLS_FILE"
+_board_gh() {
+  case "$1 $2" in
+    "issue list") echo '[{"number":1,"title":"x","labels":[{"name":"fnd:status:ready"}]}]' ;;
+    "api repos/$REPO/issues")
+      printf '%s\n' "$*" >> "$_SG_TEST_CALLS_FILE"
+      echo '[]'
+      ;;
+    *) echo "test _board_gh: unhandled '$1 $2'" >&2; return 3 ;;
+  esac
+}
+out="$(_sg_read_board "$BOARD")"
+[ -s "$_SG_TEST_CALLS_FILE" ] || fail "closed-residue read made zero _board_gh api calls (expected one per fnd:status:* label)"
+while IFS= read -r call; do
+  case " $call " in
+    *" --method GET "*|*" -X GET "*) : ;;
+    *) fail "closed-residue call regressed off an explicit GET (gh api would silently POST to the create-issue endpoint): $call" ;;
+  esac
+done < "$_SG_TEST_CALLS_FILE"
+echo "PASS: board source — every closed-residue call carries an explicit --method GET (never a bare -f call that gh would silently POST)"
 
 # --- board: closed-issue residue read fails -> FAIL-SOFT, never errors the
 # whole board source (the primary open-issue read still succeeded) ----------
