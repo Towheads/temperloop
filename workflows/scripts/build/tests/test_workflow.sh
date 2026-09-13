@@ -8167,7 +8167,7 @@ setMachinery('bound-under',
   { outcome: 'CREATED', path: '/tmp/repo.wt/bound-under' },
   // review_rounds:1 = one round already spent on this worktree, so THIS is
   // round 2 of the default bound of 3 — still inside the budget.
-  { outcome: 'REVIEW_DIFF', files: ['claude/commands/build.md'], tsv: '', tsv_rows: 0, review_rounds: 1 },
+  { outcome: 'REVIEW_DIFF', files: ['claude/commands/build.md'], tsv: '', tsv_rows: 0, tsv_checksum: 0, review_rounds: 1 },
   // Deliberately NO further entries: if the bound wrongly fires here the
   // driver proceeds to the gate, the queue is exhausted and the mock throws.
 );
@@ -8200,7 +8200,7 @@ setMachinery('bound-at',
   { outcome: 'CREATED', path: '/tmp/repo.wt/bound-at' },
   // review_rounds:2 = two rounds already spent, so THIS is round 3 == the
   // default bound: the loop stops here and the item ships with its notes.
-  { outcome: 'REVIEW_DIFF', files: ['claude/commands/build.md'], tsv: '', tsv_rows: 0, review_rounds: 2 },
+  { outcome: 'REVIEW_DIFF', files: ['claude/commands/build.md'], tsv: '', tsv_rows: 0, tsv_checksum: 0, review_rounds: 2 },
   { outcome: 'GATE_PASS' },
   { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-ba' },
   { outcome: 'SCAN_CLEAN' },
@@ -8250,7 +8250,7 @@ setMachinery('bound-cfg',
   // No review_rounds field at all -> 0 prior rounds -> this is round 1, which
   // under the DEFAULT bound of 3 would escalate. The orchestrator-supplied
   // setting is the only thing that can make it ship instead.
-  { outcome: 'REVIEW_DIFF', files: ['claude/commands/build.md'], tsv: '', tsv_rows: 0 },
+  { outcome: 'REVIEW_DIFF', files: ['claude/commands/build.md'], tsv: '', tsv_rows: 0, tsv_checksum: 0 },
   { outcome: 'GATE_PASS' },
   { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-bc' },
   { outcome: 'SCAN_CLEAN' },
@@ -8434,6 +8434,44 @@ K1970_R3="$(bash "$K1970_E2E/review-diff.sh" 2>/dev/null | grep -o '\"review_rou
 git -C "$K1970_E2E/repo.wt/rounds" status --porcelain | grep . >/dev/null \
   && fail "#1970-e2e: the round marker must NOT appear in the worktree's working tree (git status must stay clean — a stray untracked file would reach the --scoped gate and the coverage manifests)"
 echo "PASS: #1970-e2e round counter — the real generated review-diff shell reads and advances a DURABLE per-worktree counter kept in the private git dir, leaving the working tree clean"
+
+# ============================================================================
+# TEST (K1970-octal): a CORRUPTED-BUT-PRESENT marker degrades SOFT.
+#
+#   The `tr -cd '0-9'` filter strips non-digits but not leading zeros, and
+#   POSIX `$(( ))` reads a leading-`0` numeral as OCTAL — so a marker holding
+#   `08`/`09` is not an off-by-N count but a HARD arithmetic error. Under
+#   `sh` that error is FATAL: the shell exits before the closing printf, so
+#   the machinery executor receives NO JSON line and §3e escalates
+#   `review-diff-error` — the one escalation kind the loop this item bounds is
+#   least able to act on. This code path never writes such a value itself, but
+#   the marker is an ordinary file in the worktree's git dir (hand-editable,
+#   restorable from a stale snapshot) and the whole marker contract is
+#   "every step fails SOFT".
+#
+#   Executed against the SAME real generated shell the case above lifted, and
+#   asserted under BOTH shells: `sh` (where the unfixed form aborts outright)
+#   and `bash` (where it survives but emits `"review_rounds":08` — invalid
+#   JSON, so the relay breaks one layer later instead).
+# ============================================================================
+printf '08\n' > "$K1970_GD/build-review-rounds"
+K1970_OCT_SH="$(sh "$K1970_E2E/review-diff.sh" 2>/dev/null | grep -o '"review_rounds":[0-9]*' | head -1 || true)"
+[ "$K1970_OCT_SH" = '"review_rounds":8' ] \
+  || fail "#1970-octal: a marker holding '08' must read as DECIMAL 8 under sh, not abort the step on an octal arithmetic error; got '$K1970_OCT_SH'"
+printf '09\n' > "$K1970_GD/build-review-rounds"
+K1970_OCT_BASH="$(bash "$K1970_E2E/review-diff.sh" 2>/dev/null | grep -o '"review_rounds":[0-9]*' | head -1 || true)"
+[ "$K1970_OCT_BASH" = '"review_rounds":9' ] \
+  || fail "#1970-octal: a marker holding '09' must read as DECIMAL 9 under bash — a leading zero also makes the emitted JSON unparseable; got '$K1970_OCT_BASH'"
+[ "$(cat "$K1970_GD/build-review-rounds")" = "10" ] \
+  || fail "#1970-octal: the bump must write back a normalised DECIMAL count (9 -> 10), not re-corrupt the marker; got '$(cat "$K1970_GD/build-review-rounds")'"
+# All-zeros: stripping leading zeros leaves the EMPTY string, so the existing
+# `[ -n … ] || review_rounds=0` fallback is what must catch it — the same soft
+# degradation a missing or unwritable marker already gets.
+printf '000\n' > "$K1970_GD/build-review-rounds"
+K1970_ZEROS="$(sh "$K1970_E2E/review-diff.sh" 2>/dev/null | grep -o '"review_rounds":[0-9]*' | head -1 || true)"
+[ "$K1970_ZEROS" = '"review_rounds":0' ] \
+  || fail "#1970-octal: an all-zeros marker must fall back to 0 (the empty result of stripping leading zeros), never emit an empty field; got '$K1970_ZEROS'"
+echo "PASS: #1970-octal corrupted marker — a leading-zero count reads as decimal and an all-zeros one degrades to 0, so a hand-edited marker never aborts the step with an octal arithmetic error"
 
 echo ""
 echo "All test_workflow.sh cases passed."
