@@ -811,22 +811,28 @@ assemble_body() {
 # carries residual blocking findings into `## Review notes` instead of looping
 # another review round, so gutting that section first would hollow out the very
 # feature that raised the body pressure. Rungs, each re-measured before the next:
-#   1. the EARLIEST `### <reviewer>` finding blocks, oldest round first (the
-#      reviewBodySuffix render orders rounds[0] first, ci-fix rounds after), one
-#      more block at a time — never the newest block, which is where a residual
-#      HIGH from the final round lives;
-#   2. the newest block's own tail, its `### [HIGH] …` head kept;
+#   1. the EARLIEST review ROUNDS of verbatim reviewer prose, oldest round first
+#      (the reviewBodySuffix render orders rounds[0] first, ci-fix rounds after),
+#      one more round at a time — never the newest ROUND, which is where every
+#      residual HIGH from the final round lives. The unit is a round, not a
+#      reviewer block: a round that routed three reviewers renders three blocks,
+#      and dropping them one at a time would strip two of the final round's
+#      reviewers while the ladder still reported the round as protected;
+#   2. the newest round's own prose tail — every `### ` heading in that round
+#      (each reviewer's name AND each `### [HIGH] …` finding title) is kept;
 #   3. the MIDDLE of the `## Verification` surface, head AND tail kept;
 #   4. a structural floor — reached only if the linkage block, acceptance recap,
 #      backlinks and footer alone exceed the cap — which cuts the assembled body
-#      and re-appends the linkage lines and footer verbatim.
+#      and re-appends the linkage lines and footer verbatim; if even that cannot
+#      converge it hard-cuts byte-exactly and says so on stderr, so an over-cap
+#      body is never emitted by ANY path.
 # NEVER cut, at any rung: the `Closes #N` linkage lines, the `## Acceptance`
 # recap (where a worker's activation-proof evidence rides), the `§3e review —
 # ran:` line, the `## Verification` heading, the backlinks, or the footer.
 #
 # Every cut is LEGIBLE. A silent truncation would be a worse failure than the
 # API rejection it replaces, so each rung leaves an inline marker naming what
-# it dropped, how many blocks/bytes, and where the full text can still be read
+# it dropped, how many rounds/bytes, and where the full text can still be read
 # — the workflow journal for reviewer prose, the worktree's own
 # `.build-verification.md` for the surface.
 
@@ -838,57 +844,97 @@ body_bytes() { LC_ALL=C printf %s "$1" | wc -c | tr -d ' '; }
 PR_BODY_TRUNC_MARK='_[PR-body cap]'
 
 # Reviewer-prose surgery inside the summary's `## Review notes` section.
-# Modes: `count` (how many per-ROUND blocks), `bytes-last` (byte size of the
-# last block's body, heading excluded), `drop` (remove the $2 earliest blocks,
-# never the last, leaving a marker), `trim-last` (keep the last block's heading
-# plus $3 bytes of its body, leaving a marker). Reads the section's own edges:
-# it starts at a `## Review notes` line and ends at the next `## ` heading or
-# EOF.
+# Modes: `count` (how many review ROUNDS), `bytes-last` (byte size of the last
+# round's cuttable prose, every `### ` heading excluded), `drop` (remove the $2
+# earliest ROUNDS, never the last, leaving a marker), `trim-last` (keep the last
+# round's headings plus $3 bytes of its prose, leaving a marker).
+#
+# SECTION EDGES. The section starts at a `## Review notes` line and runs to
+# end-of-input. It is NOT ended at the next `## ` heading, and that is the
+# load-bearing correction (temperloop#2009 review round 1): reviewBodySuffix
+# splices each reviewer's text VERBATIM, and every reviewer in this repo emits
+# `## Summary` / `## Findings` / `## What's solid` as its own top-level shape —
+# so a next-`## ` scan lands on the FIRST reviewer's `## Summary`, sees one
+# block, and no-ops rungs 1-3 on exactly the reviewer-prose-heavy bodies this
+# cap exists for. Running to end-of-input is correct AND smallest: reviewBodySuffix
+# returns `## Review notes\n<sections>` as its LAST element, and both of its call
+# sites (build-level.mjs 3f `summary: (verdict.summary ?? '') + reviewSummarySuffix`
+# and 3g.5 `… + mergedReviewSuffix`) append it to the END of the summary, with
+# nothing after it.
 #
 # A per-ROUND block starts at reviewBodySuffix's own `### <reviewer>` /
-# `### <reviewer> (ci-fix round N)` heading. The reviewer's findings text
-# nested inside it carries `### ` headings too — `### [HIGH|MEDIUM|LOW] <name>
-# in <file>`, every reviewer's shared output contract (ADR 0007) — so the two
-# are told apart by the leading `[` a severity heading always has and a
-# reviewer name never does. Getting that wrong would make the unit of
-# truncation a single FINDING rather than a round, which drops the newest
-# round's earliest findings instead of the oldest round — the opposite of the
-# ordering this ladder exists to guarantee.
+# `### <reviewer> (ci-fix round N)` heading, matched against that exact rendered
+# grammar rather than by eye. The reviewer's findings text nested inside carries
+# `### ` headings too — `### [HIGH|MEDIUM|LOW] <name> in <file>`, every
+# reviewer's shared output contract (ADR 0007) — and prose headings like
+# `### What's solid`; neither matches the reviewer-name grammar (a bare
+# `[A-Za-z0-9_.-]+` token, optionally ` (ci-fix round N)`).
+#
+# ROUNDS, NOT BLOCKS. One round renders ONE block PER ROUTED REVIEWER, so a
+# three-reviewer round is three blocks. The unit of truncation is the round:
+# blocks are grouped by the round key their heading carries (`(ci-fix round N)`
+# → N, bare → 0), and a rung drops or trims whole rounds. Counting blocks as
+# rounds would let rung 1 strip two of the FINAL round's three reviewers while
+# still reporting the newest round as protected — and since temperloop#1970
+# carries residual blocking findings into this very section, those are precisely
+# the findings that must survive.
 review_notes() {
   LC_ALL=C awk -v mode="$1" -v drop="${2:-0}" -v keep="${3:-0}" \
       -v cap="$BUILD_PR_BODY_MAX_BYTES" -v journal="$SPEND_TRANSCRIPT_ROOT" \
       -v mark="$PR_BODY_TRUNC_MARK" '
+    function is_block_head(s,   t) {
+      if (s !~ /^### /) return 0
+      t = substr(s, 5)
+      if (t ~ /^[A-Za-z0-9_.-]+$/) return 1
+      return (t ~ /^[A-Za-z0-9_.-]+ \(ci-fix round [0-9]+\)$/)
+    }
+    function round_key(s,   t) {
+      t = substr(s, 5)
+      if (t !~ /\(ci-fix round [0-9]+\)$/) return 0
+      sub(/^.*\(ci-fix round /, "", t); sub(/\)$/, "", t)
+      return t + 0
+    }
     { lines[NR] = $0 }
     END {
       start = 0
       for (i = 1; i <= NR; i++) if (lines[i] == "## Review notes") { start = i; break }
+      # Runs to end-of-input — see the section-edges note above.
       end = NR + 1
-      if (start) {
-        for (i = start + 1; i <= NR; i++) if (substr(lines[i], 1, 3) == "## ") { end = i; break }
-      }
       nb = 0
       if (start) {
         for (i = start + 1; i < end; i++) {
-          if (substr(lines[i], 1, 4) == "### " && substr(lines[i], 5, 1) != "[") { nb++; bs[nb] = i }
+          if (is_block_head(lines[i])) { nb++; bs[nb] = i; bkey[nb] = round_key(lines[i]) }
         }
       }
-      if (mode == "count") { print nb; exit }
+      # Group consecutive blocks into rounds by their round key.
+      ng = 0
+      for (j = 1; j <= nb; j++) {
+        if (ng == 0 || bkey[j] != gkey[ng]) { ng++; gkey[ng] = bkey[j]; gfirst[ng] = j }
+        glast[ng] = j
+      }
+      for (g = 1; g <= ng; g++) {
+        gfrom[g] = bs[gfirst[g]]
+        gto[g] = (glast[g] < nb) ? bs[glast[g] + 1] - 1 : end - 1
+      }
+      if (mode == "count") { print ng; exit }
       if (mode == "bytes-last") {
         n = 0
-        if (nb) for (i = bs[nb] + 1; i < end; i++) n += length(lines[i]) + 1
+        if (ng) for (i = gfrom[ng]; i <= gto[ng]; i++) if (lines[i] !~ /^### /) n += length(lines[i]) + 1
         print n
         exit
       }
-      if (nb == 0) { for (i = 1; i <= NR; i++) print lines[i]; exit }
+      if (ng == 0) { for (i = 1; i <= NR; i++) print lines[i]; exit }
       if (mode == "drop") {
-        if (drop > nb - 1) drop = nb - 1
+        if (drop > ng - 1) drop = ng - 1
         if (drop < 1) { for (i = 1; i <= NR; i++) print lines[i]; exit }
-        from = bs[1]; to = bs[drop + 1] - 1
+        from = gfrom[1]; to = gto[drop]
         bytes = 0; names = ""
         for (i = from; i <= to; i++) bytes += length(lines[i]) + 1
-        for (j = 1; j <= drop; j++) {
-          h = substr(lines[bs[j]], 5)
-          names = names (names == "" ? "" : ", ") h
+        for (g = 1; g <= drop; g++) {
+          for (j = gfirst[g]; j <= glast[g]; j++) {
+            h = substr(lines[bs[j]], 5)
+            names = names (names == "" ? "" : ", ") h
+          }
         }
         for (i = 1; i < from; i++) print lines[i]
         printf "%s dropped the %d earliest §3e review round(s) of verbatim reviewer prose — %s — %d bytes, to fit the %d-byte PR-body cap ($BUILD_PR_BODY_MAX_BYTES). The findings are not suppressed: read them in full in the workflow journal (agent-*.jsonl under %s)._\n", mark, drop, names, bytes, cap, journal
@@ -897,17 +943,20 @@ review_notes() {
         exit
       }
       if (mode == "trim-last") {
-        last = bs[nb]
-        for (i = 1; i <= last; i++) print lines[i]
+        from = gfrom[ng]; to = gto[ng]
+        for (i = 1; i < from; i++) print lines[i]
         acc = 0; cut = 0; cutlines = 0
-        for (i = last + 1; i < end; i++) {
+        for (i = from; i <= to; i++) {
+          # Every `### ` heading in the newest round is kept: each reviewer name
+          # AND each `### [HIGH] …` finding title stays legible, only prose goes.
+          if (lines[i] ~ /^### /) { print lines[i]; continue }
           if (!cut && acc + length(lines[i]) + 1 <= keep) { acc += length(lines[i]) + 1; print lines[i]; continue }
           cut += length(lines[i]) + 1; cutlines++
         }
         if (cut > 0) {
-          printf "%s truncated the newest §3e review round of verbatim reviewer prose here — %d line(s), %d bytes — to fit the %d-byte PR-body cap ($BUILD_PR_BODY_MAX_BYTES). The findings are not suppressed: read them in full in the workflow journal (agent-*.jsonl under %s)._\n", mark, cutlines, cut, cap, journal
+          printf "%s truncated the newest §3e review round of verbatim reviewer prose here — %d line(s), %d bytes — to fit the %d-byte PR-body cap ($BUILD_PR_BODY_MAX_BYTES). Every reviewer name and finding heading in that round is kept above; the findings are not suppressed: read them in full in the workflow journal (agent-*.jsonl under %s)._\n", mark, cutlines, cut, cap, journal
         }
-        for (i = end; i <= NR; i++) print lines[i]
+        for (i = to + 1; i <= NR; i++) print lines[i]
         exit
       }
       for (i = 1; i <= NR; i++) print lines[i]
@@ -941,9 +990,13 @@ trim_middle() {
   '
 }
 
-# Keep the first $1 bytes of stdin, cutting at a line boundary.
+# Keep the first $1 bytes of stdin, cutting at a line boundary. `LC_ALL=C` is
+# load-bearing, exactly as in review_notes/trim_middle above: under gawk in a
+# UTF-8 locale `length()` counts CHARACTERS, which would silently turn this
+# byte budget into a character budget. macOS awk and Ubuntu mawk happen to count
+# bytes, so the bare form agrees here and on CI by luck, not by contract.
 head_bytes() {
-  awk -v keep="$1" '{ n += length($0) + 1; if (n > keep) exit; print }'
+  LC_ALL=C awk -v keep="$1" '{ n += length($0) + 1; if (n > keep) exit; print }'
 }
 
 # bound_body — the ladder above. $1 is the already-assembled body (so the
@@ -953,7 +1006,7 @@ head_bytes() {
 bound_body() {
   local body="$1" verdict="$2" gh_issue="$3" also_closes="$4" plan_link="$5" source_ref="$6" surface="$7"
   local cap="$BUILD_PR_BODY_MAX_BYTES" allow=700
-  local size summary blocks drop cand last_bytes keep over n tail
+  local size summary rounds drop cand last_bytes keep over n tail
 
   size="$(body_bytes "$body")"
   if [ "$size" -le "$cap" ]; then
@@ -963,11 +1016,11 @@ bound_body() {
 
   summary="$(jq -r '.summary // ""' <<<"$verdict")"
 
-  # Rung 1 — drop the earliest reviewer finding blocks, oldest round first.
-  blocks="$(review_notes count <<<"$summary")"
-  case "$blocks" in ''|*[!0-9]*) blocks=0 ;; esac
+  # Rung 1 — drop the earliest whole review ROUNDS of reviewer prose, oldest first.
+  rounds="$(review_notes count <<<"$summary")"
+  case "$rounds" in ''|*[!0-9]*) rounds=0 ;; esac
   drop=1
-  while [ "$drop" -le $((blocks - 1)) ]; do
+  while [ "$drop" -le $((rounds - 1)) ]; do
     cand="$(review_notes drop "$drop" <<<"$summary")"
     body="$(assemble_body "$verdict" "$gh_issue" "$also_closes" "$plan_link" "$source_ref" "$surface" "$cand")"
     size="$(body_bytes "$body")"
@@ -977,10 +1030,11 @@ bound_body() {
     fi
     drop=$((drop + 1))
   done
-  [ "$blocks" -gt 1 ] && summary="$(review_notes drop $((blocks - 1)) <<<"$summary")"
+  [ "$rounds" -gt 1 ] && summary="$(review_notes drop $((rounds - 1)) <<<"$summary")"
 
-  # Rung 2 — trim the newest block's tail, keeping its `### [HIGH] …` head.
-  if [ "$blocks" -gt 0 ]; then
+  # Rung 2 — trim the newest ROUND's prose tail, keeping every `### ` heading in
+  # it (each reviewer's name and each `### [HIGH] …` finding title).
+  if [ "$rounds" -gt 0 ]; then
     last_bytes="$(review_notes bytes-last <<<"$summary")"
     case "$last_bytes" in ''|*[!0-9]*) last_bytes=0 ;; esac
     over=$((size - cap))
@@ -1017,7 +1071,7 @@ bound_body() {
   # the linkage lines and footer verbatim, so auto-close and attribution
   # survive a cut that had nowhere else left to go.
   local footer='🤖 Generated with [Claude Code](https://claude.com/claude-code)'
-  local line full attempt=0
+  local line full hard resid attempt=0
   full="$body"
   tail=""
   for n in $gh_issue $also_closes; do
@@ -1041,8 +1095,25 @@ bound_body() {
     grep -qxF -- "$footer" <<<"$body" || body="${body}"$'\n\n'"$footer"
     [ "$(body_bytes "$body")" -le "$cap" ] && break
     attempt=$((attempt + 1))
-    [ "$attempt" -ge 12 ] && break
-    [ "$keep" -le 1 ] && break
+    if [ "$attempt" -ge 12 ] || [ "$keep" -le 1 ]; then
+      # Exhaustion. The shrink loop above is a LINE-boundary cut, so a single
+      # line longer than the whole budget (or a linkage+footer tail that alone
+      # exceeds the cap) can leave it stuck over the bound. Breaking here and
+      # printing would hand `gh` an over-cap body — the exact API rejection this
+      # whole ladder exists to prevent, now wearing a truncation marker. So the
+      # last resort is a BYTE-EXACT cut that structurally cannot overshoot,
+      # announced on stderr so the orchestrator's log carries a diagnosable
+      # refusal rather than a silent mangling.
+      resid="$(body_bytes "$body")"
+      # shellcheck disable=SC2016  # $BUILD_PR_BODY_MAX_BYTES is the setting NAME, shown to a human, not expanded
+      printf 'ERROR: PR-body cap ladder exhausted at rung 4 — %s bytes still over the %s-byte cap ($BUILD_PR_BODY_MAX_BYTES) after %s shrink attempts; hard-cutting to %s bytes. Full text: the workflow journal (agent-*.jsonl under %s).\n' \
+        "$resid" "$cap" "$attempt" "$cap" "$SPEND_TRANSCRIPT_ROOT" >&2
+      # Prefer a LINE-boundary hard cut (never splits a multi-byte character);
+      # fall back to a raw byte cut only when even the first line is over cap.
+      hard="$(head_bytes "$cap" <<<"$body")"
+      if [ -n "$hard" ]; then body="$hard"; else body="$(LC_ALL=C printf %s "$body" | head -c "$cap")"; fi
+      break
+    fi
     keep=$(( keep * 3 / 4 ))
   done
   printf '%s\n' "$body"

@@ -564,8 +564,11 @@ fi
 # round, so the fix that reduces review rounds is also what raises body
 # pressure. The truncation order is what keeps the two agreeing: verbatim
 # reviewer prose is what gets dropped, oldest round first, and the newest
-# block — where a residual HIGH from the final round lives — is trimmed only
-# after every older block is gone. The linkage lines, the acceptance recap, the
+# ROUND — where every residual HIGH from the final round lives — is trimmed only
+# after every older round is gone. The unit is a round, not a reviewer block: a
+# round that routed three reviewers renders three blocks, and dropping them one
+# at a time would strip two of the final round's reviewers while still reporting
+# the round as protected. The linkage lines, the acceptance recap, the
 # `## Verification` surface and the attribution footer are never dropped.
 #
 # BYTES, not characters, and deliberately conservative: a UTF-8 byte count is

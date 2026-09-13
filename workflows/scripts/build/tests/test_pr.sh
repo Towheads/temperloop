@@ -905,13 +905,27 @@ echo "PASS: open --update-pr re-renders via gh pr edit → BODY_UPDATED (#1846)"
 # build.config.sh's `:=`) rather than minting 60KB fixtures.
 #
 # Fixture: a summary carrying reviewBodySuffix's own shape — the `§3e review —
-# ran:` line, then `## Review notes` with one `### <reviewer>` block per ROUND,
-# each holding the reviewer's `### [HIGH] …` findings text (ADR 0007's output
-# contract, i.e. `### ` headings nested INSIDE a round block).
-mk_round() { # $1 reviewer heading, $2 filler tag, $3 filler lines
-  printf '### %s\n### [HIGH] finding in x.sh\n' "$1"
+# ran:` line, then `## Review notes` with one `### <reviewer>` block per routed
+# reviewer per ROUND, each holding that reviewer's verbatim text.
+#
+# The reviewer text carries the REAL shape production emits, and that is the
+# load-bearing part of this fixture (temperloop#2009 review round 1): every
+# reviewer in this repo writes TOP-LEVEL `## Summary` / `## Findings` /
+# `## What's solid` headings, with `### [HIGH] …` finding headings nested under
+# them (ADR 0007), and reviewBodySuffix splices that text VERBATIM. An earlier
+# version of this fixture emitted `### `-only blocks — a shape production never
+# produces — and stayed GREEN while the feature was fully INVERTED: the section
+# scan ended at the first reviewer's `## Summary`, rungs 1-3 no-opped, and the
+# blunt rung-4 head-cut dropped the acceptance recap, the activation-proof
+# evidence, the verification surface and the NEWEST round's prose while KEEPING
+# the oldest. A fixture that does not match the producer's shape tests nothing.
+mk_round() { # $1 reviewer heading, $2 filler tag, $3 filler prose lines
+  printf '### %s\n' "$1"
+  printf '## Summary\n\nReviewed the diff.\n\n## Findings\n\n'
+  printf '### [HIGH] %s finding in x.sh\n\n' "$2"
   local i=1
   while [ "$i" -le "$3" ]; do printf '%s prose line %d — 0123456789012345678901234567890123456789\n' "$2" "$i"; i=$((i + 1)); done
+  printf '\n## What'"'"'s solid\n\n- the ladder is prose-first\n'
 }
 {
   printf 'Implements the bounded body.\n\n§3e review — ran: shell-reviewer, docs-reviewer, workflow-reviewer\n\n## Review notes\n'
@@ -952,6 +966,12 @@ echo "PASS: open leaves an under-cap body byte-identical, unmarked, body_truncat
 # 2. OVER the cap: the outbound body — the one handed to `gh pr create`, not just
 #    the preview — is within the cap. This is the whole item: a body over the cap
 #    is truncated locally and never sent to be rejected by the API.
+#
+#    Every assertion below runs against the REAL reviewer shape mk_round now
+#    emits, and together they are the documented guarantees: the acceptance recap
+#    kept, activation-proof evidence kept, the verification surface kept, the
+#    NEWEST round's prose kept, the OLDEST round's prose dropped. Under the
+#    pre-fix `### `-only fixture every one of those read the other way.
 cap=3000
 out="$(BUILD_PR_BODY_MAX_BYTES="$cap" GH_STUB_ARGS="$TMP/gh-args-cap" PATH="$TMP/bin:$PATH" \
   bash "$SCRIPT" open --verdict "$TMP/verdict-cap.json" --repo "$REPO" --branch feat/widget \
@@ -988,7 +1008,65 @@ grep -qF 'shell-reviewer' <<<"$marker" || fail "the marker does not name the dro
 grep -qE '[0-9]+ bytes' <<<"$marker" || fail "the marker does not name how many bytes went (got: $marker)"
 grep -qF 'agent-*.jsonl' <<<"$marker" \
   || fail "the marker does not name the workflow journal as where the full text lives (got: $marker)"
+# The prose rungs actually EXECUTED — the reviewers' own top-level `## Summary`
+# headings did not end the `## Review notes` section early, leaving the ladder to
+# fall through to rung 4's blunt head-cut. That fall-through is the exact defect
+# the `### `-only fixture hid, so assert against it directly, not by inference.
+grep -qF 'cut here to fit' <<<"$marker" \
+  && fail "the ladder fell through to rung 4's structural floor on a body rungs 1-3 could bound (#2009)"
+grep -qF '## Summary' "$TMP/cap-summary.md" \
+  || fail "the fixture no longer carries the reviewers' real top-level heading shape (#2009)"
 echo "PASS: an over-cap body is bounded BEFORE gh — reviewer prose dropped oldest-round-first, legibly (#2009)"
+
+# 2b. The unit of truncation is a ROUND, not a reviewer block. One round renders
+#     one block PER ROUTED REVIEWER, so a three-reviewer final round is three
+#     blocks — and dropping blocks one at a time would strip two of them while
+#     the marker still claimed the newest round was protected. temperloop#1970
+#     carries residual blocking findings into this very section, so those are
+#     precisely the findings that must survive.
+{
+  printf 'Body.\n\n§3e review — ran: shell-reviewer, docs-reviewer, workflow-reviewer\n\n## Review notes\n'
+  mk_round 'shell-reviewer' OLDA 30
+  printf '\n'
+  mk_round 'docs-reviewer' OLDB 30
+  printf '\n'
+  mk_round 'shell-reviewer (ci-fix round 1)' NEWA 4
+  printf '\n'
+  mk_round 'docs-reviewer (ci-fix round 1)' NEWB 4
+  printf '\n'
+  mk_round 'workflow-reviewer (ci-fix round 1)' NEWC 4
+} > "$TMP/cap-summary-multi.md"
+jq -n --rawfile s "$TMP/cap-summary-multi.md" '{
+  status: "done",
+  summary: ($s | rtrimstr("\n")),
+  acceptance_results: [{criterion: "the round is the unit", passed: true,
+                        evidence: "activation proof: grep -q BUILD_PR_BODY_MAX_BYTES build.config.sh"}]
+}' > "$TMP/verdict-cap-multi.json"
+multi="$(BUILD_PR_BODY_MAX_BYTES="$cap" bash "$SCRIPT" open --verdict "$TMP/verdict-cap-multi.json" \
+  --gh-issue 2009 --plan-link "Plans/p#i" --source "epic #2009" \
+  --verification-surface-file "$TMP/surface-cap.md" --body-only)"
+[ "$(LC_ALL=C printf %s "$multi" | wc -c | tr -d ' ')" -le "$cap" ] \
+  || fail "the multi-reviewer-round body was not bounded (#2009)"
+for tag in OLDA OLDB; do
+  grep -qF "$tag prose line" <<<"$multi" \
+    && fail "an OLDEST-round reviewer's prose ($tag) survived while newer prose was cut (#2009)"
+done
+for r in 'shell-reviewer (ci-fix round 1)' 'docs-reviewer (ci-fix round 1)' 'workflow-reviewer (ci-fix round 1)'; do
+  grep -qF "### $r" <<<"$multi" \
+    || fail "the newest round lost reviewer '$r' — truncation counted blocks, not rounds (#2009)"
+done
+for tag in NEWA NEWB NEWC; do
+  grep -qF "### [HIGH] $tag finding" <<<"$multi" \
+    || fail "a residual finding heading from the newest round ($tag) was dropped (#2009)"
+done
+# The marker's unit is honest: ONE round went, and it names both of that round's
+# reviewers — never "1 round" while only one of its two blocks was removed.
+multi_marker="$(grep -F 'earliest §3e review round' <<<"$multi")"
+grep -qF 'the 1 earliest §3e review round(s)' <<<"$multi_marker" \
+  || fail "the marker miscounts the truncation unit (got: $multi_marker)"
+grep -qF 'shell-reviewer, docs-reviewer' <<<"$multi_marker" \
+  || fail "the marker does not name every reviewer in the dropped round (got: $multi_marker)"
+echo "PASS: truncation drops whole ROUNDS — a multi-reviewer final round keeps every reviewer and finding heading (#2009)"
 
 # 3. --body-only reflects the SAME bounding, byte-for-byte: the assembled-body
 #    preview and the outbound body cannot disagree about what was truncated.
@@ -1036,6 +1114,38 @@ grep -qF '[PR-body cap]' <<<"$(BUILD_PR_BODY_MAX_BYTES=10 bash "$SCRIPT" open \
   --verdict "$TMP/verdict-cap.json" --gh-issue 2009 --body-only)" \
   || fail "a below-floor cap was ignored instead of clamped (#2009)"
 echo "PASS: a below-floor cap clamps and a non-numeric one falls back — neither disables the bound (#2009)"
+
+# 6. Rung 4's EXHAUSTION path still cannot emit an over-cap body. The shrink loop
+#    cuts at line boundaries and re-appends the whole linkage block, so a linkage
+#    tail that alone exceeds the cap leaves it stuck over the bound — and simply
+#    breaking out would hand `gh` an over-cap body, the very API rejection this
+#    item exists to prevent, now wearing a truncation marker. The ladder instead
+#    hard-cuts byte-exactly and announces the residual on stderr.
+many="$(seq 1000 1249 | paste -sd, -)"     # 250 also-closes lines ≫ the 2000-byte cap floor
+err="$TMP/cap-exhaust.err"
+body="$(BUILD_PR_BODY_MAX_BYTES=2000 bash "$SCRIPT" open --verdict "$TMP/verdict-cap.json" \
+  --gh-issue 2009 --also-closes "$many" --plan-link "Plans/p#i" --source "epic #2009" \
+  --verification-surface-file "$TMP/surface-cap.md" --body-only 2>"$err")"
+bytes="$(LC_ALL=C printf %s "$body" | wc -c | tr -d ' ')"
+[ "$bytes" -le 2000 ] \
+  || fail "rung 4's exhaustion path emitted a $bytes-byte body over the 2000-byte cap (#2009)"
+grep -q '^ERROR: PR-body cap ladder exhausted' "$err" \
+  || fail "an exhausted ladder cut the body without a structured ERROR on stderr (got: $(cat "$err"))"
+grep -qE 'ERROR: .* [0-9]+ bytes still over the [0-9]+-byte cap' "$err" \
+  || fail "the exhaustion ERROR does not name the residual size (got: $(cat "$err"))"
+echo "PASS: rung 4's exhaustion path hard-cuts byte-exactly and reports the residual — never an over-cap body (#2009)"
+
+# 7. Every awk in the cap ladder is LC_ALL=C-pinned. The ladder's budgets are in
+#    BYTES and it measures them with awk's `length()`, which under gawk in a
+#    UTF-8 locale counts CHARACTERS — silently turning a byte budget into a
+#    character one. macOS awk and Ubuntu mawk both happen to count bytes, so an
+#    unpinned call agrees on dev and CI by luck, not by contract, and no runtime
+#    assertion here can catch it. A static check can.
+unpinned="$(awk '/^# --- the PR-body cap/,/^# --- acceptance-extract/' "$SCRIPT" \
+  | grep -vE '^[[:space:]]*#' | grep -n 'awk ' | grep -v 'LC_ALL=C awk' || true)"
+[ -z "$unpinned" ] \
+  || fail "an awk in the PR-body cap ladder is not LC_ALL=C-pinned, so its byte budget is locale-dependent (#2009): $unpinned"
+echo "PASS: every awk in the cap ladder pins LC_ALL=C, so its budgets are bytes under any awk/locale (#2009)"
 
 # --- recover-probe: the staged lost-return side-effect ladder (temperloop#939) ----
 # Drives all four stages against the real fixture, bottom to top, on a branch of
