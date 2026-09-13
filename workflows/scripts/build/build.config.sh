@@ -388,6 +388,19 @@ fi
 # temperloop#982).
 : "${FIX_WORKER_MODEL:=}"
 
+# claude/commands/interview.md Step 0 — model tier for the standalone
+# interview's fact-probe subagent (a narrow, isolated read-only lookup a
+# round's question may spawn before presenting options — never the
+# interview's own facilitator turn, which always runs at the caller's
+# session tier). Per the named-setting convention (claude/CLAUDE.kernel.md),
+# that spec's Step 0 sources this file and names the setting symbolically
+# thereafter, never a literal. Defaults to the SAME mechanical tier as
+# PIPELINE_DRIVE_MODEL (a fact probe is mechanical lookup work, not the
+# judgment-tier detection SWEEP_DETECT_MODEL deliberately stays inherit-
+# session for) — the `: "${VAR:=}"` idiom is the personal-override path: a
+# teammate exports a different tier without touching this tracked file.
+: "${INTERVIEW_PROBE_MODEL:=claude-sonnet-5}"
+
 # claude/workflows/build-level.mjs — model tier for the TWO machinery-executor
 # agent spawns that bridge the deterministic bash machinery into the Workflow
 # runtime: BUILD_MACHINERY_SOLO_MODEL for runMachinery (the SOLO executor —
@@ -1574,7 +1587,7 @@ export BUILD_QUOTA_PAUSE_PCT BUILD_QUOTA_CACHE BUILD_QUOTA_WAIT_BUFFER \
        NEXT_SEQ_STALE_AFTER TIDY_SYNC_WAIT TIDY_LOCK_STALE_AFTER CHECKIN_PRUNE_DAYS \
        SWEEP_FANOUT_WIDTH SWEEP_DETECT_MODEL SWEEP_WORKER_MODEL SWEEP_BG_POLL_ATTEMPTS SWEEP_BG_POLL_INTERVAL \
        SWEEP_ADMIT_OPERATIONAL_EPICS \
-       FIX_WORKER_MODEL BUILD_MACHINERY_SOLO_MODEL BUILD_MACHINERY_BATCH_MODEL BUILD_GATE_SLICE_SECS \
+       FIX_WORKER_MODEL INTERVIEW_PROBE_MODEL BUILD_MACHINERY_SOLO_MODEL BUILD_MACHINERY_BATCH_MODEL BUILD_GATE_SLICE_SECS \
        BUILD_MACHINERY_STEP_CEILING_SECS BUILD_MACHINERY_STEP_SLOW_SECS \
        PIPELINE_OPERATOR PIPELINE_REQUIRED_CHECK \
        PIPELINE_DRIVE PIPELINE_DRIVE_CAP PIPELINE_DRIVE_MODEL PIPELINE_DRIVE_SETTINGS \
