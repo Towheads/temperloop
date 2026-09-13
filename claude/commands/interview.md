@@ -86,7 +86,15 @@ so a renamed flag desyncs them with no runtime error to catch it.
   them back from that entry rather than from a return that never arrived.
 
 Absent parameters take their defaults; a parameter this spec does not name
-is an error to surface, not to guess at.
+is an error to surface, not to guess at. A named parameter carrying a
+**malformed block** is the same error, raised at Step 0 before any call
+opens: a question with fewer than two or more than four options that is
+not a free-text ask, options with no `(Recommended)` first, more than
+three `--check-questions`, or a `then:` naming an action the caller's
+own spec does not define — each is rejected with one line naming the
+defect, never passed through to `AskUserQuestion` and never repaired by
+guessing the caller's intent (an acknowledgement-only block would
+otherwise slip in under the caller's name).
 
 ## Invocation contract
 
@@ -217,16 +225,30 @@ Run in parallel; the first two are fatal, the rest degrade legibly:
    computed from, and it grows as answers open new decisions. This is a
    facilitator judgment, not a template — the tree is as deep as the work,
    and a shallow seed yields a one-round interview.
-5. **Create or adopt the note.** If the `--into` note (or the default)
-   exists, adopt it (§ Parameters). Otherwise create `Context/<repo> -
+5. **Create or adopt the note.** Check whether the `--into` note (or the
+   default) exists — a `Read` of the path under the retry-once policy
+   (§ Operating principles): an errored probe is **not** "does not
+   exist"; it is retried once, and a second error stops with one line
+   naming the note, because creating over an unreadable path would
+   shadow whatever is there. A note that exists is read in full before
+   anything is written to it: **when its frontmatter carries `status:
+   ratified`, stop with one line naming it** — a ratified brief is
+   immutable (`claude/design-schema.md` § Frontmatter), and this command
+   never edits one in place; the caller supersedes it with a new brief
+   and passes that. Otherwise adopt it (§ Parameters). If it does not
+   exist, create `Context/<repo> -
    <topic>.md` with a minimal frontmatter (`tags: [context,
    project/<repo>]`, `date`, `last_verified` equal to `date` on creation,
    `source_kind: claude-stamped`,
    **`record_grammar: delta`**, and the session/model provenance the
    kernel's note-provenance convention names when the session id is in
    context) and the empty `## Shared understanding` skeleton per
-   `claude/design-schema.md` § Shared understanding, with `### Deferrals`
-   reading `(none yet)` and **`### Problem (operator's words)` filled in
+   `claude/design-schema.md` § Shared understanding, with `### Deferrals`,
+   `### Facts found (facilitator, not asked)` and `### Risks` each
+   reading `(none yet)` — the placeholder is replaced by the first
+   bullet a round writes under that heading and stands in the finished
+   note when no round ever does, so an empty part is never an absent
+   heading — and **`### Problem (operator's words)` filled in
    this same write** with Step 1.3's quote whenever the seed carried the
    operator's own framing; when the problem is instead asked as round 1's
    free-text Q1 (a facilitator-written seed), the heading is written here
@@ -591,6 +613,15 @@ Every external call has a named failure path; none is silent:
   write is the note-write row above.
 - **Outside a git repo** (Step 0.5) → ask the operator for the `<repo>`
   prefix of the default note name; never invent one.
+- **Note existence probe errors** (Step 1.5) → retried once; a second
+  error stops naming the note — never treated as "does not exist", so
+  nothing is created over an unreadable path.
+- **`--into` names a `status: ratified` brief** (Step 1.5) → stop with
+  one line naming it; a ratified record is never edited in place — the
+  caller supersedes it and passes the new brief.
+- **A caller-supplied question block is malformed** (§ Parameters) →
+  rejected at Step 0 with one line naming the defect; never passed to
+  `AskUserQuestion`, never repaired by guessing.
 - **`gh` unavailable with an issue-number seed, or `gh issue view` exits
   non-zero or returns an empty body** → ask the operator to paste the
   issue text; never interview over a bare number.
