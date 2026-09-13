@@ -13,7 +13,9 @@ this kernel checkout emits.
 actually emits: `command-run`, `issue-touches` (plus its `claims` sibling,
 unioned at read time), `pipeline` (plus its pre-rename `funnel-*` month-files,
 also unioned at read time — see that stream below), `knowledge-search-fallback`,
-`gh-calls`, `session-context`, `item-efficiency`, and `resume-recovery`.
+`gh-calls`, `session-context`, `item-efficiency`, `resume-recovery`, and
+`triples` (the derived {s,p,o,provenance} graph-of-record stream
+`workflows/scripts/knowledge/triples.sh build` writes).
 A downstream overlay checkout (e.g. the
 composed foundation repo) layers additional, overlay-only telemetry streams
 on top — with their own record shapes, for capabilities this bare kernel
@@ -40,6 +42,7 @@ meta/data/raw/<stream>-<YYYY-MM>.jsonl
 - `gh-calls-<YYYY-MM>.jsonl`
 - `session-context-<YYYY-MM>.jsonl`
 - `item-efficiency-<YYYY-MM>.jsonl`
+- `triples-<YYYY-MM>.jsonl`
 
 Each file is newline-delimited JSON (JSONL), one record per line, strictly
 append-only — a reader unions across month-files as needed and never expects
@@ -563,4 +566,60 @@ Example record:
 
 ```json
 {"ts":"2026-09-11T14:07:22Z","session_id":"a1b2c3d4-e5f6-7890-abcd-ef1234567890","command":"build","plan":"2026-05-16 stagefind - sweep follow-up","recovered":[{"kind":"worktree","ref":"temperloop.wt/foo-slug"},{"kind":"pr","ref":"1234"}],"recovered_count":2}
+```
+
+### `triples` — `triples-<YYYY-MM>.jsonl`
+
+Emitted by `workflows/scripts/knowledge/triples.sh build` (temperloop#1910,
+epic "Graph of record for work-item state", item "triples-extractor") — the
+**derived graph-of-record stream**: one `{s, p, o, provenance}` record per
+edge the extractor can derive from sources this kernel checkout already
+carries (no new state, no network). Unlike every other stream on this page,
+`triples` is not an event log of something that *happened* at emit time — it
+is a batch re-derivation of the CURRENT state of its sources, safe to re-run
+(`build` appends only records not already present in the current month's
+file, so running it twice never doubles the lake).
+
+**Predicates are drawn from `workflows/scripts/config/ontology-registry.tsv`'s
+`edge` axis (ADR 0032) — an unlisted predicate is a hard build-time error,
+never silently emitted.** Today's four sources/predicates:
+
+| predicate | source | `s` | `o` |
+|---|---|---|---|
+| `cites` | `workflows/scripts/config/citation-registry.tsv`'s `<row-id, file>` rows, cross-checked against that file's own `<!-- cite: <row-id> <class>:<ref> ... -->` markers (`claude/citation-schema.md`) | the row id (e.g. `K.7`) | `"<class>:<ref>"` verbatim from the marker (e.g. `incident:F#1050`) |
+| `touched_by` | the `issue-touches` stream above | `"<repo>#<issue>"` | the session, normalized through `join-keys-lib.sh`'s `jk_host_session_stamp` into the same `"<host>:<sess8>"` shape the board's own `fnd:host/session:*` claim stamp uses |
+| `claimed_by` | the `claims` stream above (carries no `repo`, only a board number) | `"board:<board>#<issue>"` | the same host:sess8 stamp shape as `touched_by` |
+| `supersedes` | `docs/adr/*.md`'s own `## Status` section (ADR 0000's MADR-lite process: an old ADR's Status becomes `Superseded by ADR-NNNN`) | the superseding ADR (e.g. `ADR-0033`) | the superseded ADR |
+
+A `touched_by`/`claimed_by` source record whose session id is absent or not
+UUID-shaped is skipped — never coerced into a triple with a made-up or
+empty object. A `cites` marker whose `(row-id, file)` pair is not the
+REGISTERED pair for that row id is likewise skipped — `query cites` answers
+exactly what `workflows/scripts/validate-prose-budget.sh`'s own citation
+reconciliation can enumerate for that row id, never a superset.
+
+Record shape: `{schema_version, s, p, o, provenance}`
+
+| field | type | notes |
+|---|---|---|
+| `schema_version` | string | `"1"` — bump on a breaking shape change |
+| `s` | string | the triple's subject node id |
+| `p` | string | the predicate — always a token from ontology-registry.tsv's `edge` axis |
+| `o` | string | the triple's object node id |
+| `provenance` | object | `{file, record}` — `file` is the repo-relative source file the triple was derived from; `record` is a locator inside it (`"L<n>"`, a 1-indexed line number, for every predicate above) |
+
+`query cites <rule-id>` / `query touched_by <issue>` / `query supersedes
+<adr-ref>` read this stream back (unioned across every `triples-*.jsonl`
+month-file, matching the rest of this page's stream convention) — see
+`triples.sh`'s own usage header for each verb's argument grammar (e.g.
+`touched_by` accepts a bare issue number OR a fully-qualified
+`owner/repo#N`).
+
+Example records:
+
+```json
+{"schema_version":"1","s":"K.7","p":"cites","o":"incident:K#422","provenance":{"file":"claude/CLAUDE.kernel.md","record":"L312"}}
+{"schema_version":"1","s":"acme/widgets#42","p":"touched_by","o":"mini:4d8b1d3e","provenance":{"file":"meta/data/raw/issue-touches-2026-07.jsonl","record":"L18"}}
+{"schema_version":"1","s":"board:7#42","p":"claimed_by","o":"mini:4d8b1d3e","provenance":{"file":"meta/data/raw/claims-2026-07.jsonl","record":"L9"}}
+{"schema_version":"1","s":"ADR-0033","p":"supersedes","o":"ADR-0031","provenance":{"file":"docs/adr/0031-durable-logical-order-lives-on-the-board-as-blocked-by.md","record":"L7"}}
 ```
