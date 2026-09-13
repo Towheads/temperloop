@@ -6007,6 +6007,82 @@ console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
 "
 
 # ============================================================================
+# TEST (K1984): a routed-but-UNRUN reviewer is visible in the per-run tally.
+#   determineReviewers() marks `mandatory: true` for workflow-reviewer on a
+#   claude/commands/*.md diff and for NOTHING else, so before #1984 every
+#   tsv-routed reviewer could resolve, be skipped, and still leave
+#   `mandatory_ok: true` — the tally reading fully clean while the .sh diff
+#   went unreviewed (six live instances across three items, temperloop#1982,
+#   every one caught by a human reading the roster, never by the tally).
+#   `routed_not_run` closes that: non-empty exactly when `skipped` is.
+#   Two items in ONE level so the field is proven to DISCRIMINATE — the
+#   skipped route lists its reviewer, the ran route lists nothing — and so
+#   the assertion cannot pass on a field that is simply always non-empty.
+#   mandatory_ok stays `true` on BOTH: neither diff touches a command doc, so
+#   the foundation#1007 rule is untouched (ADR 0037 — visibility, not a gate).
+# ============================================================================
+run_node_case "K1984 routed-not-run: a skipped tsv-routed reviewer is named in the tally, while mandatory_ok stays scoped to the command-doc rule" "
+$PREAMBLE
+const TAB = String.fromCharCode(9);
+const tsv = '.sh' + TAB + 'shell-reviewer' + TAB + 'claude/agents/reviewers/shell-reviewer.md\\n';
+
+setMachinery('sh-unrun',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/sh-unrun' },
+  { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/thing.sh'], tsv, tsv_rows: tsvRows(tsv) },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-u' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'sha-u', branch: 'build/sh-unrun' },
+  { outcome: 'PR_OPENED', pr_number: 1984 },
+  { outcome: 'CI_GREEN' },
+);
+happyWorker('sh-unrun');
+setReview('sh-unrun', reviewUnavailable('shell-reviewer'));
+
+setMachinery('sh-ran',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/sh-ran' },
+  { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/other.sh'], tsv, tsv_rows: tsvRows(tsv) },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-r' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'sha-r', branch: 'build/sh-ran' },
+  { outcome: 'PR_OPENED', pr_number: 1985 },
+  { outcome: 'CI_GREEN' },
+);
+happyWorker('sh-ran');
+setReview('sh-ran', '## Summary\\nclean\\n\\n## Findings\\n(none)\\n');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'sh-unrun', branch: 'build/sh-unrun', title: 'Touch a .sh file', kind: 'impl', acceptance: ['c'] },
+  { slug: 'sh-ran', branch: 'build/sh-ran', title: 'Touch another .sh file', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+const byslug = (s) => (result.parked ?? []).find(p => p.slug === s);
+let reason = null;
+if ((result.parked ?? []).length !== 2) reason = 'expected 2 parked (a skipped reviewer degrades, never blocks): ' + JSON.stringify(result);
+const unrun = byslug('sh-unrun');
+const ranrec = byslug('sh-ran');
+if (!reason && (!unrun || !unrun.review)) reason = 'sh-unrun must park with a review tally: ' + JSON.stringify(unrun);
+else if (!reason && unrun.review.skipped.length !== 1)
+  reason = 'expected exactly 1 skipped route on sh-unrun: ' + JSON.stringify(unrun.review);
+else if (!reason && JSON.stringify(unrun.review.routed_not_run) !== JSON.stringify(['shell-reviewer']))
+  reason = '#1984: a routed-then-skipped shell-reviewer MUST be named in routed_not_run: ' + JSON.stringify(unrun.review);
+else if (!reason && unrun.review.mandatory_ok !== true)
+  reason = 'the foundation#1007 rule is command-doc-scoped — a .sh diff must NOT flip mandatory_ok: ' + JSON.stringify(unrun.review);
+// The discriminator: the same field on the round where the SAME reviewer ran.
+if (!reason && (!ranrec || !ranrec.review)) reason = 'sh-ran must park with a review tally: ' + JSON.stringify(ranrec);
+else if (!reason && (ranrec.review.routed_not_run ?? null) === null)
+  reason = '#1984: routed_not_run must be present on every tally, not only degraded ones: ' + JSON.stringify(ranrec.review);
+else if (!reason && ranrec.review.routed_not_run.length !== 0)
+  reason = 'a fully-run route must leave routed_not_run EMPTY (else the field discriminates nothing): ' + JSON.stringify(ranrec.review);
+else if (!reason && ranrec.review.ran.length !== 1)
+  reason = 'sh-ran must record its shell-reviewer as ran: ' + JSON.stringify(ranrec.review);
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+# ============================================================================
 # TEST (K1705): a Makefile-only diff routes to a reviewer through THIS SAME
 #   resolution path — determineReviewers() reading the LIVE tracked
 #   reviewer-routing.tsv, not a fixture restatement of it. Makefile has no

@@ -229,11 +229,14 @@
 //   auto-merge with nobody having verified it — the exact silent loss this
 //   field exists to make impossible.
 //
-//   A parked record also carries `review: { ran, skipped, mandatory_ok }`
-//   (temperloop#1450) — the §3e reviewer tally across every round this item's
-//   build ran (the original 3e pass plus any CI-fix re-review), the source
-//   for the Step 6 "reviewer outcome" summary build.md §3e promises. Absent
-//   only for a spike (kind:spike skips 3b-3h and never reviews).
+//   A parked record also carries
+//   `review: { ran, skipped, mandatory_ok, routed_not_run }`
+//   (temperloop#1450/#1984) — the §3e reviewer tally across every round this
+//   item's build ran (the original 3e pass plus any CI-fix re-review), the
+//   source for the Step 6 "reviewer outcome" summary build.md §3e promises.
+//   `routed_not_run` names every routed-but-unrun reviewer, mandatory or not,
+//   so the tally cannot read fully clean while a tsv-routed reviewer was
+//   skipped. Absent only for a spike (kind:spike skips 3b-3h, never reviews).
 //
 //   The workflow NEVER writes the plan note (race-safety: the orchestrator
 //   serializes all plan-note writeback at the level boundary). It only RETURNS
@@ -2530,11 +2533,14 @@ function park(slug, pr, pushedSha, acceptanceResults, noCi, recovery, discrimina
   }
   // temperloop#1450 — the §3e Step 6 tally build.md §3e promises needs
   // SOMEWHERE to read from. `review` is reviewTally()'d { ran, skipped,
-  // mandatory_ok } across every review round this item's build actually ran
-  // (the 3e pass plus any CI-fix re-review) — absent for a spike (skips
-  // 3b-3h, never reviews) or omitted by an older call site. `mandatory_ok`
-  // is false iff a mandatory (foundation#1007) route was ever genuinely
-  // skipped, not merely "an optional reviewer wasn't available".
+  // mandatory_ok, routed_not_run } across every review round this item's
+  // build actually ran (the 3e pass plus any CI-fix re-review) — absent for a
+  // spike (skips 3b-3h, never reviews) or omitted by an older call site.
+  // `mandatory_ok` is false iff a mandatory (foundation#1007) route was ever
+  // genuinely skipped, not merely "an optional reviewer wasn't available";
+  // `routed_not_run` (temperloop#1984) names every reviewer the routing
+  // resolved that did not run, mandatory or not, so the tally cannot read
+  // fully clean while a tsv-routed reviewer was skipped. See reviewTally().
   if (review) parked.review = review;
   // temperloop#1182: derived from `acceptanceResults` rather than threaded in
   // as a 9th positional argument, so BOTH park() call sites (the 3h main path
@@ -3207,6 +3213,24 @@ function reviewBodySuffix(rounds) {
 // is false iff any SKIPPED entry across every round carried `mandatory: true`
 // — i.e. the foundation#1007 command-doc rule was genuinely degraded at least
 // once, never merely "some optional reviewer wasn't available".
+//
+// temperloop#1984 — `routed_not_run`, the WEAKER companion field.
+// `mandatory: true` is set by determineReviewers() for `workflow-reviewer` on a
+// command-doc diff and for nothing else, so EVERY extension-axis route
+// (shell-reviewer for `.sh`, typescript-reviewer for `.mjs`, …) could be
+// skipped with `mandatory_ok` still reading `true` — a tally that reads fully
+// clean while the shell diff went unreviewed (observed live: six unrun §3e
+// shell reviews across three items, every one caught by a human reading the
+// roster, never by this tally). `routed_not_run` is the distinct set of
+// reviewer names the routing RESOLVED but that did not run in the round they
+// were routed for — deliberately a VISIBILITY field, not a second gate (ADR
+// 0037; kernel principle 7: a hard block here deadlocks legitimate work in a
+// consuming checkout where a reviewer agent is genuinely absent, which is the
+// ordinary case, not the pathological one). Invariant that closes the hole:
+// `routed_not_run` is non-empty exactly when `skipped` is, so the tally can
+// never read fully clean while any routed reviewer was skipped. A reviewer
+// skipped in one round and run in another stays listed — the skip was real,
+// and which round covered which diff is exactly what a reader needs to see.
 function reviewTally(...rounds) {
   const ran = [];
   const skipped = [];
@@ -3215,7 +3239,12 @@ function reviewTally(...rounds) {
     ran.push(...(r.ran ?? []));
     skipped.push(...(r.skipped ?? []));
   }
-  return { ran, skipped, mandatory_ok: !skipped.some((s) => s.mandatory) };
+  return {
+    ran,
+    skipped,
+    mandatory_ok: !skipped.some((s) => s.mandatory),
+    routed_not_run: Array.from(new Set(skipped.map((s) => s.reviewer))),
+  };
 }
 
 // --- 3e.6. Class-A activation gate (temperloop#1219) -------------------------
