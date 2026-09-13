@@ -154,6 +154,44 @@ out="$(_sg_query_stale_claims "$(jq -c '.sources.journal.status="stale"' <<<"$SN
 [ "$(jq -r .findings <<<"$out")" = "unknown" ] || fail "stale-claims journal=stale findings not 'unknown' (got: $out)"
 echo "PASS: stale-claims answers unknown (never []) when board or journal is error/stale"
 
+# --- journal ABSENT (temperloop#1980) -------------------------------------
+# The journal is stale-claims's liveness ORACLE: "no journal files" means
+# liveness cannot be established, not "nothing is live" — so an `absent`
+# journal source must answer `unknown`, never a concrete findings set
+# computed against an effectively-empty Session-node list (which would flag
+# every live claim as stale — the #1980 bug). Live evidence: soak drift_query
+# over-flagged issues #1910/#1938/#1970/#1978 as stale on a journal-absent
+# read; #1978 in particular carried the SAME session that ran the soak.
+SNAP_STALE_CLAIMS_ABSENT="$(jq -c '.sources.journal.status="absent"' <<<"$SNAP_STALE_CLAIMS")"
+out="$(_sg_query_stale_claims "$SNAP_STALE_CLAIMS_ABSENT")"
+[ "$(jq -r .status <<<"$out")" = "unknown" ] || fail "stale-claims journal=absent did not answer unknown (got: $out)"
+[ "$(jq -r .findings <<<"$out")" = "unknown" ] || fail "stale-claims journal=absent findings not the literal string 'unknown' (got: $out)"
+case "$(jq -r .reason <<<"$out")" in
+  *journal*) ;;
+  *) fail "stale-claims journal=absent reason does not name the journal source (got: $out)" ;;
+esac
+echo "PASS: stale-claims journal=absent answers unknown with a journal-naming reason, never a set computed against an empty session list"
+
+# The golden fixture above (Session:live1 claiming Issue:1) already proves a
+# claim stamped to an establishable-live session is excluded from stale
+# findings when the journal is `ok`; re-affirm it explicitly as its own
+# named case (acceptance: "a claim stamped to a session that IS establishable
+# as live is not reported as stale").
+out="$(_sg_query_stale_claims "$SNAP_STALE_CLAIMS")"
+[ "$(jq -c '[.findings[].issue]' <<<"$out")" = '["Issue:2"]' ] || fail "stale-claims live-claim regression: Issue:1 (claimed by live1) must never appear in findings (got: $out)"
+echo "PASS: stale-claims — a claim stamped to a session establishable as live (Session:live1) is not reported as stale"
+
+# --- scoping regression: status-drift's own board=absent reading is
+# UNCHANGED by the local journal-absent carve-out above (temperloop#1980
+# acceptance: "_sg_degraded is NOT widened ... status-drift ... keep today's
+# 'absent = nothing found' semantics"). board=absent is not error/stale, so
+# status-drift must still compute a normal `ok` result, never `unknown` —
+# proving `_sg_degraded` itself was never touched.
+out="$(_sg_query_status_drift "$(jq -c '.sources.board.status="absent"' <<<"$SNAP_STATUS_DRIFT")")"
+[ "$(jq -r .status <<<"$out")" = "ok" ] || fail "status-drift board=absent must stay 'ok' (unchanged semantics) — got: $out"
+[ "$out" = "$GOLDEN_STATUS_DRIFT" ] || fail "status-drift board=absent golden mismatch — the #1980 fix must not touch status-drift (got: $out)"
+echo "PASS: status-drift's board=absent ('nothing found') reading is unchanged by the stale-claims-local #1980 fix"
+
 # =============================================================================
 # unlinked-prs — open PR nodes with no closes edge (pr_list only)
 # =============================================================================

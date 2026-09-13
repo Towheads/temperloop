@@ -167,7 +167,17 @@
 #                       BACKEND.md — the board source's own closed-issue
 #                       residue read, see `_sg_read_board`).
 #   stale-claims        `claimed_by` edges naming a Session absent from the
-#                       journal source (board + journal).
+#                       journal source (board + journal). The journal is
+#                       this query's LIVENESS ORACLE, so unlike every other
+#                       consumer of `_sg_degraded`/absent-as-empty (temperloop
+#                       #1980), an `absent` journal source (no journal files
+#                       found — "nothing found" for every OTHER query) is
+#                       treated here as "liveness cannot be determined" and
+#                       answers `unknown`, never a set computed against an
+#                       empty Session-node list (which would flag every live
+#                       claim as stale). This carve-out is local to this one
+#                       query — `_sg_degraded` itself, and status-drift's use
+#                       of it, are unchanged.
 #   unlinked-prs        open PR nodes with no `closes` edge (pr_list only).
 #   orphan-worktrees     Worktree nodes with no live (`[~]`/`[m]`/`[>]`)
 #                       PlanItem of the same slug (worktrees + plan_notes).
@@ -1061,6 +1071,17 @@ _sg_query_stale_claims() {
   fi
   if _sg_degraded "$jst"; then
     jq -cn --arg st "$jst" '{query:"stale-claims", status:"unknown", reason:("journal source is "+$st), findings:"unknown"}'
+    return 0
+  fi
+  # LOCAL carve-out (temperloop#1980): the journal is this query's liveness
+  # ORACLE, so — unlike every other consumer of the journal source, where
+  # `absent` legitimately means "no journal-derived findings" — `absent`
+  # here means "cannot determine liveness", not "nothing is live". Scoped
+  # to this query only; `_sg_degraded` stays error|stale (see its own
+  # header comment) and status-drift's "absent = nothing found" reading of
+  # the board source is untouched.
+  if [ "$jst" = "absent" ]; then
+    jq -cn '{query:"stale-claims", status:"unknown", reason:"journal source is absent (no journal files - liveness cannot be established)", findings:"unknown"}'
     return 0
   fi
   jq -c '

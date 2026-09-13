@@ -187,7 +187,17 @@ echo "PASS: soak — a #N embedded in a flagged line's TITLE or a stderr warning
 # is correctly ABSENT from status-drift's own drift_query_set — a claimed,
 # in-progress issue trips neither of status-drift's own open-domain finding
 # kinds (it is neither unclaimed-in-progress nor claimed-but-not-in-progress).
+#
+# The journal here is seeded OK with a genuinely DIFFERENT live session
+# (temperloop#1980: this block tests "session present in the journal but not
+# THIS one" — distinct from "journal absent", which is its own case below
+# and must never be conflated with a real dead-session finding).
 # =============================================================================
+export SPEND_TRANSCRIPT_ROOT="$TMP/tr-dead-session"
+mkdir -p "$SPEND_TRANSCRIPT_ROOT/proj1/subagents"
+cat > "$SPEND_TRANSCRIPT_ROOT/proj1/subagents/agent-live.jsonl" <<'JSONL'
+{"sessionId":"mini-1:aliveses","step":"pr-open","outcome":"PR_OPENED"}
+JSONL
 _board_gh() {
   case "$1 $2" in
     "issue list")
@@ -200,8 +210,9 @@ _board_gh() {
     *) echo "test _board_gh: unhandled '$1 $2'" >&2; return 3 ;;
   esac
 }
-# No journal Session node named "mini-1:deadbeef" -> stale-claims (board +
-# journal) flags #20 as a claim naming a session absent from the journal.
+# Journal is OK (a real Session:mini-1:aliveses node), but no journal
+# Session node named "mini-1:deadbeef" -> stale-claims (board + journal)
+# flags #20 as a claim naming a session absent from an ESTABLISHED journal.
 _sg_reconcile() {
   cat <<'EOT'
 stale claims (In Progress, stamped to a dead same-host session — park by hand):
@@ -215,14 +226,20 @@ record="$(_sg_soak_run "$BOARD")"
 [ "$(jq -r '.classes["stale-claims"].diff.agree' <<<"$record")" = "true" ] || fail "dead-session stale-claims diff.agree should be true (got: $record)"
 [ "$(class_field status-drift drift_query_set "$record")" = '[]' ] || fail "a claimed in-progress issue must NOT surface in status-drift's drift_query_set (got: $record)"
 [ "$(class_field status-drift reconcile_set "$record")" = '[]' ] || fail "a dead-session claim stamp line must NOT be attributed to status-drift's reconcile_set (got: $record)"
-echo "PASS: soak — a dead-session claim stamp surfaces in stale-claims (both sides agree) and is absent from status-drift on either side"
+echo "PASS: soak — a dead-session claim stamp (journal OK, session genuinely not in it) surfaces in stale-claims (both sides agree) and is absent from status-drift on either side"
+export SPEND_TRANSCRIPT_ROOT="$TMP/no-such-transcripts"  # restore journal-absent default for the remaining cases
 
 # =============================================================================
 # a closed issue still wearing an fnd:status:* label (temperloop#1978, this
 # item's day-1 #158 shape): surfaces in status-drift on BOTH sides — the
 # board source's own closed-issue residue read vs. reconcile's own "residual
 # status labels on closed issues" class.
+#
+# Journal seeded OK (reusing the live-session fixture above) so the
+# "must NOT surface in stale-claims" assertion below is a real empty-set
+# read, not journal-absent's own "unknown" (temperloop#1980) masking it.
 # =============================================================================
+export SPEND_TRANSCRIPT_ROOT="$TMP/tr-dead-session"
 _board_gh() {
   case "$1 $2" in
     # a real, unrelated OPEN issue alongside the closed one — the primary
@@ -255,6 +272,41 @@ record="$(_sg_soak_run "$BOARD")"
 [ "$(jq -r '.classes["status-drift"].diff.agree' <<<"$record")" = "true" ] || fail "closed-residue status-drift diff.agree should be true (got: $record)"
 [ "$(class_field stale-claims drift_query_set "$record")" = '[]' ] || fail "a closed status-label residue must NOT surface in stale-claims (got: $record)"
 echo "PASS: soak — a closed issue still wearing an fnd:status:* label surfaces in status-drift on both sides (the #158 shape)"
+export SPEND_TRANSCRIPT_ROOT="$TMP/no-such-transcripts"  # restore journal-absent default for the remaining cases
+
+# =============================================================================
+# journal source ABSENT (temperloop#1980, the defect this item fixes): a
+# LIVE claim must never be misread as stale merely because no journal files
+# exist. stale-claims' own class reads "unknown" — even when reconcile.sh's
+# INDEPENDENT read (its own liveness check, unrelated to this journal
+# source) happens to name the very same issue — never folded into a false
+# agreement, and never a concrete drift_query_set computed against an
+# effectively-empty Session list.
+# =============================================================================
+_board_gh() {
+  case "$1 $2" in
+    "issue list")
+      echo '[{"number":30,"title":"x","labels":[{"name":"fnd:status:in-progress"},{"name":"fnd:host/session:mini-1:c0ffee00"}]}]'
+      ;;
+    "api repos/$REPO/issues/30/sub_issues") echo '[]' ;;
+    "api repos/$REPO/issues/30/dependencies/blocked_by") echo '[]' ;;
+    "pr list") echo '[]' ;;
+    "api repos/$REPO/issues") echo '[]' ;;
+    *) echo "test _board_gh: unhandled '$1 $2'" >&2; return 3 ;;
+  esac
+}
+_sg_reconcile() {
+  cat <<'EOT'
+stale claims (In Progress, stamped to a dead same-host session — park by hand):
+  #30 — stamped 'mini-1:c0ffee00' but that session is not live on this host 'mini-1' — some title
+EOT
+}
+_sg_soak_day() { echo "2026-01-08"; }
+record="$(_sg_soak_run "$BOARD")"
+[ "$(class_field stale-claims drift_query_set "$record")" = '"unknown"' ] || fail "journal-absent stale-claims drift_query_set must read the literal string 'unknown' (got: $record)"
+[ "$(class_field stale-claims diff "$record")" = '"unknown"' ] || fail "journal-absent stale-claims diff must read 'unknown' — never folded into a false agreement with reconcile.sh's independent read (got: $record)"
+[ "$(class_field stale-claims reconcile_set "$record")" = '[30]' ] || fail "journal-absent stale-claims reconcile_set must still carry reconcile.sh's own independent (unaffected) read (got: $record)"
+echo "PASS: soak — a journal-absent read makes stale-claims' own class 'unknown', never a false agreement/disagreement with reconcile.sh's independent read (temperloop#1980)"
 
 # =============================================================================
 # "never a false agreement over unknown"
@@ -304,10 +356,10 @@ expect_log="$(cache_snapshot_file "$BOARD" state-graph-soak)"
 [ -d "$expect_dir" ] || fail "soak log directory was not created via cache_repo_dir(kind=state-graph-soak)"
 [ -s "$expect_log" ] || fail "soak log file was not created via cache_snapshot_file(kind=state-graph-soak)"
 lines_before="$(wc -l <"$expect_log" | tr -d ' ')"
-[ "$lines_before" -eq 7 ] || fail "soak log should carry exactly the seven runs above (got $lines_before lines)"
+[ "$lines_before" -eq 8 ] || fail "soak log should carry exactly the eight runs above (got $lines_before lines)"
 
 count="$(cmd_soak --count --board "$BOARD")"
-[ "$count" = 7 ] || fail "soak --count should report 7 distinct days (got: $count)"
+[ "$count" = 8 ] || fail "soak --count should report 8 distinct days (got: $count)"
 echo "PASS: soak --count — distinct days recorded, log persisted append-only through lib/cache.sh"
 
 # --count SCHEMA exclusion (temperloop#1978, acceptance criterion 4): a
@@ -318,9 +370,9 @@ echo "PASS: soak --count — distinct days recorded, log persisted append-only t
 # run for a day nothing per-class was ever recorded on.
 printf '%s\n' '{"day":"2025-12-31","drift_query_set":[],"reconcile_set":[],"diff":{"only_in_drift_query":[],"only_in_reconcile":[],"agree":true}}' >>"$expect_log"
 lines_after_legacy="$(wc -l <"$expect_log" | tr -d ' ')"
-[ "$lines_after_legacy" -eq 8 ] || fail "the hand-appended legacy record should still add a line to the log (got $lines_after_legacy lines)"
+[ "$lines_after_legacy" -eq 9 ] || fail "the hand-appended legacy record should still add a line to the log (got $lines_after_legacy lines)"
 count_with_legacy="$(cmd_soak --count --board "$BOARD")"
-[ "$count_with_legacy" = 7 ] || fail "soak --count must exclude a pre-temperloop#1978 flat-schema run record from the day count (got: $count_with_legacy)"
+[ "$count_with_legacy" = 8 ] || fail "soak --count must exclude a pre-temperloop#1978 flat-schema run record from the day count (got: $count_with_legacy)"
 echo "PASS: soak --count — a pre-temperloop#1978 flat-schema run record (no type field) is excluded from the day count"
 
 # --count on a board with no soak log yet prints 0, never an error.
