@@ -41,6 +41,45 @@
 #   state-graph.sh clean --board <N>             remove ONE repo's snapshot
 #   state-graph.sh bench --scale <N> --board <N>  synthetic N-scale timing run
 #   state-graph.sh query <name> --board <N>      read a query over the snapshot
+#   state-graph.sh soak --board <N>              build + query status-drift +
+#                                                 reconcile.sh --status, append
+#                                                 one dated diff record
+#   state-graph.sh soak --count --board <N>      print distinct days recorded
+#   state-graph.sh soak --audit --board <N> --items <file>
+#                                                 record a hand-audited item set
+#                                                 against today
+#
+# SOAK (temperloop#1910, this item): the fourteen-day cross-check ADR 0033's
+# independence claim rests on — "one derivation (`build`) plus one
+# INDEPENDENT read (`reconcile.sh --status`, which never touches this file's
+# own snapshot store) should keep agreeing" — made MECHANICAL rather than a
+# human diffing two command outputs by eye every day. `soak --board N` runs a
+# fresh `build`, reads `query status-drift` off that SAME snapshot (no second
+# live build), separately shells out to `reconcile.sh --status` through the
+# overridable `_sg_reconcile` seam (mirrors `_sg_git`/`_sg_tmux` — reconcile.sh
+# is a SEPARATE script, not sourced, so it gets its own seam rather than a
+# hand-rolled subprocess call), reduces each side to a comparable SET of
+# flagged issue numbers, and appends one `{day, drift_query_set,
+# reconcile_set, diff}` record to a soak log kept through cache.sh's own path
+# accessors (kind=state-graph-soak — never a hand-rolled path, same
+# discipline as `_sg_persist_snapshot`). `day` is UTC (`_sg_soak_day`,
+# overridable) per the stored/parsed-timestamps-stay-UTC convention. Either
+# side reads "unknown" (the same never-a-bare-empty-set convention `query`
+# itself follows) when its source is degraded — `drift_query_set` when
+# status-drift's own status is "unknown", `reconcile_set` when the
+# `_sg_reconcile` invocation itself fails — and `diff` is "unknown" whenever
+# either side is, never a false agreement/disagreement computed over a set
+# that couldn't actually be read. `--count` prints the number of distinct
+# `day` values recorded (any record type). `--audit --items <file>` appends a
+# `{day, type:"audit", audited_items}` record — a hand-reviewed item set (one
+# issue number per line, `#N`/`Issue:N`/bare digits all accepted) logged
+# against today, for a human to compare against the same day's mechanical
+# diff. `bench --scale N` also appends one `{day, type:"bench", ...}` record
+# per invocation timing each of the five named queries against its synthetic
+# snapshot, so running it at scale 1, then 10, then 100 (the doc convention
+# used throughout this file for "one of these values", see the `query`
+# name enum above) leaves a trail a soak reviewer scans for the first scale
+# whose `query_ms` first exceeds `STATE_GRAPH_QUERY_SLOW_MS`.
 #
 # QUERY (temperloop#1910 L6, this item): five named, PURE functions of a
 # snapshot JSON blob — `_sg_query_*` — reused verbatim by `cmd_query` (reads
@@ -109,6 +148,10 @@
 #                 board, board_edges, AND pr_list sources)
 #   _sg_git     — the one non-`gh` external command (`git worktree list`)
 #
+# `soak` adds a THIRD seam, `_sg_reconcile`, for its one call to the SEPARATE
+# `reconcile.sh` script (not sourced, unlike board.sh/cache.sh above) — see
+# that seam's own definition below.
+#
 # No network in tests: every source above is read through one of the two
 # seams, so `test_state_graph.sh` replays fixtures with zero network access
 # (acceptance criterion 4).
@@ -146,6 +189,13 @@ usage: state-graph.sh build --board <N>
        state-graph.sh query <name> --board <N>
                 (name: status-drift | stale-claims | unlinked-prs |
                        orphan-worktrees | resume)
+       state-graph.sh soak --board <N>
+                build + query status-drift + reconcile.sh --status; append
+                one dated {day, drift_query_set, reconcile_set, diff} record
+       state-graph.sh soak --count --board <N>
+                print the number of distinct days recorded in the soak log
+       state-graph.sh soak --audit --board <N> --items <file>
+                record a hand-audited item set against today's day
 USAGE
 }
 
@@ -162,6 +212,20 @@ _sg_now_ms() {
   perl -MTime::HiRes=time -e 'printf "%d\n", time()*1000' 2>/dev/null ||
     printf '%s000' "$(date +%s)"
 }
+
+# `reconcile.sh`'s one call site (`soak`'s independent status-drift lens).
+# Production runs the real repo-shipped script; tests override this after
+# sourcing to replay canned reconcile output with no network — reconcile.sh
+# itself is a separate script (not sourced like board.sh/cache.sh), so it
+# needs its own seam rather than a hand-rolled subprocess call sprinkled
+# through cmd_soak.
+_sg_reconcile() { "$_SG_HERE/../board/reconcile.sh" "$@"; }
+
+# `soak`'s day key — UTC (stored/parsed timestamps stay UTC, never the
+# operator's display timezone; claude/CLAUDE.kernel.md § Communication
+# conventions). Its own seam (mirrors `_sg_now_ms`) so tests can pin distinct
+# days deterministically instead of depending on real calendar time.
+_sg_soak_day() { date -u +%F; }
 
 # --- ontology-registry lookups (ADR 0032) -----------------------------------
 # Every `state:issue-status` TOKEN column (col 2), one per line.
@@ -936,6 +1000,131 @@ cmd_query() {
   esac
 }
 
+# --- soak (temperloop#1910, this item) --------------------------------------
+# The soak log's own cache.sh kind — fully namespace-isolated from
+# "state-graph"/"state-graph-bench" (cache_dirty/cache_clear on one kind
+# never touches another, temperloop#1929). Its file is `cache_snapshot_file`
+# (`.../snapshot.jsonl`) reused for real this time as an APPEND-ONLY JSON
+# LINES log (every other kind treats that path as a single-record snapshot
+# overwritten whole) — never a hand-rolled path, per this file's own
+# cache.sh-persistence convention (`_sg_persist_snapshot`'s header comment).
+_SG_SOAK_KIND="state-graph-soak"
+
+_sg_soak_log_file() {
+  local board="$1" dir file
+  dir="$(cache_repo_dir "$board" "$_SG_SOAK_KIND")" || return 1
+  mkdir -p "$dir" 2>/dev/null || return 1
+  file="$(cache_snapshot_file "$board" "$_SG_SOAK_KIND")" || return 1
+  printf '%s' "$file"
+}
+
+# One soak run: build + persist a fresh snapshot, run `query status-drift`
+# over that SAME snapshot (no second live build), separately run
+# `reconcile.sh --status` through the `_sg_reconcile` seam, reduce each side
+# to a comparable SORTED-UNIQUE array of issue numbers, and append one dated
+# record. Either set (and `diff`) is the literal string "unknown" — never a
+# bare empty array standing in for "couldn't tell" — when its own source is
+# degraded, mirroring every `_sg_query_*`'s own convention.
+_sg_soak_run() {
+  local board="$1" snapshot dq_json dq_set rc_out rc_rc=0 reconcile_set diff day logf record
+
+  snapshot="$(_sg_build_snapshot "$board")"
+  _sg_persist_snapshot "$board" "$snapshot" "state-graph" ||
+    echo "state-graph.sh: warning: soak snapshot persist failed for board $board (disk/permission?)" >&2
+
+  dq_json="$(_sg_query_status_drift "$snapshot")"
+  if [ "$(jq -r '.status' <<<"$dq_json")" = "unknown" ]; then
+    dq_set='"unknown"'
+  else
+    dq_set="$(jq -c '[ .findings[].id | ltrimstr("Issue:") | tonumber ] | sort | unique' <<<"$dq_json")"
+  fi
+
+  rc_out="$(_sg_reconcile --board "$board" --status 2>&1)" || rc_rc=$?
+  if [ "$rc_rc" -ne 0 ]; then
+    reconcile_set='"unknown"'
+  else
+    # `grep -oE` legitimately exits 1 on an "In sync" report with zero
+    # flagged issues — under `set -o pipefail` that would otherwise trip
+    # this script's own `set -e` on a perfectly normal empty-set result, so
+    # its failure is absorbed in its own group before the rest of the pipe.
+    reconcile_set="$({ printf '%s' "$rc_out" | grep -oE '#[0-9]+' || true; } | tr -d '#' | sort -n | uniq | jq -Rsc 'split("\n") | map(select(length>0) | tonumber)')"
+  fi
+
+  if [ "$dq_set" = '"unknown"' ] || [ "$reconcile_set" = '"unknown"' ]; then
+    diff='"unknown"'
+  else
+    diff="$(jq -cn --argjson a "$dq_set" --argjson b "$reconcile_set" '
+      { only_in_drift_query: ($a - $b), only_in_reconcile: ($b - $a),
+        agree: (($a - $b) == [] and ($b - $a) == []) }')"
+  fi
+
+  day="$(_sg_soak_day)"
+  logf="$(_sg_soak_log_file "$board")" || { echo "state-graph.sh: soak: could not resolve soak log path" >&2; return 1; }
+  record="$(jq -cn --arg day "$day" --argjson dq "$dq_set" --argjson rc "$reconcile_set" --argjson diff "$diff" \
+    '{day:$day, drift_query_set:$dq, reconcile_set:$rc, diff:$diff}')"
+  printf '%s\n' "$record" >>"$logf"
+  printf '%s\n' "$record"
+}
+
+# `soak --count --board N`: the number of DISTINCT `day` values across every
+# record in the log (soak-run records and audit/bench records alike) — a
+# missing or empty log prints 0, never an error (nothing recorded yet).
+_sg_soak_count() {
+  local board="$1" logf
+  logf="$(_sg_soak_log_file "$board")" || { echo "state-graph.sh: soak: could not resolve soak log path" >&2; return 1; }
+  if [ ! -s "$logf" ]; then
+    echo 0
+    return 0
+  fi
+  jq -r '.day' "$logf" 2>/dev/null | sort -u | wc -l | tr -d ' '
+}
+
+# `soak --audit --board N --items <file>`: a hand-audited item set logged
+# against today, for a human to compare against the same day's mechanical
+# diff. `<file>` is one issue reference per line — a bare number, `#N`, or
+# `Issue:N` all accepted (every digit run on a line is extracted).
+_sg_soak_audit() {
+  local board="$1" items_file="$2" items day logf record
+  [ -f "$items_file" ] || { echo "state-graph.sh: soak --audit: items file not found: $items_file" >&2; return 1; }
+  # Same pipefail/set -e absorption as _sg_soak_run's reconcile_set above —
+  # a file naming zero issues is a legitimate empty audit set, not a failure.
+  items="$({ grep -oE '[0-9]+' "$items_file" 2>/dev/null || true; } | sort -n | uniq | jq -Rsc 'split("\n") | map(select(length>0) | tonumber)')"
+  day="$(_sg_soak_day)"
+  logf="$(_sg_soak_log_file "$board")" || { echo "state-graph.sh: soak: could not resolve soak log path" >&2; return 1; }
+  record="$(jq -cn --arg day "$day" --argjson items "$items" '{day:$day, type:"audit", audited_items:$items}')"
+  printf '%s\n' "$record" >>"$logf"
+  printf '%s\n' "$record"
+}
+
+cmd_soak() {
+  local board="" mode="run" items_file=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --board) board="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+      --count) mode="count"; shift ;;
+      --audit) mode="audit"; shift ;;
+      --items) items_file="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+      # `usage` writes to stderr everywhere else in this file (the error-path
+      # convention every other subcommand's `-h|--help` also follows) — this
+      # ONE case redirects it to stdout instead (`2>&1`, not a second usage
+      # text), because the class-A activation predicate this item is gated
+      # on (temperloop#1934) is `soak --help 2>/dev/null | grep -q --
+      # '--count'` and would otherwise discard the very text it greps for.
+      -h|--help) usage 2>&1; exit 0 ;;
+      *) echo "state-graph.sh: soak: unknown arg '$1'" >&2; usage; exit 2 ;;
+    esac
+  done
+  [ -n "$board" ] || { echo "state-graph.sh: soak requires --board <N>" >&2; usage; exit 2; }
+  case "$mode" in
+    run) _sg_soak_run "$board" ;;
+    count) _sg_soak_count "$board" ;;
+    audit)
+      [ -n "$items_file" ] || { echo "state-graph.sh: soak --audit requires --items <file>" >&2; usage; exit 2; }
+      _sg_soak_audit "$board" "$items_file"
+      ;;
+  esac
+}
+
 # --- commands ----------------------------------------------------------------
 cmd_build() {
   local board=""
@@ -1011,6 +1200,42 @@ cmd_bench() {
   elapsed_ms=$(( end_ms - start_ms ))
 
   echo "state-graph bench: board=$board scale=$scale nodes=$(jq '.nodes|length' <<<"$synth") edges=$(jq '.edges|length' <<<"$synth") build_ms=$elapsed_ms"
+
+  # Time each of the five named queries against this synthetic snapshot and
+  # append ONE bench-type record to the soak log (temperloop#1910, this
+  # item's acceptance criterion 2) — never a second persisted-snapshot store,
+  # the SAME log `soak` itself appends to. Running bench at scale 1, then 10,
+  # then 100 (this file's doc convention for "one of these values") leaves a
+  # per-scale trail a soak reviewer scans for the first scale whose
+  # `query_ms` exceeds `STATE_GRAPH_QUERY_SLOW_MS`.
+  local qname qstart qend qms query_ms='{}' slow_queries='[]' slow_ms day logf bench_record
+  slow_ms="${STATE_GRAPH_QUERY_SLOW_MS:-500}"
+  for qname in status-drift stale-claims unlinked-prs orphan-worktrees resume; do
+    qstart="$(_sg_now_ms)"
+    case "$qname" in
+      status-drift)     _sg_query_status_drift "$snapshot" >/dev/null ;;
+      stale-claims)     _sg_query_stale_claims "$snapshot" >/dev/null ;;
+      unlinked-prs)     _sg_query_unlinked_prs "$snapshot" >/dev/null ;;
+      orphan-worktrees) _sg_query_orphan_worktrees "$snapshot" >/dev/null ;;
+      resume)           _sg_query_resume "$snapshot" >/dev/null ;;
+    esac
+    qend="$(_sg_now_ms)"
+    qms=$(( qend - qstart ))
+    query_ms="$(jq -c --arg q "$qname" --argjson ms "$qms" '. + {($q): $ms}' <<<"$query_ms")"
+    if [ "$qms" -gt "$slow_ms" ]; then
+      slow_queries="$(jq -c --arg q "$qname" '. + [$q]' <<<"$slow_queries")"
+    fi
+  done
+
+  day="$(_sg_soak_day)"
+  if logf="$(_sg_soak_log_file "$board")"; then
+    bench_record="$(jq -cn --arg day "$day" --argjson scale "$scale" --argjson slow "$slow_ms" \
+      --argjson query_ms "$query_ms" --argjson slow_queries "$slow_queries" \
+      '{day:$day, type:"bench", scale:$scale, slow_ms:$slow, query_ms:$query_ms, slow_queries:$slow_queries}')"
+    printf '%s\n' "$bench_record" >>"$logf"
+  else
+    echo "state-graph.sh: warning: bench soak-log append failed for board $board" >&2
+  fi
 }
 
 # --- dispatch (skipped when sourced for tests) -------------------------------
@@ -1029,6 +1254,7 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
     clean) cmd_clean "$@" ;;
     bench) cmd_bench "$@" ;;
     query) cmd_query "$@" ;;
+    soak) cmd_soak "$@" ;;
     -h|--help) usage; exit 0 ;;
     *)
       echo "state-graph.sh: unknown subcommand '$cmd'" >&2
