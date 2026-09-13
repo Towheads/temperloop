@@ -74,6 +74,123 @@ nothing):
 
 Leading and trailing blank lines are trimmed; interior blank lines are kept.
 
+## Who reads a fragment, and the register that follows
+
+A fragment is written by the session operator who just made the change, and
+read by someone else entirely.
+
+Your fragment is folded verbatim into `CHANGELOG.md`, and that file's own
+header names its reader: *"a stranger greps for it before pulling."* That
+stranger is the **cold adopter** — the developer or small team described in
+[`docs/who-its-for.md`](../docs/who-its-for.md) § Designed for, who vendors
+this kernel into their own repo and is deciding whether and how to pull an
+update. They have `CHANGELOG.md` open and nothing else. They have not read
+the diff, the issue, the plan note, or the command spec, and they cannot
+ask you.
+
+You, writing it, are holding the whole change in your head — the step you
+edited, the field you added, the reviewer that flagged it. None of that
+reaches the adopter, and none of it can be looked up from where they are
+standing. So the register has to switch before the fragment ships, and
+nothing downstream will switch it for you:
+`workflows/scripts/check-changelog-entry.sh` checks that a fragment exists
+and parses, not that it can be understood.
+
+### The rule
+
+Three kinds of token must not appear in a fragment body. Each is something
+the adopter cannot resolve:
+
+- **No bare internal step-letters or section indices.** `Step 4a`, `§3e`,
+  `3a`/`3b`, `round 1`, `dimension 4`, `(3.1–3.4)` — these index a numbered
+  structure inside a command spec or a schema the adopter has never opened.
+  Name the behaviour instead, or name the file *and* the behaviour.
+- **No source-file field names.** `onlySlugs`,
+  `verdicts[<slug>].verdict_section` — an identifier from an implementation
+  file is not a surface the adopter depends on, so it tells them nothing and
+  cannot be looked up. State what changes for them, not which variable
+  carries it. A backticked identifier is fine when it *is* their surface: a
+  CLI flag, a setting name, a config key, a file path.
+- **No mechanism name that does not resolve to a real path.** Before you
+  name a validator, a gate, or a pass, `grep -r` the name. A name matching
+  nothing in the tree cannot be found, checked, or run by the person reading
+  it — and an invented name usually smuggles an invented trigger in with it.
+
+The check is mechanical: for every proper noun in your fragment, ask whether
+the adopter could find it by grepping a fresh clone. If not, it is a token
+carried over from your own context — replace it.
+
+### Examples
+
+All three are real reviewer findings from 2026-09-13 (temperloop#2007). The
+**good** column is the rewrite the review asked for, not necessarily the
+text that shipped.
+
+**Internal step-letters and field names** (temperloop#1988):
+
+> **Bad** — `3a no longer force-clears the worktree, so 3b and 4a see the`
+> `preserved build; onlySlugs carries the resumed target and the finding`
+> `rides verdicts[<slug>].verdict_section.`
+>
+> **Good** — `` **`/fix` no longer throws away a finished fix when something
+> blocks it late** (#1988). A blocking review finding used to park the
+> target and delete its worktree, discarding a complete, committed fix so
+> the whole thing had to be built again from scratch. `/fix` now checks
+> whether the worktree holds a clean commit and, if it does, resumes against
+> that build instead of rebuilding over it. ``
+
+The bad version is not shorter or denser; it is addressed to someone who has
+`claude/commands/build.md` and `claude/workflows/build-level.mjs` open. The
+good version answers the only question the adopter actually has: what stops
+happening to me after I pull this.
+
+**Section indices** (temperloop#1958):
+
+> **Bad** — `Round 1's Q1 now comes from dimension 4's Contract, the ported`
+> `panel (3.1–3.4) moves behind --first-question.`
+>
+> **Good** — `` **`/workshop` now opens with an interview pass before the
+> coverage walk** (#1958). The first question is drawn from the brief's
+> Contract section rather than a fixed opener. The brief grammar both phases
+> write is documented in `claude/design-schema.md`. ``
+
+`round 1`, `Q1`, `dimension 4` and `(3.1–3.4)` index numbered structures
+inside `claude/commands/workshop.md` and `claude/design-schema.md`. A flag
+name is the one token here worth keeping — an adopter can type a flag — but
+only once the sentence around it says what the flag does.
+
+**An invented mechanism name** (temperloop#1958, flagged independently by a
+second reviewer):
+
+> **Bad** — `the post-sync validator now rejects a drifted brief.`
+>
+> **Good** — `` `workflows/scripts/validate-design-brief.sh` now rejects a
+> drifted brief, and `scripts/quality-gates.sh` runs it, so the drift fails
+> CI rather than waiting for someone to lint by hand. ``
+
+`post-sync validator` names nothing that runs — no file, no function, no
+command. Grep the tree for it and the only hit is this page, warning you off
+it. Naming a real path is also what keeps the *when-it-fires* claim honest:
+the bad version implied an automatic gate for what was an on-demand lint,
+and no reader could have caught that, because there was nothing to open.
+
+### Baseline
+
+This section exists because of a measured rate, recorded here so the
+follow-up can be a comparison rather than an impression (see
+[`claude/CLAUDE.kernel.md`](../claude/CLAUDE.kernel.md) § Measure the delta,
+don't assume it):
+
+**Baseline — 2026-09-13: 3 reviewer findings on fragment audience, across 2
+items, in one day.** A `docs-reviewer` MEDIUM on temperloop#1988; on
+temperloop#1958 both a `docs-reviewer` HIGH and a `workflow-reviewer`
+MEDIUM. Two reviewers converging independently on the same fragment is what
+made this look systemic rather than like one author's slip.
+
+Re-check the rate once this section has been in the authoring path for a
+while. If it has not moved, the next lever is a lint — which temperloop#2007
+judged likely low-precision, and deliberately did not reach for first.
+
 ## `BREAKING`
 
 Breakingness is declared by the `.breaking` marker in the filename, and the
