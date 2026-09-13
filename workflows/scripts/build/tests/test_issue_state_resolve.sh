@@ -424,9 +424,9 @@ else
   # Same extraction workflows/scripts/config/ontology-registry.tsv's own doc
   # comment says check-ontology-registry.sh performs: the usage block's
   # `"route": "a|b|...|z"` line, split on `|`.
-  RESOLVER_ROUTES="$(tr '\n' ' ' <"$CLI" | grep -oE '"route": "[^"]*"' | head -1 \
+  RESOLVER_ROUTES="$(tr '\n' ' ' <"$CLI" | grep -m1 -oE '"route": "[^"]*"' \
     | sed -E 's/^"route": "//; s/"$//' | tr '|' '\n' | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' \
-    | grep -v '^$' | jq -Rsc 'split("\n") | map(select(length>0)) | sort')"
+    | grep -v '^$' | jq -Rsc 'split("\n") | map(select(length>0)) | sort')" || RESOLVER_ROUTES=""
   if [ -z "$RESOLVER_ROUTES" ] || [ "$RESOLVER_ROUTES" = "[]" ]; then
     bad "routes.fixture.resolver" "could not extract a route enum from $CLI's usage text"
   elif [ "$FIXTURE_ROUTES" = "$RESOLVER_ROUTES" ]; then

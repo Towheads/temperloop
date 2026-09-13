@@ -322,63 +322,131 @@ out="$(_sg_query_resume "$(jq -c '.sources.board.status="error"' <<<"$SNAP_UNTOU
 echo "PASS: resume answers probe-failed (the route alphabet's alphabet-compliant 'unknown', never a bare empty result) per degraded tier — journal, git, board"
 
 # --- every emitted route is drawn from the shared route alphabet --------
+# Captured into a variable FIRST (not read straight out of a process
+# substitution) so a producer failure propagates under `set -e`/pipefail
+# instead of the loop silently seeing fewer (or zero) lines and passing
+# vacuously.
+routes="$(
+  _sg_query_resume "$SNAP_INVARIANT" | jq -r '.items[].route'
+  _sg_query_resume "$SNAP_TIER1_PR" | jq -r '.items[].route'
+  _sg_query_resume "$SNAP_TIER1_SHA" | jq -r '.items[].route'
+  _sg_query_resume "$SNAP_TIER2" | jq -r '.items[].route'
+  _sg_query_resume "$SNAP_TIER3" | jq -r '.items[].route'
+  _sg_query_resume "$SNAP_TIER4" | jq -r '.items[].route'
+  _sg_query_resume "$(jq -c '.sources.journal.status="error"' <<<"$SNAP_UNTOUCHED")" | jq -r '.items[].route'
+)"
+[ -n "$routes" ] || fail "route-alphabet sweep produced no routes at all — a producer above likely failed"
 while IFS= read -r r; do
   [ -n "$r" ] || continue
   route_in_alphabet "$r" || fail "resume emitted route '$r' not in the shared route-alphabet fixture"
-done < <(_sg_query_resume "$SNAP_INVARIANT" | jq -r '.items[].route'; \
-         _sg_query_resume "$SNAP_TIER1_PR" | jq -r '.items[].route'; \
-         _sg_query_resume "$SNAP_TIER1_SHA" | jq -r '.items[].route'; \
-         _sg_query_resume "$SNAP_TIER2" | jq -r '.items[].route'; \
-         _sg_query_resume "$SNAP_TIER3" | jq -r '.items[].route'; \
-         _sg_query_resume "$SNAP_TIER4" | jq -r '.items[].route'; \
-         _sg_query_resume "$(jq -c '.sources.journal.status="error"' <<<"$SNAP_UNTOUCHED")" | jq -r '.items[].route')
+done <<<"$routes"
 echo "PASS: every route resume emits (decided and degraded alike) is a member of the shared route-alphabet fixture"
 
 # =============================================================================
 # cmd_query CLI dispatch — invoked as a real subprocess (`bash state-graph.sh
 # query …`), not the sourced `_sg_query_*`/`cmd_query` functions the tests
-# above call in-process. Covers: unknown query name, missing --board, and
-# the no-persisted-snapshot fallback-to-live-build path. Zero network: the
-# board/git/tmux seams are overridden and `export -f`'d so the CHILD bash
-# process inherits them exactly like the sourced-function tests above
-# inherit them in-process (mirrors test_state_graph.sh's own _board_gh/
-# _sg_git seam-override convention).
+# above call in-process. Covers: unknown query name, missing --board, and a
+# persisted snapshot being read by the CLI.
+#
+# Zero network, verified rather than assumed: an `export -f` mock does NOT
+# survive into this child — the child re-sources board.sh/state-graph.sh,
+# which redefine `_board_gh`/`_sg_git`/`_sg_tmux` themselves, clobbering
+# whatever the parent exported — so no case below relies on one. The two
+# argument-validation cases exit before any source is touched; the
+# persisted-snapshot case seeds the on-disk snapshot itself, in-process, via
+# `_sg_persist_snapshot` before invoking the subprocess, so the subprocess
+# only ever READS a file it never builds. This is enforced, not just
+# reasoned about: every subprocess below runs with a logging-and-failing
+# `gh`/`git`/`tmux` shim prepended to PATH, and the suite asserts the shim's
+# canary log stays empty — a regression to a live build in any of these
+# cases fails loudly instead of silently passing against real network/host
+# state. (The separate in-process fallback-build test further below DOES
+# need working `_board_gh`/`_sg_git`/`_sg_tmux` mocks, and gets them
+# correctly because it never re-sources — it calls `cmd_query` directly in
+# this already-sourced shell.)
 # =============================================================================
 STATE_GRAPH_BIN="$HERE/../state-graph.sh"
 CLI_TMP="$(mktemp -d)"
 trap 'rm -rf "$CLI_TMP"' EXIT
 
+NETWORK_CANARY="$CLI_TMP/network-canary.log"
+SHIM_BIN="$CLI_TMP/shim-bin"
+mkdir -p "$SHIM_BIN"
+for _shim_cmd in gh git tmux; do
+  cat >"$SHIM_BIN/$_shim_cmd" <<SHIMEOF
+#!/usr/bin/env bash
+echo "CANARY: $_shim_cmd \$*" >>"$NETWORK_CANARY"
+exit 1
+SHIMEOF
+  chmod +x "$SHIM_BIN/$_shim_cmd"
+done
+SHIM_PATH="$SHIM_BIN:$PATH"
+
 echo "── cmd_query CLI: unknown query name exits 2 ──"
-rc=0; out="$(bash "$STATE_GRAPH_BIN" query bogus-query --board 4 2>&1)" || rc=$?
+rc=0; out="$(PATH="$SHIM_PATH" bash "$STATE_GRAPH_BIN" query bogus-query --board 4 2>&1)" || rc=$?
 [ "$rc" -eq 2 ] || fail "unknown query name did not exit 2 (got rc=$rc, out: $out)"
 printf '%s' "$out" | grep -F "unknown query" >/dev/null || fail "unknown query name error did not name the bad query (got: $out)"
 echo "PASS: cmd_query CLI — unknown query name exits 2"
 
 echo "── cmd_query CLI: missing --board exits 2 ──"
-rc=0; out="$(bash "$STATE_GRAPH_BIN" query resume 2>&1)" || rc=$?
+rc=0; out="$(PATH="$SHIM_PATH" bash "$STATE_GRAPH_BIN" query resume 2>&1)" || rc=$?
 [ "$rc" -eq 2 ] || fail "missing --board did not exit 2 (got rc=$rc, out: $out)"
 echo "PASS: cmd_query CLI — missing --board exits 2"
 
-echo "── cmd_query CLI: no persisted snapshot falls back to a live build ──"
-export CACHE_STORE_ROOT="$CLI_TMP/cache"            # fresh — nothing persisted yet
+echo "── cmd_query CLI: a persisted snapshot is read by the CLI (no live build) ──"
+export CACHE_STORE_ROOT="$CLI_TMP/cache-persisted"
+_sg_persist_snapshot 4 "$SNAP_TIER2" state-graph || fail "seeding the persisted snapshot for the CLI-read test failed"
+rc=0; out="$(PATH="$SHIM_PATH" bash "$STATE_GRAPH_BIN" query resume --board 4)" || rc=$?
+[ "$rc" -eq 0 ] || fail "CLI persisted-snapshot read did not exit 0 (got rc=$rc, out: $out)"
+[ "$(jq -r '.query' <<<"$out")" = "resume" ] || fail "CLI persisted-snapshot resume payload missing query field (got: $out)"
+[ "$(jq -r '.status' <<<"$out")" = "ok" ] || fail "CLI persisted-snapshot resume payload status was not ok (got: $out)"
+[ "$(_sg_route_of "$out" PlanItem:p:delta)" = "adopt" ] || fail "CLI persisted-snapshot did not read the seeded fixture (route mismatch, got: $out)"
+[ "$(_sg_authority_of "$out" PlanItem:p:delta)" = "journal" ] || fail "CLI persisted-snapshot did not read the seeded fixture (authority mismatch, got: $out)"
+echo "PASS: cmd_query CLI — a persisted snapshot is read by the CLI and never rebuilt live"
+
+if [ -s "$NETWORK_CANARY" ]; then
+  fail "a CLI subprocess reached a real gh/git/tmux binary instead of reading the persisted snapshot or exiting on validation (canary: $(cat "$NETWORK_CANARY"))"
+fi
+echo "PASS: cmd_query CLI — zero network reached across all three subprocess cases (shim canary empty)"
+
+# =============================================================================
+# cmd_query's fallback live build (no persisted snapshot yet) must itself
+# PERSIST, so a second `query` call on the same fresh host reads it back
+# instead of paying a second live build. Run IN-PROCESS (not as a
+# subprocess) so the overridable `_board_gh`/`_sg_git`/`_sg_tmux` seams stay
+# in effect across two calls without a re-source clobbering them, and count
+# `_board_gh` invocations to prove the SECOND call never reaches it. The
+# count is a FILE, not a plain variable: `first="$(cmd_query …)"` runs
+# `cmd_query` in a command-substitution SUBSHELL, so a counter incremented
+# inside it never propagates back to this shell — an append-to-file survives
+# the subshell boundary the same way a plain variable would not.
+# =============================================================================
+echo "── cmd_query in-process: a fallback live build is persisted so a second call doesn't rebuild ──"
+export CACHE_STORE_ROOT="$CLI_TMP/cache-fallback"
 export KNOWLEDGE_STORE_ROOT="$CLI_TMP/no-such-ks"   # plan_notes -> absent
 export SPEND_TRANSCRIPT_ROOT="$CLI_TMP/no-such-tr"  # journal -> absent
+GH_CALL_LOG="$CLI_TMP/gh-call.log"
+: >"$GH_CALL_LOG"
 _board_gh() {
+  echo call >>"$GH_CALL_LOG"
   case "$1 $2" in
     "issue list") echo '[]' ;;
     "pr list") echo '[]' ;;
     *) echo "test _board_gh: unhandled '$1 $2'" >&2; return 3 ;;
   esac
 }
-_sg_git() { echo "worktree /home/x/dev/batch/foundation"; }
+_sg_git() { return 1; }
 _sg_tmux() { return 1; }
-export -f _board_gh _sg_git _sg_tmux
-rc=0; out="$(bash "$STATE_GRAPH_BIN" query resume --board 4)" || rc=$?
-[ "$rc" -eq 0 ] || fail "CLI fallback-build did not exit 0 (got rc=$rc, out: $out)"
-[ "$(jq -r '.query' <<<"$out")" = "resume" ] || fail "CLI fallback-build resume payload missing query field (got: $out)"
-[ "$(jq -r '.status' <<<"$out")" = "ok" ] || fail "CLI fallback-build resume payload status was not ok (got: $out)"
-jq -e '.items | type == "array"' <<<"$out" >/dev/null || fail "CLI fallback-build resume payload items was not an array (got: $out)"
+first="$(cmd_query resume --board 4)"
+[ "$(jq -r '.status' <<<"$first")" = "ok" ] || fail "in-process fallback build did not return an ok resume payload (got: $first)"
+first_calls="$(wc -l <"$GH_CALL_LOG" | tr -d ' ')"
+[ "$first_calls" -gt 0 ] || fail "in-process fallback build never called the live board source — test setup is broken"
+second="$(cmd_query resume --board 4)"
+second_calls="$(wc -l <"$GH_CALL_LOG" | tr -d ' ')"
+[ "$second_calls" -eq "$first_calls" ] \
+  || fail "second cmd_query call re-invoked the live board source instead of reading the persisted fallback snapshot (calls: $second_calls vs $first_calls)"
+[ "$(jq -r '.status' <<<"$second")" = "ok" ] || fail "second cmd_query call did not return an ok resume payload (got: $second)"
 unset -f _board_gh _sg_git _sg_tmux
-echo "PASS: cmd_query CLI — no persisted snapshot falls back to a live build and returns a valid resume payload"
+echo "PASS: cmd_query in-process — a fallback live build is persisted, so a second call reads it instead of rebuilding"
 
 echo "ALL PASS: test_state_graph_queries.sh"

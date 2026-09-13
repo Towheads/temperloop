@@ -44,8 +44,9 @@
 #
 # QUERY (temperloop#1910 L6, this item): five named, PURE functions of a
 # snapshot JSON blob — `_sg_query_*` — reused verbatim by `cmd_query` (reads
-# the persisted snapshot via `_sg_read_snapshot`, building a fresh one only
-# when none is persisted yet) and by test_state_graph_queries.sh (feeds a
+# the persisted snapshot via `_sg_read_snapshot`, building AND persisting a
+# fresh one only when none is persisted yet, so a second `query` call pays
+# no second live build) and by test_state_graph_queries.sh (feeds a
 # synthetic snapshot literal directly — no board/gh/git mocking needed for
 # these tests, unlike the seven readers above). Every query answers the
 # LITERAL STRING `"unknown"` for a part that depends on a source currently
@@ -923,6 +924,8 @@ cmd_query() {
   local snapshot
   if ! snapshot="$(_sg_read_snapshot "$board" 2>/dev/null)"; then
     snapshot="$(_sg_build_snapshot "$board")"
+    _sg_persist_snapshot "$board" "$snapshot" "state-graph" ||
+      echo "state-graph.sh: warning: snapshot persist failed for board $board (disk/permission?) — printing unpersisted result" >&2
   fi
   case "$name" in
     status-drift) _sg_query_status_drift "$snapshot" ;;
