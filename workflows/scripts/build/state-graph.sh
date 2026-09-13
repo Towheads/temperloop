@@ -166,18 +166,31 @@
 #                       label", workflows/scripts/board/ISSUES-ONLY-
 #                       BACKEND.md — the board source's own closed-issue
 #                       residue read, see `_sg_read_board`).
-#   stale-claims        `claimed_by` edges naming a Session absent from the
-#                       journal source (board + journal). The journal is
-#                       this query's LIVENESS ORACLE, so unlike every other
-#                       consumer of `_sg_degraded`/absent-as-empty (temperloop
-#                       #1980), an `absent` journal source (no journal files
-#                       found — "nothing found" for every OTHER query) is
-#                       treated here as "liveness cannot be determined" and
-#                       answers `unknown`, never a set computed against an
-#                       empty Session-node list (which would flag every live
-#                       claim as stale). This carve-out is local to this one
-#                       query — `_sg_degraded` itself, and status-drift's use
-#                       of it, are unchanged.
+#   stale-claims        `claimed_by` edges naming an Issue with no matching
+#                       `marked_by` edge (board + tmux). tmux — the per-
+#                       window `@claimed_issue` marker source, Marker nodes /
+#                       `marked_by` edges — is this query's LIVENESS ORACLE
+#                       (temperloop#1980 round 2): the SAME source
+#                       reconcile.sh's own claim-liveness lens checks, so the
+#                       two independent derivations can actually agree. The
+#                       journal (step-outcome ledger) is NOT this oracle and
+#                       is no longer consulted by this query at all — round 1
+#                       used the journal instead and that was the round-2 bug:
+#                       the journal records WORK DONE, not a SESSION
+#                       EXISTING, so a genuinely live session that had not yet
+#                       written a step-outcome line produced no journal
+#                       Session node and was flagged a confident false
+#                       positive (the exact live evidence temperloop#1980 was
+#                       filed over). Unlike every other consumer of
+#                       `_sg_degraded`/absent-as-empty, an `absent` tmux
+#                       source (no tmux binary or no server reachable —
+#                       "nothing found" for every OTHER query) is treated
+#                       here as "liveness cannot be determined" and answers
+#                       `unknown`, never a set computed against an empty
+#                       marker list (which would flag every live claim as
+#                       stale). This carve-out is local to this one query —
+#                       `_sg_degraded` itself, and status-drift's use of it,
+#                       are unchanged.
 #   unlinked-prs        open PR nodes with no `closes` edge (pr_list only).
 #   orphan-worktrees     Worktree nodes with no live (`[~]`/`[m]`/`[>]`)
 #                       PlanItem of the same slug (worktrees + plan_notes).
@@ -1062,33 +1075,35 @@ _sg_query_status_drift() {
 }
 
 _sg_query_stale_claims() {
-  local snap="$1" bst jst
+  local snap="$1" bst tst
   bst="$(_sg_source_status "$snap" board)"
-  jst="$(_sg_source_status "$snap" journal)"
+  tst="$(_sg_source_status "$snap" tmux)"
   if _sg_degraded "$bst"; then
     jq -cn --arg st "$bst" '{query:"stale-claims", status:"unknown", reason:("board source is "+$st), findings:"unknown"}'
     return 0
   fi
-  if _sg_degraded "$jst"; then
-    jq -cn --arg st "$jst" '{query:"stale-claims", status:"unknown", reason:("journal source is "+$st), findings:"unknown"}'
+  if _sg_degraded "$tst"; then
+    jq -cn --arg st "$tst" '{query:"stale-claims", status:"unknown", reason:("tmux source is "+$st), findings:"unknown"}'
     return 0
   fi
-  # LOCAL carve-out (temperloop#1980): the journal is this query's liveness
-  # ORACLE, so — unlike every other consumer of the journal source, where
-  # `absent` legitimately means "no journal-derived findings" — `absent`
-  # here means "cannot determine liveness", not "nothing is live". Scoped
-  # to this query only; `_sg_degraded` stays error|stale (see its own
-  # header comment) and status-drift's "absent = nothing found" reading of
-  # the board source is untouched.
-  if [ "$jst" = "absent" ]; then
-    jq -cn '{query:"stale-claims", status:"unknown", reason:"journal source is absent (no journal files - liveness cannot be established)", findings:"unknown"}'
+  # LOCAL carve-out (temperloop#1980 round 2): tmux is this query's liveness
+  # ORACLE, so — unlike every other consumer of the tmux source, where
+  # `absent` legitimately means "no markers held" — `absent` here means
+  # "cannot determine liveness", not "nothing is live". Scoped to this query
+  # only; `_sg_degraded` stays error|stale (see its own header comment) and
+  # status-drift's "absent = nothing found" reading of the board source is
+  # untouched. SUPERSEDES round 1's journal-absent carve-out: the journal
+  # source is no longer consulted by this query at all (see the header
+  # comment above and the PR body).
+  if [ "$tst" = "absent" ]; then
+    jq -cn '{query:"stale-claims", status:"unknown", reason:"tmux source is absent (no tmux binary or no server - liveness cannot be established)", findings:"unknown"}'
     return 0
   fi
   jq -c '
     (.edges | map(select(.type=="claimed_by"))) as $claims
-    | (.nodes | map(select(.type=="Session")) | map(.id)) as $sessions
+    | (.edges | map(select(.type=="marked_by")) | map(.from)) as $marked
     | { query:"stale-claims", status:"ok",
-        findings: [ $claims[] | .to as $sid | select(($sessions | index($sid)) == null) | {issue:.from, session:$sid} ] }
+        findings: [ $claims[] | .from as $iid | select(($marked | index($iid)) == null) | {issue:$iid, session:.to} ] }
   ' <<<"$snap"
 }
 

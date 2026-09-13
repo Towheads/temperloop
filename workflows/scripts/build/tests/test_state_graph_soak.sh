@@ -182,22 +182,25 @@ record="$(_sg_soak_run "$BOARD")"
 echo "PASS: soak — a #N embedded in a flagged line's TITLE or a stderr warning is never mistaken for a flagged item ref"
 
 # =============================================================================
-# a dead-session claim stamp (temperloop#1978, this item's day-1
+# a claim with no live tmux marker (temperloop#1978, this item's day-1
 # #1225/#1111/#1048/#1047 shape): surfaces in stale-claims on BOTH sides and
 # is correctly ABSENT from status-drift's own drift_query_set — a claimed,
 # in-progress issue trips neither of status-drift's own open-domain finding
 # kinds (it is neither unclaimed-in-progress nor claimed-but-not-in-progress).
 #
-# The journal here is seeded OK with a genuinely DIFFERENT live session
-# (temperloop#1980: this block tests "session present in the journal but not
-# THIS one" — distinct from "journal absent", which is its own case below
-# and must never be conflated with a real dead-session finding).
+# tmux is seeded OK (a reachable server) but holds NO marker for issue #20 —
+# temperloop#1980 round 2: tmux, not the journal, is stale-claims's liveness
+# oracle now. The journal is deliberately left at its absent default here to
+# prove it plays no role in this verdict at all (round 1 keyed this same
+# scenario off a journal Session node instead — that was the bug).
 # =============================================================================
-export SPEND_TRANSCRIPT_ROOT="$TMP/tr-dead-session"
-mkdir -p "$SPEND_TRANSCRIPT_ROOT/proj1/subagents"
-cat > "$SPEND_TRANSCRIPT_ROOT/proj1/subagents/agent-live.jsonl" <<'JSONL'
-{"sessionId":"mini-1:aliveses","step":"pr-open","outcome":"PR_OPENED"}
-JSONL
+_sg_tmux() {
+  case "$1" in
+    list-sessions) return 0 ;;
+    list-windows) return 0 ;;  # reachable server, zero markers held
+    *) return 1 ;;
+  esac
+}
 _board_gh() {
   case "$1 $2" in
     "issue list")
@@ -210,9 +213,8 @@ _board_gh() {
     *) echo "test _board_gh: unhandled '$1 $2'" >&2; return 3 ;;
   esac
 }
-# Journal is OK (a real Session:mini-1:aliveses node), but no journal
-# Session node named "mini-1:deadbeef" -> stale-claims (board + journal)
-# flags #20 as a claim naming a session absent from an ESTABLISHED journal.
+# tmux is reachable but no window holds @claimed_issue for #20 -> stale-claims
+# (board + tmux) flags #20 as a claim naming an issue with no live marker.
 _sg_reconcile() {
   cat <<'EOT'
 stale claims (In Progress, stamped to a dead same-host session — park by hand):
@@ -221,13 +223,13 @@ EOT
 }
 _sg_soak_day() { echo "2026-01-06"; }
 record="$(_sg_soak_run "$BOARD")"
-[ "$(class_field stale-claims drift_query_set "$record")" = '[20]' ] || fail "dead-session stale-claims drift_query_set (got: $record)"
-[ "$(class_field stale-claims reconcile_set "$record")" = '[20]' ] || fail "dead-session stale-claims reconcile_set (got: $record)"
-[ "$(jq -r '.classes["stale-claims"].diff.agree' <<<"$record")" = "true" ] || fail "dead-session stale-claims diff.agree should be true (got: $record)"
+[ "$(class_field stale-claims drift_query_set "$record")" = '[20]' ] || fail "no-marker stale-claims drift_query_set (got: $record)"
+[ "$(class_field stale-claims reconcile_set "$record")" = '[20]' ] || fail "no-marker stale-claims reconcile_set (got: $record)"
+[ "$(jq -r '.classes["stale-claims"].diff.agree' <<<"$record")" = "true" ] || fail "no-marker stale-claims diff.agree should be true (got: $record)"
 [ "$(class_field status-drift drift_query_set "$record")" = '[]' ] || fail "a claimed in-progress issue must NOT surface in status-drift's drift_query_set (got: $record)"
 [ "$(class_field status-drift reconcile_set "$record")" = '[]' ] || fail "a dead-session claim stamp line must NOT be attributed to status-drift's reconcile_set (got: $record)"
-echo "PASS: soak — a dead-session claim stamp (journal OK, session genuinely not in it) surfaces in stale-claims (both sides agree) and is absent from status-drift on either side"
-export SPEND_TRANSCRIPT_ROOT="$TMP/no-such-transcripts"  # restore journal-absent default for the remaining cases
+echo "PASS: soak — a claim with no live tmux marker surfaces in stale-claims (both sides agree) and is absent from status-drift on either side"
+_sg_tmux() { return 1; }  # restore tmux-absent default for the remaining cases
 
 # =============================================================================
 # a closed issue still wearing an fnd:status:* label (temperloop#1978, this
@@ -235,11 +237,17 @@ export SPEND_TRANSCRIPT_ROOT="$TMP/no-such-transcripts"  # restore journal-absen
 # board source's own closed-issue residue read vs. reconcile's own "residual
 # status labels on closed issues" class.
 #
-# Journal seeded OK (reusing the live-session fixture above) so the
-# "must NOT surface in stale-claims" assertion below is a real empty-set
-# read, not journal-absent's own "unknown" (temperloop#1980) masking it.
+# tmux seeded OK (reachable, zero markers) so the "must NOT surface in
+# stale-claims" assertion below is a real empty-set read, not tmux-absent's
+# own "unknown" (temperloop#1980 round 2) masking it.
 # =============================================================================
-export SPEND_TRANSCRIPT_ROOT="$TMP/tr-dead-session"
+_sg_tmux() {
+  case "$1" in
+    list-sessions) return 0 ;;
+    list-windows) return 0 ;;
+    *) return 1 ;;
+  esac
+}
 _board_gh() {
   case "$1 $2" in
     # a real, unrelated OPEN issue alongside the closed one — the primary
@@ -272,16 +280,18 @@ record="$(_sg_soak_run "$BOARD")"
 [ "$(jq -r '.classes["status-drift"].diff.agree' <<<"$record")" = "true" ] || fail "closed-residue status-drift diff.agree should be true (got: $record)"
 [ "$(class_field stale-claims drift_query_set "$record")" = '[]' ] || fail "a closed status-label residue must NOT surface in stale-claims (got: $record)"
 echo "PASS: soak — a closed issue still wearing an fnd:status:* label surfaces in status-drift on both sides (the #158 shape)"
-export SPEND_TRANSCRIPT_ROOT="$TMP/no-such-transcripts"  # restore journal-absent default for the remaining cases
+_sg_tmux() { return 1; }  # restore tmux-absent default for the remaining cases
 
 # =============================================================================
-# journal source ABSENT (temperloop#1980, the defect this item fixes): a
-# LIVE claim must never be misread as stale merely because no journal files
-# exist. stale-claims' own class reads "unknown" — even when reconcile.sh's
-# INDEPENDENT read (its own liveness check, unrelated to this journal
-# source) happens to name the very same issue — never folded into a false
-# agreement, and never a concrete drift_query_set computed against an
-# effectively-empty Session list.
+# tmux source ABSENT (temperloop#1980 round 2, the defect this item fixes): a
+# LIVE claim must never be misread as stale merely because no tmux server is
+# reachable. stale-claims' own class reads "unknown" — even when
+# reconcile.sh's INDEPENDENT read (its own liveness check, unrelated to this
+# tmux source) happens to name the very same issue — never folded into a
+# false agreement, and never a concrete drift_query_set computed against an
+# effectively-empty marker list. (Round 1 keyed this same scenario off the
+# journal source instead; superseded — tmux is now the sole oracle, so the
+# journal stays at its absent default here too and is simply irrelevant.)
 # =============================================================================
 _board_gh() {
   case "$1 $2" in
@@ -303,10 +313,10 @@ EOT
 }
 _sg_soak_day() { echo "2026-01-08"; }
 record="$(_sg_soak_run "$BOARD")"
-[ "$(class_field stale-claims drift_query_set "$record")" = '"unknown"' ] || fail "journal-absent stale-claims drift_query_set must read the literal string 'unknown' (got: $record)"
-[ "$(class_field stale-claims diff "$record")" = '"unknown"' ] || fail "journal-absent stale-claims diff must read 'unknown' — never folded into a false agreement with reconcile.sh's independent read (got: $record)"
-[ "$(class_field stale-claims reconcile_set "$record")" = '[30]' ] || fail "journal-absent stale-claims reconcile_set must still carry reconcile.sh's own independent (unaffected) read (got: $record)"
-echo "PASS: soak — a journal-absent read makes stale-claims' own class 'unknown', never a false agreement/disagreement with reconcile.sh's independent read (temperloop#1980)"
+[ "$(class_field stale-claims drift_query_set "$record")" = '"unknown"' ] || fail "tmux-absent stale-claims drift_query_set must read the literal string 'unknown' (got: $record)"
+[ "$(class_field stale-claims diff "$record")" = '"unknown"' ] || fail "tmux-absent stale-claims diff must read 'unknown' — never folded into a false agreement with reconcile.sh's independent read (got: $record)"
+[ "$(class_field stale-claims reconcile_set "$record")" = '[30]' ] || fail "tmux-absent stale-claims reconcile_set must still carry reconcile.sh's own independent (unaffected) read (got: $record)"
+echo "PASS: soak — a tmux-absent read makes stale-claims' own class 'unknown', never a false agreement/disagreement with reconcile.sh's independent read (temperloop#1980 round 2)"
 
 # =============================================================================
 # "never a false agreement over unknown"
@@ -315,6 +325,21 @@ echo "PASS: soak — a journal-absent read makes stale-claims' own class 'unknow
 # drift_query_set/diff must read "unknown", never an empty array that would
 # look like real agreement. unlinked-prs/orphan-worktrees, which never
 # depend on board, stay "not-covered" regardless.
+#
+# tmux is seeded OK here (reachable, zero markers) — DELIBERATELY, so the
+# board guard inside _sg_query_stale_claims is the ONLY thing that can
+# produce `unknown` for this class on this day. Without this, tmux's own
+# absent default would independently force `unknown` too, and this
+# assertion would stay green even if the board-degraded check inside
+# _sg_query_stale_claims were deleted outright — decorative coverage
+# (temperloop#1980 round 2 review finding).
+_sg_tmux() {
+  case "$1" in
+    list-sessions) return 0 ;;
+    list-windows) return 0 ;;
+    *) return 1 ;;
+  esac
+}
 _board_gh() { return 7; }
 _sg_reconcile() { echo "In sync: every board item's status matches its GitHub state; no orphaned or stale claims."; }
 _sg_soak_day() { echo "2026-01-03"; }
@@ -323,7 +348,8 @@ record="$(_sg_soak_run "$BOARD")"
 [ "$(class_field status-drift diff "$record")" = '"unknown"' ] || fail "degraded board source should make status-drift diff the literal string unknown (got: $record)"
 [ "$(class_field stale-claims drift_query_set "$record")" = '"unknown"' ] || fail "degraded board source should make stale-claims drift_query_set the literal string unknown too (got: $record)"
 [ "$(class_field unlinked-prs reconcile_set "$record")" = '"not-covered"' ] || fail "unlinked-prs reconcile_set stays not-covered even when board is degraded (got: $record)"
-echo "PASS: soak — a degraded board source reads each affected class's drift_query_set/diff as 'unknown', never a false empty agreement"
+echo "PASS: soak — a degraded board source reads each affected class's drift_query_set/diff as 'unknown', never a false empty agreement (board guard, not a tmux-absent freebie)"
+_sg_tmux() { return 1; }  # restore tmux-absent default for the remaining cases
 
 # A failing _sg_reconcile invocation degrades BOTH mapped classes'
 # reconcile_set/diff independently of the board source (one reconcile.sh

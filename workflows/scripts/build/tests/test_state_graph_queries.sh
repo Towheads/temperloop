@@ -126,63 +126,79 @@ out="$(_sg_query_status_drift "$SNAP_STATUS_DRIFT_CLOSED")"
 echo "PASS: status-drift — a closed issue still wearing an fnd:status:* label surfaces as closed_with_status_label, not conflated with the open-domain kinds"
 
 # =============================================================================
-# stale-claims — claimed_by edges naming a Session absent from the journal
-# source (board + journal)
+# stale-claims — claimed_by edges naming an Issue with no matching marked_by
+# edge (board + tmux; temperloop#1980 round 2 — tmux is the liveness oracle,
+# the SAME @claimed_issue marker source reconcile.sh's own claim-liveness
+# lens checks, never the journal's step-outcome ledger)
 # =============================================================================
 
 SNAP_STALE_CLAIMS='{
-  "sources": {"board":{"status":"ok"},"journal":{"status":"ok"}},
+  "sources": {"board":{"status":"ok"},"tmux":{"status":"ok"}},
   "nodes": [
-    {"type":"Session","id":"Session:live1"}
+    {"type":"Marker","id":"Marker:@1","window":"@1","display":"#1"}
   ],
   "edges": [
-    {"type":"claimed_by","from":"Issue:1","to":"Session:live1"},
-    {"type":"claimed_by","from":"Issue:2","to":"Session:ghost2"}
+    {"type":"claimed_by","from":"Issue:1","to":"Session:mini-1:live1"},
+    {"type":"marked_by","from":"Issue:1","to":"Marker:@1"},
+    {"type":"claimed_by","from":"Issue:2","to":"Session:mini-1:ghost2"}
   ]
 }'
-GOLDEN_STALE_CLAIMS='{"query":"stale-claims","status":"ok","findings":[{"issue":"Issue:2","session":"Session:ghost2"}]}'
+GOLDEN_STALE_CLAIMS='{"query":"stale-claims","status":"ok","findings":[{"issue":"Issue:2","session":"Session:mini-1:ghost2"}]}'
 out="$(_sg_query_stale_claims "$SNAP_STALE_CLAIMS")"
 [ "$out" = "$GOLDEN_STALE_CLAIMS" ] || fail "stale-claims golden mismatch (got: $out)"
-echo "PASS: stale-claims golden fixture — a claim naming a session absent from the journal"
+echo "PASS: stale-claims golden fixture — a claim naming an issue with no live tmux marker"
 
-# --- degraded (board, then journal) -> unknown ---------------------------
+# --- degraded (board, then tmux) -> unknown -------------------------------
 out="$(_sg_query_stale_claims "$(jq -c '.sources.board.status="error"' <<<"$SNAP_STALE_CLAIMS")")"
 [ "$(jq -r .status <<<"$out")" = "unknown" ] || fail "stale-claims board=error did not answer unknown (got: $out)"
 [ "$(jq -r .findings <<<"$out")" = "unknown" ] || fail "stale-claims board=error findings not 'unknown' (got: $out)"
-out="$(_sg_query_stale_claims "$(jq -c '.sources.journal.status="stale"' <<<"$SNAP_STALE_CLAIMS")")"
-[ "$(jq -r .status <<<"$out")" = "unknown" ] || fail "stale-claims journal=stale did not answer unknown (got: $out)"
-[ "$(jq -r .findings <<<"$out")" = "unknown" ] || fail "stale-claims journal=stale findings not 'unknown' (got: $out)"
-echo "PASS: stale-claims answers unknown (never []) when board or journal is error/stale"
+out="$(_sg_query_stale_claims "$(jq -c '.sources.tmux.status="stale"' <<<"$SNAP_STALE_CLAIMS")")"
+[ "$(jq -r .status <<<"$out")" = "unknown" ] || fail "stale-claims tmux=stale did not answer unknown (got: $out)"
+[ "$(jq -r .findings <<<"$out")" = "unknown" ] || fail "stale-claims tmux=stale findings not 'unknown' (got: $out)"
+echo "PASS: stale-claims answers unknown (never []) when board or tmux is error/stale"
 
-# --- journal ABSENT (temperloop#1980) -------------------------------------
-# The journal is stale-claims's liveness ORACLE: "no journal files" means
+# --- tmux ABSENT (temperloop#1980 round 2) --------------------------------
+# tmux is stale-claims's liveness ORACLE: "no tmux binary or no server" means
 # liveness cannot be established, not "nothing is live" — so an `absent`
-# journal source must answer `unknown`, never a concrete findings set
-# computed against an effectively-empty Session-node list (which would flag
-# every live claim as stale — the #1980 bug). Live evidence: soak drift_query
-# over-flagged issues #1910/#1938/#1970/#1978 as stale on a journal-absent
-# read; #1978 in particular carried the SAME session that ran the soak.
-SNAP_STALE_CLAIMS_ABSENT="$(jq -c '.sources.journal.status="absent"' <<<"$SNAP_STALE_CLAIMS")"
+# tmux source must answer `unknown`, never a concrete findings set computed
+# against an empty marker list (which would flag every live claim as stale —
+# the same shape of bug #1980 was originally filed over, one source over).
+SNAP_STALE_CLAIMS_ABSENT="$(jq -c '.sources.tmux.status="absent"' <<<"$SNAP_STALE_CLAIMS")"
 out="$(_sg_query_stale_claims "$SNAP_STALE_CLAIMS_ABSENT")"
-[ "$(jq -r .status <<<"$out")" = "unknown" ] || fail "stale-claims journal=absent did not answer unknown (got: $out)"
-[ "$(jq -r .findings <<<"$out")" = "unknown" ] || fail "stale-claims journal=absent findings not the literal string 'unknown' (got: $out)"
+[ "$(jq -r .status <<<"$out")" = "unknown" ] || fail "stale-claims tmux=absent did not answer unknown (got: $out)"
+[ "$(jq -r .findings <<<"$out")" = "unknown" ] || fail "stale-claims tmux=absent findings not the literal string 'unknown' (got: $out)"
 case "$(jq -r .reason <<<"$out")" in
-  *journal*) ;;
-  *) fail "stale-claims journal=absent reason does not name the journal source (got: $out)" ;;
+  *tmux*) ;;
+  *) fail "stale-claims tmux=absent reason does not name the tmux source (got: $out)" ;;
 esac
-echo "PASS: stale-claims journal=absent answers unknown with a journal-naming reason, never a set computed against an empty session list"
+echo "PASS: stale-claims tmux=absent answers unknown with a tmux-naming reason, never a set computed against an empty marker list"
 
-# The golden fixture above (Session:live1 claiming Issue:1) already proves a
-# claim stamped to an establishable-live session is excluded from stale
-# findings when the journal is `ok`; re-affirm it explicitly as its own
-# named case (acceptance: "a claim stamped to a session that IS establishable
-# as live is not reported as stale").
-out="$(_sg_query_stale_claims "$SNAP_STALE_CLAIMS")"
-[ "$(jq -c '[.findings[].issue]' <<<"$out")" = '["Issue:2"]' ] || fail "stale-claims live-claim regression: Issue:1 (claimed by live1) must never appear in findings (got: $out)"
-echo "PASS: stale-claims — a claim stamped to a session establishable as live (Session:live1) is not reported as stale"
+# --- the round-2 HIGH's reproduction: a live session that has written NO
+# journal step-outcome record must never be reported as stale, even when the
+# journal source itself reads "ok" overall (because some OTHER session wrote
+# a record) — the exact false-positive shape from the issue's live evidence.
+# Under round 1 (journal-keyed liveness) this input flagged Issue:1 stale;
+# under tmux-keyed liveness it can't, because a marker names an ISSUE, not a
+# session, and never touches the journal at all. Repoints the round-1
+# assertion below (which only re-checked the golden fixture byte-for-byte —
+# zero added mutation coverage) at this genuinely uncovered case.
+SNAP_STALE_CLAIMS_NO_STEP_OUTCOME='{
+  "sources": {"board":{"status":"ok"},"tmux":{"status":"ok"},"journal":{"status":"ok"}},
+  "nodes": [
+    {"type":"Marker","id":"Marker:@1","window":"@1","display":"#1"},
+    {"type":"Session","id":"Session:mini-1:other","steps":[{"step":"pr-open","outcome":"PR_OPENED"}]}
+  ],
+  "edges": [
+    {"type":"claimed_by","from":"Issue:1","to":"Session:mini-1:live1"},
+    {"type":"marked_by","from":"Issue:1","to":"Marker:@1"}
+  ]
+}'
+out="$(_sg_query_stale_claims "$SNAP_STALE_CLAIMS_NO_STEP_OUTCOME")"
+[ "$(jq -c '.findings' <<<"$out")" = '[]' ] || fail "stale-claims live-claim regression: a live session (tmux marker held) with NO journal step-outcome record — journal itself 'ok' via an unrelated session — must never appear in findings (got: $out)"
+echo "PASS: stale-claims — a live session holding a claim with no step-outcome record is not reported as stale (liveness is decided by the tmux marker alone, never the journal)"
 
 # --- scoping regression: status-drift's own board=absent reading is
-# UNCHANGED by the local journal-absent carve-out above (temperloop#1980
+# UNCHANGED by the local tmux-liveness carve-out above (temperloop#1980
 # acceptance: "_sg_degraded is NOT widened ... status-drift ... keep today's
 # 'absent = nothing found' semantics"). board=absent is not error/stale, so
 # status-drift must still compute a normal `ok` result, never `unknown` —
