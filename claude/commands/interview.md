@@ -1,5 +1,5 @@
 ---
-description: Standalone frontier-round interview — turn a topic, a knowledge-store pointer, or an issue number into a `## Shared understanding` section (the problem in the operator's words, facts the facilitator found itself, numbered decisions, deferrals, risks) by asking the design tree's whole frontier each round through `AskUserQuestion` calls of at most four questions, recommended option first, facts looked up rather than asked. `/workshop` runs it inline as Phase 1; usable by hand on a plan, a decision, or a bug description with no brief behind it. Operator-present only — no unattended arm.
+description: Standalone frontier-round interview — turn a topic, a knowledge-store pointer, or an issue number into a `## Shared understanding` section (the problem in the operator's words, facts the facilitator found itself, numbered decisions, deferrals, risks) by asking the design tree's whole frontier each round through `AskUserQuestion` calls of at most four questions, recommended option first, facts looked up rather than asked. Designed as the Phase-1 caller seam for `/workshop` — provisional, pending the workshop rewrite (temperloop#1958, `workshop-two-phase-rewrite`, L3 of temperloop#1938); until that lands it is hand-run only, on a plan, a decision, or a bug description with no brief behind it. Operator-present only — no unattended arm.
 argument-hint: "<topic | <pointer-note> | <issue#>> [--into <note>] [--first-question <block>] [--check-questions <block>]"
 ---
 
@@ -21,9 +21,15 @@ it replaces took 26 modal stops on one brief, 10 of them acknowledgement-
 only, with about a minute of dead time between each; the prototype of this
 shape took 5 calls, 0 acknowledgement-only, on the same day.
 
-`/workshop` Phase 1 is this command executed inline against a `Designs/`
-brief (see § Invocation contract); a hand-run lands the same section in a
-`Context/` note with no brief created around it.
+This command is designed as `/workshop`'s Phase-1 caller seam — executed
+inline against a `Designs/` brief with the parameter block below (see
+§ Invocation contract). **Provisional — pending the workshop rewrite
+(temperloop#1958, `workshop-two-phase-rewrite`, L3 of temperloop#1938).**
+Until that item lands, `claude/commands/workshop.md` does not call this
+command and `/interview` is hand-run only: a hand-run lands the same
+section in a `Context/` note with no brief created around it. The
+parameters and § Invocation contract are the seam that rewrite builds
+against, fixed here first so the caller has a stable callee.
 
 ## Inputs
 
@@ -60,8 +66,9 @@ so a renamed flag desyncs them with no runtime error to catch it.
   **Q1 of round 1**, ahead of the frontier's own questions and inside the
   same call. The block is a fully formed question: text, two to four
   options with the recommended one first, and optionally, per option, a
-  `then:` action the *caller* performs on return (e.g. `/workshop`'s
-  premise gate names `drop` as a terminating answer). The interview asks
+  `then:` action the *caller* performs on return (e.g. the pending
+  `/workshop` caller's premise gate is designed to name `drop` as a
+  terminating answer). The interview asks
   and records it exactly like any other question (it becomes `D1`); when
   the chosen option carries a terminating `then:`, the interview persists
   that one decision and returns immediately — the caller runs the action.
@@ -70,8 +77,8 @@ so a renamed flag desyncs them with no runtime error to catch it.
   own question, so the whole check stays one call of at most four. Each is
   a fully formed question in the same shape. Their answers are recorded in
   the call's working-notes entry and returned to the caller verbatim; the
-  caller decides what they mean (`/workshop` uses them for the review
-  tier).
+  caller decides what they mean (the pending `/workshop` caller is
+  designed to use them for the review tier).
 
 Absent parameters take their defaults; a parameter this spec does not name
 is an error to surface, not to guess at.
@@ -348,7 +355,8 @@ Return to the caller (or, on a hand-run, end) with:
 
 On a hand-run, print the tally under a one-line completion summary
 (`claude/CLAUDE.kernel.md` § Communication conventions) with the note path
-in full. A caller folds the tally into its own summary (`/workshop` Step 6).
+in full. A caller folds the tally into its own summary (the pending `/workshop`
+caller's closing summary, once temperloop#1958 lands).
 
 ## Output
 
@@ -399,9 +407,13 @@ note alone:
   the questions the line names, and continue from 2.6. Answers not in the
   note were never recorded; re-asking is the honest recovery, not a
   duplicate;
-- **no pending line and a non-empty frontier** (decisions the tree needs
-  that no `D<n>` settles): continue at 2.1 with round `N+1`, where `N` is
-  the last round the interview record names;
+- **no pending line and a non-empty frontier**: first rebuild the design
+  tree per Step 1.4 from the seed plus every persisted `D<n>` (the tree
+  lives in working memory and is gone with the session that built it —
+  the frontier cannot be computed from the note alone), then recompute
+  the frontier; if decisions the tree needs remain that no `D<n>`
+  settles, continue at 2.1 with round `N+1`, where `N` is the last round
+  the interview record names;
 - **no pending line, an empty frontier, and the last `### Interview
   record` line is an ordinary round** (not the check): the rounds finished
   but the check never opened — a crash in the window between 2.7's empty
