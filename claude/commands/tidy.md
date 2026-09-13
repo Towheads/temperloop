@@ -30,7 +30,7 @@ Every step in this command has a real-time counterpart that runs during the live
 | Per-epic retro mint | `claude/commands/build.md` § `Mint the per-epic retro tracker` | `Retro mint backstop` |
 | Route a conversational fix request through /fix | `claude/CLAUDE.md` § `Route a conversational fix request through /fix` | `Unlinked fix PRs` |
 | Disconfirm a root-cause diagnosis before institutionalizing it | `claude/CLAUDE.md` § `Disconfirm a root-cause diagnosis before institutionalizing it` | `Un-disconfirmed diagnoses` |
-| Coverage-walk collaborative engagement | `claude/commands/workshop.md` § `Step 2 — Coverage walk` | `All-accepted-untouched briefs` |
+| Delta-approval collaborative engagement | `claude/commands/workshop.md` § `Step 3.7 — Delta report` | `All-accepted-untouched briefs` |
 | Plan-critical artifact availability | `claude/commands/assess.md` § `Artifact-availability audit` | `Undurable plan artifacts` |
 | Response-level grounding citations | `claude/CLAUDE.md` § `Response-level grounding citations` | `Missing grounding citations` |
 
@@ -299,7 +299,7 @@ Skip an epic already recorded by a prior sweep (match on board + issue number un
 
 ### All-accepted-untouched briefs
 
-Backstop for the live `/workshop` Step 2 coverage-walk rule (`claude/commands/workshop.md` § Step 2 — Coverage walk): the walk is "collaborative by construction — every decision that reaches the brief is presented with its reasoning and can be contested before it is recorded — there is no minimal-interaction path." Nothing live can force genuine engagement at each stop, though — an operator who accepts every stop without ever contesting one is, in the moment, indistinguishable from one who engaged and simply found nothing to challenge. This sweep is the periodic, out-of-band tell: it reads each **ratified** brief's challenge record (the `### Challenge record` subheading, `claude/design-schema.md` § Challenge record) and flags the pattern that shape would leave — every single stop line's verdict reading bare `accepted`, with zero `challenged → revised` or `operator-edited` verdicts anywhere in the record. That pattern is not itself a defect (a genuinely sound design can legitimately draw no challenges), but it is worth a human glance.
+Backstop for the live `/workshop` delta-approval rule (`claude/commands/workshop.md` § Step 3.7 — Delta report): every dimension is rendered with its full current text and its before/after deltas, each cluster question carries that Δ inside its own block, and each dimension takes **one verdict of its own** — a contest is always available. Nothing live can force genuine engagement, though — an operator who accepts every dimension without ever contesting one is, in the moment, indistinguishable from one who engaged and simply found nothing to challenge. This sweep is the periodic, out-of-band tell: it reads each **ratified** brief's challenge record (the `### Challenge record` subheading, `claude/design-schema.md` § Challenge record) and flags the pattern that shape would leave — every single stop line's verdict reading bare `accepted`, with zero `challenged → revised` or `operator-edited` verdicts anywhere in the record. That pattern is not itself a defect (a genuinely sound design can legitimately draw no challenges), but it is worth a human glance.
 
 **Scope — ratified briefs with a populated record only.** List `Designs/*.md` in the knowledge store (`Glob` on the resolved path) and read each brief's frontmatter. Skip any `status: draft` or `status: dropped` brief (the record isn't finished, or the case is closed). Skip a ratified brief with **no** `### Challenge record` subheading at all — the schema's own migration carve-out: either a pre-record brief, or one where every dimension's first look sailed through with nothing worth logging at all (a valid, non-defective state per that section) — either way there are no per-stop verdicts to inspect for the ALL-ACCEPTED pattern.
 
@@ -309,7 +309,7 @@ For each newly-found hit, append one `### open` entry to the pending-decisions s
 
 ```markdown
 ### <YYYY-MM-DD HH:MM> · tidy all-accepted-untouched sweep · Designs/<note>
-- **Decision:** brief "<note>" ratified with every coverage-walk stop `accepted` and zero challenges — genuinely engaged, or rubber-stamped?
+- **Decision:** brief "<note>" ratified with every challenge-record stop `accepted` and zero challenges — genuinely engaged, or rubber-stamped?
 - **Default taken:** leave as-is (report-only; brief not edited, not reopened, not blocked)
 - **Disposition:** auto-taken (unattended; no live operator)
 - **Status:** open
