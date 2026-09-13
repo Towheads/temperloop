@@ -371,13 +371,17 @@ globalThis.tsvRows = (t) => String(t ?? '')
   .map((l) => l.replace(/\r$/, ''))
   .filter((l) => l.trim() && !l.trim().startsWith('#'))
   .length;
-// tsvChecksum(text) — temperloop#1982: the harness's OWN independent
-// restatement of reviewDiffCmd's content-checksum rule (SAME row filter as
-// tsvRows, then a running sum of character codes over each kept line plus
-// its own trailing newline), deliberately re-derived here rather than
-// imported from the .mjs — same rationale as tsvRows above, so a fixture's
-// `tsv_checksum` is computed from ITS OWN `tsv` text, not a copy of
-// production's summing code that could silently drift alongside it.
+// tsvChecksum(text) — temperloop#1982, POSITION-WEIGHTED as of round 2: the
+// harness's OWN independent restatement of reviewDiffCmd's content-checksum
+// rule (SAME row filter as tsvRows, then a running sum of character codes,
+// each weighted by its 1-based position, over each kept line plus its own
+// trailing newline), deliberately re-derived here rather than imported from
+// the .mjs — same rationale as tsvRows above, so a fixture's `tsv_checksum`
+// is computed from ITS OWN `tsv` text, not a copy of production's summing
+// code that could silently drift alongside it. Position-weighting (not a
+// bare sum) is load-bearing: a bare sum is commutative and cannot see two
+// same-length rows trading places — see the K1982 position-sensitive test
+// below for the reproduction this defeats.
 globalThis.tsvChecksum = (t) => {
   const canon = String(t ?? '')
     .split('\n')
@@ -386,7 +390,7 @@ globalThis.tsvChecksum = (t) => {
     .map((l) => l + '\n')
     .join('');
   let sum = 0;
-  for (let i = 0; i < canon.length; i++) sum += canon.charCodeAt(i);
+  for (let i = 0; i < canon.length; i++) sum += canon.charCodeAt(i) * (i + 1);
   return sum;
 };
 // reviewResolutionFailure — the SAME two-marker shape machineryAgent()'s own
@@ -6648,6 +6652,136 @@ console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
 "
 
 # ============================================================================
+# TEST (K1982 round 2 — POSITION-SENSITIVE): the round-1 checksum (a bare sum
+#   of character codes) is COMMUTATIVE — invariant under any rearrangement of
+#   the same characters. The round-2 reviewer reproduced this against this
+#   repo's OWN tracked reviewer-routing.tsv: swapping the reviewer+path
+#   columns between the \`.sh\` row and the \`docs/**\` row (same row count,
+#   same overall character multiset) left the bare-sum checksum
+#   byte-IDENTICAL (67458 before and after) — the K1982-round-1 test above
+#   corrupts \`.sh -> docs-reviewer\` WITHOUT compensating elsewhere, which
+#   changes the character inventory and so is a strawman for THIS threat
+#   model: a same-inventory row REASSIGNMENT, the exact shape of the
+#   temperloop#1978 round-4 incident (a .sh diff silently routed to
+#   docs-reviewer alone). This case builds the transposition directly off the
+#   LIVE tracked tsv (not a fixture restatement), asserts the row count is
+#   unchanged, asserts the position-weighted checksum DIFFERS, and asserts
+#   the guard escalates content_mismatch — never silently computing a roster
+#   off the transposed table.
+# ============================================================================
+run_node_case "K1982 round 2 position-sensitive: transposing reviewer+path columns between the .sh and docs/** rows of the REAL tsv (same row count, same character multiset) changes the checksum and escalates" "
+$PREAMBLE
+const tsv = readFileSync('$REPO_ROOT/workflows/scripts/config/reviewer-routing.tsv', 'utf8');
+const TAB = String.fromCharCode(9);
+const lines = tsv.split('\\n');
+const shIdx = lines.findIndex(l => l.startsWith('.sh' + TAB));
+const docsIdx = lines.findIndex(l => l.startsWith('docs/**' + TAB));
+let reason = null;
+if (shIdx < 0 || docsIdx < 0) {
+  reason = 'setup: the live tsv no longer carries a .sh row and/or a docs/** row — this case needs both';
+} else {
+  const shCols = lines[shIdx].split(TAB);
+  const docsCols = lines[docsIdx].split(TAB);
+  // Transpose columns 2+3 (reviewer name, agent path) between the two rows —
+  // column 1 (the key) stays put on each row, exactly the reviewer's
+  // reproduction: '.sh -> docs-reviewer' and 'docs/** -> shell-reviewer'.
+  const swapped = lines.slice();
+  swapped[shIdx] = [shCols[0], docsCols[1], docsCols[2]].join(TAB);
+  swapped[docsIdx] = [docsCols[0], shCols[1], shCols[2]].join(TAB);
+  const swappedTsv = swapped.join('\\n');
+
+  if (tsvRows(swappedTsv) !== tsvRows(tsv)) {
+    reason = 'setup: the transposition must preserve row count or this case tests path A, not this threat model: ' + tsvRows(tsv) + ' vs ' + tsvRows(swappedTsv);
+  } else if (tsvChecksum(swappedTsv) === tsvChecksum(tsv)) {
+    reason = 'THE DEFECT ITSELF: a same-row-count, same-inventory row transposition must change a position-sensitive checksum, but it did not — ' + tsvChecksum(tsv);
+  } else {
+
+setMachinery('rowswap-a',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/rowswap-a' },
+  // tsv_checksum is the relayed SOURCE-FILE checksum (the REAL, untransposed
+  // tsv) — reliable, like tsv_rows. tsv itself is the transposed content the
+  // relay actually delivered, same row count, same character multiset.
+  { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/foo.sh'], tsv: swappedTsv, tsv_rows: tsvRows(swappedTsv), tsv_checksum: tsvChecksum(tsv) },
+  { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/foo.sh'], tsv: swappedTsv, tsv_rows: tsvRows(swappedTsv), tsv_checksum: tsvChecksum(tsv) },
+);
+happyWorker('rowswap-a');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'rowswap-a', branch: 'build/rowswap-a', title: 'Touch a shell script', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+const diffCalls = callLog.filter(c => (c.opts.label||'').startsWith('review-diff:rowswap-a'));
+if (diffCalls.length !== 2) reason = 'expected exactly one retry (2 review-diff calls total), got ' + diffCalls.length;
+else if ((result.parked ?? []).length !== 0) reason = 'a persistent content mismatch must never park the item: ' + JSON.stringify(result);
+else if ((result.escalations ?? []).length !== 1) reason = 'expected exactly 1 escalation: ' + JSON.stringify(result.escalations);
+else if (result.escalations[0].kind !== 'review-diff-error') reason = 'wrong escalation kind: ' + result.escalations[0].kind;
+else {
+  const payload = result.escalations[0].payload;
+  const cm = payload.content_mismatch;
+  if (!cm || typeof cm.expected !== 'number' || cm.expected === cm.got) reason = 'escalation payload must name a real checksum disagreement: ' + JSON.stringify(payload);
+  else if (payload.mismatch) reason = 'a row-count-VALID case must never carry the row-count mismatch field too: ' + JSON.stringify(payload);
+}
+const reviewCalls = callLog.filter(c => isReviewCall(c.opts));
+if (!reason && reviewCalls.length !== 0) reason = 'the guard must catch a same-inventory row transposition BEFORE any reviewer roster is computed from it — shell-reviewer must never silently miss: ' + JSON.stringify(reviewCalls.map(c => c.opts.agentType));
+  }
+}
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+# ============================================================================
+# TEST (K1982 round 2 — bash/JS parity, EXECUTED not asserted): round 1's
+#   parity claim ("verified byte-for-byte identical") was prose only — no
+#   test ran the actual bash side; every fixture recomputed the checksum
+#   through the harness's OWN JS reimplementation. This case runs the REAL
+#   reviewDiffCmd()-generated bash pipeline (via bash, against this repo's
+#   own working tree) and compares its tsv_checksum against tsvChecksum(),
+#   both loaded fresh from the production .mjs source (not the harness's
+#   independent restatement above) — a genuine cross-implementation check,
+#   not a copy of one side asserting agreement with itself.
+# ============================================================================
+run_node_case "K1982 round 2 bash/JS parity: reviewDiffCmd's REAL bash pipeline (executed via bash, not reimplemented) agrees with tsvChecksum() over the SAME tracked file" "
+$PREAMBLE
+const { execFileSync } = await import('node:child_process');
+let reason = null;
+const internalsSrc = MJS_SRC.replace(/return await buildLevel\(\);\s*\$/, 'return { reviewDiffCmd, tsvChecksum };');
+if (internalsSrc === MJS_SRC) {
+  reason = 'internals-splice failed: the literal tail \\'return await buildLevel();\\' was not found in build-level.mjs — this test needs updating alongside that refactor';
+} else {
+  globalThis.args = '{}'; // module-scope \`const input = JSON.parse(args)\` needs SOME value
+  const internalsFn = new AsyncFunction(internalsSrc);
+  const { reviewDiffCmd, tsvChecksum: prodTsvChecksum } = await internalsFn();
+  const wt = '$REPO_ROOT';
+  const script = reviewDiffCmd(wt);
+  let out;
+  try {
+    out = execFileSync('bash', ['-c', script], { encoding: 'utf8', cwd: wt });
+  } catch (e) {
+    reason = 'the REAL bash pipeline threw: ' + ((e && e.message) || e);
+  }
+  if (!reason) {
+    const outLines = out.trim().split('\\n').filter(Boolean);
+    let parsed;
+    try { parsed = JSON.parse(outLines[outLines.length - 1]); }
+    catch (e) { reason = 'the real bash pipeline did not emit parseable JSON on its last line: ' + out; }
+    if (!reason) {
+      if (parsed.outcome !== 'REVIEW_DIFF') reason = 'unexpected outcome from the real bash pipeline: ' + JSON.stringify(parsed);
+      else if (typeof parsed.tsv_checksum !== 'number') reason = 'tsv_checksum missing/non-numeric from the REAL bash pipeline: ' + JSON.stringify(parsed);
+      else {
+        const realTsv = readFileSync(wt + '/workflows/scripts/config/reviewer-routing.tsv', 'utf8');
+        const jsChecksum = prodTsvChecksum(realTsv);
+        if (parsed.tsv_checksum !== jsChecksum) {
+          reason = 'PARITY BROKEN: the real bash pipeline computed tsv_checksum=' + parsed.tsv_checksum + ' but production tsvChecksum() computed ' + jsChecksum + ' over the IDENTICAL tracked file';
+        }
+      }
+    }
+  }
+}
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+# ============================================================================
 # TEST (K1982 multi-match): build.md 3e's run-both rule ("A change matching
 #   more than one axis ... runs each matching reviewer") exercised in ONE
 #   review round against a diff that matches BOTH the tsv extension axis
@@ -6697,7 +6831,16 @@ grep -q 'tsv_checksum' "$MJS" \
   || fail "#1982: reviewDiffCmd must emit tsv_checksum alongside tsv_rows, and reviewDiffTsvGap must check it — the content guard against a relay copy that preserves row count but not content"
 grep -q 'content_mismatch' "$MJS" \
   || fail "#1982: a row-count-valid but checksum-mismatched tsv must escalate review-diff-error naming content_mismatch, distinct from the row-count mismatch field"
-echo "PASS: #1982 review-diff content-checksum guard — reviewDiffCmd emits tsv_checksum, reviewDiffTsvGap detects a row-count-valid but content-garbled tsv (path B), runReviewers retries once through the same command before escalating, and no roster is ever computed from a mismatched table"
+# Round 2: the checksum must be POSITION-SENSITIVE, not a bare (commutative)
+# sum — a commutative sum is blind to a same-row-count row REASSIGNMENT, the
+# exact corruption shape temperloop#1978 round 4 showed. Pinning the literal
+# weighting expression on BOTH sides (JS `* (i + 1)`, bash awk `s+=$i*n`)
+# guards against a regression back to round 1's bare-sum shape.
+grep -q 'canon.charCodeAt(i) \* (i + 1)' "$MJS" \
+  || fail "#1982 round 2: tsvChecksum() must be POSITION-WEIGHTED (index-multiplied), not a bare commutative sum — see tsvChecksum()'s own comment for the row-transposition it must catch"
+grep -Eq 's\+=\$i\*n' "$MJS" \
+  || fail "#1982 round 2: reviewDiffCmd's bash checksum pipeline must weight each byte by its running position (n), matching tsvChecksum()'s JS-side weighting — a bare od|awk sum is commutative"
+echo "PASS: #1982 review-diff content-checksum guard — reviewDiffCmd emits a POSITION-SENSITIVE tsv_checksum alongside tsv_rows, reviewDiffTsvGap detects a row-count-valid but content-garbled OR row-transposed tsv (path B), runReviewers retries once through the same command before escalating, and no roster is ever computed from a mismatched table"
 
 # --- K1976 static lockstep guard: the relay-drop retry-then-escalate wiring --
 grep -q 'function reviewDiffTsvGap' "$MJS" \

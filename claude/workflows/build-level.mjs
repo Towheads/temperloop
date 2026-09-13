@@ -2740,23 +2740,31 @@ async function deniedOrQuota(slug, payload, worktree) {
 // string, because SHA-256 needs a matching implementation on the JS side and
 // none existed — "no hashing primitive" meant no SHA-256, not that no check
 // is possible. `tsvChecksum()` below closes that gap with a checksum needing
-// no primitive at all: a plain sum of character codes over the SAME
-// row-count-filtered lines, expressible in pure arithmetic on both sides —
-// this bash pipeline (byte values via `od`, summed in awk) and tsvChecksum()
-// (JS char codes, summed in a loop) are independent implementations of the
-// identical algorithm, verified to agree byte-for-byte against this repo's
-// own reviewer-routing.tsv (including its non-ASCII comment-header
-// punctuation, which is excluded from the sum by the same comment/blank
-// filter tsv_rows already applies). A worktree that genuinely ships no tsv
+// no primitive at all: a POSITION-WEIGHTED sum of character codes over the
+// SAME row-count-filtered lines (temperloop#1982 round 2 — see tsvChecksum's
+// own comment for why position-sensitivity, not just a sum, is the point),
+// expressible in pure arithmetic on both sides — this bash pipeline (byte
+// values via `od`, weighted and summed in awk) and tsvChecksum() (JS char
+// codes, weighted and summed in a loop) are independent implementations of
+// the identical algorithm, verified (by an automated test that executes
+// THIS bash pipeline for real — test_workflow.sh, "bash/JS parity") to agree
+// against this repo's own reviewer-routing.tsv (including its non-ASCII
+// comment-header punctuation, which is excluded from the sum by the same
+// comment/blank filter tsv_rows already applies). The two sides agree only
+// while every DATA row stays pure ASCII (byte value == UTF-16 code unit) —
+// see reviewer-routing.tsv's own header for that constraint, which governs
+// data rows only; the comment header's non-ASCII punctuation is filtered out
+// before either side sums, so it never touches this. A worktree that
+// genuinely ships no tsv
 // emits `tsv:""`, `tsv_rows:0`, `tsv_checksum:0` — never an omitted `tsv`
 // key — so "missing" stays a signal of the relay dropping the field, not of
 // a legitimate no-tsv worktree.
 function reviewDiffCmd(wt) {
   const tsvPath = `${wt}/workflows/scripts/config/reviewer-routing.tsv`;
   // The row-filter awk program (blank/`#` lines stripped) is reused for BOTH
-  // tsv_rows (count) and tsv_checksum (byte-sum via `od`) — one filter
-  // definition, two consumers, so the two can never disagree on WHICH lines
-  // count.
+  // tsv_rows (count) and tsv_checksum (position-weighted byte-sum via `od`)
+  // — one filter definition, two consumers, so the two can never disagree
+  // on WHICH lines count.
   const rowFilterAwk =
     `BEGIN{c=0} { l=$0; sub(/\\r$/,"",l); t=l; gsub(/^[ \\t]+|[ \\t]+$/,"",t); if (t != "" && substr(t,1,1) != "#") print l }`;
   return [
@@ -2773,7 +2781,14 @@ function reviewDiffCmd(wt) {
     `if [ -f ${sq(tsvPath)} ]; then`,
     `  tsv_json="$(jq -R -s -c . < ${sq(tsvPath)})"`,
     `  tsv_rows="$(awk 'BEGIN{c=0} { l=$0; sub(/\\r$/,"",l); t=l; gsub(/^[ \\t]+|[ \\t]+$/,"",t); if (t != "" && substr(t,1,1) != "#") c++ } END{print c+0}' ${sq(tsvPath)})"`,
-    `  tsv_checksum="$(awk ${sq(rowFilterAwk)} ${sq(tsvPath)} | od -An -v -tu1 | awk '{for(i=1;i<=NF;i++) s+=$i} END{print s+0}')"`,
+    // POSITION-WEIGHTED (temperloop#1982 round 2): `n` is a running counter
+    // over EVERY byte of the row-filtered stream, NOT reset between od's own
+    // output lines — so each byte's contribution depends on where it sits,
+    // not just what it is. A bare sum (the round-1 shape) is commutative and
+    // therefore blind to two same-length rows trading places; weighting by
+    // position closes that — see tsvChecksum()'s own comment for the exact
+    // corruption shape this defeats.
+    `  tsv_checksum="$(awk ${sq(rowFilterAwk)} ${sq(tsvPath)} | od -An -v -tu1 | awk '{for(i=1;i<=NF;i++){n++; s+=$i*n}} END{print s+0}')"`,
     `else`,
     `  tsv_json='""'`,
     `  tsv_rows=0`,
@@ -2799,21 +2814,42 @@ function parseTsvRows(tsvText) {
     .map(([key, reviewer]) => ({ key: key.trim(), reviewer: reviewer.trim() }));
 }
 
-// tsvChecksum — temperloop#1982: a pure-arithmetic content checksum over the
-// SAME row-count-filtered lines parseTsvRows()'s first stage keeps (blank and
-// `#`-comment lines stripped), so a corrupted comment header (which carries
-// this repo's own non-ASCII punctuation, e.g. em dashes) never enters the
-// sum and cannot desync the two independent implementations of this
-// algorithm — this one, and reviewDiffCmd's bash pipeline (`od`-computed byte
-// values summed in awk). Needs no hashing primitive: it is a running sum of
-// character codes over each kept line plus its own trailing newline
-// (matching awk's `print` — ORS appended after every line, none added at
-// the very end beyond that), so a run over zero lines sums to 0. Verified to
-// agree with the bash side byte-for-byte against this repo's own
-// reviewer-routing.tsv. This is an INTEGRITY check against relay noise, not
-// a cryptographic one — collisions are not a concern here, only whether the
-// `tsv` string runReviewers() received is the same content reviewDiffCmd
-// actually read off the worktree.
+// tsvChecksum — temperloop#1982, made POSITION-SENSITIVE in round 2: a
+// pure-arithmetic content checksum over the SAME row-count-filtered lines
+// parseTsvRows()'s first stage keeps (blank and `#`-comment lines stripped),
+// so a corrupted comment header (which carries this repo's own non-ASCII
+// punctuation, e.g. em dashes) never enters the sum and cannot desync the
+// two independent implementations of this algorithm — this one, and
+// reviewDiffCmd's bash pipeline (`od`-computed byte values, weighted and
+// summed in awk).
+//
+// WHY POSITION-WEIGHTED, NOT A BARE SUM (round 1's shape): a bare sum of
+// character codes is COMMUTATIVE — invariant under any rearrangement of the
+// same characters. The round-2 reviewer reproduced this against this repo's
+// OWN tracked reviewer-routing.tsv: swapping the reviewer+path columns
+// between the `.sh` row and the `docs/**` row (same row count, same overall
+// character multiset — a plausible hand-copy slip, and the exact shape of
+// the temperloop#1978 round-4 incident: a .sh diff silently routed to
+// docs-reviewer) left the bare-sum checksum byte-IDENTICAL. Multiplying each
+// character's code by its 1-based position in the canonicalized stream
+// before summing breaks that: the SAME characters at DIFFERENT offsets sum
+// to a different total (verified against this repo's live tsv — see
+// test_workflow.sh's "K1982 position-sensitive: transposed columns" case).
+// This is still an INTEGRITY check against relay noise, not a cryptographic
+// one — collisions are not the concern, only whether the `tsv` string
+// runReviewers() received is the same content, in the same arrangement,
+// reviewDiffCmd actually read off the worktree.
+//
+// Needs no hashing primitive: canonicalize (kept lines, each with its own
+// trailing newline — matching awk's `print`, ORS appended after every line,
+// none added at the very end beyond that, so a run over zero lines sums to
+// 0), then `sum += code * (i + 1)` over that string. Verified — by an
+// automated test that executes reviewDiffCmd's REAL bash pipeline, not a
+// restated comment — to agree with the bash side against this repo's own
+// reviewer-routing.tsv (test_workflow.sh's "bash/JS parity" case). That
+// agreement holds only while every DATA row (not the comment header, which
+// is filtered out before either side sums) is pure ASCII — reviewer-routing
+// .tsv's own header names that constraint for whoever next edits a data row.
 function tsvChecksum(tsvText) {
   // Trimmed-emptiness filter (`l.trim()`, not bare `l`) — matches
   // reviewDiffCmd's bash `t != ""` check (`t` is the TRIMMED line) exactly,
@@ -2830,7 +2866,7 @@ function tsvChecksum(tsvText) {
     .map((l) => `${l}\n`)
     .join('');
   let sum = 0;
-  for (let i = 0; i < canon.length; i++) sum += canon.charCodeAt(i);
+  for (let i = 0; i < canon.length; i++) sum += canon.charCodeAt(i) * (i + 1);
   return sum;
 }
 function reviewGlobMatch(key, file) {
