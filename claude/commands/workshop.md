@@ -792,15 +792,18 @@ time.
    Ask (item 3 below). Re-read the brief's `### Challenge record` (working
    notes, 3.1.4) and enforce `claude/design-schema.md` § Record
    completeness's two rules verbatim — the single source of truth this
-   check reuses rather than restates: **(1)** every kernel dimension 0..16
-   carries at least one `walk` stop line (dimensions 0, 1, and 3 satisfy
-   this via their Step-1 seed — `source: step-1-seed`, written at the Step
-   1.3b premise-gate proceed for dimension 0 and the Step 1 intake confirm
-   for 1 and 3); **(2)** every `operator-edited` stop line carries a
-   verbatim `response:` field. `walkthrough` coverage stays opportunistic
-   and is never required per dimension. List any gap and stop, same shape
-   as checks 1 and 1b: return to Step 2 or 3.4 and complete the record
-   before ratifying.
+   check reuses rather than restates: **(1) stamp-gated delta
+   completeness** — when the brief's frontmatter carries `record_grammar:
+   delta`, every kernel dimension 0..16 carries at least one `delta` stop
+   line (`source: operator`); a brief with no `record_grammar` field is
+   legacy and exempt from this rule entirely, whatever kinds its record
+   carries, and a `delta`/`interview` stop line in such an unstamped brief
+   is itself a defect. **(2)** every `operator-edited` stop line carries a
+   verbatim `response:` field. `walk`/`walkthrough` stay valid, parsable
+   kinds and `walkthrough` coverage stays opportunistic, but neither is
+   ever required per dimension. List any gap and stop, same shape as
+   checks 1 and 1b: return to Step 2 or 3.4 and complete the record before
+   ratifying.
 
    **Migration carve-out.** A brief with NO `### Challenge record`
    subheading at all is exempt from rule (1) — never flagged — keyed on
@@ -813,10 +816,11 @@ time.
    carve-out.
 
    **Not excused.** Fixture
-   `workflows/scripts/tests/fixtures/design-briefs/challenge-record-walk-missing.md`
-   (ratified, marker present, dimension 6's `walk` line omitted) is NOT
-   excused and IS blocked — the loophole the record-start marker exists to
-   close: a crashed post-change walk masquerading as a migration case.
+   `workflows/scripts/tests/fixtures/design-briefs/challenge-record-delta-missing.md`
+   (stamped `record_grammar: delta`, ratified, marker present, dimension
+   6's `delta` line omitted) is NOT excused and IS blocked — the loophole
+   the record-start marker exists to close: a crashed post-change walk
+   masquerading as a migration case.
 2. **Contract sanity.** Re-read dimension 4's `Produces` / `Consumes` /
    `Acceptance`. If it reads as a summary rather than an actual contract —
    the kind of content `/assess`'s epic-decomposition mode would need to

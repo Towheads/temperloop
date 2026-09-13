@@ -533,16 +533,15 @@ change. `walk`/`walkthrough` stay valid, parsable kinds regardless
 (§ Challenge record) — this rule only says which kind a stamped brief's
 completeness is judged on.
 
-> **Provisional — pending temperloop#1938's follow-on validator item.** This <!-- cite: DS.18 class:schema-ahead-of-enforcement -->
-> rule states the target grammar this doc is the single source of truth
-> for; today's shipped `validate-design-brief.sh` still enforces this
-> rule's predecessor — every kernel dimension needs a `walk` stop line,
-> unconditionally — because `CHALLENGE_STOP_RE` (§ Challenge record) parses
-> `delta`/`interview` lines additively without yet flipping the
-> completeness check itself. A stamped brief therefore parses clean today
-> but is judged by the old `walk` rule until that follow-on item lands; it
-> is a separate, dependent change sharing this same script's lines, not a
-> second implementation of this rule.
+**Shipped.** `validate-design-brief.sh` enforces this rule exactly as <!-- cite: DS.18 class:schema-ahead-of-enforcement -->
+stated above — `MISSING-DELTA-VERDICT` for a stamped ratified brief missing
+a dimension's `delta` line, `RECORD-GRAMMAR-UNSTAMPED` for a `delta`/
+`interview` line in an unstamped brief, and no per-dimension requirement at
+all for a legacy (unstamped) brief (temperloop#1938's follow-on validator
+item, `brief-validator-delta-rule`). The predecessor rule — every kernel
+dimension needs a `walk` stop line, unconditionally — and its
+`MISSING-WALK-VERDICT` failure code are retired; `walk`/`walkthrough` stay
+valid, parsable stop-line kinds regardless.
 
 **(2)** every
 `operator-edited` stop line carries a verbatim `response:` field — the

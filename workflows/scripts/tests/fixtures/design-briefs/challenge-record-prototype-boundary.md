@@ -8,28 +8,27 @@ source_model: fixture-model
 last_verified: 2026-01-01
 ---
 
-# Design brief: fixture — ratified brief with an incomplete challenge record
+# Design brief: fixture — unstamped ratified brief, the 2026-09-12 prototype's shape
 
-Purpose-built FAILING fixture, MIGRATION CARVE-OUT arm #2 (temperloop item
-`brief-record-completeness-lint`): a `status: ratified` brief whose
-`### Challenge record` subheading IS present (the `challenge-record-start:`
-marker is there, and stop lines follow it — so this is NOT the
-`EMPTY-CHALLENGE-RECORD` case) but the record omits a `walk` stop line for
-kernel dimension 6. Because the marker is present, this brief is IN SCOPE
-for design-schema.md § Record completeness's rule (1) — every kernel
-dimension 0..16 needs a `walk` stop line before ratify — so check (C) MUST
-fail it with `MISSING-WALK-VERDICT` for dimension 6, proving the
-completeness bar actually bites once a record exists (not merely skipped
-whenever the marker happens to be absent, as
-challenge-record-migration-exempt.md's EXEMPT arm is). This is the
-"marker-present / walk-verdict-missing (flagged)" fixture `/workshop`'s
-ratify-gate item (Step 4.1c) reuses.
+Purpose-built passing fixture (temperloop item `brief-validator-delta-rule`):
+models the real, ratified `Designs/temperloop - workshop two-phase
+interview` brief (ADR 0036 § Consequences: "ratified 2026-09-12 under the
+old validator with its operator lines recorded outside the parsed
+section"). Frontmatter carries NO `record_grammar` field (legacy/unstamped)
+and the `### Challenge record` subheading is present but has ZERO `walk`
+stop lines in it — under the retired walk-only rule this would have been
+`MISSING-WALK-VERDICT` for every dimension; under the stamp-gated rule it is
+EXEMPT (legacy brief, no per-dimension requirement at all). `## Working
+notes` also carries operator-authored log lines that mention dimensions and
+delta-shaped language in prose, but under a DIFFERENT, non-parsed
+subheading (`### Interview log`, not `### Challenge record`) — proving
+check (C)'s section-scoped parse doesn't misread free-form provenance text
+elsewhere in `## Working notes` as challenge-record grammar. Must pass check
+(C) clean.
 
 ## 0. Premise & null hypothesis
 disposition: filled
-Fixture premise: the do-nothing cost is a stale drift guard; proceeding is
-justified because this fixture exercises the completeness bar's enforcing
-arm.
+Fixture premise text.
 
 ## 1. Problem & outcome (stranger standpoint)
 disposition: filled
@@ -96,7 +95,12 @@ Fixture: replaces no existing default.
 
 ## Working notes
 
+### Interview log
+round 1: D1–D2 [interview] operator: 2 asked, 2 answered — this is
+free-form prose, not the machine-checked grammar; it lives under a
+different subheading than `### Challenge record` and is never parsed as a
+stop line.
+
 ### Challenge record
 challenge-record-start: 2026-01-01
-
-0,1,2,3,4,5,7,8,9,10,11,12,13,14,15,16 [walk] step-1-seed: accepted
+0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16 [walkthrough] step-1-seed: accepted

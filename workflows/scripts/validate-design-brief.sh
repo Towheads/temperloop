@@ -70,31 +70,44 @@
 #       `response:` field is flagged (design-schema.md § Record completeness —
 #       "the record is incomplete without capturing what that hand actually
 #       wrote"). SOURCE OF TRUTH, same rule as (A)/(B): the completeness bar
-#       itself — every kernel dimension 0..16 needs a `walk` stop line before
-#       a brief may ratify — is READ FROM design-schema.md § Record
-#       completeness, never re-encoded here independently; this script only
-#       enforces what that section states, and `/workshop` Step 4.1c (the
-#       in-session ratify gate) reuses the identical rule so the two can never
-#       drift apart. NOTE (temperloop#1938, design-schema-delta-grammar): the
-#       grammar above additively parses `delta`/`interview` lines and a `D<n>`
-#       dim-ref, but this completeness bar itself is UNCHANGED — it still
-#       keys on `walk` only. design-schema.md § Record completeness now
-#       documents a stamp-gated `delta` completeness rule as the target
-#       (frontmatter `record_grammar: delta`), provisional pending a separate,
-#       dependent follow-on item that flips this bar to match. Two carve-outs,
-#       both keyed on the frontmatter `status:` field exactly as (B)'s
-#       dimension-0 exemption already is (never a global flip):
+#       itself is READ FROM design-schema.md § Record completeness, never
+#       re-encoded here independently; this script only enforces what that
+#       section states, and `/workshop` Step 4.1c (the in-session ratify
+#       gate) reuses the identical rule so the two can never drift apart.
+#
+#       STAMP-GATED delta completeness (temperloop#1938 →
+#       brief-validator-delta-rule): the bar keys on the brief's frontmatter
+#       `record_grammar` field. The prior unconditional per-dimension `walk`
+#       completeness requirement is RETIRED, failure code and all —
+#       `walk`/`walkthrough` stay valid, parsable stop-line kinds, but no
+#       dimension is ever required to carry one:
+#         - `record_grammar` absent → LEGACY brief, exempt from the
+#           per-dimension completeness bar entirely, whatever stop-line kinds
+#           its record carries.
+#         - `record_grammar: delta` → every kernel dimension 0..16 must carry
+#           at least one `delta` stop line before the brief may ratify
+#           (`MISSING-DELTA-VERDICT`) — checked only once `status: ratified`
+#           (a delta-stamped draft's record is still being built, same as a
+#           legacy draft, and is never held to this bar).
+#         - A `delta` or `interview` stop line in a brief whose frontmatter
+#           LACKS the `record_grammar: delta` stamp is itself a defect,
+#           regardless of status — new-grammar content authored with no stamp
+#           declaring the new grammar in force (`RECORD-GRAMMAR-UNSTAMPED`).
+#       Two further carve-outs, both keyed on the frontmatter `status:` field
+#       exactly as (B)'s dimension-0 exemption already is (never a global
+#       flip):
 #         - NO `### Challenge record` subheading at all → exempt, for ANY
 #           status — design-schema.md § Record-start marker and its absence:
 #           a valid, non-defective "zero stops this pass" state, and (for a
 #           `ratified` brief specifically) the MIGRATION carve-out — a brief
 #           ratified before this record existed.
 #         - Subheading present but `status` is NOT `ratified` (draft/dropped,
-#           still in-flight) → grammar/response checks still run, but the
-#           per-dimension `walk`-coverage completeness bar does NOT — the
-#           record is still being built.
+#           still in-flight) → grammar/response/stamp checks still run, but
+#           the per-dimension completeness bar does NOT — the record is
+#           still being built.
 #       Only a `ratified` brief whose `### Challenge record` subheading IS
-#       present is held to full per-dimension completeness.
+#       present, AND whose frontmatter carries `record_grammar: delta`, is
+#       held to the per-dimension `delta`-coverage completeness bar.
 #
 # ANTI-DRIFT GUARDS (both live in check (A)):
 #   - NO-DIMENSION-ROWS: zero parsed table rows always fails — a renamed or
@@ -356,6 +369,26 @@ brief_status() {
   ' "$1"
 }
 
+# brief_record_grammar <file> -> prints the frontmatter `record_grammar:`
+# value, lowercased with any trailing comment/whitespace stripped, or empty
+# if absent (the legacy-grammar default — design-schema.md § Frontmatter).
+# Same leading-frontmatter-only reading rule as brief_status.
+brief_record_grammar() {
+  awk '
+    NR == 1 && $0 == "---" { infm = 1; next }
+    NR == 1 { exit }                       # no leading frontmatter block
+    infm && $0 == "---" { exit }           # end of frontmatter
+    infm && /^record_grammar:[[:space:]]*/ {
+      v = $0
+      sub(/^record_grammar:[[:space:]]*/, "", v)
+      sub(/[[:space:]]*#.*$/, "", v)       # strip a trailing YAML comment
+      sub(/[[:space:]]+$/, "", v)
+      print tolower(v)
+      exit
+    }
+  ' "$1"
+}
+
 # ---------------------------------------------------------------------------
 # (B) Brief conformance check.
 # ---------------------------------------------------------------------------
@@ -475,8 +508,9 @@ check_challenge_record() {
   local file="$1" label="$2"
   [[ -f "$file" ]] || return   # BRIEF-NOT-FOUND already reported by check (B)
 
-  local status
+  local status record_grammar
   status="$(brief_status "$file")"
+  record_grammar="$(brief_record_grammar "$file")"
 
   local working_notes record_section
   working_notes="$(awk '
@@ -527,7 +561,7 @@ EOF
     failures+=("EMPTY-CHALLENGE-RECORD  $label — 'challenge-record-start:' marker present but no stop lines follow before the next heading (design-schema.md § Record-start marker and its absence: a record announced but never populated)")
   fi
 
-  local walk_dims=" " sl
+  local delta_dims=" " sl
   for sl in ${stop_lines[@]+"${stop_lines[@]}"}; do
     if [[ ! "$sl" =~ $CHALLENGE_STOP_RE ]]; then
       failures+=("BAD-CHALLENGE-LINE  $label — '$sl' matches none of the § Challenge record grammar's stop-line forms")
@@ -539,26 +573,40 @@ EOF
       failures+=("MISSING-RESPONSE  $label dimension(s) $dimlist — 'operator-edited' stop line ($source) carries no verbatim 'response:' field (design-schema.md § Record completeness)")
     fi
 
-    if [[ "$kind" == "walk" ]]; then
+    # A `delta`/`interview` line is new-grammar content — it may appear only
+    # in a brief whose frontmatter has stamped `record_grammar: delta`
+    # (design-schema.md § Record completeness, rule 1). This check is
+    # independent of `status`: an unstamped brief authoring new-grammar
+    # content is a defect whether it is still a draft or already ratified.
+    if [[ ("$kind" == "delta" || "$kind" == "interview") && "$record_grammar" != "delta" ]]; then
+      failures+=("RECORD-GRAMMAR-UNSTAMPED  $label — '$sl' uses [$kind] but the brief's frontmatter carries no 'record_grammar: delta' stamp (design-schema.md § Record completeness, rule 1)")
+    fi
+
+    if [[ "$kind" == "delta" ]]; then
       local -a dparts
       IFS=',' read -ra dparts <<< "$dimlist"
       local d
       for d in "${dparts[@]}"; do
-        walk_dims="$walk_dims$d "
+        delta_dims="$delta_dims$d "
       done
     fi
   done
 
-  # Completeness bar (design-schema.md § Record completeness, rule 1) —
-  # ratified brief WITH a present record only; the migration carve-out
-  # (no record at all) already returned above, and a non-ratified brief is
+  # Completeness bar (design-schema.md § Record completeness, rule 1),
+  # STAMP-GATED: only a ratified brief whose frontmatter carries
+  # `record_grammar: delta` is held to per-dimension `delta` coverage. An
+  # unstamped (legacy) brief is exempt from this bar entirely, whatever
+  # stop-line kinds its record carries — the prior unconditional per-
+  # dimension `walk` completeness failure is retired, not replaced by an
+  # unconditional `MISSING-DELTA-VERDICT`. The migration carve-out (no
+  # record at all) already returned above, and a non-ratified brief is
   # never held to this bar (its record is still being built).
-  if [[ "$status" == "ratified" ]]; then
+  if [[ "$status" == "ratified" && "$record_grammar" == "delta" ]]; then
     local n
     for (( n = 0; n <= KERNEL_DIM_MAX; n++ )); do
-      case "$walk_dims" in
+      case "$delta_dims" in
         *" $n "*) : ;;
-        *) failures+=("MISSING-WALK-VERDICT  $label — kernel dimension $n has no 'walk' stop line in its challenge record; required before a brief may ratify (design-schema.md § Record completeness)") ;;
+        *) failures+=("MISSING-DELTA-VERDICT  $label — kernel dimension $n has no 'delta' stop line in its challenge record; required before a brief may ratify (design-schema.md § Record completeness, rule 1; frontmatter record_grammar: delta)") ;;
       esac
     done
   fi
