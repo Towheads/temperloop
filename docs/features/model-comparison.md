@@ -187,7 +187,7 @@ arms, judges each arm, and writes the two arm files the report producer reads.
 It orchestrates only: it derives no statistic and re-implements no scoring,
 judging, corpus selection or isolation.
 
-Nine properties are worth knowing before you run one:
+Ten properties are worth knowing before you run one:
 
 - **Arm order is counterbalanced, so arm is not confounded with position.**
   The driver used to run the arms in one fixed order on every record —
@@ -330,6 +330,41 @@ Nine properties are worth knowing before you run one:
   runner (`--baseline-runner` / `--candidate-runner`) or the single explicit
   `--live` flag; with neither, the driver refuses before it even reads the
   gate. Nothing scheduled invokes it (ADR 0027).
+- **It can run several records at once — and a record's two legs never
+  overlap.** `--concurrency N` (default `1`, from
+  `MODEL_COMPARISON_BATCH_CONCURRENCY`, clamped to
+  `MODEL_COMPARISON_BATCH_MAX_CONCURRENCY`) runs up to N corpus **records**
+  at a time. The cost of not having it was measured, not guessed: the
+  temperloop#1656 validation run took 29 min/leg, projecting **~27 hours for
+  a 28-record batch**, about a third of it the in-worktree `quality-gates.sh`
+  run rather than model time.
+
+  Concurrency is across **records only**, never within a pair, and that is a
+  correctness constraint rather than a simplification: the counterbalancing
+  above stamps every leg with an `execution_order.position` of 1 or 2, which
+  is meaningless if a record's two legs overlap — losing it would silently
+  undo the fix and re-open the arm-vs-position confound. Because the
+  assignment rule is a pure function of the record index, widening the batch
+  cannot change *what* is measured: the same corpus and seed produce the same
+  arm order and the same records in both arms at any N, and the summary's
+  `concurrency` block publishes the **measured** wall-clock against the
+  serial sum so the speedup is a number rather than a claim.
+
+  **What raising it trades is the provider's rate limit, not CPU.** The
+  28-leg outage that motivated the circuit breaker happened on a strictly
+  *sequential* run; N concurrent records multiply request rate against one
+  account's quota, so a higher N makes a trip **more** likely. There is a
+  second, smaller local cost: each leg forks its own `quality-gates.sh`,
+  which itself pools up to 4 wide, so N records is already roughly 4N
+  concurrent processes. Raise it a rung at a time.
+
+  One behaviour genuinely differs at N > 1, and the summary says so rather
+  than leaving it to be inferred: **the breaker stops dispatch, not
+  execution.** Records already running when it fires are allowed to finish —
+  their legs may have spend committed against them, and killing one throws
+  that away with no record to show for it — so `circuit_breaker` carries
+  `records_in_flight_when_dispatch_stopped`, and `legs_not_attempted_n`
+  counts only what was never started.
 
 ### Live candidate tagging
 

@@ -281,7 +281,7 @@
 #           [--repo <owner/repo>] [--gate-relpath <rel>]
 #           [--out-dir <dir>] [--state-dir <dir>]
 #           [--confirm] [--retry-failed] [--retry-stage <stage>]...
-#           [--preflight-only]
+#           [--concurrency <n>] [--preflight-only]
 #
 #       Runs the pre-flight spend gate, then replays every gate-authorized
 #       corpus record in BOTH arms, judges each arm (when a judge seam is
@@ -290,6 +290,13 @@
 #       against --repo-root when relative — the same directory
 #       workflows/scripts/report-producers/model-comparison reads, so its
 #       output is that producer's input UNCHANGED). Prints ONE JSON object.
+#
+#       --concurrency <n> runs up to n corpus RECORDS at a time (default
+#       MODEL_COMPARISON_BATCH_CONCURRENCY, clamped to
+#       MODEL_COMPARISON_BATCH_MAX_CONCURRENCY). A record's own two legs
+#       always run sequentially in their counterbalanced order whatever this
+#       is — see the concurrency section above. What it trades is the
+#       provider's rate limit, not CPU.
 #
 #       --preflight-only runs the gate and prints its verdict without
 #       executing anything (the "what would this cost me" probe).
@@ -343,6 +350,14 @@ set -uo pipefail
 
 HERE="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPLAY_SH="$HERE/replay.sh"
+
+# The bounded-concurrency scheduler (temperloop#1682). Sourced, not executed.
+# Its absence is not fatal: without it this driver runs at concurrency 1, which
+# is what it always did — bp_init failing is the documented "run serially
+# instead" path, and a missing file is the same condition one step earlier.
+# shellcheck source=workflows/scripts/model-comparison/batch-pool.sh
+# shellcheck disable=SC1091
+[ -f "$HERE/batch-pool.sh" ] && . "$HERE/batch-pool.sh"
 JUDGE_SH="$HERE/judge.sh"
 
 # shellcheck source=../build/build.config.sh
@@ -440,7 +455,7 @@ usage: batch.sh run --corpus-file <path> --repo-root <path>
                     [--repo <owner/repo>] [--gate-relpath <rel>]
                     [--out-dir <dir>] [--state-dir <dir>]
                     [--confirm] [--retry-failed] [--retry-stage <stage>]...
-#           [--preflight-only]
+                    [--concurrency <n>] [--preflight-only]
        batch.sh schema
 EOF
 }
@@ -564,6 +579,20 @@ bd_now_utc() {
 # matters is the other direction.
 BD_RUN_ID=""
 BD_INFLIGHT_DIR=""
+
+# ── THE POOL'S OUT-PARAMS, DECLARED HERE (temperloop#1682) ────────────────
+# batch-pool.sh sets these, but this file reads them on BOTH paths and runs
+# under `set -u` — and the pool is optional (a checkout without the file, or a
+# bp_init that could not allocate, runs at concurrency 1). Declaring them here
+# means the serial path needs no "did the pool load?" guard at every read.
+BD_POOL_ACTIVE=0
+BP_UNITS=()
+BP_LAUNCHED=0
+BP_SKIPPED=0
+BP_MAX_INFLIGHT=1
+BP_INFLIGHT_AT_ABORT=0
+BP_WALL=0
+BP_SERIAL_SUM=0
 bd_inflight_add() {
   [ -n "$BD_INFLIGHT_DIR" ] || return 0
   : >"$BD_INFLIGHT_DIR/$1" 2>/dev/null || true
@@ -718,6 +747,14 @@ bd_trap_cleanup() {
 # so re-invoking resumes and re-spends none of them.
 bd_trap_signal() {
   local sig="$1" signum
+  # The workers go FIRST, and their process GROUPS with them: each leads its
+  # own group (batch-pool.sh's `set -m` fork), so this reaches the replay.sh /
+  # quality-gates.sh subtree beneath it. Tearing a worktree down while a worker
+  # is still writing into it would race. At concurrency 1 there are no workers,
+  # so this is a no-op on the path that always existed (temperloop#1682).
+  if [ "$BD_POOL_ACTIVE" -eq 1 ] && declare -f bp_kill_running >/dev/null 2>&1; then
+    bp_kill_running
+  fi
   bd_trap_cleanup
   printf 'batch.sh: INTERRUPTED (SIG%s) — the in-flight replay worktree was torn down and the batch STOPPED before the next leg; legs already in a terminal state are recorded, so re-invoking resumes without re-spending them\n' \
     "$sig" >&2
@@ -738,6 +775,30 @@ bd_trap_signal() {
 trap bd_trap_cleanup EXIT
 trap 'bd_trap_signal INT' INT
 trap 'bd_trap_signal TERM' TERM
+
+# bd_pool_worker <tsv-line> — the pool's unit body: ONE corpus record.
+#
+# The pool schedules a RECORD, never a leg — see batch-pool.sh's header for
+# why (temperloop#1571's execution_order is only meaningful if a record's two
+# legs run sequentially). This just unpacks the selection line the pool handed
+# back and calls the same bd_run_record the sequential path calls; there is no
+# second execute path to keep in sync.
+bd_pool_worker() {
+  local w_idx w_ref w_rec
+  IFS="$(printf '\t')" read -r w_idx w_ref w_rec <<<"$1"
+  bd_run_record "$w_idx" "$w_ref" "$w_rec"
+}
+
+# bd_pool_abort — TRUE (exit 0) once the circuit breaker has tripped, which
+# tells the pool to stop dispatching (temperloop#1554, #1682).
+#
+# It reads the SHARED state rather than a variable, because the fold that
+# trips the breaker happens inside a forked worker and a parent's copy of a
+# variable would never see it.
+bd_pool_abort() {
+  bd_cb_read
+  [ "$BD_CB_TRIPPED" -eq 1 ]
+}
 
 # bd_derive_counts — every tally the summary publishes, READ OUT OF the leg
 # state files after the execute loop (temperloop#1682).
@@ -1152,10 +1213,17 @@ cmd_schema() {
                 baseline_first_n:null, candidate_first_n:null, per_record:[]},
     legs: {planned_n:null, completed_n:null, resumed_n:null, failed_n:null,
            scored_n:null, integration_error_n:null, not_attempted_n:null},
+    concurrency: {basis:null, requested:null, effective:null, cap:null,
+                  cap_setting:null, setting:null, max_records_in_flight:null,
+                  records_not_dispatched_n:null,
+                  observed:{basis:null, wall_secs:null, serial_sum_secs:null, speedup:null},
+                  effective_note:null},
     circuit_breaker: {basis:null, setting:null, threshold:null, tripped:null,
                       stage:null, consecutive_same_stage_n:null,
                       legs_not_attempted_n:null, records_not_attempted_n:null,
-                      not_attempted:[], detail:null},
+                      not_attempted:[], concurrency:null,
+                      records_in_flight_when_dispatch_stopped:null,
+                      concurrency_note:null, detail:null},
     completion: {basis:null, replay_completion_rate:null,
                  rate_is_over_a_reconciled_arm:null, rate_caveat:null, per_arm:null},
     failures: [],
@@ -1186,6 +1254,7 @@ cmd_run() {
   local baseline_model="" candidate_model="" judge_model=""
   local baseline_provider="" candidate_provider="" judge_provider=""
   local live=0 confirm=0 preflight_only=0 retry_failed=0 retry_stages=""
+  local concurrency_spec=""
 
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -1219,6 +1288,12 @@ cmd_run() {
           *) printf 'batch.sh: --retry-stage %s is not an integration-error stage this harness emits. Known stages: %s\n' "$2" "$BATCH_INTEGRATION_ERROR_STAGES" >&2; return 2 ;;
         esac
         retry_stages="$retry_stages $2"; shift 2 ;;
+      --concurrency)
+        bd_need_operand --concurrency "$#" "${2:-}" || return 2
+        case "$2" in
+          ''|*[!0-9]*) printf 'batch.sh: --concurrency takes a non-negative integer, got %s\n' "$2" >&2; return 2 ;;
+        esac
+        concurrency_spec="$2"; shift 2 ;;
       --preflight-only) preflight_only=1; shift ;;
       *) printf 'batch.sh run: unknown arg %s\n' "$1" >&2; return 2 ;;
     esac
@@ -1245,6 +1320,37 @@ cmd_run() {
       return 1 ;;
   esac
   BD_CB_THRESHOLD="$cb_threshold"
+
+  # ── HOW WIDE (temperloop#1682) ────────────────────────────────────────
+  # --concurrency wins over the setting; the setting's own default is 1, so
+  # an operator who asks for nothing gets exactly the sequential driver this
+  # replaced. The cap is a SECOND setting rather than a literal because the
+  # right ceiling is a property of the host and the account, not of this file.
+  local concurrency
+  if [ -n "$concurrency_spec" ]; then
+    concurrency="$concurrency_spec"
+  else
+    concurrency="$MODEL_COMPARISON_BATCH_CONCURRENCY"
+  fi
+  local concurrency_requested="$concurrency"
+  if declare -f bp_resolve_concurrency >/dev/null 2>&1; then
+    concurrency="$(bp_resolve_concurrency "$concurrency" "$MODEL_COMPARISON_BATCH_MAX_CONCURRENCY")"
+  else
+    concurrency=1
+  fi
+  # Two different facts, said differently: a width that was too LARGE was
+  # clamped, and one that could not be READ was refused. Collapsing them into
+  # one "clamped" message would report a typo as a policy decision.
+  if [ "$concurrency" != "$concurrency_requested" ]; then
+    case "$concurrency_requested" in
+      ''|*[!0-9]*)
+        printf 'batch.sh: MODEL_COMPARISON_BATCH_CONCURRENCY is not a number (%s) — running SEQUENTIALLY rather than guessing a width\n' \
+          "$concurrency_requested" >&2 ;;
+      *)
+        printf 'batch.sh: concurrency %s clamped to %s by MODEL_COMPARISON_BATCH_MAX_CONCURRENCY (%s)\n' \
+          "$concurrency_requested" "$concurrency" "$MODEL_COMPARISON_BATCH_MAX_CONCURRENCY" >&2 ;;
+    esac
+  fi
 
   local repo_top
   repo_top="$(cd "$repo_root" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null)"
@@ -1477,16 +1583,70 @@ cmd_run() {
   local unattempted_file="$scratch/unattempted.jsonl"; : >"$unattempted_file"
   local order_file="$scratch/arm-order.jsonl"; : >"$order_file"
 
-  # Read the selection on fd 3, NOT stdin: every `replay.sh execute` below
-  # spawns a candidate runner, and the `--live` arm redirects its own stdin
-  # from the prompt file — but a stubbed runner is an arbitrary operator
-  # command that may read stdin, and one that did would silently swallow the
-  # rest of this loop's selection and truncate the batch.
-  while IFS="$(printf '\t')" read -r sel_idx sel_ref sel_rec <&3; do
-    [ -n "$sel_idx" ] || continue
-    bd_run_record "$sel_idx" "$sel_ref" "$sel_rec"
+  # ── THE SELECTION, AS THE POOL'S UNIT LIST ────────────────────────────
+  # Read on fd 3, NOT stdin: `replay.sh execute` spawns a candidate runner,
+  # and while the `--live` arm redirects its own stdin from the prompt file, a
+  # stubbed runner is an arbitrary operator command that may read stdin — one
+  # that did would silently swallow the rest of the selection and truncate the
+  # batch. (The pool closes each worker's stdin for the same reason.)
+  BP_UNITS=()
+  while IFS= read -r sel_line <&3; do
+    [ -n "$sel_line" ] || continue
+    BP_UNITS+=("$sel_line")
   done 3<"$sel_tsv"
 
+  local pool_ok=0
+  if [ "$concurrency" -gt 1 ] && declare -f bp_init >/dev/null 2>&1; then
+    if bp_init "$scratch"; then
+      pool_ok=1
+    else
+      printf 'batch.sh: could not allocate the worker pool; running at concurrency 1\n' >&2
+      concurrency=1
+    fi
+  fi
+
+  if [ "$pool_ok" -eq 1 ]; then
+    BD_POOL_ACTIVE=1
+    bp_run "$concurrency" bd_pool_worker bd_pool_abort
+    BD_POOL_ACTIVE=0
+  else
+    # Concurrency 1 — the sequential driver, unchanged, and the path every
+    # fixture in tests/test_replay_batch.sh drives unless it asks otherwise.
+    # It measures its own wall clock for the same reason the pool does: a
+    # `wall_secs: 0` on every serial run would read as "instant" rather than
+    # "not measured", and the serial figure is what a later concurrent run is
+    # compared AGAINST (kernel § Measure the delta, don't assume it).
+    local u serial_start
+    serial_start="$(date +%s)"
+    for ((u = 0; u < ${#BP_UNITS[@]}; u++)); do
+      bd_pool_abort && break
+      bd_pool_worker "${BP_UNITS[$u]}"
+      BP_LAUNCHED=$((BP_LAUNCHED + 1))
+    done
+    BP_SKIPPED=$(( ${#BP_UNITS[@]} - BP_LAUNCHED ))
+    BP_WALL=$(( $(date +%s) - serial_start ))
+    # Sequentially the two are the same number by construction, which is the
+    # point: it makes the published speedup exactly 1.00 rather than absent.
+    BP_SERIAL_SUM="$BP_WALL"
+  fi
+
+  # ── THE UNITS DISPATCH SKIPPED (temperloop#1554, #1682) ────────────────
+  # Once the breaker trips, neither path dispatches any further record — but
+  # every skipped one still owes a `not-attempted` state file. That record is
+  # the whole point of temperloop#1554: it makes no compatibility claim, it
+  # cost nothing, and a plain resume re-drives it. bd_run_record writes
+  # exactly that when it finds the breaker tripped, so the remainder is driven
+  # IN-PROCESS on both paths — forking a worker to spend nothing would cost a
+  # subshell per record for no work, and this keeps the two paths writing the
+  # same records through the same code.
+  local skipped_u
+  for ((skipped_u = BP_LAUNCHED; skipped_u < ${#BP_UNITS[@]}; skipped_u++)); do
+    bd_pool_worker "${BP_UNITS[$skipped_u]}"
+  done
+
+  # Every tally the summary publishes is read back out of the leg state files
+  # here, once, after the last leg has reached a terminal state — never
+  # incremented as the loop went (temperloop#1682).
   bd_derive_counts
   bd_cb_read
 
@@ -1854,6 +2014,7 @@ cmd_run() {
     --arg setting "MODEL_COMPARISON_BATCH_MAX_CONSECUTIVE_STAGE_ERRORS" \
     --arg stage "$BD_CB_TRIP_STAGE" --argjson streak "$BD_CB_TRIP_STREAK" \
     --argjson legs_na "$legs_unattempted" --argjson recs_na "$records_unattempted" \
+    --argjson conc "$concurrency" --argjson inflight "$BP_INFLIGHT_AT_ABORT" \
     --slurpfile not_attempted "$unattempted_file" \
     '{basis: "consecutive integration errors carrying the SAME integration_error.stage, counted over the legs THIS invocation executed. Any leg that scores resets the run to zero; a different stage re-keys it to 1; a resumed leg is evidence about a previous run and is not counted. So a scatter of unrelated per-record incompatibilities cannot trip it, and a spawn path that has gone systemically unavailable does",
       setting: $setting, threshold: $threshold, armed: ($threshold > 0),
@@ -1863,6 +2024,12 @@ cmd_run() {
       legs_not_attempted_n: $legs_na,
       records_not_attempted_n: $recs_na,
       not_attempted: $not_attempted,
+      concurrency: $conc,
+      records_in_flight_when_dispatch_stopped: $inflight,
+      concurrency_note: (if $conc > 1
+        then "the breaker stops DISPATCH, not execution. " + ($inflight|tostring)
+             + " record(s) were already running when it fired and were allowed to FINISH rather than be killed — their legs may have spend committed against them, and killing one throws that away with no record to show for it. So at concurrency > 1 some legs legitimately completed AFTER the stop condition was reached, and legs_not_attempted_n counts only what was never started (temperloop#1682)"
+        else "at concurrency 1 the breaker stops the batch at the very next leg, so nothing runs after it fires" end),
       detail: (if $tripped
                then ("STOPPED EARLY: " + ($streak|tostring) + " consecutive \"" + $stage
                      + "\" integration errors reached the threshold, so " + ($legs_na|tostring)
@@ -1947,6 +2114,10 @@ cmd_run() {
     --argjson legs_unattempted "$legs_unattempted" \
     --argjson circuit_breaker "$circuit_breaker_json" \
     --argjson arm_order "$arm_order_json" \
+    --argjson conc "$concurrency" --arg conc_req "$concurrency_requested" \
+    --argjson conc_cap "$MODEL_COMPARISON_BATCH_MAX_CONCURRENCY" \
+    --argjson max_inflight "$BP_MAX_INFLIGHT" --argjson pool_wall "$BP_WALL" \
+    --argjson pool_serial "$BP_SERIAL_SUM" --argjson not_dispatched "$BP_SKIPPED" \
     --argjson rate "$rate" \
     --slurpfile failures "$failures_file" \
     --slurpfile degradations "$degradations" \
@@ -1978,6 +2149,23 @@ cmd_run() {
       selection:{corpus_file:$corpus, corpus_sha256:$csha,
                  selected_records_n:$records_n, refs:$refs},
       arm_order: $arm_order,
+      concurrency:{
+        basis: "how many corpus RECORDS ran at a time. A record\u0027s own two legs ALWAYS run sequentially in their counterbalanced order, at every setting of this — temperloop#1571\u0027s execution_order.position is meaningless if they overlap, and losing it re-opens the arm-vs-position confound temperloop#1606 was filed against. So this number can never affect what the comparison measures, only how long it takes (temperloop#1682)",
+        requested: ($conc_req | tonumber? // $conc_req),
+        effective: $conc, cap: $conc_cap,
+        cap_setting: "MODEL_COMPARISON_BATCH_MAX_CONCURRENCY",
+        setting: "MODEL_COMPARISON_BATCH_CONCURRENCY",
+        max_records_in_flight: $max_inflight,
+        records_not_dispatched_n: $not_dispatched,
+        observed:{
+          basis: "MEASURED on this run, not projected. wall_secs is how long the execute phase actually took; serial_sum_secs is the sum of the per-record times, i.e. what the SAME set would have cost strictly sequentially. Their ratio is the speedup this concurrency actually bought (kernel \u00a7 Measure the delta, don\u0027t assume it). At concurrency 1 the two are equal by construction and the speedup is 1.0; both are near 0 on a resumed run that executed nothing",
+          wall_secs: $pool_wall, serial_sum_secs: $pool_serial,
+          speedup: (if $pool_wall > 0 then (($pool_serial / $pool_wall * 100) | round) / 100 else null end)},
+        effective_note: (if $conc == 1
+          then "sequential: one record at a time, which is the default and exactly the behaviour that predates temperloop#1682"
+          elif $max_inflight <= 1
+          then "requested " + ($conc|tostring) + " but never ran more than one record at a time — either the corpus was too short to fill the pool, or every record but one was resumed. Read the wall-clock figures above as a SEQUENTIAL run"
+          else "ran up to " + ($max_inflight|tostring) + " records concurrently" end)},
       legs:{planned_n:$legs_planned, completed_n:$legs_done, resumed_n:$legs_resumed,
             failed_n:$legs_failed, scored_n:$legs_scored, integration_error_n:$legs_interr,
             not_attempted_n:$legs_unattempted},

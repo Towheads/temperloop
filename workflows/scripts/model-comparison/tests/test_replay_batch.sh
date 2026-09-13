@@ -70,6 +70,14 @@
 #      assignment is reproducible from the recorded rule+seed alone, and no
 #      unaudited fixed-order arm loop can be reintroduced (+ MUTATION PROOF
 #      that a driver reverted to fixed order FAILS the same predicate)
+#   N  RECORD-LEVEL CONCURRENCY (temperloop#1682) — --concurrency N runs N
+#      RECORDS at once and changes nothing about what is measured: the same
+#      arm order and the same records in both arms at N=1 and N=4, a record's
+#      two legs never overlapping in time, the breaker still stopping the
+#      batch (and SAYING that it stops dispatch rather than execution), the
+#      width clamped to its cap and an unparseable one resolving to 1, and a
+#      resume across widths re-spending nothing (+ MUTATION PROOF that a
+#      driver overlapping a record's two legs FAILS the same predicate)
 #   L  the suite-wide no-live-call canary verdict
 #
 # Usage: bash workflows/scripts/model-comparison/tests/test_replay_batch.sh
@@ -1625,6 +1633,240 @@ m5_total="$(grep -c '^[[:space:]]*for arm in ' "$SUT")"
 [ "$m5_total" -ge 4 ] \
   || fail "M5: expected at least 4 arm loops to audit in batch.sh, found $m5_total — this check may have stopped matching"
 ok "M5 all $m5_total arm loop(s) in batch.sh are either the counterbalanced execute loop or carry an ARM-ORDER AUDIT marker"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SECTION N — RECORD-LEVEL CONCURRENCY (temperloop#1682).
+#
+#   N1  determinism: the same corpus and seed at N=1 and N=4 assign the SAME
+#       arm order and produce the SAME records in both arms
+#   N2  a record's two legs NEVER overlap in time — asserted from the recorded
+#       per-leg started_at/ended_at, not by inspection
+#   N3  ...and concurrency ACTUALLY HAPPENED, which is the converse N2 needs:
+#       a pool that silently ran serially would satisfy N2 trivially
+#   N4  the circuit breaker under concurrency: it still stops the batch, and
+#       the summary states how many records were running when dispatch stopped
+#   N5  the requested width is CLAMPED to the configured cap, and says so
+#   N6  an unparseable width resolves to 1 — never to a concurrency nobody
+#       asked for
+#   N7  resume ACROSS WIDTHS: a batch run at N=4 and resumed at N=1 re-spends
+#       nothing
+#   N8  MUTATION PROOF — a driver that runs a record's two legs concurrently
+#       FAILS N2's predicate, so N2 is a measurement rather than a formality
+# ═══════════════════════════════════════════════════════════════════════════
+
+# CORPUS_CONC — 4 eligible records (8 legs): enough to fill a 4-wide pool and
+# to split the arm order two-and-two, and no more. Deliberately the smallest
+# corpus that still exercises everything below, because the slow stubs these
+# runs need make this suite the SLOWEST gate in scripts/quality-gates.sh — and
+# the slowest gate sets the whole suite's floor.
+CORPUS_CONC="$WORK/corpus-conc.jsonl"
+{ mk_corpus_line 701 eligible "$BASE"
+  mk_corpus_line 702 eligible "$BASE"
+  mk_corpus_line 703 eligible "$BASE"
+  mk_corpus_line 704 eligible "$BASE"; } >"$CORPUS_CONC"
+
+# The SLOW recorded runners. started_at/ended_at are ISO-8601 at SECOND
+# resolution — the right resolution for a leg that runs for minutes, and too
+# coarse for a stub that finishes in milliseconds. A one-second floor per leg
+# is what makes N2's ordering assertion and N8's mutation observable at all.
+SLOW_LOG="$WORK/slow-calls.log"; : >"$SLOW_LOG"
+mk_slow_stub() {  # mk_slow_stub <path> <model-key>
+  mk_stub "$1" "$2" "$SLOW_LOG"
+  MUT_OLD='set -u' MUT_NEW='set -u
+sleep 1' perl -0777 -pi -e 's/\Qset -u\E/$ENV{MUT_NEW}/' "$1"
+}
+SLOW_BASE="$WORK/stub-slow-baseline.sh"
+SLOW_CAND="$WORK/stub-slow-candidate.sh"
+mk_slow_stub "$SLOW_BASE" "recorded-baseline-model"
+mk_slow_stub "$SLOW_CAND" "recorded-candidate-model"
+
+# assert_legs_sequential <state-dir> — THE predicate N2 asserts and N8 mutates
+# against. Returns 0 when every record's two legs are strictly ordered in time
+# (the leg at position 2 starts at or after the leg at position 1 ends);
+# non-zero, with a reason on stdout, when any pair overlaps.
+#
+# Written as ONE reusable predicate on purpose, for the same reason
+# assert_counterbalanced is: a mutation proof that runs a DIFFERENT check than
+# the passing test proves nothing about that test.
+assert_legs_sequential() {
+  local sd="$1" f key bf cf verdict checked=0
+  for f in "$sd"/legs/baseline/*.state.json; do
+    [ -e "$f" ] || continue
+    key="$(basename "$f" .state.json)"
+    bf="$sd/legs/baseline/$key.state.json"
+    cf="$sd/legs/candidate/$key.state.json"
+    [ -f "$cf" ] || continue
+    verdict="$(jq -n --slurpfile b "$bf" --slurpfile c "$cf" -r '
+      [$b[0], $c[0]]
+      | map(select((.started_at // null) != null and (.ended_at // null) != null))
+      | sort_by(.execution_order.position)
+      | if length < 2 then "skip"
+        elif (.[1].started_at >= .[0].ended_at) then "ok"
+        else "OVERLAP pos1 " + .[0].started_at + ".." + .[0].ended_at
+             + " vs pos2 " + .[1].started_at + ".." + .[1].ended_at
+        end' 2>/dev/null)"
+    case "$verdict" in
+      ok) checked=$((checked + 1)) ;;
+      skip) ;;
+      *) printf '%s: %s\n' "$key" "$verdict"; return 1 ;;
+    esac
+  done
+  [ "$checked" -gt 0 ] || { printf 'no record had two timestamped legs to compare\n'; return 1; }
+  printf '%s record(s) checked\n' "$checked"
+  return 0
+}
+
+# N1 — determinism. Concurrency must not be able to change WHAT is measured.
+count
+: >"$SLOW_LOG"
+SER_OUT="$WORK/out-conc-serial"; SER_STATE="$WORK/state-conc-serial"
+DRIVE_ARGS=(--corpus-file "$CORPUS_CONC" --repo-root "$REPO" --out-dir "$SER_OUT" --state-dir "$SER_STATE"
+            --baseline-runner "bash $SLOW_BASE" --candidate-runner "bash $SLOW_CAND" --confirm
+            --concurrency 1)
+drive ""
+[ "$RC" -eq 0 ] || fail "N1: the serial reference run must exit 0, got $RC: $OUT"
+CONC_SERIAL_OUT="$OUT"
+PAR_OUT="$WORK/out-conc-par"; PAR_STATE="$WORK/state-conc-par"
+DRIVE_ARGS=(--corpus-file "$CORPUS_CONC" --repo-root "$REPO" --out-dir "$PAR_OUT" --state-dir "$PAR_STATE"
+            --baseline-runner "bash $SLOW_BASE" --candidate-runner "bash $SLOW_CAND" --confirm
+            --concurrency 4)
+drive ""
+[ "$RC" -eq 0 ] || fail "N1: the concurrent run must exit 0, got $RC: $(cat "$WORK/last-stderr.txt")"
+CONC_PAR_OUT="$OUT"
+[ "$(jq -c '.arm_order.per_record' <<<"$CONC_PAR_OUT")" = "$(jq -c '.arm_order.per_record' <<<"$CONC_SERIAL_OUT")" ] \
+  || fail "N1: N=4 assigned a DIFFERENT arm order than N=1 — the assignment must be a pure function of the record index: $(jq -c '.arm_order.per_record' <<<"$CONC_PAR_OUT")"
+for a in baseline candidate; do
+  [ "$(jq -s -c 'map(.outcome_ref) | sort' <"$PAR_OUT/$a.jsonl")" \
+    = "$(jq -s -c 'map(.outcome_ref) | sort' <"$SER_OUT/$a.jsonl")" ] \
+    || fail "N1: the $a arm holds different records at N=4 than at N=1"
+done
+[ "$(jq -r '.legs.scored_n' <<<"$CONC_PAR_OUT")" = "$(jq -r '.legs.scored_n' <<<"$CONC_SERIAL_OUT")" ] \
+  || fail "N1: N=4 scored a different number of legs than N=1: $(jq -c .legs <<<"$CONC_PAR_OUT")"
+ok "N1 the same corpus and seed produce the SAME arm order, the SAME records in both arms, and the same scored count at N=1 and N=4"
+
+# N2 — a record's two legs never overlap. THE constraint that makes
+#      record-level concurrency safe for temperloop#1571's position estimate.
+count
+if ! n2_reason="$(assert_legs_sequential "$PAR_STATE")"; then
+  fail "N2: a record's two legs overlapped in time at N=4 — that destroys the execution_order.position estimate (temperloop#1571) and re-opens the arm-vs-position confound (temperloop#1606): $n2_reason"
+fi
+ok "N2 at N=4 every record's two legs are strictly ordered in time ($n2_reason) — concurrency is across records, never within a pair"
+
+# N3 — ...and concurrency actually happened. Without this, N2 proves nothing:
+#      a pool that silently ran serially satisfies it trivially.
+count
+n3_inflight="$(jq -r '.concurrency.max_records_in_flight' <<<"$CONC_PAR_OUT")"
+[ "$n3_inflight" -ge 2 ] \
+  || fail "N3: the N=4 run never had more than $n3_inflight record(s) in flight — it ran SERIALLY, so N2 above asserts nothing: $(jq -c .concurrency <<<"$CONC_PAR_OUT")"
+[ "$(jq -r '.concurrency.effective' <<<"$CONC_PAR_OUT")" = "4" ] \
+  || fail "N3: the summary must report the effective width: $(jq -c .concurrency <<<"$CONC_PAR_OUT")"
+[ "$(jq -r '.concurrency.max_records_in_flight' <<<"$CONC_SERIAL_OUT")" = "1" ] \
+  || fail "N3: the N=1 run must report exactly one record in flight: $(jq -c .concurrency <<<"$CONC_SERIAL_OUT")"
+jq -e '.concurrency.observed | (.wall_secs | type) == "number" and (.serial_sum_secs | type) == "number"' \
+  <<<"$CONC_PAR_OUT" >/dev/null \
+  || fail "N3: the speedup must be MEASURED and published, not assumed: $(jq -c .concurrency <<<"$CONC_PAR_OUT")"
+n3_meas="$(jq -r '"wall \(.concurrency.observed.wall_secs)s vs serial-sum \(.concurrency.observed.serial_sum_secs)s, speedup \(.concurrency.observed.speedup)x"' <<<"$CONC_PAR_OUT")"
+n3_ser="$(jq -r '.concurrency.observed.wall_secs' <<<"$CONC_SERIAL_OUT")"
+ok "N3 the N=4 run really did run $n3_inflight records at once (N=1 ran 1) — MEASURED on this host: $n3_meas (the N=1 reference run took ${n3_ser}s)"
+
+# N4 — the circuit breaker under concurrency.
+count
+: >"$CB_LOG"
+CBC_OUT="$WORK/out-cb-conc"; CBC_STATE="$WORK/state-cb-conc"
+DRIVE_ARGS=(--corpus-file "$CORPUS_CB" --repo-root "$REPO" --out-dir "$CBC_OUT" --state-dir "$CBC_STATE"
+            --baseline-runner "bash $CB_STUB" --candidate-runner "bash $CB_STUB"
+            --judge-runner "bash $JUDGE_STUB" --confirm --concurrency 3)
+drive "" MODEL_COMPARISON_BATCH_MAX_CONSECUTIVE_STAGE_ERRORS=2
+[ "$RC" -eq 5 ] || fail "N4: a tripped breaker must still exit 5 (BATCH_STOPPED_EARLY) at N>1, got $RC: $OUT"
+[ "$(jq -r '.circuit_breaker.tripped' <<<"$OUT")" = "true" ] \
+  || fail "N4: the breaker must still trip at N>1: $(jq -c .circuit_breaker <<<"$OUT")"
+cbc_calls="$(wc -l <"$CB_LOG" | tr -d ' ')"
+[ "$cbc_calls" -lt 8 ] \
+  || fail "N4: the breaker did not stop anything at N=3 — the runner was invoked $cbc_calls times, i.e. the whole corpus"
+# The DOCUMENTED difference from N=1: dispatch stops, execution does not, so
+# some legs legitimately finish after the trip. The summary must SAY so rather
+# than let legs_not_attempted_n quietly disagree with what ran.
+jq -e '.circuit_breaker | has("records_in_flight_when_dispatch_stopped") and has("concurrency")' \
+  <<<"$OUT" >/dev/null \
+  || fail "N4: at N>1 the breaker block must state how many records were in flight when dispatch stopped: $(jq -c .circuit_breaker <<<"$OUT")"
+case "$(jq -r '.circuit_breaker.concurrency_note' <<<"$OUT")" in
+  *"stops DISPATCH"*) : ;;
+  *) fail "N4: the breaker must NAME the dispatch-vs-execution distinction at N>1: $(jq -r '.circuit_breaker.concurrency_note' <<<"$OUT")" ;;
+esac
+ok "N4 the breaker still stops the batch at N=3 (exit 5, $cbc_calls of 8 legs run) and the summary names the dispatch-vs-execution difference"
+
+# N5 — the cap clamps, and says so.
+count
+CLAMP_OUT="$WORK/out-clamp"; CLAMP_STATE="$WORK/state-clamp"
+DRIVE_ARGS=(--corpus-file "$CORPUS_A" --repo-root "$REPO" --out-dir "$CLAMP_OUT" --state-dir "$CLAMP_STATE"
+            --baseline-runner "bash $BASE_STUB" --candidate-runner "bash $CAND_STUB" --confirm
+            --concurrency 99)
+drive "" MODEL_COMPARISON_BATCH_MAX_CONCURRENCY=2
+[ "$RC" -eq 0 ] || fail "N5: a clamped run must still succeed, got $RC"
+[ "$(jq -r '.concurrency.effective' <<<"$OUT")" = "2" ] \
+  || fail "N5: --concurrency 99 must clamp to the cap of 2: $(jq -c .concurrency <<<"$OUT")"
+[ "$(jq -r '.concurrency.requested' <<<"$OUT")" = "99" ] \
+  || fail "N5: the summary must record what was REQUESTED alongside what ran: $(jq -c .concurrency <<<"$OUT")"
+grep -q "clamped to 2" "$WORK/last-stderr.txt" \
+  || fail "N5: a clamp must be announced on stderr, not applied silently: $(cat "$WORK/last-stderr.txt")"
+ok "N5 --concurrency 99 clamps to MODEL_COMPARISON_BATCH_MAX_CONCURRENCY and the clamp is announced"
+
+# N6 — an unparseable width resolves to SERIAL, never to a guess.
+count
+BADC_OUT="$WORK/out-badconc"; BADC_STATE="$WORK/state-badconc"
+DRIVE_ARGS=(--corpus-file "$CORPUS_A" --repo-root "$REPO" --out-dir "$BADC_OUT" --state-dir "$BADC_STATE"
+            --baseline-runner "bash $BASE_STUB" --candidate-runner "bash $CAND_STUB" --confirm)
+drive "" MODEL_COMPARISON_BATCH_CONCURRENCY=four
+[ "$RC" -eq 0 ] || fail "N6: an unparseable setting must degrade to serial, not abort, got $RC"
+[ "$(jq -r '.concurrency.effective' <<<"$OUT")" = "1" ] \
+  || fail "N6: an unparseable width must resolve to 1: $(jq -c .concurrency <<<"$OUT")"
+ok "N6 an unparseable MODEL_COMPARISON_BATCH_CONCURRENCY resolves to 1 — a typo never silently widens a spend-bearing batch"
+
+# N7 — resume ACROSS widths. The state dir is width-agnostic or it is broken.
+count
+: >"$SLOW_LOG"
+DRIVE_ARGS=(--corpus-file "$CORPUS_CONC" --repo-root "$REPO" --out-dir "$PAR_OUT" --state-dir "$PAR_STATE"
+            --baseline-runner "bash $SLOW_BASE" --candidate-runner "bash $SLOW_CAND" --confirm
+            --concurrency 1)
+drive ""
+[ "$RC" -eq 0 ] || fail "N7: resuming an N=4 batch at N=1 must succeed, got $RC"
+n7_calls="$(wc -l <"$SLOW_LOG" | tr -d ' ')"
+[ "$n7_calls" = "0" ] \
+  || fail "N7: resuming at a different width re-spent $n7_calls leg(s) — the state dir must be width-agnostic"
+[ "$(jq -r '.legs.resumed_n' <<<"$OUT")" = "8" ] \
+  || fail "N7: all 8 legs should have resumed: $(jq -c .legs <<<"$OUT")"
+[ "$(jq -c '.arm_order.per_record' <<<"$OUT")" = "$(jq -c '.arm_order.per_record' <<<"$CONC_PAR_OUT")" ] \
+  || fail "N7: the resume assigned a different arm order than the N=4 run it resumed"
+ok "N7 a batch run at N=4 and resumed at N=1 re-spends nothing and reproduces its arm order"
+
+# N8 — MUTATION PROOF. Run a record's two legs CONCURRENTLY in a throwaway
+#      mirror and N2's own predicate must now FAIL. Without this, N2 is
+#      satisfied by any driver that happens to be sequential for other reasons.
+count
+MUT_N="$WORK/mut-conc"; mk_mirror "$MUT_N"
+MUT_N_SUT="$MUT_N/workflows/scripts/model-comparison/batch.sh"
+unlink_and_copy "$MUT_N_SUT"
+mutate_file "$MUT_N_SUT" \
+  '  for arm in "$arm_first" "$arm_second"; do
+    arm_pos=$((arm_pos + 1))' \
+  '  for arm in "$arm_first" "$arm_second"; do
+    { arm_pos=$((arm_pos + 1))'
+mutate_file "$MUT_N_SUT" \
+  '  done
+  rm -rf "$leg_scratch"' \
+  '  } &
+  done
+  wait
+  rm -rf "$leg_scratch"'
+MUT_N_OUT="$WORK/out-mut-n"; MUT_N_STATE="$WORK/state-mut-n"
+DRIVE_ARGS=(--corpus-file "$CORPUS_CONC" --repo-root "$REPO" --out-dir "$MUT_N_OUT" --state-dir "$MUT_N_STATE"
+            --baseline-runner "bash $SLOW_BASE" --candidate-runner "bash $SLOW_CAND" --confirm
+            --concurrency 1)
+drive "$MUT_N_SUT"
+if mut_n_reason="$(assert_legs_sequential "$MUT_N_STATE")"; then
+  fail "N8: the mutation proof did not fire — a driver running both legs of a record AT ONCE passed N2's predicate ($mut_n_reason), so N2 proves nothing"
+fi
+ok "N8 MUTATION PROOF: a driver that overlaps a record's two legs FAILS the same predicate N2 passes ($mut_n_reason) — N2 is a measurement"
 
 # ═══════════════════════════════════════════════════════════════════════════
 # SECTION L — the suite-wide no-live-call verdict.
