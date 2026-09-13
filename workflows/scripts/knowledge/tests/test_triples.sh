@@ -151,7 +151,7 @@ check_eq "cites: provenance.record names the marker's line" "L1" "$(jq -r '.prov
 
 echo "── 2. a marker sharing a row id but NOT the registered (row-id, file) pair is never a triple ──"
 check_not "the unregistered.md marker produced no cites row" \
-  bash -c "cat '$FX/out'/triples-*.jsonl | jq -e 'select(.p == \"cites\" and .provenance.file == \"rule-files/unregistered.md\")' | grep -q ."
+  bash -c "cat '$FX/out'/triples-*.jsonl | jq -e 'select(.p == \"cites\" and .provenance.file == \"rule-files/unregistered.md\")' | grep . >/dev/null"
 
 echo "── 3. touched_by / claimed_by resolve session ids through join-keys-lib.sh into host:sess8 ──"
 touch_row="$(cat "$FX/out"/triples-*.jsonl | jq -c 'select(.p == "touched_by")')"
@@ -163,9 +163,9 @@ check_eq "claimed_by: o is the same host:sess8 stamp shape" "mini:4d8b1d3e" "$(j
 
 echo "── 4. an absent or non-UUID session id is skipped, never coerced into a triple ──"
 check_not "issue 43 (blank session_id) produced no touched_by row" \
-  bash -c "cat '$FX/out'/triples-*.jsonl | jq -e 'select(.p == \"touched_by\" and (.s | endswith(\"#43\")))' | grep -q ."
+  bash -c "cat '$FX/out'/triples-*.jsonl | jq -e 'select(.p == \"touched_by\" and (.s | endswith(\"#43\")))' | grep . >/dev/null"
 check_not "issue 44 (not-a-uuid session_id) produced no touched_by row" \
-  bash -c "cat '$FX/out'/triples-*.jsonl | jq -e 'select(.p == \"touched_by\" and (.s | endswith(\"#44\")))' | grep -q ."
+  bash -c "cat '$FX/out'/triples-*.jsonl | jq -e 'select(.p == \"touched_by\" and (.s | endswith(\"#44\")))' | grep . >/dev/null"
 
 echo "── 5. supersedes reads docs/adr/*.md's own Status section ──"
 super_row="$(cat "$FX/out"/triples-*.jsonl | jq -c 'select(.p == "supersedes")')"
@@ -216,7 +216,7 @@ RED_OUT="$(TRIPLES_REPO_ROOT="$NO_CITES_FX" TRIPLES_RAW_DIR="$NO_CITES_FX/out" b
 RED_RC=$?
 check_eq "build FAILS LOUDLY when the ontology registry drops the cites edge row" "1" "$RED_RC"
 check "the failure names the unlisted predicate" \
-  bash -c "printf '%s' '$RED_OUT' | grep -qi 'cites.*not a registered ontology edge'"
+  bash -c "printf '%s' '$RED_OUT' | grep -i 'cites.*not a registered ontology edge' >/dev/null"
 check "no lake file is left behind on the red run" \
   bash -c "! ls '$NO_CITES_FX/out'/triples-*.jsonl >/dev/null 2>&1"
 # ...and restoring the edge row goes back to GREEN, proving this is a real
