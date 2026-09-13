@@ -129,6 +129,25 @@ record="$(_sg_soak_run "$BOARD")"
 echo "PASS: soak — a differing day (each side flags a distinct issue) records agree:false with per-side diffs"
 
 # =============================================================================
+# a matching day whose reconcile.sh report embeds `#N` inside a flagged
+# line's TITLE (and a `#M` inside a stderr warning) — neither may inflate
+# reconcile_set into a phantom disagreement (over-broad #[0-9]+ extraction
+# over merged stdout+stderr).
+# =============================================================================
+_sg_reconcile() {
+  echo "warning: #50 could not be labeled Backlog" >&2
+  cat <<'EOT'
+orphaned In-Progress (report-only — park by hand: release.sh / re-claim):
+  #10 — In Progress with no Host/Session owner (orphaned claim) — fix flaky test (temperloop#1910)
+EOT
+}
+_sg_soak_day() { echo "2026-01-05"; }
+record="$(_sg_soak_run "$BOARD")"
+[ "$(jq -c '.reconcile_set' <<<"$record")" = '[10]' ] || fail "a #N inside a title or stderr warning must never inflate reconcile_set (got: $record)"
+[ "$(jq -r '.diff.agree' <<<"$record")" = "true" ] || fail "a #N inside a title or stderr warning must never manufacture a false disagreement (got: $record)"
+echo "PASS: soak — a #N embedded in a flagged line's TITLE or a stderr warning is never mistaken for a flagged item ref"
+
+# =============================================================================
 # "never a false agreement over unknown"
 # =============================================================================
 # board_resolve failure -> status-drift's own status is "unknown" ->
@@ -167,10 +186,10 @@ expect_log="$(cache_snapshot_file "$BOARD" state-graph-soak)"
 [ -d "$expect_dir" ] || fail "soak log directory was not created via cache_repo_dir(kind=state-graph-soak)"
 [ -s "$expect_log" ] || fail "soak log file was not created via cache_snapshot_file(kind=state-graph-soak)"
 lines_before="$(wc -l <"$expect_log" | tr -d ' ')"
-[ "$lines_before" -eq 4 ] || fail "soak log should carry exactly the four runs above (got $lines_before lines)"
+[ "$lines_before" -eq 5 ] || fail "soak log should carry exactly the five runs above (got $lines_before lines)"
 
 count="$(cmd_soak --count --board "$BOARD")"
-[ "$count" = 4 ] || fail "soak --count should report 4 distinct days (got: $count)"
+[ "$count" = 5 ] || fail "soak --count should report 5 distinct days (got: $count)"
 echo "PASS: soak --count — distinct days recorded, log persisted append-only through lib/cache.sh"
 
 # --count on a board with no soak log yet prints 0, never an error.
@@ -178,6 +197,18 @@ fresh_cache empty-count
 count0="$(cmd_soak --count --board "$BOARD")"
 [ "$count0" = 0 ] || fail "soak --count on an empty/missing log should print 0 (got: $count0)"
 echo "PASS: soak --count — 0 on a board with no soak log yet"
+
+# --count over a torn/malformed log line surfaces WHY it failed (a bare
+# non-zero exit under pipefail leaves the reason silent).
+fresh_cache count-malformed
+malformed_dir="$(cache_repo_dir "$BOARD" state-graph-soak)"
+mkdir -p "$malformed_dir"
+malformed_log="$(cache_snapshot_file "$BOARD" state-graph-soak)"
+printf '{not valid json\n' >"$malformed_log"
+rc=0; malformed_out="$(cmd_soak --count --board "$BOARD" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "soak --count over a malformed log should exit non-zero (got: $malformed_out)"
+printf '%s' "$malformed_out" | grep -F -- 'unreadable soak log' >/dev/null || fail "soak --count over a malformed log should name the unreadable log path (got: $malformed_out)"
+echo "PASS: soak --count — a torn/malformed log line surfaces a diagnostic and exits non-zero"
 
 # =============================================================================
 # --audit --items <file>
@@ -194,10 +225,10 @@ _sg_reconcile() { echo "In sync: every board item's status matches its GitHub st
 _sg_soak_day() { echo "2026-01-10"; }
 
 ITEMS_FILE="$TMP/audit-items.txt"
-printf '10\n#20\nIssue:30\n' >"$ITEMS_FILE"
+printf '10\n#20\nIssue:30\n#40 build fails on 2026-09\n' >"$ITEMS_FILE"
 audit_record="$(cmd_soak --audit --board "$BOARD" --items "$ITEMS_FILE")"
 [ "$(jq -r '.type' <<<"$audit_record")" = "audit" ] || fail "audit record missing type:audit (got: $audit_record)"
-[ "$(jq -c '.audited_items' <<<"$audit_record")" = '[10,20,30]' ] || fail "audit record did not extract bare/#N/Issue:N item refs correctly (got: $audit_record)"
+[ "$(jq -c '.audited_items' <<<"$audit_record")" = '[10,20,30,40]' ] || fail "audit record did not extract bare/#N/Issue:N item refs correctly, anchored to one ref per line (got: $audit_record)"
 [ "$(jq -r '.day' <<<"$audit_record")" = "2026-01-10" ] || fail "audit record day mismatch (got: $audit_record)"
 echo "PASS: soak --audit — records a hand-audited item set against today, accepting bare/#N/Issue:N refs"
 
@@ -260,8 +291,37 @@ bench_record="$(tail -1 "$bench_logf")"
 [ "$(jq -r '.query_ms."status-drift"' <<<"$bench_record")" = "10" ] || fail "bench soak-log record status-drift timing mismatch (got: $bench_record)"
 [ "$(jq -c '.slow_queries' <<<"$bench_record")" = '["resume"]' ] || fail "bench should name only resume as the slow query at this scale (got: $bench_record)"
 echo "PASS: bench --scale N — captures one {day, type:bench, query_ms, slow_queries} record naming the first query to exceed STATE_GRAPH_QUERY_SLOW_MS"
+
+# =============================================================================
+# bench --scale N with a non-integer STATE_GRAPH_QUERY_SLOW_MS override warns
+# and falls back to the config default (500) instead of dying mid-run after
+# the summary line has already printed. Own deterministic _sg_now_ms (a
+# constant — this fixture only cares that the run COMPLETES and records, not
+# about specific query timings) rather than reusing the exhausted disk-backed
+# sequence above, since `_sg_now_ms` has no per-test reset otherwise.
+# =============================================================================
+fresh_cache bench-bad-slow-ms
+_board_gh() {
+  case "$1 $2" in
+    "issue list") echo '[]' ;;
+    "pr list") echo '[]' ;;
+    *) echo "test _board_gh: unhandled '$1 $2'" >&2; return 3 ;;
+  esac
+}
+_sg_soak_day() { echo "2026-01-21"; }
+_sg_now_ms() { echo 0; }
+export STATE_GRAPH_QUERY_SLOW_MS=500ms
+rc=0; bad_slow_out="$(cmd_bench --scale 1 --board "$BOARD" 2>&1)" || rc=$?
+[ "$rc" -eq 0 ] || fail "bench with a non-integer STATE_GRAPH_QUERY_SLOW_MS should still complete (rc=$rc, out: $bad_slow_out)"
+printf '%s' "$bad_slow_out" | grep -F -- 'STATE_GRAPH_QUERY_SLOW_MS' >/dev/null || fail "bench with a non-integer STATE_GRAPH_QUERY_SLOW_MS should warn on stderr (got: $bad_slow_out)"
+printf '%s' "$bad_slow_out" | grep -E 'build_ms=[0-9]+' >/dev/null || fail "bench should still print its summary line (got: $bad_slow_out)"
+bad_slow_logf="$(cache_snapshot_file "$BOARD" state-graph-soak)"
+bad_slow_record="$(tail -1 "$bad_slow_logf")"
+[ "$(jq -r '.type' <<<"$bad_slow_record")" = "bench" ] || fail "bench with a bad slow-ms override should still append a soak-log record (got: $bad_slow_record)"
+[ "$(jq -r '.slow_ms' <<<"$bad_slow_record")" = "500" ] || fail "bench should fall back to the default slow_ms=500 on a bad override (got: $bad_slow_record)"
 unset -f _sg_now_ms
 unset STATE_GRAPH_QUERY_SLOW_MS
+echo "PASS: bench — a non-integer STATE_GRAPH_QUERY_SLOW_MS warns and falls back to the default instead of dying mid-run"
 
 # =============================================================================
 # CLI dispatch — invoked as a real subprocess, zero network reached

@@ -1039,15 +1039,23 @@ _sg_soak_run() {
     dq_set="$(jq -c '[ .findings[].id | ltrimstr("Issue:") | tonumber ] | sort | unique' <<<"$dq_json")"
   fi
 
-  rc_out="$(_sg_reconcile --board "$board" --status 2>&1)" || rc_rc=$?
+  # stdout only (`2>/dev/null`) — reconcile.sh's flagged lines carry the
+  # item's TITLE on the same line, and titles routinely contain `#N`
+  # themselves (`fix … (temperloop#1910)`); a stray board.sh warning routed
+  # to stderr can carry an unrelated `#N` too. Merging either into the
+  # parsed text manufactures a phantom issue number and a false
+  # disagreement — the one thing this cross-check exists to avoid.
+  rc_out="$(_sg_reconcile --board "$board" --status 2>/dev/null)" || rc_rc=$?
   if [ "$rc_rc" -ne 0 ]; then
     reconcile_set='"unknown"'
   else
-    # `grep -oE` legitimately exits 1 on an "In sync" report with zero
-    # flagged issues — under `set -o pipefail` that would otherwise trip
-    # this script's own `set -e` on a perfectly normal empty-set result, so
-    # its failure is absorbed in its own group before the rest of the pipe.
-    reconcile_set="$({ printf '%s' "$rc_out" | grep -oE '#[0-9]+' || true; } | tr -d '#' | sort -n | uniq | jq -Rsc 'split("\n") | map(select(length>0) | tonumber)')"
+    # Anchored on the report's line-leading item shape — the same shape
+    # reconcile.sh uses for its own marker parse (`sed -n
+    # 's/^#\([0-9][0-9]*\).*/\1/p'`, reconcile.sh:468) — so a `#N` embedded
+    # mid-line in a title is never mistaken for a flagged item ref. `sed`
+    # (unlike `grep -oE`) exits 0 on zero matches, so no pipefail absorption
+    # is needed for an "In sync" report with nothing flagged.
+    reconcile_set="$(printf '%s' "$rc_out" | sed -nE 's/^[[:space:]]*#([0-9]+)[[:space:]].*/\1/p' | sort -n | uniq | jq -Rsc 'split("\n") | map(select(length>0) | tonumber)')"
   fi
 
   if [ "$dq_set" = '"unknown"' ] || [ "$reconcile_set" = '"unknown"' ]; then
@@ -1076,19 +1084,26 @@ _sg_soak_count() {
     echo 0
     return 0
   fi
-  jq -r '.day' "$logf" 2>/dev/null | sort -u | wc -l | tr -d ' '
+  # No `2>/dev/null` on the `jq` here: under `pipefail` a torn/malformed line
+  # already makes this pipeline (and, as the function's last command, the
+  # whole script) exit non-zero — discarding jq's stderr left that exit code
+  # legible but its REASON silent. Surface it instead of a bare rc.
+  jq -r '.day' "$logf" | sort -u | wc -l | tr -d ' ' ||
+    { echo "state-graph.sh: soak --count: unreadable soak log $logf" >&2; return 1; }
 }
 
 # `soak --audit --board N --items <file>`: a hand-audited item set logged
 # against today, for a human to compare against the same day's mechanical
-# diff. `<file>` is one issue reference per line — a bare number, `#N`, or
-# `Issue:N` all accepted (every digit run on a line is extracted).
+# diff. `<file>` is one ANCHORED issue reference per line — a bare number,
+# `#N`, or `Issue:N`, matched only against the line's leading ref (never
+# every digit run on the line, so a line like `#20 build fails on 2026-09`
+# records just `20`, not `2026`/`09` too).
 _sg_soak_audit() {
   local board="$1" items_file="$2" items day logf record
   [ -f "$items_file" ] || { echo "state-graph.sh: soak --audit: items file not found: $items_file" >&2; return 1; }
-  # Same pipefail/set -e absorption as _sg_soak_run's reconcile_set above —
-  # a file naming zero issues is a legitimate empty audit set, not a failure.
-  items="$({ grep -oE '[0-9]+' "$items_file" 2>/dev/null || true; } | sort -n | uniq | jq -Rsc 'split("\n") | map(select(length>0) | tonumber)')"
+  # `sed` exits 0 on zero matches (unlike `grep -oE`), so a file naming zero
+  # issues is a legitimate empty audit set with no pipefail/set -e trip.
+  items="$(sed -nE 's/^[[:space:]]*(#|Issue:)?([0-9]+).*/\2/p' "$items_file" | sort -n | uniq | jq -Rsc 'split("\n") | map(select(length>0) | tonumber)')"
   day="$(_sg_soak_day)"
   logf="$(_sg_soak_log_file "$board")" || { echo "state-graph.sh: soak: could not resolve soak log path" >&2; return 1; }
   record="$(jq -cn --arg day "$day" --argjson items "$items" '{day:$day, type:"audit", audited_items:$items}')"
@@ -1210,6 +1225,16 @@ cmd_bench() {
   # `query_ms` exceeds `STATE_GRAPH_QUERY_SLOW_MS`.
   local qname qstart qend qms query_ms='{}' slow_queries='[]' slow_ms day logf bench_record
   slow_ms="${STATE_GRAPH_QUERY_SLOW_MS:-500}"
+  # Same digit guard `--scale` uses above — a bad env override (`500ms`)
+  # would otherwise reach `[ -gt ]`/`--argjson` below and die non-zero AFTER
+  # the summary line already printed (a half-completed run, no soak-log
+  # record). Warn and fall back to the config default instead.
+  case "$slow_ms" in
+    '' | *[!0-9]*)
+      echo "state-graph.sh: bench: STATE_GRAPH_QUERY_SLOW_MS='$slow_ms' is not a positive integer; using default 500" >&2
+      slow_ms=500
+      ;;
+  esac
   for qname in status-drift stale-claims unlinked-prs orphan-worktrees resume; do
     qstart="$(_sg_now_ms)"
     case "$qname" in
