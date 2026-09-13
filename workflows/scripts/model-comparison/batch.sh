@@ -99,6 +99,10 @@
 # Only the named legs are re-driven. An already-scored PARTNER leg keeps its
 # own terminal state and is not re-spent, because the resume gate is per-leg.
 #
+# Every leg state file carries the `run_id` of the invocation that wrote it,
+# which is what lets the post-loop derivation tell a leg this run executed
+# from one it resumed without re-deriving the resume decision.
+#
 # A state dir is bound to ONE batch: it records the corpus file's sha256 and
 # the selected outcome refs, and refuses to resume against a different
 # selection rather than silently mixing two batches' records into one arm
@@ -223,6 +227,28 @@
 # arm in` site in this file is either the counterbalanced execute loop or
 # carries that audit marker — so a future fixed-order loop cannot be added
 # silently.
+#
+# ── EVERY TALLY IS A READ OF THE STATE DIR (temperloop#1682) ──────────────
+# One corpus record, both arms, is `bd_run_record` — a function that mutates
+# no shell state its caller reads back. It writes what it learns to disk (the
+# leg state file, the leg record, the shared circuit-breaker state, the
+# in-flight worktree set) and `bd_derive_counts` then reads every published
+# tally back out of those files.
+#
+# That is a correctness property before it is a concurrency one. The counts
+# used to be incremented in the loop, alongside the state files rather than
+# out of them, so the summary was a SECOND derivation free to drift from the
+# artifact it described — the same class of gap the arm-file reconciliation
+# below catches one layer up. It is also what makes the loop wideable at all:
+# a forked leg cannot increment its parent's counter, and the three shared
+# scratch files the loop appended to (failures, not-attempted, the arm-order
+# ledger) are now regenerated in record-index order after the join instead.
+#
+# Two things are stamped on each leg state file to make that possible:
+# `run_id` (which invocation wrote it — so "resumed from an earlier run" is
+# attributable from disk rather than from a counter only the skipping branch
+# could touch), and `started_at`/`ended_at` (so the interval a leg held a
+# worktree is a recorded fact rather than something only inspection can see).
 #
 # ── THE COMPLETION RATE IS RECONCILED AGAINST THE ARTIFACT (temperloop#1556)
 # Every count this driver publishes — `replay_completion_rate`, `legs.*`,
@@ -515,17 +541,156 @@ bd_arm_order() {
   esac
 }
 
+# bd_now_utc — ISO-8601 UTC, second resolution.
+#
+# UTC on purpose: these stamps land in a machine-parsed record, which is the
+# kernel's stated carve-out from "human-facing times render local" — a stored
+# timestamp stays UTC so interval maths is DST-free (§ Communication
+# conventions). Second resolution is enough for what it is asserted over: a
+# leg is minutes long, and the property is an ORDERING one (leg 2 starts at or
+# after leg 1 ends), not a duration measurement — duration already rides the
+# record itself.
+bd_now_utc() {
+  date -u +%Y-%m-%dT%H:%M:%SZ
+}
+
+# ── THE IN-FLIGHT WORKTREE SET ────────────────────────────────────────────
+# One marker file per worktree that is prepared RIGHT NOW. This replaces a
+# single BD_LIVE_SLUG scalar, which could only ever name one worktree and so
+# could not describe a batch with more than one leg in flight
+# (temperloop#1682). A marker is created before worktree-prepare and removed
+# after teardown, so the set is always a superset of what is actually live —
+# tearing down a slug that is already gone is a no-op, and the failure that
+# matters is the other direction.
+BD_RUN_ID=""
+BD_INFLIGHT_DIR=""
+bd_inflight_add() {
+  [ -n "$BD_INFLIGHT_DIR" ] || return 0
+  : >"$BD_INFLIGHT_DIR/$1" 2>/dev/null || true
+}
+bd_inflight_del() {
+  [ -n "$BD_INFLIGHT_DIR" ] || return 0
+  rm -f "$BD_INFLIGHT_DIR/$1" 2>/dev/null || true
+}
+
+# ── THE CIRCUIT BREAKER'S STATE, ON DISK (temperloop#1554, #1682) ─────────
+# The streak used to be two shell variables in cmd_run's loop. It is a FILE
+# now, folded under a lock, for one reason: the fold has to survive a fork.
+# A worker that reaches a terminal leg state folds it in, and the dispatcher
+# reads the tripped flag back — neither of which works through a subshell's
+# copy of a variable.
+#
+# THE RULES ARE UNCHANGED: a leg that scores zeroes the streak, a same-stage
+# integration error increments it, a different stage re-keys it to 1, and the
+# threshold is MODEL_COMPARISON_BATCH_MAX_CONSECUTIVE_STAGE_ERRORS (0 = off).
+# What changes is only the ORDER the folds arrive in — leg COMPLETION order,
+# which sequentially IS the order the loop reaches legs in. That is what makes
+# this a refactor rather than a behaviour change.
+#
+# The state is one TSV line: streak, stage, tripped, trip-stage, trip-streak.
+# It is rewritten with a temp-and-rename, so a reader that takes no lock still
+# sees a whole line rather than a prefix.
+BD_CB_DIR=""
+BD_CB_THRESHOLD=0
+BD_CB_STREAK=0
+BD_CB_STAGE=""
+BD_CB_TRIPPED=0
+BD_CB_TRIP_STAGE=""
+BD_CB_TRIP_STREAK=0
+BD_CB_JUST_TRIPPED=0
+
+bd_cb_init() {
+  BD_CB_DIR="$1"
+  mkdir -p "$BD_CB_DIR" || return 1
+  printf '0\t\t0\t\t0\n' >"$BD_CB_DIR/state"
+}
+
+# A mkdir lock: atomic on every filesystem this runs on, and self-evidently
+# released by rmdir. The spin is BOUNDED — a fold that cannot take the lock
+# within the cap gives up rather than wedging a spend-bearing batch forever,
+# and the cost of that is one under-counted leg in the streak, never a lost
+# leg record (the record and its state file are written outside this lock).
+bd_cb_lock() {
+  local tries=0
+  until mkdir "$BD_CB_DIR/lock" 2>/dev/null; do
+    tries=$((tries + 1))
+    [ "$tries" -gt 600 ] && return 1
+    sleep 0.1
+  done
+  return 0
+}
+bd_cb_unlock() {
+  rmdir "$BD_CB_DIR/lock" 2>/dev/null || true
+}
+
+# bd_cb_read — load the shared state into the BD_CB_* globals.
+bd_cb_read() {
+  local streak stage tripped trip_stage trip_streak
+  [ -n "$BD_CB_DIR" ] && [ -f "$BD_CB_DIR/state" ] || return 0
+  IFS="$(printf '\t')" read -r streak stage tripped trip_stage trip_streak \
+    <"$BD_CB_DIR/state" 2>/dev/null || return 0
+  case "${streak:-}" in ''|*[!0-9]*) streak=0 ;; esac
+  case "${tripped:-}" in ''|*[!0-9]*) tripped=0 ;; esac
+  case "${trip_streak:-}" in ''|*[!0-9]*) trip_streak=0 ;; esac
+  BD_CB_STREAK="$streak"; BD_CB_STAGE="${stage:-}"; BD_CB_TRIPPED="$tripped"
+  BD_CB_TRIP_STAGE="${trip_stage:-}"; BD_CB_TRIP_STREAK="$trip_streak"
+  return 0
+}
+
+# bd_cb_fold <scored|integration-error> <stage> — fold ONE terminal leg in.
+#
+# Sets BD_CB_JUST_TRIPPED when THIS fold is the one that crossed the
+# threshold, so the "CIRCUIT BREAKER TRIPPED" notice is printed exactly once
+# no matter how many legs land afterwards.
+bd_cb_fold() {
+  local outcome="$1" stage="$2"
+  BD_CB_JUST_TRIPPED=0
+  [ -n "$BD_CB_DIR" ] || return 0
+  bd_cb_lock || { bd_cb_read; return 0; }
+  bd_cb_read
+  case "$outcome" in
+    scored)
+      BD_CB_STREAK=0; BD_CB_STAGE="" ;;
+    integration-error)
+      if [ "$stage" = "$BD_CB_STAGE" ]; then
+        BD_CB_STREAK=$((BD_CB_STREAK + 1))
+      else
+        BD_CB_STAGE="$stage"; BD_CB_STREAK=1
+      fi
+      if [ "$BD_CB_THRESHOLD" -gt 0 ] && [ "$BD_CB_STREAK" -ge "$BD_CB_THRESHOLD" ] \
+         && [ "$BD_CB_TRIPPED" -eq 0 ]; then
+        BD_CB_TRIPPED=1; BD_CB_TRIP_STAGE="$BD_CB_STAGE"
+        BD_CB_TRIP_STREAK="$BD_CB_STREAK"; BD_CB_JUST_TRIPPED=1
+      fi ;;
+  esac
+  printf '%s\t%s\t%s\t%s\t%s\n' "$BD_CB_STREAK" "$BD_CB_STAGE" "$BD_CB_TRIPPED" \
+    "$BD_CB_TRIP_STAGE" "$BD_CB_TRIP_STREAK" >"$BD_CB_DIR/state.part"
+  mv -f "$BD_CB_DIR/state.part" "$BD_CB_DIR/state"
+  bd_cb_unlock
+  return 0
+}
+
 # ── the interrupted-path teardown ─────────────────────────────────────────
-# BD_LIVE_SLUG holds the slug of the worktree that is prepared RIGHT NOW.
-# The trap is what makes "torn down on both success and failure" true even
-# when the failure is a ^C or a kill between prepare and teardown.
-BD_LIVE_SLUG=""
+# The in-flight worktree SET (bd_inflight_add/del above) is what makes
+# "torn down on both success and failure" true even when the failure is a ^C
+# or a kill between prepare and teardown. It is a set rather than the single
+# BD_LIVE_SLUG scalar it replaces because more than one leg can hold a
+# worktree at once (temperloop#1682) — a scalar could only ever name the last
+# one prepared, silently leaking every other.
 BD_REPO_ROOT=""
 bd_trap_cleanup() {
-  if [ -n "$BD_LIVE_SLUG" ] && [ -n "$BD_REPO_ROOT" ]; then
-    bash "$REPLAY_SH" worktree-teardown "$BD_REPO_ROOT" "$BD_LIVE_SLUG" >/dev/null 2>&1 || true
-    BD_LIVE_SLUG=""
-  fi
+  [ -n "$BD_REPO_ROOT" ] || return 0
+  [ -n "$BD_INFLIGHT_DIR" ] && [ -d "$BD_INFLIGHT_DIR" ] || return 0
+  local marker slug
+  # bash 3.2: an unmatched glob expands to itself, so the -e test is what
+  # keeps an empty set from tearing down a worktree literally named "*".
+  for marker in "$BD_INFLIGHT_DIR"/*; do
+    [ -e "$marker" ] || continue
+    slug="$(basename "$marker")"
+    bash "$REPLAY_SH" worktree-teardown "$BD_REPO_ROOT" "$slug" >/dev/null 2>&1 || true
+    rm -f "$marker" 2>/dev/null || true
+  done
+  return 0
 }
 
 # bd_trap_signal <SIGNAL-NAME> — the INTERRUPTED path (temperloop#1527), and
@@ -573,6 +738,406 @@ bd_trap_signal() {
 trap bd_trap_cleanup EXIT
 trap 'bd_trap_signal INT' INT
 trap 'bd_trap_signal TERM' TERM
+
+# bd_derive_counts — every tally the summary publishes, READ OUT OF the leg
+# state files after the execute loop (temperloop#1682).
+#
+# WHY THIS EXISTS. The loop used to increment eight counters and append to
+# three shared scratch files as it went. Neither survives a fork, so the loop
+# could not be widened. It also meant the published counts were a SECOND
+# derivation running alongside the state files rather than a read of them —
+# free to disagree with the artifact they describe, which is the same class of
+# gap temperloop#1556's arm-file reconciliation catches one layer up.
+#
+# WHAT IT MUST REPRODUCE, exactly. The three scratch files are consumed
+# verbatim by the summary, so this walks the selection in the SAME order the
+# loop did — record index ascending, and within a record the two arms in their
+# counterbalanced EXECUTION order — and emits the same lines it used to append.
+#
+#   * legs_resumed  — a leg whose state file carries a run_id other than this
+#                     invocation's is a leg the resume gate skipped. That is
+#                     precisely what the old counter counted, now attributable
+#                     from disk rather than from a variable only the skipping
+#                     branch could touch.
+#   * failures      — the summary's failure list carried SHORTER text than the
+#                     state file's own `reason` for a worktree-prepare failure.
+#                     `failure_note` preserves that, so the published list is
+#                     byte-identical rather than merely equivalent.
+#   * records_unattempted — a record NONE of whose legs were attempted. A
+#                     record whose first arm ran and whose second was skipped
+#                     is deliberately NOT counted: it was partially attempted,
+#                     and legs_not_attempted_n already carries that leg.
+#
+# Reads and writes cmd_run's locals by dynamic scope, exactly as bd_run_record
+# reads its inputs.
+bd_derive_counts() {
+  legs_done=0; legs_resumed=0; legs_failed=0; legs_scored=0; legs_interr=0
+  legs_unattempted=0; records_unattempted=0
+  : >"$failures_file"; : >"$unattempted_file"; : >"$order_file"
+
+  local d_idx d_ref d_rec d_first d_second d_arm d_state d_key d_file
+  local d_rid d_from d_reason d_na
+  # d_rec (the third TSV column, the record file) is read only so it cannot
+  # land in d_ref; the derivation needs the index and the ref alone.
+  # shellcheck disable=SC2034
+  while IFS="$(printf '\t')" read -r d_idx d_ref d_rec <&4; do
+    [ -n "$d_idx" ] || continue
+    read -r d_first d_second <<<"$(bd_arm_order "$d_idx")"
+    # ── THE ARM-ORDER LEDGER (temperloop#1571) ─────────────────────────
+    # One line per record: which arm ran first, and each arm's execution
+    # position. bd_arm_order is a PURE function of the record index, so
+    # re-deriving the ledger here is the same statement the loop made while
+    # executing — and it stays the same statement at any concurrency,
+    # because the assignment never depended on when a record ran.
+    jq -cn --argjson i "$d_idx" --arg ref "$d_ref" --arg first "$d_first" \
+      --arg second "$d_second" --arg base "$BATCH_ARM_BASELINE" \
+      --arg cand "$BATCH_ARM_CANDIDATE" \
+      '{record_index:$i, outcome_ref:$ref, first_arm:$first, second_arm:$second,
+        positions: {($base): (if $first == $base then 1 else 2 end),
+                    ($cand): (if $first == $cand then 1 else 2 end)}}' >>"$order_file"
+
+    d_key="$(printf '%03d' "$d_idx")-$(bd_slugify "$d_ref")"
+    d_na=0
+    for d_arm in "$d_first" "$d_second"; do
+      d_file="$state_dir/legs/$d_arm/$d_key.state.json"
+      d_state="absent"; d_rid=""
+      if [ -f "$d_file" ]; then
+        if jq -e 'type == "object" and (.state | type) == "string"' <"$d_file" >/dev/null 2>&1; then
+          d_state="$(jq -r '.state' <"$d_file" 2>/dev/null)"
+          d_rid="$(jq -r '.run_id // ""' <"$d_file" 2>/dev/null)"
+        else
+          d_state="state-unreadable"
+        fi
+      fi
+      # A leg with no state file at all was never reached — only possible if
+      # the loop was cut short below the signal handler, in which case the
+      # process is already dying. Counted as nothing, never as a success.
+      [ "$d_state" = "absent" ] && continue
+
+      if [ "$d_rid" = "$BD_RUN_ID" ]; then
+        d_from="this invocation"
+      else
+        d_from="a previous invocation of this batch"
+        legs_resumed=$((legs_resumed + 1))
+      fi
+
+      case "$d_state" in
+        scored)
+          legs_done=$((legs_done + 1)); legs_scored=$((legs_scored + 1)) ;;
+        integration-error)
+          legs_done=$((legs_done + 1)); legs_interr=$((legs_interr + 1)) ;;
+        not-attempted)
+          legs_unattempted=$((legs_unattempted + 1)); d_na=$((d_na + 1))
+          jq -cn --arg a "$d_arm" --arg r "$d_ref" \
+            '{arm:$a, outcome_ref:$r}' >>"$unattempted_file" ;;
+        state-unreadable)
+          legs_failed=$((legs_failed + 1))
+          jq -cn --arg a "$d_arm" --arg r "$d_ref" --arg f "$d_from" \
+            '{arm:$a, outcome_ref:$r,
+              reason:"this leg\u0027s state file exists but carries no readable state — a torn or damaged write. What happened to this leg is UNKNOWN: it may have scored (and its record may already be in the arm file), or it may never have run. Nothing is re-spent by default because the candidate may already have been billed; `--retry-failed` re-drives it as a deliberate operator choice (temperloop#1764)",
+              from:$f}' >>"$failures_file" ;;
+        *)
+          legs_failed=$((legs_failed + 1))
+          d_reason="$(jq -r '.failure_note // .reason // "no reason recorded"' <"$d_file" 2>/dev/null)"
+          jq -cn --arg a "$d_arm" --arg r "$d_ref" --arg reason "$d_reason" --arg f "$d_from" \
+            '{arm:$a, outcome_ref:$r, reason:$reason, from:$f}' >>"$failures_file" ;;
+      esac
+    done
+    [ "$d_na" -eq "$BATCH_ARMS_N" ] && records_unattempted=$((records_unattempted + 1))
+  done 4<"$sel_tsv"
+  return 0
+}
+
+# bd_run_record <record-index> <outcome-ref> <record-file> — ONE corpus
+# record, both arms, in their counterbalanced order (temperloop#1682).
+#
+# THE CONTRACT THAT MAKES THIS FORKABLE, and the reason it was carved out of
+# cmd_run's loop: this function mutates NO shell state its caller reads back.
+# Everything it learns it writes to disk — the leg state file, the leg record,
+# the shared circuit-breaker state, the in-flight slug set — and every tally
+# the summary publishes is DERIVED from those files afterwards by
+# bd_derive_counts. Before this it incremented eight caller-local counters and
+# appended to three shared scratch files, none of which survives a fork, so
+# the loop could not be widened without silently losing counts.
+#
+# It still READS plenty of cmd_run's locals (repo_root, live, the per-arm
+# runner/model/provider, cb threshold, …) — bash scopes those dynamically and
+# a forked child inherits them, so they are inputs, not shared mutable state.
+#
+# Deliberately NOT changed here: arm order. bd_arm_order is a pure function of
+# the record index, so this record's assignment is identical whether it runs
+# first, last, or alongside five others (temperloop#1571).
+bd_run_record() {
+  local sel_idx="$1" sel_ref="$2" sel_rec="$3"
+  [ -n "$sel_idx" ] || return 0
+  # Per-RECORD scratch. The shared $scratch/prep-stderr.txt and
+  # $scratch/exec-stderr.txt this replaces were single files two records
+  # cannot share: concurrently, one leg's diagnostic would be read as
+  # another's failure reason.
+  local leg_scratch
+  leg_scratch="$scratch/rec-$(printf '%03d' "$sel_idx")"
+  mkdir -p "$leg_scratch"
+  # ── COUNTERBALANCED EXECUTION ORDER (temperloop#1571) ────────────────
+  # THE loop whose arm order can confound a result, and therefore the one
+  # loop in this file that is NOT fixed-order. bd_arm_order is a pure
+  # function of the record index, so this record's assignment is the same
+  # on a resume, on a --retry-failed, and on a re-run from a fresh state
+  # dir.
+  local arm arm_first arm_second arm_pos
+  read -r arm_first arm_second <<<"$(bd_arm_order "$sel_idx")"
+  arm_pos=0
+  for arm in "$arm_first" "$arm_second"; do
+    arm_pos=$((arm_pos + 1))
+    # The execution_order block stamped onto this leg's record and its state
+    # file. `position` is the per-LEG fact an order effect is estimated
+    # from; `rule`/`seed` are what make the assignment reproducible without
+    # this driver.
+    local exec_order_json
+    exec_order_json="$(jq -cn --arg rule "$BATCH_ARM_ORDER_RULE" \
+      --arg expr "$BATCH_ARM_ORDER_EXPRESSION" --argjson seed "$BATCH_ARM_ORDER_SEED" \
+      --argjson i "$sel_idx" --argjson pos "$arm_pos" --argjson arms_n "$BATCH_ARMS_N" \
+      --arg arm "$arm" --arg first "$arm_first" \
+      '{rule:$rule, rule_expression:$expr, seed:$seed, record_index:$i,
+        arm:$arm, position:$pos, arms_n:$arms_n, first_arm:$first,
+        basis:"the execution POSITION of this leg within its record'"'"'s pair (1 = ran first, 2 = ran second). Recorded per leg so an order effect can be ESTIMATED rather than assumed away — arm and position are counterbalanced across the batch, never confounded as they were before temperloop#1571"}')"
+    local leg_key leg_rec leg_state
+    leg_key="$(printf '%03d' "$sel_idx")-$(bd_slugify "$sel_ref")"
+    leg_rec="$state_dir/legs/$arm/$leg_key.json"
+    leg_state="$state_dir/legs/$arm/$leg_key.state.json"
+
+    # ── RESUME: a leg that already reached a terminal state is never
+    #    re-spent. A failed leg is not retried either unless asked, since
+    #    a failure can land AFTER the candidate ran (score.sh's own
+    #    refusal path is exactly that shape) and a blind retry would
+    #    re-spend it.
+    if [ -f "$leg_state" ]; then
+      # A TORN state file is its own case (temperloop#1764), never a silent
+      # generic failure. Before this, a file with no readable `.state` fell
+      # through to the catch-all below and was counted `legs_failed` with the
+      # reason "no reason recorded" — for a leg that may well have SCORED,
+      # with a real record already in the arm file. That reads as a knowable
+      # failure, is inconsistent with the arm file, and no resume re-drives it.
+      #
+      # Writes are atomic since bd_write_state, so this should not arise from
+      # this driver again — but a state dir can predate that fix, or be
+      # damaged by something else, and "I cannot tell what happened to this
+      # leg" is a real answer that deserves saying out loud.
+      local prev_state
+      if jq -e 'type == "object" and (.state | type) == "string"' <"$leg_state" >/dev/null 2>&1; then
+        prev_state="$(jq -r '.state' <"$leg_state" 2>/dev/null)"
+      else
+        prev_state="state-unreadable"
+      fi
+      local retryable=0
+      [ "$prev_state" = "cannot-evaluate" ] && [ "$retry_failed" -eq 1 ] && retryable=1
+      # An unreadable state is the SAME risk class as cannot-evaluate: the leg
+      # may have failed after the candidate ran, so a blind re-spend is what
+      # the default protects against — and `--retry-failed` is the operator
+      # saying they have judged it worth spending. Recoverable, but only on
+      # an explicit ask (temperloop#1764).
+      [ "$prev_state" = "state-unreadable" ] && [ "$retry_failed" -eq 1 ] && retryable=1
+      # A `not-attempted` leg (temperloop#1554) is ALWAYS retryable, with or
+      # without --retry-failed: --retry-failed exists to protect a leg that
+      # may have failed AFTER the candidate ran from a blind re-spend, and a
+      # leg the circuit breaker skipped never ran at all. There is nothing to
+      # protect, so a plain resume re-drives it.
+      [ "$prev_state" = "not-attempted" ] && retryable=1
+      # ── STAGE-SCOPED RETRY (temperloop#1693) ──────────────────────
+      # `--retry-failed`'s conservatism is right for `envelope-parse` or
+      # `vendor-error`, where the candidate may already have run and been
+      # billed. It is WRONG for `candidate-timeout`, which is a leg that
+      # ran and was cut off by OUR OWN configured wall
+      # (REPLAY_CANDIDATE_TIMEOUT_SECS) — re-driving it at a longer wall
+      # is a deliberate, informed operator choice, not a blind re-spend.
+      #
+      # Before this flag there was no way to express that: an
+      # integration-error leg matched neither arm above and fell through
+      # to legs_done, permanently unrecoverable against its state dir. On
+      # the #1656 run that cost 10 of 28 records a leg, and with it the
+      # whole record's paired delta — 18 paired outcomes against a floor
+      # of 20, so the report returned `inconclusive` on sample size for a
+      # reason that had nothing to do with what it was measuring.
+      #
+      # Scoped per STAGE rather than broadening --retry-failed, so the
+      # operator names the failure class they judged safe to re-drive and
+      # every other class keeps today's protection untouched.
+      if [ "$prev_state" = "integration-error" ] && [ -n "$retry_stages" ]; then
+        local prev_stage; prev_stage="$(jq -r '.stage // ""' <"$leg_state" 2>/dev/null)"
+        case " $retry_stages " in
+          *" $prev_stage "*) [ -n "$prev_stage" ] && retryable=1 ;;
+        esac
+      fi
+      if [ "$retryable" -eq 0 ]; then
+        # NOTHING is counted here. Every tally this driver publishes is
+        # derived from the leg state files after the loop (bd_derive_counts),
+        # so a leg the resume gate skips needs no bookkeeping beyond the
+        # state file it already has on disk — and the record body stays a
+        # pure function of ONE record, which is what lets it be forked.
+        printf 'batch.sh: [%s/%s] %s %s — resumed (%s), not re-spent\n' \
+          "$sel_idx" "$idx" "$arm" "$sel_ref" "$prev_state" >&2
+        continue
+      fi
+    fi
+
+    # ── THE CIRCUIT BREAKER HAS TRIPPED (temperloop#1554) ─────────────
+    # Deliberately AFTER the resume block above: a leg that already reached
+    # a terminal state in an earlier run keeps that state — the breaker
+    # never overwrites recorded work — and only a leg this run would have
+    # EXECUTED is recorded not-attempted. Nothing is prepared and nothing is
+    # spent from here on; the loop keeps walking purely so every remaining
+    # leg gets its `not-attempted` record rather than silently vanishing.
+    bd_cb_read
+    if [ "$BD_CB_TRIPPED" -eq 1 ]; then
+      jq -cn --arg stage "$BD_CB_TRIP_STAGE" --argjson n "$BD_CB_TRIP_STREAK" \
+        --argjson eo "$exec_order_json" --arg rid "$BD_RUN_ID" \
+        '{state:"not-attempted",
+          reason:("the circuit breaker tripped earlier in this batch after " + ($n|tostring)
+                  + " consecutive \"" + $stage + "\" integration errors, so this leg was NEVER EXECUTED. This is not a claim that this record is incompatible — nothing was attempted, nothing was spent, and a resume re-drives it"),
+          stage:null, execution_order:$eo, run_id:$rid,
+          started_at:null, ended_at:null}' | bd_write_state "$leg_state"
+      rm -f "$leg_rec"
+      printf 'batch.sh: [%s/%s] %s %s — NOT ATTEMPTED (circuit breaker tripped); nothing spent, a resume re-drives it\n' \
+        "$sel_idx" "$idx" "$arm" "$sel_ref" >&2
+      continue
+    fi
+
+    # ── prepare ────────────────────────────────────────────────────────
+    # The leg's clock starts BEFORE worktree-prepare and stops after
+    # teardown, so `started_at`/`ended_at` bound everything this leg
+    # occupied a worktree for. That is the interval the "a record's two legs
+    # never overlap" property is asserted over (temperloop#1682) — bounding
+    # only the model call would leave the prepare/teardown windows free to
+    # overlap while the assertion still passed.
+    local leg_started; leg_started="$(bd_now_utc)"
+    local slug prep_out prep_path rec_base
+    slug="mc-replay-$arm-$(printf '%03d' "$sel_idx")"
+    rec_base="$(jq -r '.base // ""' "$sel_rec")"
+    # stderr is deliberately NOT merged into this capture — worktree.sh's
+    # create() writes its structured JSON to stdout but a diagnostic guard
+    # banner to stderr, and merging the two corrupts the JSON parse below on
+    # every run where the banner fires (replay.sh's own worktree-prepare
+    # carries the same comment for the same reason; observed here as every
+    # leg "failing" with a PREPARED payload inside its own failure text).
+    prep_out="$(bash "$REPLAY_SH" worktree-prepare "$repo_root" "$slug" "$rec_base" 2>"$leg_scratch/prep-stderr.txt")"
+    prep_path="$(jq -r '.path // empty' <<<"$prep_out" 2>/dev/null)"
+    if [ "$(jq -r '.outcome // empty' <<<"$prep_out" 2>/dev/null)" != "PREPARED" ] || [ -z "$prep_path" ]; then
+      # worktree-prepare tears its own partial worktree down on every
+      # failure path (its header's mid-run-failure guarantee), so there
+      # is nothing to clean up here — only to record.
+      # `failure_note` is the SHORTER text the summary's failure list
+      # carries, kept beside the state file's own fuller `reason` rather
+      # than appended to a shared scratch file — the two were always
+      # different strings, and the derivation pass reads this one back so
+      # the published list is unchanged (temperloop#1682).
+      jq -cn --arg s "cannot-evaluate" \
+        --arg r "worktree-prepare failed for slug $slug: $(printf '%s' "$prep_out" | head -c 400) $(head -c 400 "$leg_scratch/prep-stderr.txt" 2>/dev/null)" \
+        --arg n "worktree-prepare failed: $(printf '%s' "$prep_out" | head -c 200)" \
+        --argjson eo "$exec_order_json" --arg rid "$BD_RUN_ID" \
+        --arg st "$leg_started" --arg en "$(bd_now_utc)" \
+        '{state:$s, reason:$r, failure_note:$n, execution_order:$eo, run_id:$rid,
+          started_at:$st, ended_at:$en}' | bd_write_state "$leg_state"
+      printf 'batch.sh: [%s/%s] %s %s — FAILED (worktree-prepare); the batch continues\n' \
+        "$sel_idx" "$idx" "$arm" "$sel_ref" >&2
+      continue
+    fi
+    bd_inflight_add "$slug"
+
+    # ── execute ────────────────────────────────────────────────────────
+    local -a xa
+    xa=(execute --record "$sel_rec" --repo-root "$repo_root" --worktree "$prep_path" --out "$leg_rec")
+    if [ "$live" -eq 1 ]; then
+      xa+=(--live)
+    else
+      case "$arm" in
+        "$BATCH_ARM_BASELINE") xa+=(--candidate-runner "$baseline_runner") ;;
+        *) xa+=(--candidate-runner "$candidate_runner") ;;
+      esac
+    fi
+    local arm_model arm_provider
+    case "$arm" in
+      "$BATCH_ARM_BASELINE") arm_model="$baseline_model"; arm_provider="$baseline_provider" ;;
+      *) arm_model="$candidate_model"; arm_provider="$candidate_provider" ;;
+    esac
+    [ -n "$arm_model" ] && xa+=(--model "$arm_model")
+    [ -n "$arm_provider" ] && xa+=(--provider "$arm_provider")
+    [ -n "$owner_repo" ] && xa+=(--repo "$owner_repo")
+    [ -n "$gate_relpath" ] && xa+=(--gate-relpath "$gate_relpath")
+
+    local x_rc=0 x_err="$leg_scratch/exec-stderr.txt"
+    rm -f "$leg_rec"
+    bash "$REPLAY_SH" "${xa[@]}" >/dev/null 2>"$x_err" || x_rc=$?
+
+    # ── teardown, on BOTH the success and the failure path ────────────
+    bash "$REPLAY_SH" worktree-teardown "$repo_root" "$slug" >/dev/null 2>&1 || true
+    bd_inflight_del "$slug"
+
+    # A record must actually exist and parse before this leg counts as
+    # having produced one — an exit code alone is not evidence.
+    local have_record=0
+    if [ -s "$leg_rec" ] && jq -e 'type=="object"' >/dev/null 2>&1 <"$leg_rec"; then have_record=1; fi
+
+    # ── STAMP THE EXECUTION POSITION ONTO THE RECORD (temperloop#1571) ──
+    # Onto the RECORD, not only the state file: the record is what STEP 4
+    # assembles into the arm file the report producer reads, and the order
+    # effect can only be estimated where the position travels with the
+    # measurement. Stamped for BOTH terminal record shapes (a scored record
+    # and an integration-error record), since both carry a duration and both
+    # ran in a position. A jq failure here leaves the record exactly as
+    # replay.sh wrote it rather than truncating it — an un-stamped record is
+    # reported as un-estimable downstream, never as position 1.
+    if [ "$have_record" -eq 1 ]; then
+      if jq -c --argjson eo "$exec_order_json" '. + {execution_order:$eo}' \
+           <"$leg_rec" >"$leg_scratch/leg-stamped.json" 2>/dev/null \
+         && [ -s "$leg_scratch/leg-stamped.json" ]; then
+        mv "$leg_scratch/leg-stamped.json" "$leg_rec"
+      fi
+    fi
+
+    if [ "$x_rc" -eq 0 ] && [ "$have_record" -eq 1 ]; then
+      jq -cn --argjson eo "$exec_order_json" --arg rid "$BD_RUN_ID" \
+        --arg st "$leg_started" --arg en "$(bd_now_utc)" \
+        '{state:"scored", reason:null, stage:null, execution_order:$eo, run_id:$rid,
+          started_at:$st, ended_at:$en}' | bd_write_state "$leg_state"
+      # A success is the one thing that proves the spawn path is alive, so
+      # it zeroes the breaker's streak outright (temperloop#1554).
+      bd_cb_fold scored ""
+      printf 'batch.sh: [%s/%s] %s %s — scored\n' "$sel_idx" "$idx" "$arm" "$sel_ref" >&2
+    elif [ "$x_rc" -eq 4 ] && [ "$have_record" -eq 1 ]; then
+      # The STAGE comes off the record replay.sh just wrote — its own
+      # vocabulary, read rather than re-derived, so the breaker keys on the
+      # same word the record and the report producer already use.
+      local ie_stage
+      ie_stage="$(jq -r '.candidate.integration_error.stage // ""' <"$leg_rec" 2>/dev/null)"
+      [ -n "$ie_stage" ] || ie_stage="unknown"
+      jq -cn --arg r "$(head -c 400 "$x_err" 2>/dev/null)" --arg s "$ie_stage" \
+        --argjson eo "$exec_order_json" --arg rid "$BD_RUN_ID" \
+        --arg st "$leg_started" --arg en "$(bd_now_utc)" \
+        '{state:"integration-error", reason:$r, stage:$s, execution_order:$eo, run_id:$rid,
+          started_at:$st, ended_at:$en}' | bd_write_state "$leg_state"
+      # The fold is the ONE place the streak advances, and it advances in
+      # LEG-COMPLETION order. Sequentially that is the order this loop
+      # reaches legs in, i.e. exactly the pre-temperloop#1682 behaviour.
+      bd_cb_fold integration-error "$ie_stage"
+      printf 'batch.sh: [%s/%s] %s %s — integration error (stage %s, %s in a row; a record WAS produced); the batch continues\n' \
+        "$sel_idx" "$idx" "$arm" "$sel_ref" "$ie_stage" "$BD_CB_STREAK" >&2
+      if [ "$BD_CB_TRIPPED" -eq 1 ] && [ "$BD_CB_JUST_TRIPPED" -eq 1 ]; then
+        printf 'batch.sh: CIRCUIT BREAKER TRIPPED — %s consecutive "%s" integration errors reached the threshold MODEL_COMPARISON_BATCH_MAX_CONSECUTIVE_STAGE_ERRORS (%s). The spawn path looks systemically unavailable, not the records incompatible, so this batch STOPS here instead of running the rest of the corpus out against it. Every remaining leg is recorded not-attempted and a resume re-drives it once the cause is cleared\n' \
+          "$BD_CB_STREAK" "$BD_CB_STAGE" "$BD_CB_THRESHOLD" >&2
+      fi
+    else
+      local why
+      why="replay.sh execute exited $x_rc and produced no usable record: $(head -c 400 "$x_err" 2>/dev/null)"
+      rm -f "$leg_rec"
+      jq -cn --arg r "$why" --argjson eo "$exec_order_json" --arg rid "$BD_RUN_ID" \
+        --arg st "$leg_started" --arg en "$(bd_now_utc)" \
+        '{state:"cannot-evaluate", reason:$r, execution_order:$eo, run_id:$rid,
+          started_at:$st, ended_at:$en}' | bd_write_state "$leg_state"
+      printf 'batch.sh: [%s/%s] %s %s — FAILED (%s); the batch continues\n' \
+        "$sel_idx" "$idx" "$arm" "$sel_ref" "$why" >&2
+    fi
+  done
+  rm -rf "$leg_scratch"
+}
 
 cmd_schema() {
   jq -cn --arg sv "$BATCH_SUMMARY_SCHEMA_VERSION" '{
@@ -670,7 +1235,7 @@ cmd_run() {
 
   # The circuit-breaker threshold is read ONCE, here, and validated fail-closed
   # like every other input: a non-integer would otherwise turn every later
-  # `[ "$cb_streak" -ge "$cb_threshold" ]` into a shell error the loop swallows,
+  # threshold comparison in bd_cb_fold into a shell error the fold swallows,
   # leaving the breaker silently disarmed on a spend-bearing run. 0 is a
   # legitimate value (breaker off); a negative one is not.
   local cb_threshold="$MODEL_COMPARISON_BATCH_MAX_CONSECUTIVE_STAGE_ERRORS"
@@ -679,6 +1244,7 @@ cmd_run() {
       bd_cannot_evaluate "MODEL_COMPARISON_BATCH_MAX_CONSECUTIVE_STAGE_ERRORS must be a non-negative integer (0 disables the circuit breaker), got \"$cb_threshold\" — refusing to start a spend-bearing batch whose stop condition could not be read"
       return 1 ;;
   esac
+  BD_CB_THRESHOLD="$cb_threshold"
 
   local repo_top
   repo_top="$(cd "$repo_root" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null)"
@@ -870,28 +1436,46 @@ cmd_run() {
   # STEP 3 — EXECUTE. Every selected record, in BOTH arms.
   # ═════════════════════════════════════════════════════════════════════
   local legs_planned=$(( idx * BATCH_ARMS_N ))
-  local legs_done=0 legs_resumed=0 legs_failed=0 legs_scored=0 legs_interr=0
-  local failures_file="$scratch/failures.jsonl"; : >"$failures_file"
   local arm sel_idx sel_ref sel_rec
+  local arm_first arm_second
 
-  # ── THE CIRCUIT BREAKER's running state (temperloop#1554) ──────────────
-  # cb_stage/cb_streak are the CURRENT run of same-stage integration errors:
-  # cb_stage is the stage they all carry, cb_streak how many in a row. A leg
-  # that scores zeroes both; a leg whose stage differs re-keys to that stage
-  # at 1. Once cb_tripped flips, no further leg is executed — each remaining
-  # one is recorded `not-attempted` instead, which is a statement about THIS
-  # RUN and never about the record.
-  local cb_streak=0 cb_stage="" cb_tripped=0 cb_trip_stage="" cb_trip_streak=0
+  # ── WHICH INVOCATION WROTE THIS LEG (temperloop#1682) ──────────────────
+  # Every leg state file this run writes is stamped with this id, and the
+  # derivation pass tells "resumed from an earlier invocation" from "executed
+  # just now" by comparing it. The distinction used to live in a counter
+  # incremented at the two sites that knew; it has to be ON DISK for a forked
+  # worker's work to be attributable at all.
+  BD_RUN_ID="$$-$(date -u +%s)"
+
+  # The circuit breaker's streak and the in-flight worktree set both live in
+  # the scratch dir rather than in shell variables, so a forked leg can fold
+  # into one and the EXIT trap can read the other. Sequentially this is the
+  # same state it always was, in a different place.
+  bd_cb_init "$scratch/cb" || {
+    rm -rf "$scratch"
+    bd_cannot_evaluate "could not create the circuit-breaker state dir under $scratch — refusing to start a spend-bearing batch whose stop condition has nowhere to live"
+    return 1
+  }
+  BD_INFLIGHT_DIR="$scratch/inflight"
+  mkdir -p "$BD_INFLIGHT_DIR" || {
+    rm -rf "$scratch"
+    bd_cannot_evaluate "could not create the in-flight worktree marker dir under $scratch — refusing to start a batch whose worktrees could not be torn down on an interrupt"
+    return 1
+  }
+
+  # ── THE TALLIES, AND WHERE THEY COME FROM (temperloop#1682) ────────────
+  # Declared here, but every one of them is written ONCE, by bd_derive_counts
+  # after the execute loop, out of the leg state files themselves. They are
+  # no longer incremented as the loop goes: a forked leg cannot increment its
+  # parent's counter, and a tally that is a second derivation running beside
+  # the state files is free to drift from them — which is the exact class of
+  # gap temperloop#1556's arm-file reconciliation exists to catch one layer
+  # up. Deriving them makes the summary a READ of the state dir.
+  local legs_done=0 legs_resumed=0 legs_failed=0 legs_scored=0 legs_interr=0
   local legs_unattempted=0 records_unattempted=0
+  local failures_file="$scratch/failures.jsonl"; : >"$failures_file"
   local unattempted_file="$scratch/unattempted.jsonl"; : >"$unattempted_file"
-
-  # ── THE ARM-ORDER LEDGER (temperloop#1571) ─────────────────────────────
-  # One line per record: which arm ran first, and each arm's execution
-  # position. Written from the SAME bd_arm_order call the loop below executes
-  # under, so the ledger is a record of what actually ran rather than a
-  # second derivation that could drift from it.
   local order_file="$scratch/arm-order.jsonl"; : >"$order_file"
-  local arm_first arm_second arm_pos
 
   # Read the selection on fd 3, NOT stdin: every `replay.sh execute` below
   # spawns a candidate runner, and the `--live` arm redirects its own stdin
@@ -900,285 +1484,11 @@ cmd_run() {
   # rest of this loop's selection and truncate the batch.
   while IFS="$(printf '\t')" read -r sel_idx sel_ref sel_rec <&3; do
     [ -n "$sel_idx" ] || continue
-    # How many of THIS record's legs the breaker skipped. A record all of
-    # whose legs were skipped was never attempted at all in this run, which
-    # is the count an operator needs to size what a resume still owes.
-    local rec_skipped=0
-    # ── COUNTERBALANCED EXECUTION ORDER (temperloop#1571) ────────────────
-    # THE loop whose arm order can confound a result, and therefore the one
-    # loop in this file that is NOT fixed-order. bd_arm_order is a pure
-    # function of the record index, so this record's assignment is the same
-    # on a resume, on a --retry-failed, and on a re-run from a fresh state
-    # dir.
-    read -r arm_first arm_second <<<"$(bd_arm_order "$sel_idx")"
-    jq -cn --argjson i "$sel_idx" --arg ref "$sel_ref" --arg first "$arm_first" \
-      --arg second "$arm_second" --arg base "$BATCH_ARM_BASELINE" \
-      --arg cand "$BATCH_ARM_CANDIDATE" \
-      '{record_index:$i, outcome_ref:$ref, first_arm:$first, second_arm:$second,
-        positions: {($base): (if $first == $base then 1 else 2 end),
-                    ($cand): (if $first == $cand then 1 else 2 end)}}' >>"$order_file"
-    arm_pos=0
-    for arm in "$arm_first" "$arm_second"; do
-      arm_pos=$((arm_pos + 1))
-      # The execution_order block stamped onto this leg's record and its state
-      # file. `position` is the per-LEG fact an order effect is estimated
-      # from; `rule`/`seed` are what make the assignment reproducible without
-      # this driver.
-      local exec_order_json
-      exec_order_json="$(jq -cn --arg rule "$BATCH_ARM_ORDER_RULE" \
-        --arg expr "$BATCH_ARM_ORDER_EXPRESSION" --argjson seed "$BATCH_ARM_ORDER_SEED" \
-        --argjson i "$sel_idx" --argjson pos "$arm_pos" --argjson arms_n "$BATCH_ARMS_N" \
-        --arg arm "$arm" --arg first "$arm_first" \
-        '{rule:$rule, rule_expression:$expr, seed:$seed, record_index:$i,
-          arm:$arm, position:$pos, arms_n:$arms_n, first_arm:$first,
-          basis:"the execution POSITION of this leg within its record'"'"'s pair (1 = ran first, 2 = ran second). Recorded per leg so an order effect can be ESTIMATED rather than assumed away — arm and position are counterbalanced across the batch, never confounded as they were before temperloop#1571"}')"
-      local leg_key leg_rec leg_state
-      leg_key="$(printf '%03d' "$sel_idx")-$(bd_slugify "$sel_ref")"
-      leg_rec="$state_dir/legs/$arm/$leg_key.json"
-      leg_state="$state_dir/legs/$arm/$leg_key.state.json"
-
-      # ── RESUME: a leg that already reached a terminal state is never
-      #    re-spent. A failed leg is not retried either unless asked, since
-      #    a failure can land AFTER the candidate ran (score.sh's own
-      #    refusal path is exactly that shape) and a blind retry would
-      #    re-spend it.
-      if [ -f "$leg_state" ]; then
-        # A TORN state file is its own case (temperloop#1764), never a silent
-        # generic failure. Before this, a file with no readable `.state` fell
-        # through to the catch-all below and was counted `legs_failed` with the
-        # reason "no reason recorded" — for a leg that may well have SCORED,
-        # with a real record already in the arm file. That reads as a knowable
-        # failure, is inconsistent with the arm file, and no resume re-drives it.
-        #
-        # Writes are atomic since bd_write_state, so this should not arise from
-        # this driver again — but a state dir can predate that fix, or be
-        # damaged by something else, and "I cannot tell what happened to this
-        # leg" is a real answer that deserves saying out loud.
-        local prev_state
-        if jq -e 'type == "object" and (.state | type) == "string"' <"$leg_state" >/dev/null 2>&1; then
-          prev_state="$(jq -r '.state' <"$leg_state" 2>/dev/null)"
-        else
-          prev_state="state-unreadable"
-        fi
-        local retryable=0
-        [ "$prev_state" = "cannot-evaluate" ] && [ "$retry_failed" -eq 1 ] && retryable=1
-        # An unreadable state is the SAME risk class as cannot-evaluate: the leg
-        # may have failed after the candidate ran, so a blind re-spend is what
-        # the default protects against — and `--retry-failed` is the operator
-        # saying they have judged it worth spending. Recoverable, but only on
-        # an explicit ask (temperloop#1764).
-        [ "$prev_state" = "state-unreadable" ] && [ "$retry_failed" -eq 1 ] && retryable=1
-        # A `not-attempted` leg (temperloop#1554) is ALWAYS retryable, with or
-        # without --retry-failed: --retry-failed exists to protect a leg that
-        # may have failed AFTER the candidate ran from a blind re-spend, and a
-        # leg the circuit breaker skipped never ran at all. There is nothing to
-        # protect, so a plain resume re-drives it.
-        [ "$prev_state" = "not-attempted" ] && retryable=1
-        # ── STAGE-SCOPED RETRY (temperloop#1693) ──────────────────────
-        # `--retry-failed`'s conservatism is right for `envelope-parse` or
-        # `vendor-error`, where the candidate may already have run and been
-        # billed. It is WRONG for `candidate-timeout`, which is a leg that
-        # ran and was cut off by OUR OWN configured wall
-        # (REPLAY_CANDIDATE_TIMEOUT_SECS) — re-driving it at a longer wall
-        # is a deliberate, informed operator choice, not a blind re-spend.
-        #
-        # Before this flag there was no way to express that: an
-        # integration-error leg matched neither arm above and fell through
-        # to legs_done, permanently unrecoverable against its state dir. On
-        # the #1656 run that cost 10 of 28 records a leg, and with it the
-        # whole record's paired delta — 18 paired outcomes against a floor
-        # of 20, so the report returned `inconclusive` on sample size for a
-        # reason that had nothing to do with what it was measuring.
-        #
-        # Scoped per STAGE rather than broadening --retry-failed, so the
-        # operator names the failure class they judged safe to re-drive and
-        # every other class keeps today's protection untouched.
-        if [ "$prev_state" = "integration-error" ] && [ -n "$retry_stages" ]; then
-          local prev_stage; prev_stage="$(jq -r '.stage // ""' <"$leg_state" 2>/dev/null)"
-          case " $retry_stages " in
-            *" $prev_stage "*) [ -n "$prev_stage" ] && retryable=1 ;;
-          esac
-        fi
-        if [ "$retryable" -eq 0 ]; then
-          legs_resumed=$((legs_resumed + 1))
-          case "$prev_state" in
-            scored) legs_done=$((legs_done + 1)); legs_scored=$((legs_scored + 1)) ;;
-            integration-error) legs_done=$((legs_done + 1)); legs_interr=$((legs_interr + 1)) ;;
-            state-unreadable)
-              legs_failed=$((legs_failed + 1))
-              jq -cn --arg a "$arm" --arg r "$sel_ref" \
-                '{arm:$a, outcome_ref:$r,
-                  reason:"this leg\u0027s state file exists but carries no readable state — a torn or damaged write. What happened to this leg is UNKNOWN: it may have scored (and its record may already be in the arm file), or it may never have run. Nothing is re-spent by default because the candidate may already have been billed; `--retry-failed` re-drives it as a deliberate operator choice (temperloop#1764)",
-                  from:"a previous invocation of this batch"}' >>"$failures_file" ;;
-            *)
-              legs_failed=$((legs_failed + 1))
-              jq -cn --arg a "$arm" --arg r "$sel_ref" \
-                --arg reason "$(jq -r '.reason // "no reason recorded"' <"$leg_state" 2>/dev/null)" \
-                '{arm:$a, outcome_ref:$r, reason:$reason, from:"a previous invocation of this batch"}' >>"$failures_file" ;;
-          esac
-          printf 'batch.sh: [%s/%s] %s %s — resumed (%s), not re-spent\n' \
-            "$sel_idx" "$idx" "$arm" "$sel_ref" "$prev_state" >&2
-          continue
-        fi
-      fi
-
-      # ── THE CIRCUIT BREAKER HAS TRIPPED (temperloop#1554) ─────────────
-      # Deliberately AFTER the resume block above: a leg that already reached
-      # a terminal state in an earlier run keeps that state — the breaker
-      # never overwrites recorded work — and only a leg this run would have
-      # EXECUTED is recorded not-attempted. Nothing is prepared and nothing is
-      # spent from here on; the loop keeps walking purely so every remaining
-      # leg gets its `not-attempted` record rather than silently vanishing.
-      if [ "$cb_tripped" -eq 1 ]; then
-        jq -cn --arg stage "$cb_trip_stage" --argjson n "$cb_trip_streak" \
-          --argjson eo "$exec_order_json" \
-          '{state:"not-attempted",
-            reason:("the circuit breaker tripped earlier in this batch after " + ($n|tostring)
-                    + " consecutive \"" + $stage + "\" integration errors, so this leg was NEVER EXECUTED. This is not a claim that this record is incompatible — nothing was attempted, nothing was spent, and a resume re-drives it"),
-            stage:null, execution_order:$eo}' | bd_write_state "$leg_state"
-        rm -f "$leg_rec"
-        legs_unattempted=$((legs_unattempted + 1))
-        rec_skipped=$((rec_skipped + 1))
-        jq -cn --arg a "$arm" --arg r "$sel_ref" \
-          '{arm:$a, outcome_ref:$r}' >>"$unattempted_file"
-        printf 'batch.sh: [%s/%s] %s %s — NOT ATTEMPTED (circuit breaker tripped); nothing spent, a resume re-drives it\n' \
-          "$sel_idx" "$idx" "$arm" "$sel_ref" >&2
-        continue
-      fi
-
-      # ── prepare ────────────────────────────────────────────────────────
-      local slug prep_out prep_path rec_base
-      slug="mc-replay-$arm-$(printf '%03d' "$sel_idx")"
-      rec_base="$(jq -r '.base // ""' "$sel_rec")"
-      # stderr is deliberately NOT merged into this capture — worktree.sh's
-      # create() writes its structured JSON to stdout but a diagnostic guard
-      # banner to stderr, and merging the two corrupts the JSON parse below on
-      # every run where the banner fires (replay.sh's own worktree-prepare
-      # carries the same comment for the same reason; observed here as every
-      # leg "failing" with a PREPARED payload inside its own failure text).
-      prep_out="$(bash "$REPLAY_SH" worktree-prepare "$repo_root" "$slug" "$rec_base" 2>"$scratch/prep-stderr.txt")"
-      prep_path="$(jq -r '.path // empty' <<<"$prep_out" 2>/dev/null)"
-      if [ "$(jq -r '.outcome // empty' <<<"$prep_out" 2>/dev/null)" != "PREPARED" ] || [ -z "$prep_path" ]; then
-        # worktree-prepare tears its own partial worktree down on every
-        # failure path (its header's mid-run-failure guarantee), so there
-        # is nothing to clean up here — only to record.
-        jq -cn --arg s "cannot-evaluate" \
-          --arg r "worktree-prepare failed for slug $slug: $(printf '%s' "$prep_out" | head -c 400) $(head -c 400 "$scratch/prep-stderr.txt" 2>/dev/null)" \
-          --argjson eo "$exec_order_json" \
-          '{state:$s, reason:$r, execution_order:$eo}' | bd_write_state "$leg_state"
-        legs_failed=$((legs_failed + 1))
-        jq -cn --arg a "$arm" --arg r "$sel_ref" \
-          --arg reason "worktree-prepare failed: $(printf '%s' "$prep_out" | head -c 200)" \
-          '{arm:$a, outcome_ref:$r, reason:$reason, from:"this invocation"}' >>"$failures_file"
-        printf 'batch.sh: [%s/%s] %s %s — FAILED (worktree-prepare); the batch continues\n' \
-          "$sel_idx" "$idx" "$arm" "$sel_ref" >&2
-        continue
-      fi
-      BD_LIVE_SLUG="$slug"
-
-      # ── execute ────────────────────────────────────────────────────────
-      local -a xa
-      xa=(execute --record "$sel_rec" --repo-root "$repo_root" --worktree "$prep_path" --out "$leg_rec")
-      if [ "$live" -eq 1 ]; then
-        xa+=(--live)
-      else
-        case "$arm" in
-          "$BATCH_ARM_BASELINE") xa+=(--candidate-runner "$baseline_runner") ;;
-          *) xa+=(--candidate-runner "$candidate_runner") ;;
-        esac
-      fi
-      local arm_model arm_provider
-      case "$arm" in
-        "$BATCH_ARM_BASELINE") arm_model="$baseline_model"; arm_provider="$baseline_provider" ;;
-        *) arm_model="$candidate_model"; arm_provider="$candidate_provider" ;;
-      esac
-      [ -n "$arm_model" ] && xa+=(--model "$arm_model")
-      [ -n "$arm_provider" ] && xa+=(--provider "$arm_provider")
-      [ -n "$owner_repo" ] && xa+=(--repo "$owner_repo")
-      [ -n "$gate_relpath" ] && xa+=(--gate-relpath "$gate_relpath")
-
-      local x_rc=0 x_err="$scratch/exec-stderr.txt"
-      rm -f "$leg_rec"
-      bash "$REPLAY_SH" "${xa[@]}" >/dev/null 2>"$x_err" || x_rc=$?
-
-      # ── teardown, on BOTH the success and the failure path ────────────
-      bash "$REPLAY_SH" worktree-teardown "$repo_root" "$slug" >/dev/null 2>&1 || true
-      BD_LIVE_SLUG=""
-
-      # A record must actually exist and parse before this leg counts as
-      # having produced one — an exit code alone is not evidence.
-      local have_record=0
-      if [ -s "$leg_rec" ] && jq -e 'type=="object"' >/dev/null 2>&1 <"$leg_rec"; then have_record=1; fi
-
-      # ── STAMP THE EXECUTION POSITION ONTO THE RECORD (temperloop#1571) ──
-      # Onto the RECORD, not only the state file: the record is what STEP 4
-      # assembles into the arm file the report producer reads, and the order
-      # effect can only be estimated where the position travels with the
-      # measurement. Stamped for BOTH terminal record shapes (a scored record
-      # and an integration-error record), since both carry a duration and both
-      # ran in a position. A jq failure here leaves the record exactly as
-      # replay.sh wrote it rather than truncating it — an un-stamped record is
-      # reported as un-estimable downstream, never as position 1.
-      if [ "$have_record" -eq 1 ]; then
-        if jq -c --argjson eo "$exec_order_json" '. + {execution_order:$eo}' \
-             <"$leg_rec" >"$scratch/leg-stamped.json" 2>/dev/null \
-           && [ -s "$scratch/leg-stamped.json" ]; then
-          mv "$scratch/leg-stamped.json" "$leg_rec"
-        fi
-      fi
-
-      if [ "$x_rc" -eq 0 ] && [ "$have_record" -eq 1 ]; then
-        jq -cn --argjson eo "$exec_order_json" \
-          '{state:"scored", reason:null, stage:null, execution_order:$eo}' | bd_write_state "$leg_state"
-        legs_done=$((legs_done + 1)); legs_scored=$((legs_scored + 1))
-        # A success is the one thing that proves the spawn path is alive, so
-        # it zeroes the breaker's streak outright (temperloop#1554).
-        cb_streak=0; cb_stage=""
-        printf 'batch.sh: [%s/%s] %s %s — scored\n' "$sel_idx" "$idx" "$arm" "$sel_ref" >&2
-      elif [ "$x_rc" -eq 4 ] && [ "$have_record" -eq 1 ]; then
-        # The STAGE comes off the record replay.sh just wrote — its own
-        # vocabulary, read rather than re-derived, so the breaker keys on the
-        # same word the record and the report producer already use.
-        local ie_stage
-        ie_stage="$(jq -r '.candidate.integration_error.stage // ""' <"$leg_rec" 2>/dev/null)"
-        [ -n "$ie_stage" ] || ie_stage="unknown"
-        jq -cn --arg r "$(head -c 400 "$x_err" 2>/dev/null)" --arg s "$ie_stage" \
-          --argjson eo "$exec_order_json" \
-          '{state:"integration-error", reason:$r, stage:$s, execution_order:$eo}' | bd_write_state "$leg_state"
-        legs_done=$((legs_done + 1)); legs_interr=$((legs_interr + 1))
-        if [ "$ie_stage" = "$cb_stage" ]; then
-          cb_streak=$((cb_streak + 1))
-        else
-          cb_stage="$ie_stage"; cb_streak=1
-        fi
-        printf 'batch.sh: [%s/%s] %s %s — integration error (stage %s, %s in a row; a record WAS produced); the batch continues\n' \
-          "$sel_idx" "$idx" "$arm" "$sel_ref" "$ie_stage" "$cb_streak" >&2
-        if [ "$cb_threshold" -gt 0 ] && [ "$cb_streak" -ge "$cb_threshold" ]; then
-          cb_tripped=1; cb_trip_stage="$cb_stage"; cb_trip_streak="$cb_streak"
-          printf 'batch.sh: CIRCUIT BREAKER TRIPPED — %s consecutive "%s" integration errors reached the threshold MODEL_COMPARISON_BATCH_MAX_CONSECUTIVE_STAGE_ERRORS (%s). The spawn path looks systemically unavailable, not the records incompatible, so this batch STOPS here instead of running the rest of the corpus out against it. Every remaining leg is recorded not-attempted and a resume re-drives it once the cause is cleared\n' \
-            "$cb_streak" "$cb_stage" "$cb_threshold" >&2
-        fi
-      else
-        local why
-        why="replay.sh execute exited $x_rc and produced no usable record: $(head -c 400 "$x_err" 2>/dev/null)"
-        rm -f "$leg_rec"
-        jq -cn --arg r "$why" --argjson eo "$exec_order_json" \
-          '{state:"cannot-evaluate", reason:$r, execution_order:$eo}' | bd_write_state "$leg_state"
-        legs_failed=$((legs_failed + 1))
-        jq -cn --arg a "$arm" --arg r "$sel_ref" --arg reason "$why" \
-          '{arm:$a, outcome_ref:$r, reason:$reason, from:"this invocation"}' >>"$failures_file"
-        printf 'batch.sh: [%s/%s] %s %s — FAILED (%s); the batch continues\n' \
-          "$sel_idx" "$idx" "$arm" "$sel_ref" "$why" >&2
-      fi
-    done
-    # A record NONE of whose legs were attempted — the unit an operator sizes
-    # a resume in. A record whose first arm ran and whose second was skipped
-    # is deliberately NOT counted here: it was partially attempted, and
-    # legs_not_attempted_n already carries that leg.
-    if [ "$rec_skipped" -eq "$BATCH_ARMS_N" ]; then
-      records_unattempted=$((records_unattempted + 1))
-    fi
+    bd_run_record "$sel_idx" "$sel_ref" "$sel_rec"
   done 3<"$sel_tsv"
+
+  bd_derive_counts
+  bd_cb_read
 
   # ── the end-of-batch worktree sweep. Covers a leg worktree left behind by
   #    a PREVIOUS interrupted run (this run's own legs are already torn
@@ -1240,7 +1550,7 @@ cmd_run() {
   # re-spends no judge call either.
   # ═════════════════════════════════════════════════════════════════════
   local judge_json judge_degraded=0
-  if [ "$cb_tripped" -eq 1 ]; then
+  if [ "$BD_CB_TRIPPED" -eq 1 ]; then
     # The breaker tripped because the spawn seam went systemically
     # unavailable — and the judge pass runs through that SAME seam. Judging
     # now would hammer the endpoint that just stopped answering, which is the
@@ -1248,7 +1558,7 @@ cmd_run() {
     # (never silent — a skipped judge is a fact this file always states). A
     # resume judges the arms once the cause is cleared, since the judge pass
     # is keyed on the arm file's own sha256 and re-spends nothing already done.
-    judge_json="$(jq -cn --arg stage "$cb_trip_stage" \
+    judge_json="$(jq -cn --arg stage "$BD_CB_TRIP_STAGE" \
       '{ran:false, degraded:false,
         reason:("SKIPPED — the circuit breaker tripped on consecutive \"" + $stage
                 + "\" integration errors, and the judge pass spawns through the same seam that just went systemically unavailable. Judging now would re-hammer it. The arm files are written UNJUDGED; re-run this batch once the cause is cleared and the judge pass will run over them without re-spending any replay"),
@@ -1537,12 +1847,12 @@ cmd_run() {
   # stage that kept failing, how many in a row, and how much was never
   # attempted (in legs AND in whole records).
   local cb_tripped_json=false
-  [ "$cb_tripped" -eq 1 ] && cb_tripped_json=true
+  [ "$BD_CB_TRIPPED" -eq 1 ] && cb_tripped_json=true
   local circuit_breaker_json
   circuit_breaker_json="$(jq -cn \
     --argjson tripped "$cb_tripped_json" --argjson threshold "$cb_threshold" \
     --arg setting "MODEL_COMPARISON_BATCH_MAX_CONSECUTIVE_STAGE_ERRORS" \
-    --arg stage "$cb_trip_stage" --argjson streak "$cb_trip_streak" \
+    --arg stage "$BD_CB_TRIP_STAGE" --argjson streak "$BD_CB_TRIP_STREAK" \
     --argjson legs_na "$legs_unattempted" --argjson recs_na "$records_unattempted" \
     --slurpfile not_attempted "$unattempted_file" \
     '{basis: "consecutive integration errors carrying the SAME integration_error.stage, counted over the legs THIS invocation executed. Any leg that scores resets the run to zero; a different stage re-keys it to 1; a resumed leg is evidence about a previous run and is not counted. So a scatter of unrelated per-record incompatibilities cannot trip it, and a spawn path that has gone systemically unavailable does",
@@ -1603,7 +1913,7 @@ cmd_run() {
   fi
 
   local degradations="$scratch/degradations.jsonl"; : >"$degradations"
-  [ "$cb_tripped" -eq 1 ] && jq -cn --arg stage "$cb_trip_stage" \
+  [ "$BD_CB_TRIPPED" -eq 1 ] && jq -cn --arg stage "$BD_CB_TRIP_STAGE" \
     --argjson legs_na "$legs_unattempted" --argjson recs_na "$records_unattempted" \
     '{kind:"circuit_breaker_tripped",
       detail:("the batch STOPPED EARLY on consecutive \"" + $stage + "\" integration errors — "
@@ -1710,9 +2020,9 @@ cmd_run() {
   # code: a degraded batch ran the corpus out, this one did not, and a caller
   # that cannot tell them apart cannot tell "some records are incompatible"
   # from "the endpoint stopped answering" (temperloop#1554).
-  if [ "$cb_tripped" -eq 1 ]; then
+  if [ "$BD_CB_TRIPPED" -eq 1 ]; then
     printf 'batch.sh: BATCH STOPPED EARLY — the circuit breaker tripped on %s consecutive "%s" integration errors; %s executed replay(s) across %s never-attempted corpus record(s) were skipped and are recorded not-attempted, NOT as integration errors. %s of %s planned executed replays completed. Re-run against the same --state-dir once the cause is cleared to drive the remainder without re-spending anything\n' \
-      "$cb_trip_streak" "$cb_trip_stage" "$legs_unattempted" "$records_unattempted" \
+      "$BD_CB_TRIP_STREAK" "$BD_CB_TRIP_STAGE" "$legs_unattempted" "$records_unattempted" \
       "$legs_done" "$legs_planned" >&2
     return 5
   fi

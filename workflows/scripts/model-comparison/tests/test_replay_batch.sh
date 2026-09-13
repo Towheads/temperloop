@@ -526,10 +526,10 @@ unlink_and_copy "$MUT_C_SUT"
 # baseline-only batch this proof has always forced, expressed against the
 # loop's current shape.
 mutate_file "$MUT_C_SUT" \
-  '    for arm in "$arm_first" "$arm_second"; do
-      arm_pos=$((arm_pos + 1))' \
-  '    for arm in "$BATCH_ARM_BASELINE"; do
-      arm_pos=$((arm_pos + 1))'
+  '  for arm in "$arm_first" "$arm_second"; do
+    arm_pos=$((arm_pos + 1))' \
+  '  for arm in "$BATCH_ARM_BASELINE"; do
+    arm_pos=$((arm_pos + 1))'
 MUT_C_OUT="$WORK/out-mut-c"; MUT_C_STATE="$WORK/state-mut-c"
 DRIVE_ARGS=(--corpus-file "$CORPUS_A" --repo-root "$REPO" --out-dir "$MUT_C_OUT" --state-dir "$MUT_C_STATE"
             --baseline-runner "bash $BASE_STUB" --candidate-runner "bash $CAND_STUB" --confirm)
@@ -598,17 +598,24 @@ ok "D2 replay completion rate (0.6667 = 4/6 executed replays) falls out of the d
 
 # D3 — MUTATION PROOF. A driver that counts a failed leg as completed reports
 #      a perfect 1.0 — "could not evaluate" rendered as "evaluated, and fine".
+#
+#      The mutation targets bd_derive_counts, which is where the tally is made
+#      since temperloop#1682 — it used to sit at the failure site inside the
+#      execute loop. Note the mutated leg is STILL named in failures[]: the
+#      point of the proof is a driver whose count disagrees with the failures
+#      it is simultaneously reporting, which is exactly how "could not
+#      evaluate" gets rendered as "evaluated, and fine".
 count
 MUT_E="$WORK/mut-rate"; mk_mirror "$MUT_E"
 MUT_E_SUT="$MUT_E/workflows/scripts/model-comparison/batch.sh"
 unlink_and_copy "$MUT_E_SUT"
 mutate_file "$MUT_E_SUT" \
-  '        legs_failed=$((legs_failed + 1))
-        jq -cn --arg a "$arm" --arg r "$sel_ref" \
-          --arg reason "worktree-prepare failed: $(printf '"'"'%s'"'"' "$prep_out" | head -c 200)" \' \
-  '        legs_done=$((legs_done + 1))
-        jq -cn --arg a "$arm" --arg r "$sel_ref" \
-          --arg reason "worktree-prepare failed: $(printf '"'"'%s'"'"' "$prep_out" | head -c 200)" \'
+  '        *)
+          legs_failed=$((legs_failed + 1))
+          d_reason=' \
+  '        *)
+          legs_done=$((legs_done + 1))
+          d_reason='
 MUT_E_OUT="$WORK/out-mut-e"; MUT_E_STATE="$WORK/state-mut-e"
 DRIVE_ARGS=(--corpus-file "$CORPUS_FAIL" --repo-root "$REPO" --out-dir "$MUT_E_OUT" --state-dir "$MUT_E_STATE"
             --baseline-runner "bash $BASE_STUB" --candidate-runner "bash $CAND_STUB" --confirm)
@@ -654,7 +661,7 @@ count
 MUT_F="$WORK/mut-resume"; mk_mirror "$MUT_F"
 MUT_F_SUT="$MUT_F/workflows/scripts/model-comparison/batch.sh"
 unlink_and_copy "$MUT_F_SUT"
-mutate_file "$MUT_F_SUT" '      if [ -f "$leg_state" ]; then' '      if false; then'
+mutate_file "$MUT_F_SUT" '    if [ -f "$leg_state" ]; then' '    if false; then'
 : >"$CAND_LOG"
 drive "$MUT_F_SUT"
 mut_f_calls="$(wc -l <"$CAND_LOG" | tr -d ' ')"
@@ -697,8 +704,8 @@ MUT_G="$WORK/mut-teardown"; mk_mirror "$MUT_G"
 MUT_G_SUT="$MUT_G/workflows/scripts/model-comparison/batch.sh"
 unlink_and_copy "$MUT_G_SUT"
 mutate_file "$MUT_G_SUT" \
-  '      bash "$REPLAY_SH" worktree-teardown "$repo_root" "$slug" >/dev/null 2>&1 || true' \
-  '      : "$slug"'
+  '    bash "$REPLAY_SH" worktree-teardown "$repo_root" "$slug" >/dev/null 2>&1 || true' \
+  '    : "$slug"'
 mutate_file "$MUT_G_SUT" \
   '        bash "$REPLAY_SH" worktree-teardown "$repo_root" "$sweep_slug" >/dev/null 2>&1 || true' \
   '        : "$sweep_slug"'
@@ -798,8 +805,8 @@ MUT_H="$WORK/mut-live"; mk_mirror "$MUT_H"
 MUT_H_SUT="$MUT_H/workflows/scripts/model-comparison/batch.sh"
 unlink_and_copy "$MUT_H_SUT"
 mutate_file "$MUT_H_SUT" \
-  '          *) xa+=(--candidate-runner "$candidate_runner") ;;' \
-  '          *) xa+=(--live) ;;'
+  '        *) xa+=(--candidate-runner "$candidate_runner") ;;' \
+  '        *) xa+=(--live) ;;'
 MUT_H_OUT="$WORK/out-mut-h"; MUT_H_STATE="$WORK/state-mut-h"
 DRIVE_ARGS=(--corpus-file "$CORPUS_A" --repo-root "$REPO" --out-dir "$MUT_H_OUT" --state-dir "$MUT_H_STATE"
             --baseline-runner "bash $BASE_STUB" --candidate-runner "bash $CAND_STUB" --confirm)
@@ -1754,8 +1761,8 @@ unlink_and_copy "$MUT_R_SUT"
 # mutate_file dies unless the old text matches EXACTLY once, so a refactor that
 # moves this gate fails the suite loudly instead of quietly voiding the proof.
 mutate_file "$MUT_R_SUT" \
-  '            *" $prev_stage "*) [ -n "$prev_stage" ] && retryable=1 ;;' \
-  '            *" $prev_stage "*) : ;;'
+  '          *" $prev_stage "*) [ -n "$prev_stage" ] && retryable=1 ;;' \
+  '          *" $prev_stage "*) : ;;'
 
 MUT_STATE="$WORK/state-timeout-mut"; MUT_OUT="$WORK/out-timeout-mut"
 rm -rf "$MUT_STATE" "$MUT_OUT"; mkdir -p "$MUT_STATE" "$MUT_OUT"
