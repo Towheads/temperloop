@@ -45,6 +45,22 @@
 # Invariant: no extension/glob is claimed by two rows (checked by
 # check-reviewer-routing.sh, wired into scripts/quality-gates.sh).
 #
+# ASCII CONSTRAINT on DATA rows (temperloop#1982): claude/workflows/
+# build-level.mjs's review-diff relay guard compares a checksum computed
+# TWICE over this file's non-comment lines — once in bash (od-reported UTF-8
+# BYTE values) and once in JS (tsvChecksum(), UTF-16 code units via
+# charCodeAt). The two agree only while every character in every DATA row
+# (the three tab-separated columns below, NOT this comment header, which is
+# excluded from both sums by the same blank/`#` filter that skips it here)
+# is pure ASCII (code point < 0x80, where byte value and code unit are
+# identical). This comment header itself already carries non-ASCII
+# punctuation (em dashes) safely, because it never enters the sum — the
+# constraint binds DATA rows only. Adding a non-ASCII character (an accented
+# name, a smart quote, etc.) to a key/reviewer-name/path column would desync
+# the two sides and could produce a spurious content_mismatch escalation on
+# a perfectly faithful relay copy. Keep data rows ASCII, or extend both
+# checksum implementations to a byte-accurate encoding together.
+#
 # Two rows may name the SAME reviewer for different extensions (.ts and .js
 # both -> typescript-reviewer) — that is not a duplicate claim.
 #

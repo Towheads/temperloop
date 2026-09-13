@@ -446,6 +446,13 @@ const SPINE_OUTCOME_SCHEMA = {
     // uses to detect the relay dropping/truncating `tsv`. Row-count only: it
     // catches a dropped or truncated table, not a same-length garble.
     tsv_rows: { type: ['number', 'string'] },
+    // temperloop#1982: the tsv's own content checksum (tsvChecksum() below,
+    // computed by reviewDiffCmd off the worktree file itself), independently
+    // recomputable client-side from the RECEIVED `tsv` string with no hashing
+    // primitive — closes exactly the same-length-garble gap tsv_rows alone
+    // cannot (see reviewDiffTsvGap's comment for the observed case this
+    // catches, temperloop#1978 round 4).
+    tsv_checksum: { type: ['number', 'string'] },
     // 3e.5 sliced-gate fields (temperloop#1021). resumeAt — the 0-based gate
     // index the NEXT slice starts at; failed — failures seen in THIS slice (the
     // driver accumulates); elapsedSecs / budgetSecs — the margin pair that makes
@@ -2724,14 +2731,42 @@ async function deniedOrQuota(slug, payload, worktree) {
 // row-count check that the `tsv` it received is the SAME one this command
 // actually read, without re-reading the file itself — a ROW-COUNT check
 // only: it catches a dropped or truncated table (a row-count mismatch), not
-// a same-length garble (content corrupted without changing the row count),
-// since the Workflow runtime this command runs under exposes no hashing
-// primitive the script body could compare against. A worktree that
-// genuinely ships no tsv emits `tsv:""`, `tsv_rows:0` — never an omitted
-// `tsv` key — so "missing" stays a signal of the relay dropping the field,
-// not of a legitimate no-tsv worktree.
+// a same-length garble (content corrupted without changing the row count).
+//
+// temperloop#1982: this also emits `tsv_checksum` — a content checksum, not
+// a row count. A prior attempt at a content check (`tsv_sha256`, temperloop
+// #1976 round 1) was reverted as dead code: it hashed the SOURCE file but
+// nothing could ever recompute a comparable hash from the RECEIVED `tsv`
+// string, because SHA-256 needs a matching implementation on the JS side and
+// none existed — "no hashing primitive" meant no SHA-256, not that no check
+// is possible. `tsvChecksum()` below closes that gap with a checksum needing
+// no primitive at all: a POSITION-WEIGHTED sum of character codes over the
+// SAME row-count-filtered lines (temperloop#1982 round 2 — see tsvChecksum's
+// own comment for why position-sensitivity, not just a sum, is the point),
+// expressible in pure arithmetic on both sides — this bash pipeline (byte
+// values via `od`, weighted and summed in awk) and tsvChecksum() (JS char
+// codes, weighted and summed in a loop) are independent implementations of
+// the identical algorithm, verified (by an automated test that executes
+// THIS bash pipeline for real — test_workflow.sh, "bash/JS parity") to agree
+// against this repo's own reviewer-routing.tsv (including its non-ASCII
+// comment-header punctuation, which is excluded from the sum by the same
+// comment/blank filter tsv_rows already applies). The two sides agree only
+// while every DATA row stays pure ASCII (byte value == UTF-16 code unit) —
+// see reviewer-routing.tsv's own header for that constraint, which governs
+// data rows only; the comment header's non-ASCII punctuation is filtered out
+// before either side sums, so it never touches this. A worktree that
+// genuinely ships no tsv
+// emits `tsv:""`, `tsv_rows:0`, `tsv_checksum:0` — never an omitted `tsv`
+// key — so "missing" stays a signal of the relay dropping the field, not of
+// a legitimate no-tsv worktree.
 function reviewDiffCmd(wt) {
   const tsvPath = `${wt}/workflows/scripts/config/reviewer-routing.tsv`;
+  // The row-filter awk program (blank/`#` lines stripped) is reused for BOTH
+  // tsv_rows (count) and tsv_checksum (position-weighted byte-sum via `od`)
+  // — one filter definition, two consumers, so the two can never disagree
+  // on WHICH lines count.
+  const rowFilterAwk =
+    `BEGIN{c=0} { l=$0; sub(/\\r$/,"",l); t=l; gsub(/^[ \\t]+|[ \\t]+$/,"",t); if (t != "" && substr(t,1,1) != "#") print l }`;
   return [
     `cd ${sq(wt)} || exit 1`,
     `default="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##')"`,
@@ -2746,11 +2781,20 @@ function reviewDiffCmd(wt) {
     `if [ -f ${sq(tsvPath)} ]; then`,
     `  tsv_json="$(jq -R -s -c . < ${sq(tsvPath)})"`,
     `  tsv_rows="$(awk 'BEGIN{c=0} { l=$0; sub(/\\r$/,"",l); t=l; gsub(/^[ \\t]+|[ \\t]+$/,"",t); if (t != "" && substr(t,1,1) != "#") c++ } END{print c+0}' ${sq(tsvPath)})"`,
+    // POSITION-WEIGHTED (temperloop#1982 round 2): `n` is a running counter
+    // over EVERY byte of the row-filtered stream, NOT reset between od's own
+    // output lines — so each byte's contribution depends on where it sits,
+    // not just what it is. A bare sum (the round-1 shape) is commutative and
+    // therefore blind to two same-length rows trading places; weighting by
+    // position closes that — see tsvChecksum()'s own comment for the exact
+    // corruption shape this defeats.
+    `  tsv_checksum="$(awk ${sq(rowFilterAwk)} ${sq(tsvPath)} | od -An -v -tu1 | awk '{for(i=1;i<=NF;i++){n++; s+=$i*n}} END{print s+0}')"`,
     `else`,
     `  tsv_json='""'`,
     `  tsv_rows=0`,
+    `  tsv_checksum=0`,
     `fi`,
-    `printf '{"outcome":"REVIEW_DIFF","files":%s,"tsv":%s,"tsv_rows":%s}\\n' "$files_json" "$tsv_json" "$tsv_rows"`,
+    `printf '{"outcome":"REVIEW_DIFF","files":%s,"tsv":%s,"tsv_rows":%s,"tsv_checksum":%s}\\n' "$files_json" "$tsv_json" "$tsv_rows" "$tsv_checksum"`,
   ].join('\n');
 }
 
@@ -2768,6 +2812,62 @@ function parseTsvRows(tsvText) {
     .map((l) => l.split('\t'))
     .filter((cols) => cols.length >= 2 && cols[0] && cols[1])
     .map(([key, reviewer]) => ({ key: key.trim(), reviewer: reviewer.trim() }));
+}
+
+// tsvChecksum — temperloop#1982, made POSITION-SENSITIVE in round 2: a
+// pure-arithmetic content checksum over the SAME row-count-filtered lines
+// parseTsvRows()'s first stage keeps (blank and `#`-comment lines stripped),
+// so a corrupted comment header (which carries this repo's own non-ASCII
+// punctuation, e.g. em dashes) never enters the sum and cannot desync the
+// two independent implementations of this algorithm — this one, and
+// reviewDiffCmd's bash pipeline (`od`-computed byte values, weighted and
+// summed in awk).
+//
+// WHY POSITION-WEIGHTED, NOT A BARE SUM (round 1's shape): a bare sum of
+// character codes is COMMUTATIVE — invariant under any rearrangement of the
+// same characters. The round-2 reviewer reproduced this against this repo's
+// OWN tracked reviewer-routing.tsv: swapping the reviewer+path columns
+// between the `.sh` row and the `docs/**` row (same row count, same overall
+// character multiset — a plausible hand-copy slip, and the exact shape of
+// the temperloop#1978 round-4 incident: a .sh diff silently routed to
+// docs-reviewer) left the bare-sum checksum byte-IDENTICAL. Multiplying each
+// character's code by its 1-based position in the canonicalized stream
+// before summing breaks that: the SAME characters at DIFFERENT offsets sum
+// to a different total (verified against this repo's live tsv — see
+// test_workflow.sh's "K1982 position-sensitive: transposed columns" case).
+// This is still an INTEGRITY check against relay noise, not a cryptographic
+// one — collisions are not the concern, only whether the `tsv` string
+// runReviewers() received is the same content, in the same arrangement,
+// reviewDiffCmd actually read off the worktree.
+//
+// Needs no hashing primitive: canonicalize (kept lines, each with its own
+// trailing newline — matching awk's `print`, ORS appended after every line,
+// none added at the very end beyond that, so a run over zero lines sums to
+// 0), then `sum += code * (i + 1)` over that string. Verified — by an
+// automated test that executes reviewDiffCmd's REAL bash pipeline, not a
+// restated comment — to agree with the bash side against this repo's own
+// reviewer-routing.tsv (test_workflow.sh's "bash/JS parity" case). That
+// agreement holds only while every DATA row (not the comment header, which
+// is filtered out before either side sums) is pure ASCII — reviewer-routing
+// .tsv's own header names that constraint for whoever next edits a data row.
+function tsvChecksum(tsvText) {
+  // Trimmed-emptiness filter (`l.trim()`, not bare `l`) — matches
+  // reviewDiffCmd's bash `t != ""` check (`t` is the TRIMMED line) exactly,
+  // so a whitespace-only line is filtered identically on both sides. This
+  // deliberately does NOT reuse parseTsvRows's own first-stage filter (bare
+  // `l`), which answers a different question (is this a candidate data row
+  // for the routing decision) — tsvChecksum answers "did the bash side count
+  // this line," and those two must agree bit-for-bit or the checksum could
+  // disagree with a perfectly faithful relay.
+  const canon = String(tsvText ?? '')
+    .split('\n')
+    .map((l) => l.replace(/\r$/, ''))
+    .filter((l) => l.trim() && !l.trim().startsWith('#'))
+    .map((l) => `${l}\n`)
+    .join('');
+  let sum = 0;
+  for (let i = 0; i < canon.length; i++) sum += canon.charCodeAt(i) * (i + 1);
+  return sum;
 }
 function reviewGlobMatch(key, file) {
   // BASENAME form, e.g. '**/Makefile' (temperloop#1705) — the tsv key shape
@@ -2866,37 +2966,57 @@ function reviewHasBlockingFinding(text) {
   return /^\s*###\s*\[\s*HIGH\b/im.test(String(text ?? ''));
 }
 
-// reviewDiffTsvGap — temperloop#1976: the relay-drop guard. `diffOut.tsv` is
-// hand-copied by the machinery-executor agent from the diff-fetch command's
-// own JSON line, a SEPARATE step from the one that computed `tsv_rows`
-// off the same worktree file — so the two can disagree only if the relay
-// dropped or truncated the (potentially large) `tsv` field on the way
-// through. This is a ROW-COUNT check only — it catches a dropped or
-// truncated table (a row-count mismatch), never a same-length garble
-// (content corrupted without changing the row count): the Workflow runtime
-// this command runs under exposes no hashing primitive the script body could
-// compare against, so there is no cheaper-than-re-reading content check
-// available here. Returns null when `tsv` is trustworthy, else the
-// escalation payload naming what's wrong, always carrying `files` (the
-// changed-file list) so a `review-diff-error` names what would have been
-// routed: `{ missing: 'tsv', files }` when the field isn't even a string
-// (the observed drop — evidence: wf_cbc556f5-7be, where `files` survived the
-// relay but `tsv` vanished entirely), or `{ mismatch: { expected, got },
-// files }` when it IS a string but its own non-comment row count
-// (recomputed via parseTsvRows, the SAME routing-axis reader
-// determineReviewers() uses) disagrees with the `tsv_rows` the diff fetch
-// reported for that same file (`got` is `?? null` since `tsv_rows` can
-// itself be absent, and JSON.stringify silently drops an `undefined` key).
-// Only checked when `files` is non-empty: an empty diff never needs a
-// routing table, so this never fires on the legitimate no-tsv-worktree case
-// (`tsv:''`, `tsv_rows:0`) either, regardless of `files` — a genuinely empty
-// tsv is complete by construction (0 === 0).
+// reviewDiffTsvGap — temperloop#1976 (row-count), extended by temperloop#1982
+// (content). `diffOut.tsv` is hand-copied by the machinery-executor agent
+// from the diff-fetch command's own JSON line, a SEPARATE step from the one
+// that computed `tsv_rows`/`tsv_checksum` off the same worktree file — so
+// any of the three can disagree only if the relay dropped, truncated, or
+// otherwise garbled the (potentially large) `tsv` field on the way through.
+//
+// PATH A (missing/truncated — temperloop#1976, evidence: wf_cbc556f5-7be):
+// `tsv` isn't even a string, or its own non-comment row count disagrees with
+// the relayed `tsv_rows` — a row-count mismatch.
+//
+// PATH B (content-preserving garble — temperloop#1982, evidence:
+// temperloop#1978 round 4): `tsv` IS a string, and its row count DOES match
+// `tsv_rows` (the guard above sees nothing wrong), yet its content differs
+// from what reviewDiffCmd actually read off the worktree — the relay
+// reproduced a plausible-LOOKING table (right length) that was not the real
+// one, and determineReviewers() silently routed off it (that run's diff
+// touched four `.sh` files with a `reviewer-routing.tsv` `.sh` row, yet only
+// docs-reviewer ran). A row-count check structurally cannot see this: the
+// row count survives the garble unchanged. Caught here by comparing
+// `tsv_checksum` (relayed off the source file, a short scalar exactly like
+// `tsv_rows`, and observed — same as `tsv_rows` — to survive the relay even
+// when `tsv` itself does not) against `tsvChecksum(diffOut.tsv)` (recomputed
+// HERE from the received string, no hashing primitive needed — see
+// tsvChecksum()'s own comment for why the prior sha256 attempt, temperloop
+// #1976 round 1, couldn't close this gap and this can).
+//
+// Returns null when `tsv` is trustworthy, else the escalation payload naming
+// what's wrong, always carrying `files` (the changed-file list) so a
+// `review-diff-error` names what would have been routed: `{ missing: 'tsv',
+// files }` when the field isn't even a string; `{ mismatch: { expected,
+// got }, files }` on a row-count disagreement (`got` is `?? null` since
+// `tsv_rows` can itself be absent, and JSON.stringify silently drops an
+// `undefined` key); `{ content_mismatch: { expected, got }, files }` when
+// the row count agrees but the checksum doesn't (`got` is likewise `?? null`
+// for an absent `tsv_checksum`). Only checked when `files` is non-empty: an
+// empty diff never needs a routing table, so this never fires on the
+// legitimate no-tsv-worktree case (`tsv:''`, `tsv_rows:0`,
+// `tsv_checksum:0`) either, regardless of `files` — a genuinely empty tsv is
+// complete by construction (0 === 0 and tsvChecksum('') === 0).
 function reviewDiffTsvGap(diffOut, files) {
   if (!files.length) return null;
   if (typeof diffOut.tsv !== 'string') return { missing: 'tsv', files };
   const expected = parseTsvRows(diffOut.tsv).length;
   const got = Number(diffOut.tsv_rows);
   if (expected !== got) return { mismatch: { expected, got: diffOut.tsv_rows ?? null }, files };
+  const expectedChecksum = tsvChecksum(diffOut.tsv);
+  const gotChecksum = Number(diffOut.tsv_checksum);
+  if (expectedChecksum !== gotChecksum) {
+    return { content_mismatch: { expected: expectedChecksum, got: diffOut.tsv_checksum ?? null }, files };
+  }
   return null;
 }
 
