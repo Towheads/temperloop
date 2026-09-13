@@ -37,6 +37,14 @@
 #     linkage block is stripped down to one block, a surface with no honored
 #     closing-keyword line (mid-sentence / backticked / indented / fenced) is
 #     passed through byte-for-byte, and the count rides `surface_closes_stripped`
+#   - open (temperloop#2009): the PR-body cap — an under-cap body passes through
+#     byte-identically with no marker and body_truncated_bytes=0; an over-cap body
+#     is bounded BEFORE gh (the body actually handed to `gh pr create` is within
+#     $BUILD_PR_BODY_MAX_BYTES), with verbatim reviewer prose dropped OLDEST review
+#     round first and the newest round kept, an inline marker naming what/how
+#     much/where, `--body-only` byte-identical to the outbound body, and the
+#     linkage lines, acceptance recap, verification surface and footer never cut;
+#     a review-prose-free over-cap body is bounded by eliding the surface's MIDDLE
 #   - open (stubbed gh): PR_OPENED with parsed pr_number; body/head passed to gh
 #   - recover-probe (temperloop#939): the staged lost-return ladder — RECOVER_NONE
 #     / _COMMITTED / _PUSHED / _PR_OPEN across the four real fixture states, plus
@@ -888,6 +896,146 @@ rc=0; bash "$SCRIPT" open --verdict "$TMP/verdict.json" --update-pr 342 >/dev/nu
 rc=0; bash "$SCRIPT" open --verdict "$TMP/verdict.json" --repo "$REPO" --update-pr abc >/dev/null 2>&1 || rc=$?
 [ "$rc" -ne 0 ] || fail "update-pr with a non-numeric PR number must die"
 echo "PASS: open --update-pr re-renders via gh pr edit → BODY_UPDATED (#1846)"
+
+# --- open: the PR-body cap (temperloop#2009) --------------------------------------
+# GitHub rejects a body over 65536 characters, and that rejection lands on
+# `gh pr create` AFTER the worker, the reviewers, the gates and the push have all
+# already succeeded. pr.sh must bound the body LOCALLY first. The cap is
+# $BUILD_PR_BODY_MAX_BYTES; these cases drive it small (an env override beats
+# build.config.sh's `:=`) rather than minting 60KB fixtures.
+#
+# Fixture: a summary carrying reviewBodySuffix's own shape — the `§3e review —
+# ran:` line, then `## Review notes` with one `### <reviewer>` block per ROUND,
+# each holding the reviewer's `### [HIGH] …` findings text (ADR 0007's output
+# contract, i.e. `### ` headings nested INSIDE a round block).
+mk_round() { # $1 reviewer heading, $2 filler tag, $3 filler lines
+  printf '### %s\n### [HIGH] finding in x.sh\n' "$1"
+  local i=1
+  while [ "$i" -le "$3" ]; do printf '%s prose line %d — 0123456789012345678901234567890123456789\n' "$2" "$i"; i=$((i + 1)); done
+}
+{
+  printf 'Implements the bounded body.\n\n§3e review — ran: shell-reviewer, docs-reviewer, workflow-reviewer\n\n## Review notes\n'
+  mk_round 'shell-reviewer' OLDEST 40
+  printf '\n'
+  mk_round 'docs-reviewer (ci-fix round 1)' MIDDLE 40
+  printf '\n'
+  mk_round 'workflow-reviewer (ci-fix round 2)' NEWEST 6
+} > "$TMP/cap-summary.md"
+jq -n --rawfile s "$TMP/cap-summary.md" '{
+  status: "done",
+  summary: ($s | rtrimstr("\n")),
+  acceptance_results: [{criterion: "the body is bounded before gh", passed: true,
+                        evidence: "activation proof: grep -q BUILD_PR_BODY_MAX_BYTES build.config.sh"}]
+}' > "$TMP/verdict-cap.json"
+printf 'HEAD-OF-SURFACE\nbefore: unbounded\nafter: bounded\nTAIL-OF-SURFACE\n' > "$TMP/surface-cap.md"
+
+# 1. UNDER the cap: no truncation at all, and the body is BYTE-IDENTICAL to the
+#    unbounded assembly (a huge cap = the identity path). A cap that quietly
+#    rewrote a normal body would be a worse defect than the one being fixed.
+under_default="$(bash "$SCRIPT" open --verdict "$TMP/verdict.json" --gh-issue 278 --also-closes 171 \
+  --plan-link "Plans/p#i" --source "epic #253" \
+  --verification-surface-file "$TMP/surface-cap.md" --body-only)"
+under_huge="$(BUILD_PR_BODY_MAX_BYTES=4000000 bash "$SCRIPT" open --verdict "$TMP/verdict.json" \
+  --gh-issue 278 --also-closes 171 --plan-link "Plans/p#i" --source "epic #253" \
+  --verification-surface-file "$TMP/surface-cap.md" --body-only)"
+[ "$under_default" = "$under_huge" ] \
+  || fail "an under-cap body was not passed through byte-identically (#2009)"
+grep -qF '[PR-body cap]' <<<"$under_default" \
+  && fail "an under-cap body must carry no truncation marker (body: $under_default)"
+out="$(GH_STUB_ARGS="$TMP/gh-args-undercap" PATH="$TMP/bin:$PATH" bash "$SCRIPT" open \
+  --verdict "$TMP/verdict.json" --repo "$REPO" --branch feat/widget --title "t" \
+  --gh-issue 278 --verification-surface-file "$TMP/surface-cap.md")"
+[ "$(jq -r .body_truncated_bytes <<<"$out")" = "0" ] \
+  || fail "body_truncated_bytes must be 0 for an under-cap body (got: $out)"
+echo "PASS: open leaves an under-cap body byte-identical, unmarked, body_truncated_bytes=0 (#2009)"
+
+# 2. OVER the cap: the outbound body — the one handed to `gh pr create`, not just
+#    the preview — is within the cap. This is the whole item: a body over the cap
+#    is truncated locally and never sent to be rejected by the API.
+cap=3000
+out="$(BUILD_PR_BODY_MAX_BYTES="$cap" GH_STUB_ARGS="$TMP/gh-args-cap" PATH="$TMP/bin:$PATH" \
+  bash "$SCRIPT" open --verdict "$TMP/verdict-cap.json" --repo "$REPO" --branch feat/widget \
+  --title "feat: bounded body" --gh-issue 2009 --also-closes 1958 \
+  --plan-link "Plans/p#i" --source "epic #2009" \
+  --verification-surface-file "$TMP/surface-cap.md")"
+[ "$(jq -r .outcome <<<"$out")" = "PR_OPENED" ] || fail "over-cap open outcome (got: $out)"
+sent="$(awk 'seen{print} $0=="--body"{seen=1}' "$TMP/gh-args-cap")"
+sent_bytes="$(LC_ALL=C printf %s "$sent" | wc -c | tr -d ' ')"
+[ "$sent_bytes" -le "$cap" ] \
+  || fail "the body handed to gh is $sent_bytes bytes, over the $cap-byte cap (#2009)"
+[ "$(jq -r .body_truncated_bytes <<<"$out")" -gt 0 ] \
+  || fail "body_truncated_bytes must report the cut (got: $out)"
+# Oldest review round first: the earliest round's prose goes, the newest stays.
+grep -qF 'OLDEST prose line' <<<"$sent" \
+  && fail "the OLDEST review round's prose survived while newer prose was cut (#2009)"
+grep -qF 'NEWEST prose line' <<<"$sent" \
+  || fail "the NEWEST review round's prose was dropped — truncation ran newest-first (#2009)"
+# Never dropped: linkage, the acceptance recap (where activation-proof evidence
+# rides), the verification surface, the §3e `ran:` line, the footer.
+grep -qx 'Closes #2009' <<<"$sent" || fail "the Closes linkage line was truncated away (#2009)"
+grep -qx 'Closes #1958' <<<"$sent" || fail "an also-closes linkage line was truncated away (#2009)"
+grep -qF '## Acceptance' <<<"$sent" || fail "the acceptance recap was truncated away (#2009)"
+grep -qF 'activation proof:' <<<"$sent" || fail "the activation proof evidence was truncated away (#2009)"
+grep -qF '## Verification' <<<"$sent" || fail "the verification section was truncated away (#2009)"
+grep -qF 'HEAD-OF-SURFACE' <<<"$sent" || fail "the verification surface was truncated away (#2009)"
+grep -qF '§3e review — ran:' <<<"$sent" || fail "the §3e review ran: line was truncated away (#2009)"
+grep -qxF '🤖 Generated with [Claude Code](https://claude.com/claude-code)' <<<"$sent" \
+  || fail "the attribution footer was truncated away (#2009)"
+# Legible, never silent: the marker names what went, how much, and where to read it.
+marker="$(grep -F '[PR-body cap]' <<<"$sent")"
+[ -n "$marker" ] || fail "an over-cap body was truncated SILENTLY — no inline marker (#2009)"
+grep -qF 'shell-reviewer' <<<"$marker" || fail "the marker does not name the dropped round (got: $marker)"
+grep -qE '[0-9]+ bytes' <<<"$marker" || fail "the marker does not name how many bytes went (got: $marker)"
+grep -qF 'agent-*.jsonl' <<<"$marker" \
+  || fail "the marker does not name the workflow journal as where the full text lives (got: $marker)"
+echo "PASS: an over-cap body is bounded BEFORE gh — reviewer prose dropped oldest-round-first, legibly (#2009)"
+
+# 3. --body-only reflects the SAME bounding, byte-for-byte: the assembled-body
+#    preview and the outbound body cannot disagree about what was truncated.
+preview="$(BUILD_PR_BODY_MAX_BYTES="$cap" bash "$SCRIPT" open --verdict "$TMP/verdict-cap.json" \
+  --gh-issue 2009 --also-closes 1958 --plan-link "Plans/p#i" --source "epic #2009" \
+  --verification-surface-file "$TMP/surface-cap.md" --body-only)"
+[ "$preview" = "$sent" ] \
+  || fail "--body-only's preview diverges from the bounded body handed to gh (#2009)"
+echo "PASS: open --body-only reflects the same bounding as the outbound body (#2009)"
+
+# 4. A body with NO reviewer prose at all is bounded too — the surface's middle is
+#    elided, its head AND tail kept, and the section itself is never dropped.
+{ printf 'HEAD-OF-SURFACE\n'; i=1; while [ "$i" -le 200 ]; do printf 'surface filler line %d — 0123456789012345678901234567890123456789\n' "$i"; i=$((i + 1)); done; printf 'TAIL-OF-SURFACE\n'; } > "$TMP/surface-big.md"
+body="$(BUILD_PR_BODY_MAX_BYTES="$cap" bash "$SCRIPT" open --verdict "$TMP/verdict.json" \
+  --gh-issue 2009 --verification-surface-file "$TMP/surface-big.md" --body-only)"
+[ "$(LC_ALL=C printf %s "$body" | wc -c | tr -d ' ')" -le "$cap" ] \
+  || fail "a review-prose-free over-cap body was not bounded (#2009)"
+grep -qF 'HEAD-OF-SURFACE' <<<"$body" || fail "the surface head was not kept (#2009)"
+grep -qF 'TAIL-OF-SURFACE' <<<"$body" || fail "the surface tail was not kept (#2009)"
+grep -qF '## Verification' <<<"$body" || fail "the verification section was dropped outright (#2009)"
+grep -qx 'Closes #2009' <<<"$body" || fail "linkage lost while eliding the surface (#2009)"
+surface_marker="$(grep -F '[PR-body cap]' <<<"$body")"
+grep -qF 'verification surface' <<<"$surface_marker" \
+  || fail "the surface elision is not marked inline (#2009)"
+echo "PASS: a body with no reviewer prose is bounded by eliding the surface middle, head+tail kept (#2009)"
+
+# 5. A cap below the parts no rung may cut (linkage + footer + one marker) is
+#    clamped to the structural floor, and a non-numeric one falls back — neither
+#    can disable the bound or ask for a body that could not be assembled at all.
+for bad in 10 not-a-number ""; do
+  body="$(BUILD_PR_BODY_MAX_BYTES="$bad" bash "$SCRIPT" open --verdict "$TMP/verdict-cap.json" \
+    --gh-issue 2009 --verification-surface-file "$TMP/surface-cap.md" --body-only)"
+  bytes="$(LC_ALL=C printf %s "$body" | wc -c | tr -d ' ')"
+  [ "$bytes" -gt 0 ] || fail "cap '$bad' produced an empty body (#2009)"
+  grep -qx 'Closes #2009' <<<"$body" || fail "cap '$bad' lost the linkage line (#2009)"
+  grep -qxF '🤖 Generated with [Claude Code](https://claude.com/claude-code)' <<<"$body" \
+    || fail "cap '$bad' lost the attribution footer (#2009)"
+done
+# The empty/non-numeric arms fall back to the registered default, so they must
+# NOT truncate this fixture at all; the clamped tiny cap must.
+grep -qF '[PR-body cap]' <<<"$(BUILD_PR_BODY_MAX_BYTES=not-a-number bash "$SCRIPT" open \
+  --verdict "$TMP/verdict-cap.json" --gh-issue 2009 --body-only)" \
+  && fail "a non-numeric cap did not fall back to the registered default (#2009)"
+grep -qF '[PR-body cap]' <<<"$(BUILD_PR_BODY_MAX_BYTES=10 bash "$SCRIPT" open \
+  --verdict "$TMP/verdict-cap.json" --gh-issue 2009 --body-only)" \
+  || fail "a below-floor cap was ignored instead of clamped (#2009)"
+echo "PASS: a below-floor cap clamps and a non-numeric one falls back — neither disables the bound (#2009)"
 
 # --- recover-probe: the staged lost-return side-effect ladder (temperloop#939) ----
 # Drives all four stages against the real fixture, bottom to top, on a branch of

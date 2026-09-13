@@ -544,6 +544,45 @@ fi
 # string) still runs bounded.
 : "${BUILD_REVIEW_BLOCKING_MAX_ROUNDS:=3}"
 
+# workflows/scripts/build/pr.sh — the PR-BODY CAP, in BYTES: the largest body
+# `pr.sh open` will hand to `gh pr create` / `gh pr edit`.
+#
+# WHY IT EXISTS (temperloop#2009). GitHub rejects a PR body over 65536
+# characters with `GraphQL: Body is too long`. That rejection lands on the very
+# LAST step of the PR-open sequence — after the worker, every routed reviewer,
+# the acceptance gate, the activation gate and the push have all already
+# succeeded. The branch and its commits are safe; only publishing the result
+# fails, and an unattended run then parks an item whose work is complete. Two
+# live items failed exactly that way in one day (temperloop#1958, #1970), both
+# recovered by hand. Past this bound pr.sh truncates the body LOCALLY — reviewer
+# prose first, oldest review round first, with an inline marker naming what it
+# cut and where the full text can be read — so an over-cap body is never sent
+# and rejected.
+#
+# WHY IT COMPOSES WITH THE REVIEW BOUND ABOVE. BUILD_REVIEW_BLOCKING_MAX_ROUNDS
+# carries residual findings INTO the PR body rather than looping another review
+# round, so the fix that reduces review rounds is also what raises body
+# pressure. The truncation order is what keeps the two agreeing: verbatim
+# reviewer prose is what gets dropped, oldest round first, and the newest
+# block — where a residual HIGH from the final round lives — is trimmed only
+# after every older block is gone. The linkage lines, the acceptance recap, the
+# `## Verification` surface and the attribution footer are never dropped.
+#
+# BYTES, not characters, and deliberately conservative: a UTF-8 byte count is
+# always >= the character count GitHub meters, so a body inside this byte cap
+# is inside the character limit too. 60000 leaves ~5.5KB of headroom below
+# 65536 for the linkage + attribution tail the truncation ladder never touches.
+# Raise it toward (never to) that limit to carry more reviewer prose; a
+# non-numeric or zero value falls back to pr.sh's own in-file default rather
+# than disabling the bound — an unbounded body is not an option this setting
+# offers, since the API rejection it prevents is unconditional.
+#
+# Read by pr.sh directly (it sources this file), not plumbed as a workflow
+# input: the bound must hold at the one place the body is handed to `gh`, and
+# that place is bash — contrast BUILD_REVIEW_BLOCKING_MAX_ROUNDS above, which
+# must reach build-level.mjs's own control flow (DESIGN NOTE 1).
+: "${BUILD_PR_BODY_MAX_BYTES:=60000}"
+
 # claude/workflows/build-level.mjs — the per-STEP WALL-CLOCK LIVENESS BOUND on a
 # machinery-executor step (the `prelude` / `pr-batch` / `ci-batch` batches and the
 # solo `gate` / `recover-probe` / `push-retry` calls), in seconds.
@@ -1676,7 +1715,7 @@ export BUILD_QUOTA_PAUSE_PCT BUILD_QUOTA_CACHE BUILD_QUOTA_WAIT_BUFFER \
        SWEEP_FANOUT_WIDTH SWEEP_DETECT_MODEL SWEEP_WORKER_MODEL SWEEP_BG_POLL_ATTEMPTS SWEEP_BG_POLL_INTERVAL \
        SWEEP_ADMIT_OPERATIONAL_EPICS \
        FIX_WORKER_MODEL INTERVIEW_PROBE_MODEL BUILD_MACHINERY_SOLO_MODEL BUILD_MACHINERY_BATCH_MODEL BUILD_GATE_SLICE_SECS \
-       BUILD_REVIEW_BLOCKING_MAX_ROUNDS \
+       BUILD_REVIEW_BLOCKING_MAX_ROUNDS BUILD_PR_BODY_MAX_BYTES \
        BUILD_MACHINERY_STEP_CEILING_SECS BUILD_MACHINERY_STEP_SLOW_SECS \
        PIPELINE_OPERATOR PIPELINE_REQUIRED_CHECK \
        PIPELINE_DRIVE PIPELINE_DRIVE_CAP PIPELINE_DRIVE_MODEL PIPELINE_DRIVE_SETTINGS \
