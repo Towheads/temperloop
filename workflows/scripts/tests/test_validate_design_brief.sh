@@ -284,12 +284,12 @@ run --brief "$BRIEF_FIXTURES/challenge-record-migration-exempt.md"
 assert_rc "$rc" 0 "migration-exempt fixture exits 0"
 assert_has "$out" "validate-design-brief: OK" "migration-exempt fixture says OK"
 assert_has "$out" "no '### Challenge record' section (exempt; status=ratified)" "exempt path named"
-assert_lacks "$out" "MISSING-WALK-VERDICT" "no completeness failure for a pre-epic ratified brief"
+assert_lacks "$out" "MISSING-DELTA-VERDICT" "no completeness failure for a pre-epic ratified brief"
 
-echo "--- 11b. --brief on challenge-record-walk-missing (ratified, marker present, dim 6 missing walk) ---"
-run --brief "$BRIEF_FIXTURES/challenge-record-walk-missing.md"
-assert_rc "$rc" 1 "walk-missing fixture exits 1"
-assert_has "$out" "MISSING-WALK-VERDICT  challenge-record-walk-missing.md — kernel dimension 6" "dimension 6 named missing a walk verdict"
+echo "--- 11b. --brief on challenge-record-delta-missing (stamped ratified, dim 6 missing delta) ---"
+run --brief "$BRIEF_FIXTURES/challenge-record-delta-missing.md"
+assert_rc "$rc" 1 "delta-missing fixture exits 1"
+assert_has "$out" "MISSING-DELTA-VERDICT  challenge-record-delta-missing.md — kernel dimension 6" "dimension 6 named missing a delta verdict"
 
 echo "--- 11c. --brief on challenge-record-complete (ratified, full walk+walkthrough coverage) ---"
 run --brief "$BRIEF_FIXTURES/challenge-record-complete.md"
@@ -316,7 +316,55 @@ echo "--- 11g. --brief on challenge-record-draft-partial (draft, partial coverag
 run --brief "$BRIEF_FIXTURES/challenge-record-draft-partial.md"
 assert_rc "$rc" 0 "draft-partial fixture exits 0"
 assert_has "$out" "validate-design-brief: OK" "draft-partial fixture says OK"
-assert_lacks "$out" "MISSING-WALK-VERDICT" "in-flight draft not held to the ratify-time completeness bar"
+assert_lacks "$out" "MISSING-DELTA-VERDICT" "in-flight draft not held to the ratify-time completeness bar"
+
+# ── 11h-11l. stamp-gated delta completeness (temperloop item
+#             brief-validator-delta-rule, temperloop#1938 follow-on) ────────
+# design-schema.md § Record completeness rule (1) is now STAMP-GATED on the
+# brief's frontmatter `record_grammar` field, and a `delta`/`interview` stop
+# line in an unstamped brief is its own defect (`RECORD-GRAMMAR-UNSTAMPED`).
+# 11a-11g above (all pre-existing, unstamped fixtures) already prove legacy
+# briefs stay green unchanged; these cover the new stamp-gated rule itself.
+
+echo "--- 11h. --brief on challenge-record-delta-complete (stamped ratified, full delta coverage + flag line) ---"
+run --brief "$BRIEF_FIXTURES/challenge-record-delta-complete.md"
+assert_rc "$rc" 0 "delta-complete fixture exits 0"
+assert_has "$out" "validate-design-brief: OK" "delta-complete fixture says OK"
+assert_lacks "$out" "MISSING-DELTA-VERDICT" "every dimension covered by a delta line"
+assert_lacks "$out" "RECORD-GRAMMAR-UNSTAMPED" "stamped brief's delta lines are not flagged unstamped"
+assert_lacks "$out" "BAD-DISPOSITION" "the facilitator-drafted flag line (dim 6) after the disposition line does not corrupt the disposition read"
+
+echo "--- 11i. --brief on challenge-record-interview-draft (stamped draft, D<n> interview line, marker+first-stop) ---"
+run --brief "$BRIEF_FIXTURES/challenge-record-interview-draft.md"
+assert_rc "$rc" 0 "interview-draft fixture exits 0"
+assert_has "$out" "validate-design-brief: OK" "interview-draft fixture says OK"
+assert_lacks "$out" "RECORD-GRAMMAR-UNSTAMPED" "stamped draft's interview line is not flagged unstamped"
+assert_lacks "$out" "MALFORMED-RECORD-MARKER" "marker written together with its first stop line parses clean"
+assert_lacks "$out" "EMPTY-CHALLENGE-RECORD" "marker is not empty — one interview stop line follows it"
+assert_lacks "$out" "MISSING-DELTA-VERDICT" "draft is not held to the ratify-time completeness bar"
+
+echo "--- 11j. --brief on challenge-record-prototype-boundary (unstamped ratified, no walk lines, prose under a different heading) ---"
+run --brief "$BRIEF_FIXTURES/challenge-record-prototype-boundary.md"
+assert_rc "$rc" 0 "prototype-boundary fixture exits 0"
+assert_has "$out" "validate-design-brief: OK" "prototype-boundary fixture says OK"
+assert_lacks "$out" "MISSING-DELTA-VERDICT" "unstamped (legacy) brief carries no per-dimension completeness requirement"
+assert_lacks "$out" "BAD-CHALLENGE-LINE" "the ### Interview log prose is never parsed as a stop line"
+
+echo "--- 11k. --brief on challenge-record-grammar-unstamped (delta line, no record_grammar stamp) ---"
+run --brief "$BRIEF_FIXTURES/challenge-record-grammar-unstamped.md"
+assert_rc "$rc" 1 "grammar-unstamped fixture exits 1"
+assert_has "$out" "RECORD-GRAMMAR-UNSTAMPED  challenge-record-grammar-unstamped.md — '0 [delta] operator: accepted'" "unstamped delta line named"
+
+echo "--- 11l. walk-only completeness is fully retired (regression: no MISSING-WALK-VERDICT anywhere) ---"
+for f in challenge-record-complete.md challenge-record-migration-exempt.md \
+         challenge-record-empty.md challenge-record-bad-grammar.md \
+         challenge-record-missing-response.md challenge-record-draft-partial.md \
+         challenge-record-delta-complete.md challenge-record-delta-missing.md \
+         challenge-record-interview-draft.md challenge-record-prototype-boundary.md \
+         challenge-record-grammar-unstamped.md; do
+  run --brief "$BRIEF_FIXTURES/$f"
+  assert_lacks "$out" "MISSING-WALK-VERDICT" "$f never emits the retired MISSING-WALK-VERDICT code"
+done
 
 # ── Tally ─────────────────────────────────────────────────────────────────────
 echo "---"
