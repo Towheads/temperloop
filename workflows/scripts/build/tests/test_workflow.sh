@@ -6028,7 +6028,7 @@ const tsv = '.sh' + TAB + 'shell-reviewer' + TAB + 'claude/agents/reviewers/shel
 
 setMachinery('sh-unrun',
   { outcome: 'CREATED', path: '/tmp/repo.wt/sh-unrun' },
-  { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/thing.sh'], tsv, tsv_rows: tsvRows(tsv) },
+  { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/thing.sh'], tsv, tsv_rows: tsvRows(tsv), tsv_checksum: tsvChecksum(tsv) },
   { outcome: 'GATE_PASS' },
   { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-u' },
   { outcome: 'SCAN_CLEAN' },
@@ -6041,7 +6041,7 @@ setReview('sh-unrun', reviewUnavailable('shell-reviewer'));
 
 setMachinery('sh-ran',
   { outcome: 'CREATED', path: '/tmp/repo.wt/sh-ran' },
-  { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/other.sh'], tsv, tsv_rows: tsvRows(tsv) },
+  { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/other.sh'], tsv, tsv_rows: tsvRows(tsv), tsv_checksum: tsvChecksum(tsv) },
   { outcome: 'GATE_PASS' },
   { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-r' },
   { outcome: 'SCAN_CLEAN' },
@@ -6081,6 +6081,13 @@ else if (!reason && ranrec.review.ran.length !== 1)
   reason = 'sh-ran must record its shell-reviewer as ran: ' + JSON.stringify(ranrec.review);
 console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
 "
+
+# Lockstep guard (the convention every feature in this suite follows, e.g. the
+# K1982 block below): the behavioral case above proves routed_not_run
+# DISCRIMINATES, this pins the field's existence in the .mjs so a rename or a
+# revert fails loudly here rather than silently un-covering the case.
+grep -q 'routed_not_run' "$MJS" \
+  || fail "#1984: reviewTally() must emit routed_not_run — the visibility field naming every routed-but-unrun reviewer, so the tally cannot read fully clean while a routed reviewer was skipped (ADR 0037)"
 
 # ============================================================================
 # TEST (K1705): a Makefile-only diff routes to a reviewer through THIS SAME
