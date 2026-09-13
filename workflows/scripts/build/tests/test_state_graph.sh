@@ -8,8 +8,8 @@
 # network), plus this file's own `_sg_git` seam for `git worktree list`.
 # Fixtures are entirely synthetic: no real host names, session ids, or paths.
 #
-# Covers (sixteen ok/absent/error/stale cases, four per source, plus one
-# extra pr_list ok case for the control-byte class):
+# Covers (sixteen ok/absent/error/stale cases, four per source, plus three
+# extra pr_list cases for the control-byte / empty-after-sanitize classes):
 #   - board:        ok (valid fnd:status:* + a claimed_by edge, session id
 #                    normalized via jk_session8), absent (zero open issues),
 #                    error (a status not in the ontology registry), stale
@@ -24,7 +24,12 @@
 #                    error (gh pr list fails), stale — plus one extra ok case
 #                    (temperloop#1981): a LITERAL control byte in a PR title or
 #                    body is stripped before jq, so the source recovers rather
-#                    than degrading to error for as long as that PR stays open
+#                    than degrading to error for as long as that PR stays open,
+#                    and two empty-after-jq cases (round 2) — a control-byte-
+#                    only and a whitespace-only payload — each asserting a ZERO
+#                    return plus valid JSON with status `error`, since jq exits
+#                    0 with no output on both and the fall-through was a
+#                    non-zero return that aborts the whole snapshot build
 #   - worktrees:    ok (a linked `<repo>.wt/<slug>` worktree), absent (no
 #                    linked worktrees), error (git itself fails), stale
 # Plus: the snapshot goes through lib/cache.sh (repo-keyed dir, meta.json,
@@ -512,11 +517,15 @@ echo "PASS: pr_list source error — gh pr list failure"
 # read routed through `_board_sanitize_control_chars` the byte is stripped and
 # the source recovers: `ok`, with the node AND its closes edge intact. The
 # fixture emits 0x01/0x02 LITERALLY (printf '\001'), not as a JSON \u escape —
-# an escape is valid JSON and would not reproduce the failure.
+# an escape is valid JSON and would not reproduce the failure. The body's byte
+# sits INSIDE the `Closes #1<0x01>0` line, not merely somewhere in the body:
+# `body` is not emitted as a node field, so a byte elsewhere would only prove
+# the parse survived — inside the linkage line it additionally proves the
+# closes-edge regex matches POST-strip text (round-2 reviewer hardening).
 _board_gh() {
   case "$1 $2" in
     "pr list")
-      printf '[{"number":7,"title":"ti\001tle","body":"Closes #10\\nbo\002dy\\n"}]\n'
+      printf '[{"number":7,"title":"ti\001tle","body":"Closes #1\0010\\nbody\\n"}]\n'
       ;;
     *) echo "test _board_gh: unhandled '$1 $2'" >&2; return 3 ;;
   esac
@@ -527,6 +536,48 @@ out="$(_sg_read_pr_list "$BOARD")"
 [ "$(jq -r '.nodes[0].title' <<<"$out")" = "title" ] || fail "pr_list control-byte title not stripped (got: $out)"
 [ "$(jq -c '[.edges[].to]' <<<"$out")" = '["Issue:10"]' ] || fail "pr_list control-byte closes edge (got: $out)"
 echo "PASS: pr_list source ok — a literal control byte in a PR title/body is stripped, not degraded to error"
+
+# --- pr_list: empty-after-jq must report `error` AND return 0 ---------------
+# temperloop#1981 round 2. `jq` can exit ZERO with NO OUTPUT on empty or
+# whitespace-only input, so a guard keyed only on jq's EXIT STATUS leaves
+# `count` empty: `[ "" -eq 0 ]` errors and evaluates false, execution falls
+# through to `_sg_source_result ok "" ""`, and that `jq --argjson ""` fails
+# hard — a NON-ZERO return, which `_sg_build_snapshot`'s bare `r_pr=$(...)`
+# assignment turns into a `set -e` abort of the WHOLE snapshot build (every
+# other `_sg_read_*` in state-graph.sh returns 0 on every path). Both cases
+# below therefore assert the RETURN CODE and VALID JSON, not just the status
+# string: the defect is a non-zero return with EMPTY stdout, against which a
+# status-only grep would pass vacuously.
+#
+# Two routes reach the same hole, hence two cases:
+#   1. control-byte-only — `tr -d '\000-\037'` strips the payload to nothing;
+#   2. whitespace-only — SPACE is 0x20, OUTSIDE that range, so the payload
+#      survives sanitizing intact and reaches jq as whitespace.
+_board_gh() {
+  case "$1 $2" in
+    "pr list") printf '\001\002\003' ;;
+    *) echo "test _board_gh: unhandled '$1 $2'" >&2; return 3 ;;
+  esac
+}
+rc=0
+out="$(_sg_read_pr_list "$BOARD")" || rc=$?
+[ "$rc" -eq 0 ] || fail "pr_list control-byte-only payload must return 0, not abort the snapshot build (rc=$rc, out: $out)"
+jq -e . >/dev/null 2>&1 <<<"$out" || fail "pr_list control-byte-only payload must emit valid JSON (got: $out)"
+[ "$(jq -r .status <<<"$out")" = "error" ] || fail "pr_list control-byte-only payload status (got: $out)"
+echo "PASS: pr_list source error — a control-byte-only payload sanitizes to empty, reports error, and returns 0"
+
+_board_gh() {
+  case "$1 $2" in
+    "pr list") printf '  \t  ' ;;
+    *) echo "test _board_gh: unhandled '$1 $2'" >&2; return 3 ;;
+  esac
+}
+rc=0
+out="$(_sg_read_pr_list "$BOARD")" || rc=$?
+[ "$rc" -eq 0 ] || fail "pr_list whitespace-only payload must return 0, not abort the snapshot build (rc=$rc, out: $out)"
+jq -e . >/dev/null 2>&1 <<<"$out" || fail "pr_list whitespace-only payload must emit valid JSON (got: $out)"
+[ "$(jq -r .status <<<"$out")" = "error" ] || fail "pr_list whitespace-only payload status (got: $out)"
+echo "PASS: pr_list source error — a whitespace-only payload (survives sanitizing: SPACE is 0x20) reports error and returns 0"
 
 # =============================================================================
 # source: worktrees (Worktree nodes)

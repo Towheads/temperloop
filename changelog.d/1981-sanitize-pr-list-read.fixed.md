@@ -7,16 +7,39 @@
   every run for as long as that one PR stayed open, out of up to 100 open PRs,
   and `_sg_query_unlinked_prs` correctly refuses to answer over a degraded
   source, so `unlinked-prs` reported `unknown` for the duration. Each run stayed
-  individually legible; nobody reads every run, so the practical effect was a
-  query class silently contributing nothing across the fourteen-day soak
+  individually legible. Nobody reads every run, so the practical effect was a
+  query class silently contributing nothing across the fourteen-day soak that
   ADR 0033 / #1921 depends on. This is a **degrade-instead-of-recover** bug, not
   the silent-wrong-answer class `board.sh`'s helper header records (`ccbc6868`,
   `92feec12`) — the wrong-empty answer was structurally unreachable here, since
   the `count` guard fails before the unguarded `nodes=`/`edges=` transforms ever
   run. The stage is applied once, right after the read and after the
-  empty-output default, so all three downstream `jq` stages see sanitized text
-  while a payload of nothing but control bytes still reports `error` rather than
-  a false `absent`. Scoped to `_sg_read_pr_list`; `board.sh` is unchanged.
+  empty-output default; that ordering is load-bearing **because** the `count`
+  guard treats empty `jq` output as unparseable, so a payload of nothing but
+  control bytes — which sanitizes down to nothing — reports `error`, the honest
+  answer for a page that could not be read, rather than being defaulted to `[]`
+  and reported `absent` (a genuinely-empty PR list downstream queries would
+  take at face value). Scoped to `_sg_read_pr_list`; `board.sh` is unchanged.
+
+  **Also closed here: the empty-`jq`-output fall-through — PRE-EXISTING, not
+  introduced by this change.** `jq` exits **zero with no output** on empty or
+  whitespace-only input, so the `count` guard's exit-status-only test left
+  `count` empty, `[ "" -eq 0 ]` errored and evaluated false, and execution fell
+  through to `_sg_source_result ok "" ""`, whose `jq --argjson ""` fails hard —
+  a **non-zero return**, which `_sg_build_snapshot`'s bare `r_pr=$(...)`
+  assignment turns under `set -euo pipefail` into an abort of the **whole
+  snapshot build**, not one degraded source. It was already reachable before
+  this change: SPACE is `0x20`, outside `tr -d '\000-\037'`, so a
+  whitespace-bearing payload survives sanitizing and lands in the same hole.
+  What this change did do is **widen the trigger set** — a control-byte-only
+  payload went from a clean `error` to that hard abort. `_sg_read_pr_list` was
+  the lone `_sg_read_*` in the file that could escape the return-0 contract;
+  it now uses `_sg_read_board`'s own idiom (`state-graph.sh:515-519`) — `||
+  count=""` plus a `[ -z "$count" ]` guard reporting `error` and returning 0 —
+  with the belt-and-suspenders `|| x='[]'` fallback the closed-residue block
+  uses on `nodes=`/`edges=`. Two new tests cover both routes, each asserting a
+  zero return **and** valid JSON, since the defect is a non-zero return with
+  empty stdout.
 
   **Audit (confirmed, not assumed):** `pr_list` was the last unsanitized
   `gh → jq` seam in `state-graph.sh`, and is now covered. The other two `gh`
