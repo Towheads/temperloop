@@ -75,21 +75,48 @@
 #        the same or shallower level; the name must appear as a WHOLE TOKEN
 #        inside it, so `docs-reviewer` is not matched by `docs-reviewer-v2`.
 #   1. `$PWD/.claude/agents/<name>.md`             -> installed
+#      `$PWD/.claude/agents/reviewers/<name>.md`
 #        The project-scoped live agent dir Claude Code discovers, and
 #        `project-agents.sh`'s deploy target.
 #   2. `<checkout>/claude/agents/<name>.md`        -> source-only
 #      `<checkout>/claude/agents/reviewers/<name>.md`
 #        The tracked kernel source. `<checkout>` is resolved from THIS LIB
 #        FILE'S own location via `git rev-parse --show-toplevel`, never
-#        `$PWD` (which may be another repo or a subdirectory). The
-#        `reviewers/` sub-probe is not a new surface — it is the same one:
-#        the per-language reviewer catalog deliberately lives one directory
-#        down and is inert until opted in (ADR 0007), which is precisely
-#        what `source-only` means.
+#        `$PWD` (which may be another repo or a subdirectory).
 #   3. `$HOME/.claude/agents/<name>.md`            -> installed
+#      `$HOME/.claude/agents/reviewers/<name>.md`
 #        The machine-scoped live agent dir. THIS is the surface the literal
 #        two-surface predicate omitted, and the one that carries every agent
 #        on the kernel's own dogfooding host.
+#
+# ── EVERY SURFACE IS AN AGENT DIR, AND AN AGENT DIR HAS A `reviewers/` ────
+# All three FILE surfaces are probed by one predicate
+# (`_agent_declared_dir_has`), which reads a directory as flat `<name>.md`
+# PLUS `reviewers/<name>.md`. That arm is not a fourth surface — it is the
+# shape an agent dir HAS: ADR 0007's per-language reviewer catalog
+# deliberately lives one directory down, inert until opted in, and any of
+# these dirs can carry it (on the kernel's own dogfooding host
+# `$HOME/.claude/agents` IS a checkout's `claude/agents`, catalog subdir and
+# all).
+#
+# Probing it at surface 2 ALONE was temperloop#2026: a catalog reviewer
+# installed at `$HOME/.claude/agents/reviewers/<name>.md` missed surface 3's
+# flat-only check, fell through to the provisional surface-2 arm, and
+# reported `source-only` for a seat that was live and demonstrably
+# spawnable. Since `installed` is the documented SPAWN gate, a caller
+# obeying the contract silently skipped a review seat that would have run —
+# the #1462 false negative reproduced one catalog directory down. Surface 1
+# carries the same arm for the same reason, not merely for symmetry: it is
+# the same KIND of live dir, so the same layout arriving there (a
+# `.claude/agents` symlinked at a kernel `claude/agents`, a wholesale-copied
+# tree) must resolve the same way rather than re-open this bug one surface
+# over.
+#
+# It cannot manufacture a false positive: a file under a LIVE agent dir is a
+# live agent whichever of that dir's directories holds it. The arm moves
+# nothing OUT of `absent` — only out of a wrongly-provisional `source-only`
+# — so the absent/source-only distinction this header insists on above is
+# untouched.
 #
 # The first surface that carries <name> decides the answer — EXCEPT that a
 # `source-only` hit at surface 2 never suppresses a later `installed` hit at
@@ -148,6 +175,17 @@ _agent_declared_name_ok() {
     *[!A-Za-z0-9._-]*) return 1 ;;
     *) return 0 ;;
   esac
+}
+
+# <dir> <name> -> rc 0 if agent dir <dir> carries <name>, either flat as
+# `<dir>/<name>.md` or under the ADR-0007 catalog subdir as
+# `<dir>/reviewers/<name>.md`. THE one shape-of-an-agent-dir predicate, run
+# against all three file surfaces (1, 2, 3) so none of them can drift into
+# probing only half a dir -- which is exactly temperloop#2026. See this
+# file's header, § EVERY SURFACE IS AN AGENT DIR.
+_agent_declared_dir_has() {
+  local dir="$1" name="$2"
+  [ -f "$dir/$name.md" ] || [ -f "$dir/reviewers/$name.md" ]
 }
 
 # <name> -> rc 0 if $PWD/CLAUDE.md has a `## Subagents` (or `### Subagents`)
@@ -217,8 +255,8 @@ agent_declared_state() {
     printf 'installed\n'; return 0
   fi
 
-  # Surface 1: the project-scoped live agent dir.
-  if [ -f "$PWD/.claude/agents/$name.md" ]; then
+  # Surface 1: the project-scoped live agent dir (flat + `reviewers/`).
+  if _agent_declared_dir_has "$PWD/.claude/agents" "$name"; then
     printf 'installed\n'; return 0
   fi
 
@@ -227,14 +265,12 @@ agent_declared_state() {
   # installed is installed. See this file's header.
   local shipped=0
   root="$(_agent_declared_checkout_root)"
-  if [ -n "$root" ]; then
-    if [ -f "$root/claude/agents/$name.md" ] || [ -f "$root/claude/agents/reviewers/$name.md" ]; then
-      shipped=1
-    fi
+  if [ -n "$root" ] && _agent_declared_dir_has "$root/claude/agents" "$name"; then
+    shipped=1
   fi
 
-  # Surface 3: the machine-scoped live agent dir.
-  if [ -f "$HOME/.claude/agents/$name.md" ]; then
+  # Surface 3: the machine-scoped live agent dir (flat + `reviewers/`).
+  if _agent_declared_dir_has "$HOME/.claude/agents" "$name"; then
     printf 'installed\n'; return 0
   fi
 

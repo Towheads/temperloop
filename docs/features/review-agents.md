@@ -115,8 +115,10 @@ two would not be enough:
 
 - **installed** — the agent is live here: the project names it in its own
   configuration section, or a definition file sits in the project's
-  `.claude/agents/` or in the machine-wide `~/.claude/agents/`. This is the
-  only state that permits a spawn.
+  `.claude/agents/` or in the machine-wide `~/.claude/agents/` — in either
+  case flat, **or** in that directory's `reviewers/` catalog subdir, which is
+  part of an agent directory's shape rather than a separate place to look.
+  This is the only state that permits a spawn.
 - **source-only** — the agent ships in this checkout's tracked
   `claude/agents/` tree but has not been deployed anywhere live. It is real
   and one command away — and that command is what its skip line names.
@@ -167,8 +169,12 @@ per-language checklist.
 **Selective activation.** `project-agents.sh --only <name> --category
 reviewers` (temperloop#543, single-reviewer deploy flag) deploys exactly one catalog reviewer — reading
 from `claude/agents/reviewers/<name>.md` but writing to the flat
-`.claude/agents/<name>.md`, the same path the capability probe resolves
-against — without touching the rest of the catalog. This is the mechanical
+`.claude/agents/<name>.md`, a path the capability probe resolves against —
+without touching the rest of the catalog. (The probe also reads a live
+directory's own `reviewers/` subdir, so a catalog reviewer that arrives live
+some other way — a `.claude/agents` or `~/.claude/agents` pointed at a
+kernel checkout's `claude/agents` — resolves as `installed` rather than
+being misreported as merely shipped; temperloop#2026.) This is the mechanical
 deploy primitive; what to offer and the accept/decline decision live in the
 two scripts below.
 

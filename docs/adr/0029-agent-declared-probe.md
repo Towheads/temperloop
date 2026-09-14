@@ -53,10 +53,28 @@ place of `commands/` — and preserves the canonical predicate's other clause
 as a declaration surface probed first:
 
 0. `$PWD/CLAUDE.md` § Subagents names `<name>` → **installed**
-1. `$PWD/.claude/agents/<name>.md` → **installed**
+1. `$PWD/.claude/agents/<name>.md` (or `…/reviewers/<name>.md`) →
+   **installed**
 2. `<checkout>/claude/agents/<name>.md` (or `…/reviewers/<name>.md`) →
    **source-only**
-3. `$HOME/.claude/agents/<name>.md` → **installed**
+3. `$HOME/.claude/agents/<name>.md` (or `…/reviewers/<name>.md`) →
+   **installed**
+
+**The `reviewers/` arm belongs to every file surface, not just surface 2**
+(temperloop#2026). It is not a fourth surface — it is the shape an agent
+*directory* has: ADR 0007's per-language catalog lives one directory down in
+whichever agent dir carries it, and on the kernel's own dogfooding host
+`$HOME/.claude/agents` **is** a checkout's `claude/agents`, catalog subdir
+and all. Reading it at surface 2 alone reproduced #1462's false negative one
+directory down: a catalog reviewer installed at
+`$HOME/.claude/agents/reviewers/<name>.md` missed surface 3's flat-only
+check, fell through to the provisional surface-2 arm, and answered
+`source-only` for a live, spawnable seat — so a caller obeying the
+`installed`-is-the-spawn-gate contract silently skipped a review that would
+have run. All three file surfaces now share one predicate
+(`_agent_declared_dir_has`), so none can drift back into probing half a
+directory. This moves nothing out of `absent`; it only stops a live hit being
+misreported as `source-only`.
 
 Two functions, and the second is the one callers gate on:
 
