@@ -323,6 +323,7 @@ globalThis.agent = async function agent(prompt, opts = {}) {
       // the machineryMap FIFO.
       if (/^preserve-push:/.test(String(opts.label || ''))) {
         return nextFromMap(preserveMap, slug, { outcome: 'WORK_PRESERVED', branch: 'build/' + slug, commits_ahead: 1, pushed: true });
+      }
       // temperloop#2003: the §3e ceiling's timer executor, on its own queue
       // (see reviewWaitMap). Default REVIEW_WAIT_ELAPSED = "the interval
       // elapsed", which is the only fact this call ever reports.
