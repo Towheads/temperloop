@@ -34,6 +34,13 @@
 #   {"outcome":"NO_CI","pr":…,"sha":…,"waited":…}                exit 0
 #   {"outcome":"TIMEOUT","pr":…,"sha":…,"waited":…}              exit 1
 #   {"outcome":"ERROR","error":…}                                exit 1
+#   {"outcome":"ERROR","error":…,"usage_error":true}             exit 1
+# The `usage_error:true` ERROR shape (temperloop#2014) is the script REFUSING
+# TO RUN on its own arguments — a bad flag or a closed-set validation failure
+# below. It is the one ERROR that carries NO information about CI: the poll
+# never observed a check-run, so a caller must never report it as a CI verdict
+# (build-level.mjs escalates `ci-poll-bad-argument`, never `ci-failed`). See
+# die_usage() alongside the transient/deterministic ERROR variants.
 # CI_FAILED exits 0 by DEFAULT on purpose: the poll itself succeeded — the
 # verdict is data, not a script failure. Only TIMEOUT/ERROR (poll never
 # completed) are non-zero by default. failed_run_ids come from `gh run list
@@ -105,6 +112,21 @@ command -v jq >/dev/null 2>&1 || { echo '{"outcome":"ERROR","error":"jq not foun
 exec 3>&1
 die() {
   jq -cn --arg error "$1" '{outcome:"ERROR", error:$error}' >&3
+  exit 1
+}
+
+# die_usage() — same ERROR shape as die(), plus a usage_error:true field
+# (temperloop#2014). Emitted when the script REFUSES TO RUN on its own
+# arguments: a missing/unknown flag, or a closed-set validation below. The
+# distinction the field carries is the one that matters to a caller: every
+# other ERROR means "the poll ran and something went wrong", while this one
+# means the poll never observed CI at all — so a caller must never report it as
+# a CI verdict. build-level.mjs reads it to escalate `ci-poll-bad-argument`
+# rather than `ci-failed`, which is how a healthy PR (open, checks still
+# running) came to be reported as red. The closed `.outcome` enum is unchanged,
+# exactly as for the two fields below.
+die_usage() {
+  jq -cn --arg error "$1" '{outcome:"ERROR", error:$error, usage_error:true}' >&3
   exit 1
 }
 
@@ -183,7 +205,7 @@ gh_retry() {
 }
 
 usage() {
-  die "usage: ci-poll.sh <owner>/<repo> <pr> [--sha <sha>] [--interval <secs>] [--timeout <secs>] [--exit-nonzero-on-failure]"
+  die_usage "usage: ci-poll.sh <owner>/<repo> <pr> [--sha <sha>] [--interval <secs>] [--timeout <secs>] [--exit-nonzero-on-failure]"
 }
 
 [ $# -ge 2 ] || usage
@@ -214,28 +236,28 @@ done
 
 # Closed-set validation: these feed gh api paths and jq --argjson.
 case "$owner_repo" in
-  */*/*|*/|/*|"") die "owner/repo '$owner_repo' invalid — must be <owner>/<repo>" ;;
+  */*/*|*/|/*|"") die_usage "owner/repo '$owner_repo' invalid — must be <owner>/<repo>" ;;
   */*) ;;
-  *) die "owner/repo '$owner_repo' invalid — must be <owner>/<repo>" ;;
+  *) die_usage "owner/repo '$owner_repo' invalid — must be <owner>/<repo>" ;;
 esac
 case "$owner_repo" in
-  *[!A-Za-z0-9_./-]*) die "owner/repo '$owner_repo' invalid — must be <owner>/<repo>" ;;
+  *[!A-Za-z0-9_./-]*) die_usage "owner/repo '$owner_repo' invalid — must be <owner>/<repo>" ;;
 esac
 case "$pr" in
-  ""|*[!0-9]*) die "pr '$pr' invalid — must be a PR number" ;;
+  ""|*[!0-9]*) die_usage "pr '$pr' invalid — must be a PR number" ;;
 esac
 case "$interval" in
-  ""|.|*[!0-9.]*|*.*.*) die "interval '$interval' invalid — must be seconds (decimals ok)" ;;
+  ""|.|*[!0-9.]*|*.*.*) die_usage "interval '$interval' invalid — must be seconds (decimals ok)" ;;
 esac
 case "$timeout" in
-  ""|*[!0-9]*) die "timeout '$timeout' invalid — must be whole seconds" ;;
+  ""|*[!0-9]*) die_usage "timeout '$timeout' invalid — must be whole seconds" ;;
 esac
 case "$grace" in
-  ""|*[!0-9]*) die "CI_POLL_NOCI_GRACE_SECS '$grace' invalid — must be whole seconds" ;;
+  ""|*[!0-9]*) die_usage "CI_POLL_NOCI_GRACE_SECS '$grace' invalid — must be whole seconds" ;;
 esac
 if [ -n "$sha" ]; then
   case "$sha" in
-    *[!0-9a-fA-F]*) die "sha '$sha' invalid — must be a hex commit SHA" ;;
+    *[!0-9a-fA-F]*) die_usage "sha '$sha' invalid — must be a hex commit SHA" ;;
   esac
 fi
 

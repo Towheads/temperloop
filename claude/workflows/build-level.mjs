@@ -5675,6 +5675,36 @@ async function driveItem(item) {
     }
   }
 
+  // --- 3f→3g SHA hand-off guard (temperloop#2014) --------------------------
+  // The ONE choke point every arm above converges on. FOUR paths can set
+  // `pushedSha` and all four are covered here rather than four times over:
+  //   1. the timeout-ADOPT arm       — `adopted.sha ?? null` (probe.sha; the
+  //      `?? null` makes a probe that landed a PR but resolved no SHA reach
+  //      this guard as an explicit null rather than an `undefined`);
+  //   2. the push lost-return RECOVERY arm      — `rec.pushedSha`;
+  //   3. the pr-open lost-return RECOVERY arm   — `rec.pushedSha ?? pushedSha`;
+  //   4. the plain PUSHED arm        — `pushOut.sha`, unguarded until now: the
+  //      push outcome is transported through an executor agent's structured
+  //      return, so a `sha` key that never makes it back leaves this
+  //      `undefined` while the step still reports success — the temperloop#2014
+  //      reproduction's own path.
+  // A guard at each assignment would have to be written (and kept) four times
+  // and would still miss a fifth arm added later; one guard on the value the
+  // poll actually receives cannot be bypassed by a new arm. The CI-fix re-push
+  // inside ciPollLoop re-pins `sha` after this point and carries its own copy.
+  if (hexSha(pushedSha) === null) {
+    return escalate(
+      item.slug,
+      'ci-poll-bad-argument',
+      badShaEscalation(
+        pr,
+        pushedSha,
+        'push-to-poll-handoff',
+        'push + PR-open reported success but produced no usable head SHA to pin the CI poll to',
+      ),
+    );
+  }
+
   // --- 3g. CI poll (the bounded short-slice loop — DESIGN NOTE 2) ----------
   const ciResult = await ciPollLoop(item, ownerRepo, pr, pushedSha, wt);
   if (ciResult.escalation) {
@@ -5809,6 +5839,67 @@ function mergeStateCmd(ownerRepo, pr) {
   // space). Only `mergeable`/`mergeStateStatus` are requested and both are
   // space-free enum values, so stripping spaces cannot corrupt a value.
   return `gh pr view ${sq(pr)} --repo ${sq(ownerRepo)} --json mergeable,mergeStateStatus | tr -d ' \\n'`;
+}
+
+// -----------------------------------------------------------------------------
+// The pushed-SHA hand-off guard (temperloop#2014).
+// -----------------------------------------------------------------------------
+// ciPollCmd pins `--sha` to the SHA the push reported — the #254 false-green
+// guard, and the one argument of the poll that this file, not the machinery,
+// is responsible for. sq() stringifies whatever it is handed, so an ABSENT
+// value does not crash: it renders as the literal `undefined` (or `null`),
+// ci-poll.sh's own argument validation refuses to run on it, and the driver
+// read that refusal back through the catch-all ERROR arm as `ci-failed` — i.e.
+// reported a PR whose CI was still running (temperloop#2014: PR #2013 was OPEN
+// with checks IN_PROGRESS) as a red one. Two halves close it:
+//   • hexSha() is the PRE-FLIGHT. Every value that can become the poll's
+//     `--sha` passes through it before a poll is spawned, so the driver never
+//     spends a slice on an argument ci-poll.sh is certain to reject.
+//   • a bad argument that reaches ci-poll.sh anyway (a vendored older copy, a
+//     validation this file does not model) comes back as its OWN escalation
+//     kind, `ci-poll-bad-argument`, never `ci-failed` — see isBadArgumentError
+//     and the ERROR arm at the bottom of ciPollLoop.
+// The predicate is hex-only, matching ci-poll.sh's own `*[!0-9a-fA-F]*`
+// rejection exactly. It must never be LOOSER than the check it protects, or
+// the pre-flight passes something the poll then refuses — which is the whole
+// failure being fixed, one layer down.
+function hexSha(value) {
+  return typeof value === 'string' && value !== '' && /^[0-9a-fA-F]+$/.test(value)
+    ? value
+    : null;
+}
+
+// badShaEscalation — the payload shared by both pre-flight sites (the 3f→3g
+// hand-off and the CI-fix re-push). `sha_seen` is the value STRINGIFIED exactly
+// as sq() would have rendered it, so the payload shows the literal
+// `undefined`/`null` the poll would have been handed rather than dropping the
+// key entirely (JSON.stringify eats an `undefined` value).
+function badShaEscalation(pr, seen, stage, detail) {
+  return {
+    pr,
+    sha_seen: String(seen),
+    stage,
+    reason: detail,
+    disposition:
+      'NOT a CI verdict — the poll never ran. The PR itself is untouched and its checks ' +
+      'may well be green: inspect it, and re-drive (or finish by hand) once the head SHA is known.',
+  };
+}
+
+// isBadArgumentError — true iff a ci-poll.sh ERROR is the script REFUSING TO
+// RUN on its own arguments, rather than a poll that ran and went wrong. The
+// primary signal is the structured `usage_error:true` field ci-poll.sh stamps
+// on every argument-validation die (its own header documents it alongside
+// transient_retries_exhausted / deterministic_failure). The error-text fallback
+// covers a vendored or older ci-poll.sh predating that stamp: every one of its
+// argument dies renders as `<name> '<value>' invalid — must be …`, or the
+// `usage: ci-poll.sh …` line — phrasings no API/transport error shares. Narrow
+// on purpose: a genuine CI failure must never be laundered out of `ci-failed`.
+function isBadArgumentError(out) {
+  if (!out || out.outcome !== 'ERROR') return false;
+  if (out.usage_error === true) return true;
+  if (typeof out.error !== 'string') return false;
+  return / invalid — must be /.test(out.error) || /^usage: ci-poll\.sh /.test(out.error);
 }
 
 function ciPollCmd(ownerRepo, pr, sha) {
@@ -6070,6 +6161,24 @@ async function ciPollLoop(item, ownerRepo, pr, initialSha, wt) {
       if (fpush.outcome !== 'PUSHED') {
         return { escalation: 'ci-failed', payload: { fpush, sha } };
       }
+      // temperloop#2014 — the FIFTH `--sha` assignment, and the one the issue's
+      // own audit list does not name: the re-push's reported SHA arrives
+      // through the same executor transport as the 3f push, so it can go
+      // missing the same way. Guarded BEFORE it is adopted, so the previous
+      // (still valid, but now stale) `sha` is never silently re-polled either —
+      // re-polling the pre-fix head is the #254 false-green this pin exists to
+      // prevent.
+      if (hexSha(fpush.sha) === null) {
+        return {
+          escalation: 'ci-poll-bad-argument',
+          payload: badShaEscalation(
+            pr,
+            fpush.sha,
+            'ci-fix-push',
+            'the CI-fix re-push reported PUSHED but produced no usable head SHA to re-pin the poll to',
+          ),
+        };
+      }
       sha = fpush.sha; // authoritative — pin the next poll to it (NOT the PR API)
       // FLUSH any slices still buffered from the pre-fix batch: they were polled
       // against the OLD head and reading them now would re-resolve CI on a stale
@@ -6081,6 +6190,21 @@ async function ciPollLoop(item, ownerRepo, pr, initialSha, wt) {
 
     // ERROR or any unexpected outcome (e.g. ci-poll.sh itself errored) →
     // escalate rather than spin.
+    //
+    // temperloop#2014 — but NOT as `ci-failed` when ci-poll.sh refused to run on
+    // its own arguments. `ci-failed` means "this PR's CI is red", and a run
+    // disposing on it parks or re-drives a healthy PR; a bad argument means the
+    // poll never observed CI at all, so it is its own kind with its own
+    // disposition. The pre-flight above makes this unreachable from the
+    // driver's own hand-off — this arm catches the argument errors the driver
+    // does not own (a stale vendored ci-poll.sh, an owner/repo or PR number
+    // this file passed through from its input).
+    if (isBadArgumentError(out)) {
+      return {
+        escalation: 'ci-poll-bad-argument',
+        payload: { ...badShaEscalation(pr, sha, 'ci-poll', 'ci-poll.sh rejected its own arguments'), ciOut: out },
+      };
+    }
     return { escalation: 'ci-failed', payload: { ciOut: out, sha } };
   }
 

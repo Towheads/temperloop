@@ -528,9 +528,9 @@ export AGENT_DEF_PATH="$AGENT_DEF"
 run_node_case "happy: 3 green items → 3 parked, empty escalations, no plan-note write" "
 $PREAMBLE
 
-happyMachinery('item101', 101, 'sha1');
-happyMachinery('item102', 102, 'sha2');
-happyMachinery('item103', 103, 'sha3');
+happyMachinery('item101', 101, 'a160');
+happyMachinery('item102', 102, 'a261');
+happyMachinery('item103', 103, 'a362');
 happyWorker('item101');
 happyWorker('item102');
 happyWorker('item103');
@@ -555,11 +555,11 @@ if (escalations.length !== 0)
 const p101 = parked.find(p => p.slug === 'item101');
 const p102 = parked.find(p => p.slug === 'item102');
 const p103 = parked.find(p => p.slug === 'item103');
-if (!p101 || p101.pr !== 101 || p101.pushed_sha !== 'sha1')
+if (!p101 || p101.pr !== 101 || p101.pushed_sha !== 'a160')
   { console.log(JSON.stringify({ ok: false, reason: 'item101 mismatch: ' + JSON.stringify(p101) })); process.exit(0); }
-if (!p102 || p102.pr !== 102 || p102.pushed_sha !== 'sha2')
+if (!p102 || p102.pr !== 102 || p102.pushed_sha !== 'a261')
   { console.log(JSON.stringify({ ok: false, reason: 'item102 mismatch: ' + JSON.stringify(p102) })); process.exit(0); }
-if (!p103 || p103.pr !== 103 || p103.pushed_sha !== 'sha3')
+if (!p103 || p103.pr !== 103 || p103.pushed_sha !== 'a362')
   { console.log(JSON.stringify({ ok: false, reason: 'item103 mismatch: ' + JSON.stringify(p103) })); process.exit(0); }
 
 // No plan-note write from inside the workflow (workflow only RETURNS; orchestrator writes)
@@ -579,8 +579,8 @@ console.log(JSON.stringify({ ok: true }));
 run_node_case "design-fork: one design-fork item → escalations[], siblings park" "
 $PREAMBLE
 
-happyMachinery('item-a', 201, 'sha-a');
-happyMachinery('item-b', 202, 'sha-b');
+happyMachinery('item-a', 201, 'aa02');
+happyMachinery('item-b', 202, 'ab06');
 // item-fork: CREATED only (worker escalates immediately after worktree step)
 setMachinery('item-fork',
   { outcome: 'CREATED', path: '/tmp/repo.wt/item-fork' }
@@ -622,7 +622,7 @@ console.log(JSON.stringify({ ok: true }));
 run_node_case "failed verdict: one item returns failed → escalation, sibling parks" "
 $PREAMBLE
 
-happyMachinery('item-good', 301, 'sha-good');
+happyMachinery('item-good', 301, 'ad26');
 setMachinery('item-bad', { outcome: 'CREATED', path: '/tmp/repo.wt/item-bad' });
 happyWorker('item-good');
 setWorker('item-bad', { status: 'failed', failure_reason: 'could not compile' });
@@ -659,16 +659,16 @@ setMachinery('item-cifix',
   { outcome: 'CREATED', path: '/tmp/repo.wt/item-cifix' },
   { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-v1' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'a15e' },
   { outcome: 'SCAN_CLEAN' },
-  { outcome: 'PUSHED', sha: 'sha-v1', branch: 'build/item-cifix' },
+  { outcome: 'PUSHED', sha: 'a15e', branch: 'build/item-cifix' },
   { outcome: 'PR_OPENED', pr_number: 401 },
   // First CI poll: CI_FAILED
   { outcome: 'CI_FAILED', failed_run_ids: [9001] },
   // temperloop#1450: §3e re-review of the CI-fix commit, before the retry push
   { outcome: 'REVIEW_DIFF' },
   // Retry push after fix worker (plain push — ff descendant, no --force)
-  { outcome: 'PUSHED', sha: 'sha-v2', branch: 'build/item-cifix' },
+  { outcome: 'PUSHED', sha: 'a25f', branch: 'build/item-cifix' },
   // Re-poll pinned to sha-v2: CI_GREEN
   { outcome: 'CI_GREEN' },
 );
@@ -702,7 +702,7 @@ if ((result.parked ?? []).length !== 1)
   { console.log(JSON.stringify({ ok: false, reason: 'expected 1 parked: ' + JSON.stringify(result) })); process.exit(0); }
 if ((result.escalations ?? []).length !== 0)
   { console.log(JSON.stringify({ ok: false, reason: 'unexpected escalation: ' + JSON.stringify(result) })); process.exit(0); }
-if (result.parked[0].pushed_sha !== 'sha-v2')
+if (result.parked[0].pushed_sha !== 'a25f')
   { console.log(JSON.stringify({ ok: false, reason: 'pushed_sha not re-pushed sha: ' + result.parked[0].pushed_sha })); process.exit(0); }
 // CI-fix worker must omit model (top tier = undefined)
 if (ciFixWorkerModel !== undefined)
@@ -722,13 +722,13 @@ setMachinery('item-cibust',
   { outcome: 'CREATED', path: '/tmp/repo.wt/item-cibust' },
   { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-v1' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'a15e' },
   { outcome: 'SCAN_CLEAN' },
-  { outcome: 'PUSHED', sha: 'sha-v1', branch: 'build/item-cibust' },
+  { outcome: 'PUSHED', sha: 'a15e', branch: 'build/item-cibust' },
   { outcome: 'PR_OPENED', pr_number: 501 },
   { outcome: 'CI_FAILED', failed_run_ids: [9002] },
   { outcome: 'REVIEW_DIFF' },
-  { outcome: 'PUSHED', sha: 'sha-v2', branch: 'build/item-cibust' },
+  { outcome: 'PUSHED', sha: 'a25f', branch: 'build/item-cibust' },
   // Retry budget=1 used up; second CI_FAILED → escalate
   { outcome: 'CI_FAILED', failed_run_ids: [9003] },
 );
@@ -765,9 +765,9 @@ setMachinery('item-timeout',
   { outcome: 'CREATED', path: '/tmp/repo.wt/item-timeout' },
   { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-t' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'a5a' },
   { outcome: 'SCAN_CLEAN' },
-  { outcome: 'PUSHED', sha: 'sha-t', branch: 'build/item-timeout' },
+  { outcome: 'PUSHED', sha: 'a5a', branch: 'build/item-timeout' },
   { outcome: 'PR_OPENED', pr_number: 601 },
   { outcome: 'TIMEOUT' },
   { outcome: 'TIMEOUT' },
@@ -786,7 +786,7 @@ if ((result.parked ?? []).length !== 1)
   { console.log(JSON.stringify({ ok: false, reason: 'expected 1 parked after timeout+green: ' + JSON.stringify(result) })); process.exit(0); }
 if ((result.escalations ?? []).length !== 0)
   { console.log(JSON.stringify({ ok: false, reason: 'TIMEOUT slices should not escalate: ' + JSON.stringify(result) })); process.exit(0); }
-if (result.parked[0].pushed_sha !== 'sha-t')
+if (result.parked[0].pushed_sha !== 'a5a')
   { console.log(JSON.stringify({ ok: false, reason: 'pushed_sha wrong: ' + result.parked[0].pushed_sha })); process.exit(0); }
 
 console.log(JSON.stringify({ ok: true }));
@@ -806,11 +806,11 @@ setMachinery('item-noci',
   { outcome: 'CREATED', path: '/tmp/repo.wt/item-noci' },
   { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-n' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'a3f' },
   { outcome: 'SCAN_CLEAN' },
-  { outcome: 'PUSHED', sha: 'sha-n', branch: 'build/item-noci' },
+  { outcome: 'PUSHED', sha: 'a3f', branch: 'build/item-noci' },
   { outcome: 'PR_OPENED', pr_number: 618 },
-  { outcome: 'NO_CI', pr: 618, sha: 'sha-n', waited: 90 },
+  { outcome: 'NO_CI', pr: 618, sha: 'a3f', waited: 90 },
 );
 happyWorker('item-noci');
 
@@ -827,7 +827,7 @@ if ((result.parked ?? []).length !== 1)
   { console.log(JSON.stringify({ ok: false, reason: 'expected 1 parked for NO_CI: ' + JSON.stringify(result) })); process.exit(0); }
 if (result.parked[0].pr !== 618)
   { console.log(JSON.stringify({ ok: false, reason: 'parked pr wrong: ' + JSON.stringify(result.parked[0]) })); process.exit(0); }
-if (result.parked[0].pushed_sha !== 'sha-n')
+if (result.parked[0].pushed_sha !== 'a3f')
   { console.log(JSON.stringify({ ok: false, reason: 'parked pushed_sha wrong: ' + JSON.stringify(result.parked[0]) })); process.exit(0); }
 if (result.parked[0].no_ci !== true)
   { console.log(JSON.stringify({ ok: false, reason: 'NO_CI item must carry no_ci:true sentinel: ' + JSON.stringify(result.parked[0]) })); process.exit(0); }
@@ -874,7 +874,7 @@ setMachinery('item-rejected',
   { outcome: 'CREATED', path: '/tmp/repo.wt/item-rejected' },
   { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-r' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'a4d' },
   { outcome: 'SCAN_CLEAN' },
   { outcome: 'PUSH_REJECTED', error: 'non-fast-forward' },
 );
@@ -913,9 +913,9 @@ setMachinery('item-unwatched',
   { outcome: 'CREATED', path: '/tmp/repo.wt/item-unwatched' },
   { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-r' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'a4d' },
   { outcome: 'SCAN_CLEAN' },
-  { outcome: 'PUSHED_UNWATCHED', sha: 'sha-r', branch: 'build/item-unwatched', forced: true,
+  { outcome: 'PUSHED_UNWATCHED', sha: 'a4d', branch: 'build/item-unwatched', forced: true,
     pr_lookup: 'ok', pr_number: 1404, pr_head_ref: 'fix/item-unwatched',
     stale_head_cause: 'branch-mismatch', error: 'no open PR references build/item-unwatched' },
 );
@@ -950,7 +950,7 @@ setMachinery('item-scan',
   { outcome: 'CREATED', path: '/tmp/repo.wt/item-scan' },
   { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-scan' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'aca58' },
   { outcome: 'SCAN_BLOCKED', matches: ['Closes #42'] },
 );
 happyWorker('item-scan');
@@ -1189,9 +1189,9 @@ setMachinery('item-fresh-reb',
   { outcome: 'CREATED', path: '/tmp/repo.wt/item-fresh-reb' },
   { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-out' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'a44' },
   { outcome: 'SCAN_CLEAN' },
-  { outcome: 'PUSHED', sha: 'sha-out', branch: 'build/item-fresh-reb' },
+  { outcome: 'PUSHED', sha: 'a44', branch: 'build/item-fresh-reb' },
   { outcome: 'PR_OPENED', pr_number: 501 },
   { outcome: 'CI_GREEN' },
 );
@@ -1258,7 +1258,7 @@ console.log(JSON.stringify({ ok: true }));
 run_node_case "freshness-current (temperloop#1937): a worktree already at/ahead of main takes the byte-identical pre-#1937 path — one freshness check, no extra rebase spawn" "
 $PREAMBLE
 
-happyMachinery('item-fresh-cur', 601, 'sha-cur');
+happyMachinery('item-fresh-cur', 601, 'ac14');
 happyWorker('item-fresh-cur');
 // No setFreshness() call — the default (FRESHNESS_CURRENT) models the common
 // case every pre-#1937 test above already exercises, unchanged.
@@ -1368,7 +1368,7 @@ run_node_case "freshness-error (temperloop#1937): the fetch/resolve step itself 
 $PREAMBLE
 
 setFreshness('item-fresh-err', { outcome: 'FRESHNESS_ERROR', detail: 'git fetch origin main failed' });
-happyMachinery('item-fresh-err', 701, 'sha-err');
+happyMachinery('item-fresh-err', 701, 'ae1e');
 happyWorker('item-fresh-err');
 
 globalThis.args = { ...baseArgs, items: [
@@ -1435,9 +1435,9 @@ setMachinery('item-fresh-nogate',
   { outcome: 'CREATED', path: '/tmp/repo.wt/item-fresh-nogate' },
   { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_ABSENT' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-nogate' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'aae41' },
   { outcome: 'SCAN_CLEAN' },
-  { outcome: 'PUSHED', sha: 'sha-nogate', branch: 'build/item-fresh-nogate' },
+  { outcome: 'PUSHED', sha: 'aae41', branch: 'build/item-fresh-nogate' },
   { outcome: 'PR_OPENED', pr_number: 801 },
   { outcome: 'CI_GREEN' },
 );
@@ -1560,7 +1560,7 @@ echo "PASS: #1937 ordering guard — the pre-gate freshness step runs strictly b
 run_node_case "gate-timeout: 3e.5 gate prompt carries the Bash-timeout directive (#115)" "
 $PREAMBLE
 
-happyMachinery('item-gto', 115, 'sha-gto');
+happyMachinery('item-gto', 115, 'a2a');
 happyWorker('item-gto');
 
 // Wrap the mock agent to capture the FULL gate prompt (the shared callLog slices
@@ -1624,7 +1624,7 @@ console.log(JSON.stringify({ ok: true }));
 run_node_case "gate-worktree: 3e.5 gate runs the worktree's quality-gates.sh, not repoRoot's (#626)" "
 $PREAMBLE
 
-happyMachinery('item-qgwt', 626, 'sha-qgwt');
+happyMachinery('item-qgwt', 626, 'a4c');
 happyWorker('item-qgwt');
 
 // Capture the FULL gate prompt (the shared callLog truncates to 120 chars,
@@ -1727,9 +1727,9 @@ setMachinery('item-gs1021',
   { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_SLICE', resumeAt: 47, failed: 0, elapsedSecs: 301 },
   { outcome: 'GATE_PASS', failed: 0, elapsedSecs: 120 },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-gs' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'a29' },
   { outcome: 'SCAN_CLEAN' },
-  { outcome: 'PUSHED', sha: 'sha-gs', branch: 'build/item-gs1021' },
+  { outcome: 'PUSHED', sha: 'a29', branch: 'build/item-gs1021' },
   { outcome: 'PR_OPENED', pr_number: 1021 },
   { outcome: 'CI_GREEN' },
 );
@@ -1858,7 +1858,7 @@ run_node_case "1021 setting: input.gateSliceSecs drives the budget and is clampe
 $PREAMBLE
 
 async function budgetAndTimeoutFor(sliceSecs, slug) {
-  happyMachinery(slug, 1, 'sha-' + slug);
+  happyMachinery(slug, 1, 'a01');
   happyWorker(slug);
   let seen = null;
   const origAgent = globalThis.agent;
@@ -1910,7 +1910,7 @@ run_node_case "1587 agreement: kind and payload agree across GATE_PASS/FAIL/SLIC
 $PREAMBLE
 
 // GATE_PASS — the green arm: parks, no escalation at all.
-happyMachinery('g1587-pass', 1587, 'sha-pass');
+happyMachinery('g1587-pass', 1587, 'aa46');
 happyWorker('g1587-pass');
 
 // GATE_FAIL — note failed:0 in the executor's own line (a stale/absent
@@ -2151,14 +2151,14 @@ run_node_case "2-level e2e smoke: two buildLevel() calls, each independent and s
 $PREAMBLE
 
 // Level 1: 2 green items
-happyMachinery('l1a', 701, 'sha-l1a');
-happyMachinery('l1b', 702, 'sha-l1b');
+happyMachinery('l1a', 701, 'a1a31');
+happyMachinery('l1b', 702, 'a1b32');
 happyWorker('l1a');
 happyWorker('l1b');
 
 // Level 2: 2 green items (different slugs)
-happyMachinery('l2a', 703, 'sha-l2a');
-happyMachinery('l2b', 704, 'sha-l2b');
+happyMachinery('l2a', 703, 'a2a33');
+happyMachinery('l2b', 704, 'a2b34');
 happyWorker('l2a');
 happyWorker('l2b');
 
@@ -2220,9 +2220,9 @@ setMachinery('l2ok',
   { outcome: 'CREATED', path: '/tmp/repo.wt/l2ok' },
   { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-l2ok' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'a235' },
   { outcome: 'SCAN_CLEAN' },
-  { outcome: 'PUSHED', sha: 'sha-l2ok', branch: 'build/l2ok' },
+  { outcome: 'PUSHED', sha: 'a235', branch: 'build/l2ok' },
   { outcome: 'PR_OPENED', pr_number: 811 },
   { outcome: 'CI_GREEN' },
 );
@@ -2231,13 +2231,13 @@ happyWorker('l2ok');
 // l2blocked: dep gate reports an unmerged dependency — the ONLY machinery call it
 // should ever make. No CREATED registered: if the code wrongly reached
 // worktree.sh create, the machinery mock would throw 'label exhausted'.
-setMachinery('l2blocked', { outcome: 'DEPS_UNMERGED', unmerged: ['sha-dep-unmerged'] });
+setMachinery('l2blocked', { outcome: 'DEPS_UNMERGED', unmerged: ['adeeed17'] });
 
 globalThis.args = { ...baseArgs, items: [
   { slug: 'l2ok',      branch: 'build/l2ok',      title: 'L2 OK',      kind: 'impl', acceptance: ['c'],
-    dependsOn: [{ slug: 'l1', sha: 'sha-l1-merged' }] },
+    dependsOn: [{ slug: 'l1', sha: 'a1eed2f' }] },
   { slug: 'l2blocked', branch: 'build/l2blocked', title: 'L2 Blocked', kind: 'impl', acceptance: ['c'],
-    dependsOn: [{ slug: 'l1', sha: 'sha-l1-unmerged' }] },
+    dependsOn: [{ slug: 'l1', sha: 'a1eed30' }] },
 ]};
 
 const mod = await loadLevel();
@@ -2327,9 +2327,9 @@ $PREAMBLE
 setMachinery('item-cont',
   { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-cont' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'ac12' },
   { outcome: 'SCAN_CLEAN' },
-  { outcome: 'PUSHED', sha: 'sha-cont', branch: 'build/item-cont' },
+  { outcome: 'PUSHED', sha: 'ac12', branch: 'build/item-cont' },
   { outcome: 'PR_OPENED', pr_number: 901 },
   { outcome: 'CI_GREEN' },
 );
@@ -2382,7 +2382,7 @@ if ((result.escalations ?? []).length !== 0)
   { console.log(JSON.stringify({ ok: false, reason: 'unexpected escalation: ' + JSON.stringify(result) })); process.exit(0); }
 if (result.parked[0].slug !== 'item-cont')
   { console.log(JSON.stringify({ ok: false, reason: 'wrong slug driven: ' + result.parked[0].slug })); process.exit(0); }
-if (result.parked[0].pushed_sha !== 'sha-cont')
+if (result.parked[0].pushed_sha !== 'ac12')
   { console.log(JSON.stringify({ ok: false, reason: 'pushed_sha wrong: ' + result.parked[0].pushed_sha })); process.exit(0); }
 
 // The verdict block must be injected into the re-spawned worker's prompt.
@@ -2410,7 +2410,7 @@ console.log(JSON.stringify({ ok: true }));
 # ============================================================================
 run_node_case "acceptance-string: item.acceptance as a string → parks, no .map throw (#437)" "
 $PREAMBLE
-happyMachinery('strone', 201, 'shaS');
+happyMachinery('strone', 201, 'a7c');
 happyWorker('strone');
 globalThis.args = { ...baseArgs, items: [
   { slug: 'strone', branch: 'build/strone', title: 'String acc', kind: 'impl', acceptance: '(self-verify the issue is resolved)' },
@@ -2458,9 +2458,9 @@ setMachinery('retryitem',
   noSideEffects(),
   { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-retry' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'ae50' },
   { outcome: 'SCAN_CLEAN' },
-  { outcome: 'PUSHED', sha: 'sha-retry', branch: 'build/retryitem' },
+  { outcome: 'PUSHED', sha: 'ae50', branch: 'build/retryitem' },
   { outcome: 'PR_OPENED', pr_number: 10 },
   { outcome: 'CI_GREEN' },
 );
@@ -2541,15 +2541,15 @@ console.log(JSON.stringify({ ok: true }));
 run_node_case "null-cifix: ci-fix agent returns null → ci-failed escalation, no TypeError (#542)" "
 $PREAMBLE
 // Machinery: normal path up to CI_FAILED, then fix-spawn (worker) returns null
-happyMachinery('cifixnull', 20, 'sha-cifix');
+happyMachinery('cifixnull', 20, 'acf0f');
 // Override ci-poll in machineryMap to return CI_FAILED
 machineryMap.set('cifixnull', [
   { outcome: 'CREATED', path: '/tmp/repo.wt/cifixnull' },
   { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-cifix' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'acf0f' },
   { outcome: 'SCAN_CLEAN' },
-  { outcome: 'PUSHED', sha: 'sha-cifix', branch: 'build/cifixnull' },
+  { outcome: 'PUSHED', sha: 'acf0f', branch: 'build/cifixnull' },
   { outcome: 'PR_OPENED', pr_number: 20 },
   { outcome: 'CI_FAILED', failed_run_ids: [1] },
 ]);
@@ -2589,9 +2589,9 @@ setMachinery('item-conflict543',
   { outcome: 'CREATED', path: '/tmp/repo.wt/item-conflict543' },
   { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-cf' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'acf0b' },
   { outcome: 'SCAN_CLEAN' },
-  { outcome: 'PUSHED', sha: 'sha-cf', branch: 'build/item-conflict543' },
+  { outcome: 'PUSHED', sha: 'acf0b', branch: 'build/item-conflict543' },
   { outcome: 'PR_OPENED', pr_number: 543 },
   // No CI_GREEN/CI_FAILED/TIMEOUT entries: if ci-poll.sh fires, it consumes
   // from an exhausted machineryMap → ERROR fallback → test would see ci-failed, not
@@ -2649,16 +2649,16 @@ setMachinery('item-dirty',
   { outcome: 'CREATED', path: '/tmp/repo.wt/item-dirty' },
   { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-dirty' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'ad18' },
   { outcome: 'SCAN_CLEAN' },
-  { outcome: 'PUSHED', sha: 'sha-dirty', branch: 'build/item-dirty' },
+  { outcome: 'PUSHED', sha: 'ad18', branch: 'build/item-dirty' },
   { outcome: 'PR_OPENED', pr_number: 544 },
 );
 happyWorker('item-dirty');
 setMergeCheck('item-dirty', { mergeable: 'UNKNOWN', mergeStateStatus: 'DIRTY' });
 
 // Clean sibling parks normally
-happyMachinery('item-clean', 545, 'sha-clean');
+happyMachinery('item-clean', 545, 'acea10');
 happyWorker('item-clean');
 // No setMergeCheck → default { mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN' }
 
@@ -2701,9 +2701,9 @@ setMachinery('item-exists',
   { outcome: 'CREATED', path: '/tmp/repo.wt/item-exists' },
   { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-exists' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'ae1f' },
   { outcome: 'SCAN_CLEAN' },
-  { outcome: 'PUSHED', sha: 'sha-exists', branch: 'build/item-exists' },
+  { outcome: 'PUSHED', sha: 'ae1f', branch: 'build/item-exists' },
   // EXISTS: branch already had an open PR (e.g. create retry after first create succeeded)
   { outcome: 'EXISTS', pr_number: 163, url: 'https://github.com/Towheads/foundation/pull/163' },
   { outcome: 'CI_GREEN' },
@@ -2728,7 +2728,7 @@ if (parked[0].slug !== 'item-exists')
   { console.log(JSON.stringify({ ok: false, reason: 'EXISTS: wrong slug parked: ' + parked[0].slug })); process.exit(0); }
 if (parked[0].pr !== 163)
   { console.log(JSON.stringify({ ok: false, reason: 'EXISTS: pr should be 163 (from EXISTS outcome), got: ' + parked[0].pr })); process.exit(0); }
-if (parked[0].pushed_sha !== 'sha-exists')
+if (parked[0].pushed_sha !== 'ae1f')
   { console.log(JSON.stringify({ ok: false, reason: 'EXISTS: pushed_sha wrong: ' + parked[0].pushed_sha })); process.exit(0); }
 
 console.log(JSON.stringify({ ok: true }));
@@ -2745,9 +2745,9 @@ setMachinery('item-prfail',
   { outcome: 'CREATED', path: '/tmp/repo.wt/item-prfail' },
   { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-prfail' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'afa4a' },
   { outcome: 'SCAN_CLEAN' },
-  { outcome: 'PUSHED', sha: 'sha-prfail', branch: 'build/item-prfail' },
+  { outcome: 'PUSHED', sha: 'afa4a', branch: 'build/item-prfail' },
   // Genuine failure (not the already-exists case) → must escalate
   { outcome: 'ERROR', error: 'authentication required' },
 );
@@ -2817,7 +2817,7 @@ setMachinery('pushdenied',
   { outcome: 'CREATED', path: '/tmp/repo.wt/pushdenied' },
   { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-pd' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'ad47' },
   { outcome: 'SCAN_CLEAN' },
   null,   // push → classifier denied
 );
@@ -2855,7 +2855,7 @@ console.log(JSON.stringify({ ok: true }));
 # ============================================================================
 run_node_case "machineryBinDir: pre-resolved dir → plain paths, no readlink in executed machinery command (#72)" "
 $PREAMBLE
-happyMachinery('deobf', 260, 'sha-deobf');
+happyMachinery('deobf', 260, 'adebf15');
 happyWorker('deobf');
 let machineryPrompts = [];
 const origAgent = globalThis.agent;
@@ -3020,7 +3020,7 @@ echo "PASS: #1460 machineryBinDir + principles hand-off guard — all three call
 run_node_case "K712 prevention: workerPrompt embeds the FOREGROUND-ONLY (#1219) contract" "
 $PREAMBLE
 
-happyMachinery('fg-item', 900, 'shaFg');
+happyMachinery('fg-item', 900, 'af70');
 happyWorker('fg-item');
 globalThis.args = { ...baseArgs, items: [
   { slug: 'fg-item', branch: 'build/fg-item', title: 'FG item', kind: 'impl', acceptance: ['c'] },
@@ -3043,9 +3043,9 @@ setMachinery('cure-item',
   noSideEffects(),
   { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'shaCure' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'ace68' },
   { outcome: 'SCAN_CLEAN' },
-  { outcome: 'PUSHED', sha: 'shaCure', branch: 'build/cure-item' },
+  { outcome: 'PUSHED', sha: 'ace68', branch: 'build/cure-item' },
   { outcome: 'PR_OPENED', pr_number: 901 },
   { outcome: 'CI_GREEN' },
 );
@@ -3099,7 +3099,7 @@ console.log(JSON.stringify({ ok: true }));
 run_node_case "K1530 prevention: workerPrompt embeds the changelog-fragment instruction" "
 $PREAMBLE
 
-happyMachinery('cl-item', 900, 'shaCl');
+happyMachinery('cl-item', 900, 'ac66');
 happyWorker('cl-item');
 globalThis.args = { ...baseArgs, items: [
   { slug: 'cl-item', branch: 'build/cl-item', title: 'CL item', kind: 'impl', acceptance: ['c'] },
@@ -3153,7 +3153,7 @@ echo "PASS: #1530 changelog-fragment guard — workerPrompt embeds the add-a-fra
 run_node_case "K1931 prevention: workerPrompt embeds the gate-registration checklist" "
 $PREAMBLE
 
-happyMachinery('gr-item', 900, 'shaGr');
+happyMachinery('gr-item', 900, 'a71');
 happyWorker('gr-item');
 globalThis.args = { ...baseArgs, items: [
   { slug: 'gr-item', branch: 'build/gr-item', title: 'GR item', kind: 'impl', acceptance: ['c'] },
@@ -3222,11 +3222,11 @@ echo "PASS: #1931 gate-registration-checklist guard — workerPrompt embeds the 
 run_node_case "K1934 prevention: workerPrompt renders a class-A activation.proof verbatim as the reachability predicate; class-B/absent get no such section" "
 $PREAMBLE
 
-happyMachinery('act-a-item', 930, 'shaActA');
+happyMachinery('act-a-item', 930, 'aaca63');
 happyWorker('act-a-item');
-happyMachinery('act-b-item', 931, 'shaActB');
+happyMachinery('act-b-item', 931, 'aacb64');
 happyWorker('act-b-item');
-happyMachinery('act-none-item', 932, 'shaActNone');
+happyMachinery('act-none-item', 932, 'aace65');
 happyWorker('act-none-item');
 globalThis.args = { ...baseArgs, items: [
   { slug: 'act-a-item', branch: 'build/act-a-item', title: 'Act A item', kind: 'code', acceptance: ['c'],
@@ -3303,9 +3303,9 @@ echo "PASS: #1934 activation-proof guard — workerPrompt embeds the class-A ite
 run_node_case "K1847 prevention: workerPrompt carries the parent epic's group summary for a member item, and omits it for a singleton" "
 $PREAMBLE
 
-happyMachinery('member-item', 910, 'shaMember');
+happyMachinery('member-item', 910, 'aebe77');
 happyWorker('member-item');
-happyMachinery('singleton-item', 911, 'shaSingle');
+happyMachinery('singleton-item', 911, 'ae7d');
 happyWorker('singleton-item');
 globalThis.args = { ...baseArgs, items: [
   { slug: 'member-item', branch: 'build/member-item', title: 'Member item', kind: 'code', acceptance: ['c'],
@@ -3366,9 +3366,9 @@ setMachinery('stall-item',
   dirtyStall(8),                       // the #982 shape: 8 modified files, 0 commits
   { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'shaStall' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'aa7e' },
   { outcome: 'SCAN_CLEAN' },
-  { outcome: 'PUSHED', sha: 'shaStall', branch: 'build/stall-item' },
+  { outcome: 'PUSHED', sha: 'aa7e', branch: 'build/stall-item' },
   { outcome: 'PR_OPENED', pr_number: 993 },
   { outcome: 'CI_GREEN' },
 );
@@ -3401,9 +3401,9 @@ setMachinery('clean-item',
   noSideEffects(),
   { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'shaClean' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'acea67' },
   { outcome: 'SCAN_CLEAN' },
-  { outcome: 'PUSHED', sha: 'shaClean', branch: 'build/clean-item' },
+  { outcome: 'PUSHED', sha: 'acea67', branch: 'build/clean-item' },
   { outcome: 'PR_OPENED', pr_number: 994 },
   { outcome: 'CI_GREEN' },
 );
@@ -3764,7 +3764,7 @@ echo "PASS: gate-scope-exec — RED demonstrated: dropping the backslash breaks 
 run_node_case "K1080: output-shape bounds ride input.* into the worker prompt; omitted keys fall back to the in-file defaults" "
 $PREAMBLE
 
-happyMachinery('os-item', 900, 'shaOs');
+happyMachinery('os-item', 900, 'a78');
 happyWorker('os-item');
 globalThis.args = { ...baseArgs, workerSummaryMaxWords: 41, workerEvidenceMaxWords: 23, items: [
   { slug: 'os-item', branch: 'build/os-item', title: 'OS item', kind: 'impl', acceptance: ['c'] },
@@ -3782,7 +3782,7 @@ if (reason) { console.log(JSON.stringify({ ok: false, reason })); process.exit(0
 
 // Second pass, keys OMITTED — sweep.md/fix.md today. Still bounded.
 callLog.length = 0;
-happyMachinery('os2-item', 901, 'shaOs2');
+happyMachinery('os2-item', 901, 'a279');
 happyWorker('os2-item');
 globalThis.args = { ...baseArgs, items: [
   { slug: 'os2-item', branch: 'build/os2-item', title: 'OS2 item', kind: 'impl', acceptance: ['c'] },
@@ -3933,11 +3933,11 @@ $PREAMBLE
 
 setMachinery('pushed-item',
   { outcome: 'CREATED', path: '/tmp/repo.wt/pushed-item' },
-  { outcome: 'RECOVER_PUSHED', sha: 'shaP', commits_ahead: 2, pushed: true, remote_sha: 'shaP', verification_surface_present: true },
+  { outcome: 'RECOVER_PUSHED', sha: 'a7a', commits_ahead: 2, pushed: true, remote_sha: 'a7a', verification_surface_present: true },
   { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
   { outcome: 'SCAN_CLEAN' },
-  { outcome: 'PUSHED', sha: 'shaP', branch: 'build/pushed-item' },
+  { outcome: 'PUSHED', sha: 'a7a', branch: 'build/pushed-item' },
   { outcome: 'PR_OPENED', pr_number: 950 },
   { outcome: 'CI_GREEN' },
 );
@@ -4030,7 +4030,7 @@ $PREAMBLE
 
 // Board ON + ghIssue → the full L0 shape: claim, worktree, gate, rebase, scan,
 // push, pr-open, then a CI poll that needs two slices (TIMEOUT then CI_GREEN).
-for (const [slug, pr, sha] of [['a1', 11, 'sha-a1'], ['a2', 12, 'sha-a2'], ['a3', 13, 'sha-a3']]) {
+for (const [slug, pr, sha] of [['a1', 11, 'aa103'], ['a2', 12, 'aa204'], ['a3', 13, 'aa305']]) {
   setMachinery(slug,
     { outcome: 'CLAIMED' },
     { outcome: 'CREATED', path: '/tmp/repo.wt/' + slug },
@@ -4102,9 +4102,9 @@ setMachinery('pre-ok',
   { outcome: 'CREATED', path: '/tmp/repo.wt/pre-ok' },
   { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-pre' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'ae49' },
   { outcome: 'SCAN_CLEAN' },
-  { outcome: 'PUSHED', sha: 'sha-pre', branch: 'build/pre-ok' },
+  { outcome: 'PUSHED', sha: 'ae49', branch: 'build/pre-ok' },
   { outcome: 'PR_OPENED', pr_number: 942 },
   { outcome: 'CI_GREEN' },
 );
@@ -4116,9 +4116,9 @@ setMachinery('pre-claimfail', { outcome: 'CLAIM_CONFLICT' });
 
 globalThis.args = { ...baseArgs, board: 3, claimCmd: '/fake/claim.sh', items: [
   { slug: 'pre-ok', branch: 'build/pre-ok', title: 'Pre OK', kind: 'impl', ghIssue: 10, acceptance: ['c'],
-    dependsOn: [{ slug: 'dep', sha: 'sha-dep' }] },
+    dependsOn: [{ slug: 'dep', sha: 'ade16' }] },
   { slug: 'pre-claimfail', branch: 'build/pre-claimfail', title: 'Pre claim fail', kind: 'impl', ghIssue: 11, acceptance: ['c'],
-    dependsOn: [{ slug: 'dep', sha: 'sha-dep' }] },
+    dependsOn: [{ slug: 'dep', sha: 'ade16' }] },
 ]};
 
 const mod = await loadLevel();
@@ -4150,9 +4150,9 @@ setMachinery('slow-ci',
   { outcome: 'CREATED', path: '/tmp/repo.wt/slow-ci' },
   { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-slow' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'a59' },
   { outcome: 'SCAN_CLEAN' },
-  { outcome: 'PUSHED', sha: 'sha-slow', branch: 'build/slow-ci' },
+  { outcome: 'PUSHED', sha: 'a59', branch: 'build/slow-ci' },
   { outcome: 'PR_OPENED', pr_number: 700 },
   { outcome: 'TIMEOUT' },
   { outcome: 'TIMEOUT' },
@@ -4186,7 +4186,7 @@ console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
 run_node_case "K942 cap invariant: no ci-batch may ask a single Bash invocation to outlive the ~10-min cap (DESIGN NOTE 2)" "
 $PREAMBLE
 
-happyMachinery('cap-item', 800, 'sha-cap');
+happyMachinery('cap-item', 800, 'aca0a');
 happyWorker('cap-item');
 globalThis.args = { ...baseArgs, items: [
   { slug: 'cap-item', branch: 'build/cap-item', title: 'Cap item', kind: 'impl', acceptance: ['c'] },
@@ -4237,9 +4237,9 @@ setMachinery('q-item',
   { outcome: 'CREATED', path: WT },
   { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-q' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'a4b' },
   { outcome: 'SCAN_CLEAN' },
-  { outcome: 'PUSHED', sha: 'sha-q', branch: 'feat/spaced branch' },
+  { outcome: 'PUSHED', sha: 'a4b', branch: 'feat/spaced branch' },
   { outcome: 'PR_OPENED', pr_number: 942 },
   { outcome: 'CI_GREEN' },
 );
@@ -4346,7 +4346,7 @@ echo "PASS: #942 legibility guard — every machinery branch (SCAN_BLOCKED / PUS
 # ============================================================================
 run_node_case "machinerySoloModel/machineryBatchModel/item.model SET → override reaches gate:/prelude:/worker: agent().opts.model (#982)" "
 $PREAMBLE
-happyMachinery('mtier', 270, 'sha-mtier');
+happyMachinery('mtier', 270, 'ae3c');
 happyWorker('mtier');
 globalThis.args = { ...baseArgs, machinerySoloModel: 'opus', machineryBatchModel: 'sonnet', items: [
   { slug: 'mtier', branch: 'build/mtier', title: 'Mtier', kind: 'impl', acceptance: ['c'], model: 'haiku-worker-tier' },
@@ -4372,7 +4372,7 @@ console.log(JSON.stringify({ ok: true }));
 
 run_node_case "machinerySoloModel/machineryBatchModel/item.model UNSET (omitted) → gate:/prelude: 'haiku', worker: undefined (inherit session), byte-identical (#982)" "
 $PREAMBLE
-happyMachinery('mtierdef', 271, 'sha-mtierdef');
+happyMachinery('mtierdef', 271, 'aedef3d');
 happyWorker('mtierdef');
 globalThis.args = { ...baseArgs, items: [
   { slug: 'mtierdef', branch: 'build/mtierdef', title: 'Mtierdef', kind: 'impl', acceptance: ['c'] },
@@ -4395,7 +4395,7 @@ console.log(JSON.stringify({ ok: true }));
 
 run_node_case "machinerySoloModel/machineryBatchModel/item.model set to EMPTY STRING → all three seats still fall back to their default, never spawn at '' (#982 BLOCKING fix)" "
 $PREAMBLE
-happyMachinery('mtierempty', 272, 'sha-mtierempty');
+happyMachinery('mtierempty', 272, 'aee3e');
 happyWorker('mtierempty');
 globalThis.args = { ...baseArgs, machinerySoloModel: '', machineryBatchModel: '', items: [
   { slug: 'mtierempty', branch: 'build/mtierempty', title: 'Mtierempty', kind: 'impl', acceptance: ['c'], model: '' },
@@ -4437,7 +4437,7 @@ echo "PASS: #982 haiku-literal-retained guard — found $haikuHits '|| '\''haiku
 
 run_node_case "K1014 lean default: every machinery executor runs as machinery-executor, with the standing contract dropped from the prompt but the #72 framing and the Bash timeout kept" "
 $PREAMBLE
-happyMachinery('lean1', 1014, 'sha-lean1');
+happyMachinery('lean1', 1014, 'aea136');
 happyWorker('lean1');
 globalThis.args = { ...baseArgs, items: [
   { slug: 'lean1', branch: 'build/lean1', title: 'Lean', kind: 'impl', acceptance: ['c'] },
@@ -4469,7 +4469,7 @@ console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
 
 run_node_case "K1014 fallback: an unresolvable machinery-executor re-issues ONCE as general-purpose with the FULL prompt, and the level completes unchanged" "
 $PREAMBLE
-happyMachinery('fb1', 1015, 'sha-fb1');
+happyMachinery('fb1', 1015, 'afb120');
 happyWorker('fb1');
 // Simulate a checkout where the agent definition was never deployed: the runtime
 // rejects the agentType at RESOLUTION time, before any subagent runs.
@@ -4505,7 +4505,7 @@ console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
 
 run_node_case "K1014 narrow catch: a NON-resolution executor failure propagates — the fallback never re-runs a machinery command" "
 $PREAMBLE
-happyMachinery('nar1', 1017, 'sha-nar1');
+happyMachinery('nar1', 1017, 'aa140');
 happyWorker('nar1');
 // A mid-agent failure (the #939 StructuredOutput-cap shape): the subagent DID
 // run, so re-issuing the command under another agent type would re-execute a
@@ -4544,7 +4544,7 @@ console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
 
 run_node_case "K1014 pin: input.machineryAgentType='general-purpose' reproduces the pre-#1014 executor prompts byte-identically, with no probe spawn" "
 $PREAMBLE
-happyMachinery('pin1', 1016, 'sha-pin1');
+happyMachinery('pin1', 1016, 'a148');
 happyWorker('pin1');
 globalThis.args = { ...baseArgs, machineryAgentType: 'general-purpose', items: [
   { slug: 'pin1', branch: 'build/pin1', title: 'Pin', kind: 'impl', acceptance: ['c'] },
@@ -4593,9 +4593,9 @@ echo "PASS: #1014 lean-executor guards — machinery-executor is Bash-only; the 
 # ============================================================================
 run_node_case "temperloop#852: item.repo != ownerRepo qualifies --gh-issue/--also-closes as owner/repo#N; same-repo (absent or equal repo:) stays bare" "
 $PREAMBLE
-happyMachinery('same-repo', 852, 'sha-same');
-happyMachinery('same-explicit', 853, 'sha-same2');
-happyMachinery('cross-repo', 854, 'sha-cross');
+happyMachinery('same-repo', 852, 'aae56');
+happyMachinery('same-explicit', 853, 'aae257');
+happyMachinery('cross-repo', 854, 'ac13');
 happyWorker('same-repo');
 happyWorker('same-explicit');
 happyWorker('cross-repo');
@@ -4668,10 +4668,10 @@ setMachinery('to-item',
   { outcome: 'CREATED', path: '/tmp/repo.wt/to-item' },
   { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-to' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'a5b' },
   { outcome: 'SCAN_CLEAN' },
   { outcome: 'STEP_TIMEOUT', step: 'push', ceiling_secs: 900, elapsed_secs: 35362 },
-  { outcome: 'RECOVER_PR_OPEN', pr_number: 1070, sha: 'sha-to', pushed: true, verification_surface_present: true },
+  { outcome: 'RECOVER_PR_OPEN', pr_number: 1070, sha: 'a5b', pushed: true, verification_surface_present: true },
   { outcome: 'CI_GREEN' },
 );
 happyWorker('to-item');
@@ -4695,7 +4695,7 @@ setMachinery('to2',
   { outcome: 'CREATED', path: '/tmp/repo.wt/to2' },
   { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha2' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'a261' },
   { outcome: 'SCAN_CLEAN' },
   { outcome: 'STEP_TIMEOUT', step: 'push', ceiling_secs: 900, elapsed_secs: 901 },
   noSideEffects(),
@@ -4733,10 +4733,10 @@ globalThis.agent = async (prompt, opts = {}) => {
   if (label.startsWith('gate-freshness:')) return { outcome: 'FRESHNESS_CURRENT', worktree_base: 'x', main: 'y' };
   if (label.startsWith('gate:')) return { outcome: 'GATE_PASS' };
   if (label.startsWith('pr-batch:')) return { results: [
-    { outcome: 'REBASED', sha: 'x' },
+    { outcome: 'REBASED', sha: 'abcdef' },
     { outcome: 'STEP_SLOW', step: 'rebase', elapsed_secs: 420, slow_secs: 300, ceiling_secs: 900 },
     { outcome: 'SCAN_CLEAN' },
-    { outcome: 'PUSHED', sha: 'x' },
+    { outcome: 'PUSHED', sha: 'abcdef' },
     { outcome: 'PR_OPENED', pr_number: 77 },
   ] };
   if (label.startsWith('ci-batch:')) return { results: [{ mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN' }, { outcome: 'CI_GREEN' }] };
@@ -4768,7 +4768,7 @@ globalThis.agent = async (prompt, opts = {}) => {
   if (l.startsWith('review-diff:')) return { outcome: 'REVIEW_DIFF', files: [] };
   if (l.startsWith('gate-freshness:')) return { outcome: 'FRESHNESS_CURRENT', worktree_base: 'x', main: 'y' };
   if (l.startsWith('gate:')) return { outcome: 'GATE_PASS' };
-  if (l.startsWith('pr-batch:')) return { results: [{ outcome: 'REBASED', sha: 'x' }, { outcome: 'SCAN_CLEAN' }, { outcome: 'PUSHED', sha: 'x' }, { outcome: 'PR_OPENED', pr_number: 9 }] };
+  if (l.startsWith('pr-batch:')) return { results: [{ outcome: 'REBASED', sha: 'abcdef' }, { outcome: 'SCAN_CLEAN' }, { outcome: 'PUSHED', sha: 'abcdef' }, { outcome: 'PR_OPENED', pr_number: 9 }] };
   if (l.startsWith('ci-batch:')) return { results: [{ mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN' }, { outcome: 'CI_GREEN' }] };
   return null;
 };
@@ -5061,9 +5061,9 @@ setMachinery('hang-adv',
   { outcome: 'CREATED', path: '/tmp/repo.wt/hang-adv' },
   { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/x.sh', 'claude/commands/build.md'], tsv, tsv_rows: tsvRows(tsv), tsv_checksum: tsvChecksum(tsv) },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-ha' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'ada0' },
   { outcome: 'SCAN_CLEAN' },
-  { outcome: 'PUSHED', sha: 'sha-ha', branch: 'build/hang-adv' },
+  { outcome: 'PUSHED', sha: 'ada0', branch: 'build/hang-adv' },
   { outcome: 'PR_OPENED', pr_number: 2003 },
   { outcome: 'CI_GREEN' },
 );
@@ -5120,9 +5120,9 @@ setMachinery('hang-mid',
   { outcome: 'CREATED', path: '/tmp/repo.wt/hang-mid' },
   { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/x.sh', 'claude/workflows/build-level.mjs', 'docs/guide.md'], tsv, tsv_rows: tsvRows(tsv), tsv_checksum: tsvChecksum(tsv) },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-hm' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'adb1' },
   { outcome: 'SCAN_CLEAN' },
-  { outcome: 'PUSHED', sha: 'sha-hm', branch: 'build/hang-mid' },
+  { outcome: 'PUSHED', sha: 'adb1', branch: 'build/hang-mid' },
   { outcome: 'PR_OPENED', pr_number: 2006 },
   { outcome: 'CI_GREEN' },
 );
@@ -5191,9 +5191,9 @@ setMachinery('floor-item',
   { outcome: 'CREATED', path: '/tmp/repo.wt/floor-item' },
   { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/x.sh'], tsv, tsv_rows: tsvRows(tsv), tsv_checksum: tsvChecksum(tsv) },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-fl' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'f100' },
   { outcome: 'SCAN_CLEAN' },
-  { outcome: 'PUSHED', sha: 'sha-fl', branch: 'build/floor-item' },
+  { outcome: 'PUSHED', sha: 'f100', branch: 'build/floor-item' },
   { outcome: 'PR_OPENED', pr_number: 2004 },
   { outcome: 'CI_GREEN' },
 );
@@ -5230,9 +5230,9 @@ setMachinery('failopen',
   { outcome: 'CREATED', path: '/tmp/repo.wt/failopen' },
   { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/x.sh'], tsv, tsv_rows: tsvRows(tsv), tsv_checksum: tsvChecksum(tsv) },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-fo' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'f0be' },
   { outcome: 'SCAN_CLEAN' },
-  { outcome: 'PUSHED', sha: 'sha-fo', branch: 'build/failopen' },
+  { outcome: 'PUSHED', sha: 'f0be', branch: 'build/failopen' },
   { outcome: 'PR_OPENED', pr_number: 2005 },
   { outcome: 'CI_GREEN' },
 );
@@ -5345,10 +5345,10 @@ setMachinery('lost-push-adopt',
   { outcome: 'CREATED', path: '/tmp/repo.wt/lost-push-adopt' },
   { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-lp' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'a39' },
   { outcome: 'SCAN_CLEAN' },
   lostReturn(),
-  { outcome: 'RECOVER_PR_OPEN', pr_number: 5001, sha: 'sha-lp', pushed: true, verification_surface_present: true },
+  { outcome: 'RECOVER_PR_OPEN', pr_number: 5001, sha: 'a39', pushed: true, verification_surface_present: true },
   { outcome: 'CI_GREEN' },
 );
 happyWorker('lost-push-adopt');
@@ -5373,10 +5373,10 @@ setMachinery('lost-push-resume-open',
   { outcome: 'CREATED', path: '/tmp/repo.wt/lost-push-resume-open' },
   { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-rp' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'a51' },
   { outcome: 'SCAN_CLEAN' },
   lostReturn(),
-  { outcome: 'RECOVER_PUSHED', sha: 'sha-rp', pushed: true, remote_sha: 'sha-rp', verification_surface_present: true },
+  { outcome: 'RECOVER_PUSHED', sha: 'a51', pushed: true, remote_sha: 'a51', verification_surface_present: true },
   { outcome: 'PR_OPENED', pr_number: 5002 },
   { outcome: 'CI_GREEN' },
 );
@@ -5390,7 +5390,7 @@ let reason = null;
 if ((result.escalations ?? []).length !== 0) reason = 'RECOVER_PUSHED must resume, not escalate: ' + JSON.stringify(result.escalations);
 else if (parked.length !== 1) reason = 'expected the item to park on the resumed PR: ' + JSON.stringify(result);
 else if (parked[0].pr !== 5002) reason = 'must park on the PR the resumed pr-open step opened, got ' + parked[0].pr;
-else if (parked[0].pushed_sha !== 'sha-rp') reason = 'pushed_sha must come from the probe (already-pushed sha), got ' + parked[0].pushed_sha;
+else if (parked[0].pushed_sha !== 'a51') reason = 'pushed_sha must come from the probe (already-pushed sha), got ' + parked[0].pushed_sha;
 else if (steps.filter(s => s === 'push').length !== 1) reason = 'RECOVER_PUSHED must NOT re-push, got push count ' + steps.filter(s => s === 'push').length;
 else if (steps.filter(s => s === 'pr-open').length !== 1) reason = 'must resume at pr-open exactly once, got ' + steps.filter(s => s === 'pr-open').length;
 else if (!callLog.some(c => c.opts.label === 'recover-probe:lost-push-resume-open')) reason = 'must probe via the EXISTING pr.sh recover-probe path';
@@ -5403,11 +5403,11 @@ setMachinery('lost-push-resume-both',
   { outcome: 'CREATED', path: '/tmp/repo.wt/lost-push-resume-both' },
   { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-rc' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'ac4e' },
   { outcome: 'SCAN_CLEAN' },
   lostReturn(),
-  { outcome: 'RECOVER_COMMITTED', sha: 'sha-rc', pushed: false, verification_surface_present: false },
-  { outcome: 'PUSHED', sha: 'sha-rc2', branch: 'b/rc' },
+  { outcome: 'RECOVER_COMMITTED', sha: 'ac4e', pushed: false, verification_surface_present: false },
+  { outcome: 'PUSHED', sha: 'ac24f', branch: 'b/rc' },
   { outcome: 'PR_OPENED', pr_number: 5003 },
   { outcome: 'CI_GREEN' },
 );
@@ -5421,7 +5421,7 @@ let reason = null;
 if ((result.escalations ?? []).length !== 0) reason = 'RECOVER_COMMITTED must resume, not escalate: ' + JSON.stringify(result.escalations);
 else if (parked.length !== 1) reason = 'expected the item to park on the resumed PR: ' + JSON.stringify(result);
 else if (parked[0].pr !== 5003) reason = 'must park on the PR the resumed pr-open step opened, got ' + parked[0].pr;
-else if (parked[0].pushed_sha !== 'sha-rc2') reason = 'pushed_sha must come from the RESUMED push (fresh ground truth), got ' + parked[0].pushed_sha;
+else if (parked[0].pushed_sha !== 'ac24f') reason = 'pushed_sha must come from the RESUMED push (fresh ground truth), got ' + parked[0].pushed_sha;
 else if (steps.filter(s => s === 'rebase').length !== 1) reason = 'RECOVER_COMMITTED must NOT re-rebase, got rebase count ' + steps.filter(s => s === 'rebase').length;
 else if (steps.filter(s => s === 'push').length !== 2) reason = 'must resume at push (original lost attempt + one resumed push), got ' + steps.filter(s => s === 'push').length;
 else if (steps.filter(s => s === 'pr-open').length !== 1) reason = 'must open exactly once via the resume batch, got ' + steps.filter(s => s === 'pr-open').length;
@@ -5435,7 +5435,7 @@ setMachinery('lost-push-none',
   { outcome: 'CREATED', path: '/tmp/repo.wt/lost-push-none' },
   { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-ln' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'a37' },
   { outcome: 'SCAN_CLEAN' },
   lostReturn(),
   noSideEffects(),
@@ -5459,7 +5459,7 @@ setMachinery('genuine-push-fail',
   { outcome: 'CREATED', path: '/tmp/repo.wt/genuine-push-fail' },
   { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-gp' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'a27' },
   { outcome: 'SCAN_CLEAN' },
   // A REAL pr.sh die() — a genuine failure, NOT the batchStep sentinel.
   { outcome: 'ERROR', error: 'git push: remote end hung up unexpectedly' },
@@ -5483,11 +5483,11 @@ setMachinery('lost-open-adopt',
   { outcome: 'CREATED', path: '/tmp/repo.wt/lost-open-adopt' },
   { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-lo' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'a38' },
   { outcome: 'SCAN_CLEAN' },
-  { outcome: 'PUSHED', sha: 'sha-lo', branch: 'b/lo' },
+  { outcome: 'PUSHED', sha: 'a38', branch: 'b/lo' },
   lostReturn(),
-  { outcome: 'RECOVER_PR_OPEN', pr_number: 5004, sha: 'sha-lo', pushed: true, verification_surface_present: true },
+  { outcome: 'RECOVER_PR_OPEN', pr_number: 5004, sha: 'a38', pushed: true, verification_surface_present: true },
   { outcome: 'CI_GREEN' },
 );
 happyWorker('lost-open-adopt');
@@ -5512,9 +5512,9 @@ setMachinery('genuine-open-fail',
   { outcome: 'CREATED', path: '/tmp/repo.wt/genuine-open-fail' },
   { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-go' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'a25' },
   { outcome: 'SCAN_CLEAN' },
-  { outcome: 'PUSHED', sha: 'sha-go', branch: 'b/go' },
+  { outcome: 'PUSHED', sha: 'a25', branch: 'b/go' },
   // A REAL pr.sh die() — a genuine failure, NOT the batchStep sentinel.
   { outcome: 'ERROR', error: 'authentication required' },
 );
@@ -5556,9 +5556,9 @@ run_node_case "K1294 stages: a level emits one phase() per stage, in order, and 
 $PREAMBLE
 const phases = [];
 globalThis.phase = (t) => phases.push(String(t));
-happyMachinery('alpha', 201, 'sha-a');
-happyMachinery('beta', 202, 'sha-b');
-happyMachinery('gamma', 203, 'sha-c');
+happyMachinery('alpha', 201, 'aa02');
+happyMachinery('beta', 202, 'ab06');
+happyMachinery('gamma', 203, 'ac09');
 happyWorker('alpha'); happyWorker('beta'); happyWorker('gamma');
 globalThis.args = { ...baseArgs, items: [
   { slug: 'alpha', branch: 'b/alpha', title: 'A', kind: 'impl', ghIssue: 11, acceptance: ['c'] },
@@ -5607,7 +5607,7 @@ $PREAMBLE
 const phases = [];
 globalThis.phase = (t) => phases.push(String(t));
 const slugs = ['i1','i2','i3','i4','i5'];
-slugs.forEach((s, n) => { happyMachinery(s, 300 + n, 'sha-' + s); happyWorker(s); });
+slugs.forEach((s, n) => { happyMachinery(s, 300 + n, 'a01' + n.toString(16)); happyWorker(s); });
 globalThis.args = { ...baseArgs, items: slugs.map((s, n) => (
   { slug: s, branch: 'b/' + s, title: s, kind: 'impl', ghIssue: 400 + n, acceptance: ['c'] }
 ))};
@@ -5631,12 +5631,12 @@ globalThis.phase = (t) => phases.push(String(t));
 // fires while the level is mid-flight. It must NOT re-fire phase().
 setMachinery('rec1',
   { outcome: 'CREATED', path: '/tmp/repo.wt/rec1' },
-  { outcome: 'RECOVER_PR_OPEN', sha: 'sha-r', commits_ahead: 1, pushed: true, remote_sha: 'sha-r', pr_number: 4242, verification_surface_present: true },
+  { outcome: 'RECOVER_PR_OPEN', sha: 'a4d', commits_ahead: 1, pushed: true, remote_sha: 'a4d', pr_number: 4242, verification_surface_present: true },
   { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
   // No REBASED entry — an already-pushed recovery skips 3f-0a.
   { outcome: 'SCAN_CLEAN' },
-  { outcome: 'PUSHED', sha: 'sha-r', branch: 'b/rec1' },
+  { outcome: 'PUSHED', sha: 'a4d', branch: 'b/rec1' },
   { outcome: 'EXISTS', pr_number: 4242 },
   { outcome: 'CI_GREEN' },
 );
@@ -5707,7 +5707,7 @@ run_node_case "K1432: effective engineering principles ride input.principlesSumm
 $PREAMBLE
 
 // Pass 1: default pair resolved and supplied — embedded verbatim, no DEGRADED notice.
-happyMachinery('pr-item', 910, 'shaPr');
+happyMachinery('pr-item', 910, 'a7b');
 happyWorker('pr-item');
 globalThis.args = { ...baseArgs, principlesSummaries: {
   'owner/repo': '1. Test Kernel Principle — do the thing [kernel]\\n2. Test Project Principle — do the other thing [project]\\n\\n(kernel (7) ∪ project (Projects/repo/Priorities.md: 1))',
@@ -5728,7 +5728,7 @@ if (reason) { console.log(JSON.stringify({ ok: false, reason })); process.exit(0
 // Pass 2: a cross-repo item (its own repo: differs from ownerRepo) picks ITS
 // pair's summary, not the default's.
 callLog.length = 0;
-happyMachinery('xr-item', 911, 'shaXr');
+happyMachinery('xr-item', 911, 'a80');
 happyWorker('xr-item');
 globalThis.args = { ...baseArgs, principlesSummaries: {
   'owner/repo': '1. Home Principle [kernel]',
@@ -5748,7 +5748,7 @@ if (reason) { console.log(JSON.stringify({ ok: false, reason })); process.exit(0
 // default pair's summary (never the static fallback, never DEGRADED — a
 // resolved principlesSummaries map WAS supplied this run).
 callLog.length = 0;
-happyMachinery('unk-item', 912, 'shaUnk');
+happyMachinery('unk-item', 912, 'a7f');
 happyWorker('unk-item');
 globalThis.args = { ...baseArgs, principlesSummaries: {
   'owner/repo': '1. Home Principle [kernel]',
@@ -5768,7 +5768,7 @@ if (reason) { console.log(JSON.stringify({ ok: false, reason })); process.exit(0
 // worker still gets a bounded, legible list: the static kernel-only fallback
 // PLUS an explicit DEGRADED notice, never a silent empty set.
 callLog.length = 0;
-happyMachinery('deg-item', 913, 'shaDeg');
+happyMachinery('deg-item', 913, 'ade69');
 happyWorker('deg-item');
 globalThis.args = { ...baseArgs, items: [
   { slug: 'deg-item', branch: 'build/deg-item', title: 'Degraded item', kind: 'impl', acceptance: ['c'] },
@@ -5831,7 +5831,7 @@ $PREAMBLE
 // Pass 1: armed (/build's own hand-off) — section present, names the
 // mechanism/RED/GREEN requirement, and bounds the field from the SAME named
 // setting as .evidence (WORKER_EVIDENCE_MAX_WORDS), not a hardcoded literal.
-happyMachinery('discrim-on', 920, 'shaDiscrimOn');
+happyMachinery('discrim-on', 920, 'adc6e');
 happyWorker('discrim-on');
 globalThis.args = { ...baseArgs, requireDiscriminationEvidence: true, workerEvidenceMaxWords: 23, items: [
   { slug: 'discrim-on', branch: 'build/discrim-on', title: 'Discrim on', kind: 'impl', acceptance: ['c'] },
@@ -5853,7 +5853,7 @@ if (reason) { console.log(JSON.stringify({ ok: false, reason })); process.exit(0
 // be ABSENT, not degraded-and-present — an unrequired discipline must stay
 // silent, unlike principlesSummaries' always-present-with-notice shape.
 callLog.length = 0;
-happyMachinery('discrim-off', 921, 'shaDiscrimOff');
+happyMachinery('discrim-off', 921, 'adcff6d');
 happyWorker('discrim-off');
 globalThis.args = { ...baseArgs, items: [
   { slug: 'discrim-off', branch: 'build/discrim-off', title: 'Discrim off', kind: 'impl', acceptance: ['(self-verify the issue is resolved)'] },
@@ -5868,7 +5868,7 @@ if (reason) { console.log(JSON.stringify({ ok: false, reason })); process.exit(0
 // Pass 3: explicitly false — same OFF outcome as omitted (=== true, not a
 // truthy check), proving the gate is strict equality.
 callLog.length = 0;
-happyMachinery('discrim-false', 922, 'shaDiscrimFalse');
+happyMachinery('discrim-false', 922, 'adcfae6b');
 happyWorker('discrim-false');
 globalThis.args = { ...baseArgs, requireDiscriminationEvidence: false, items: [
   { slug: 'discrim-false', branch: 'build/discrim-false', title: 'Discrim false', kind: 'impl', acceptance: ['c'] },
@@ -5887,7 +5887,7 @@ if (reason) { console.log(JSON.stringify({ ok: false, reason })); process.exit(0
 // record so the orchestrator can surface + tally it — never silently
 // dropped, which is exactly the failure criterion 2 exists to close.
 callLog.length = 0;
-happyMachinery('discrim-gap', 923, 'shaDiscrimGap');
+happyMachinery('discrim-gap', 923, 'adca6c');
 setWorker('discrim-gap', { status: 'done', summary: 'gap item done', commits: [], acceptance_results: [
   { criterion: 'proven criterion', passed: true, evidence: 'e1', discrimination_evidence: 'removed X -> RED; restored -> GREEN' },
   { criterion: 'unproven criterion', passed: true, evidence: 'e2' },
@@ -5911,7 +5911,7 @@ if (reason) { console.log(JSON.stringify({ ok: false, reason })); process.exit(0
 // Pass 5: armed run, EVERY criterion carries discrimination_evidence — no
 // spurious tally when nothing is actually missing.
 callLog.length = 0;
-happyMachinery('discrim-clean', 924, 'shaDiscrimClean');
+happyMachinery('discrim-clean', 924, 'adccea6a');
 setWorker('discrim-clean', { status: 'done', summary: 'clean item done', commits: [], acceptance_results: [
   { criterion: 'c', passed: true, evidence: 'e', discrimination_evidence: 'removed X -> RED; restored -> GREEN' },
 ]});
@@ -5930,7 +5930,7 @@ else if ('discrimination_gaps' in p) reason = 'clean item (no gaps) must not car
 // Pass 2's 'no leak' shape, at the park-record layer instead of the prompt).
 if (!reason) {
   callLog.length = 0;
-  happyMachinery('discrim-unarmed', 925, 'shaDiscrimUnarmed');
+  happyMachinery('discrim-unarmed', 925, 'adcaed6f');
   setWorker('discrim-unarmed', { status: 'done', summary: 'unarmed item done', commits: [], acceptance_results: [
     { criterion: '(self-verify the issue is resolved)', passed: true, evidence: 'e' },
   ]});
@@ -6036,7 +6036,7 @@ $PREAMBLE
 // requireDiscriminationEvidence-style arming — the worktree-vs-index fact
 // holds on /build, /sweep and /fix alike), and carries both load-bearing
 // halves: the no-carry prohibition and the passed:false + marker pair.
-happyMachinery('hostcfg-prompt', 940, 'shaHostPrompt');
+happyMachinery('hostcfg-prompt', 940, 'a76');
 happyWorker('hostcfg-prompt');
 globalThis.args = { ...baseArgs, items: [
   { slug: 'hostcfg-prompt', branch: 'build/hostcfg-prompt', title: 'Host cfg prompt', kind: 'impl', acceptance: ['c'] },
@@ -6058,7 +6058,7 @@ if (reason) { console.log(JSON.stringify({ ok: false, reason })); process.exit(0
 // parked record must carry the criterion AND the file the parent needs to run
 // the check — never a silent pass.
 callLog.length = 0;
-happyMachinery('hostcfg-defer', 941, 'shaHostDefer');
+happyMachinery('hostcfg-defer', 941, 'adefe75');
 setWorker('hostcfg-defer', { status: 'done', summary: 'deferred item done', commits: [], acceptance_results: [
   { criterion: 'spawn --dry-run reports credential_present', passed: false, evidence: 'not observable from a worktree', deferred_host_config: 'workflows/scripts/build/build.config.local.sh (SENTRY_AUTH_TOKEN)' },
   { criterion: 'the spawn reads the credential from config', passed: true, evidence: 'unit test green' },
@@ -6081,7 +6081,7 @@ if (reason) { console.log(JSON.stringify({ ok: false, reason })); process.exit(0
 // exclusion is the PAIR, never the boolean — otherwise this item would have
 // quietly turned every failed criterion into a park.
 callLog.length = 0;
-happyMachinery('hostcfg-bare', 942, 'shaHostBare');
+happyMachinery('hostcfg-bare', 942, 'abae72');
 setWorker('hostcfg-bare', { status: 'done', summary: 'bare fail', commits: [], acceptance_results: [
   { criterion: 'a genuinely failed criterion', passed: false, evidence: 'test RED' },
 ]});
@@ -6098,7 +6098,7 @@ if (reason) { console.log(JSON.stringify({ ok: false, reason })); process.exit(0
 // Pass 4: a whitespace-only marker is NOT a marker (same trim rule as
 // discrimination_evidence) — it escalates like any bare failure.
 callLog.length = 0;
-happyMachinery('hostcfg-blank', 943, 'shaHostBlank');
+happyMachinery('hostcfg-blank', 943, 'aba73');
 setWorker('hostcfg-blank', { status: 'done', summary: 'blank marker', commits: [], acceptance_results: [
   { criterion: 'blank-marker criterion', passed: false, evidence: 'e', deferred_host_config: '   ' },
 ]});
@@ -6114,7 +6114,7 @@ if (reason) { console.log(JSON.stringify({ ok: false, reason })); process.exit(0
 // Pass 5: an item with no host-config criterion carries no field at all —
 // byte-identical parked records to before this item.
 callLog.length = 0;
-happyMachinery('hostcfg-clean', 944, 'shaHostClean');
+happyMachinery('hostcfg-clean', 944, 'acea74');
 happyWorker('hostcfg-clean');
 globalThis.args = { ...baseArgs, items: [
   { slug: 'hostcfg-clean', branch: 'build/hostcfg-clean', title: 'Host cfg clean', kind: 'impl', acceptance: ['c'] },
@@ -6238,9 +6238,9 @@ setMachinery('cmd-md-item',
   { outcome: 'CREATED', path: '/tmp/repo.wt/cmd-md-item' },
   { outcome: 'REVIEW_DIFF', files: ['claude/commands/build.md'], tsv: '', tsv_rows: 0, tsv_checksum: 0 },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-cmd' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'acd11' },
   { outcome: 'SCAN_CLEAN' },
-  { outcome: 'PUSHED', sha: 'sha-cmd', branch: 'build/cmd-md-item' },
+  { outcome: 'PUSHED', sha: 'acd11', branch: 'build/cmd-md-item' },
   { outcome: 'PR_OPENED', pr_number: 999 },
   { outcome: 'CI_GREEN' },
 );
@@ -6280,9 +6280,9 @@ setMachinery('unavail-item',
   { outcome: 'CREATED', path: '/tmp/repo.wt/unavail-item' },
   { outcome: 'REVIEW_DIFF', files: ['claude/commands/build.md'], tsv: '', tsv_rows: 0, tsv_checksum: 0 },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-un' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'a5d' },
   { outcome: 'SCAN_CLEAN' },
-  { outcome: 'PUSHED', sha: 'sha-un', branch: 'build/unavail-item' },
+  { outcome: 'PUSHED', sha: 'a5d', branch: 'build/unavail-item' },
   { outcome: 'PR_OPENED', pr_number: 1000 },
   { outcome: 'CI_GREEN' },
 );
@@ -6339,9 +6339,9 @@ setMachinery('routed-item',
   { outcome: 'CREATED', path: '/tmp/repo.wt/routed-item' },
   { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/foo.py'], tsv, tsv_rows: tsvRows(tsv), tsv_checksum: tsvChecksum(tsv) },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-rt' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'a54' },
   { outcome: 'SCAN_CLEAN' },
-  { outcome: 'PUSHED', sha: 'sha-rt', branch: 'build/routed-item' },
+  { outcome: 'PUSHED', sha: 'a54', branch: 'build/routed-item' },
   { outcome: 'PR_OPENED', pr_number: 1001 },
   { outcome: 'CI_GREEN' },
 );
@@ -6386,9 +6386,9 @@ setMachinery('sh-unrun',
   { outcome: 'CREATED', path: '/tmp/repo.wt/sh-unrun' },
   { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/thing.sh'], tsv, tsv_rows: tsvRows(tsv), tsv_checksum: tsvChecksum(tsv) },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-u' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'a5c' },
   { outcome: 'SCAN_CLEAN' },
-  { outcome: 'PUSHED', sha: 'sha-u', branch: 'build/sh-unrun' },
+  { outcome: 'PUSHED', sha: 'a5c', branch: 'build/sh-unrun' },
   { outcome: 'PR_OPENED', pr_number: 1984 },
   { outcome: 'CI_GREEN' },
 );
@@ -6399,9 +6399,9 @@ setMachinery('sh-ran',
   { outcome: 'CREATED', path: '/tmp/repo.wt/sh-ran' },
   { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/other.sh'], tsv, tsv_rows: tsvRows(tsv), tsv_checksum: tsvChecksum(tsv) },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-r' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'a4d' },
   { outcome: 'SCAN_CLEAN' },
-  { outcome: 'PUSHED', sha: 'sha-r', branch: 'build/sh-ran' },
+  { outcome: 'PUSHED', sha: 'a4d', branch: 'build/sh-ran' },
   { outcome: 'PR_OPENED', pr_number: 1985 },
   { outcome: 'CI_GREEN' },
 );
@@ -6463,9 +6463,9 @@ setMachinery('makefile-item',
   { outcome: 'CREATED', path: '/tmp/repo.wt/makefile-item' },
   { outcome: 'REVIEW_DIFF', files: ['Makefile'], tsv, tsv_rows: tsvRows(tsv), tsv_checksum: tsvChecksum(tsv) },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-mk' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'a3a' },
   { outcome: 'SCAN_CLEAN' },
-  { outcome: 'PUSHED', sha: 'sha-mk', branch: 'build/makefile-item' },
+  { outcome: 'PUSHED', sha: 'a3a', branch: 'build/makefile-item' },
   { outcome: 'PR_OPENED', pr_number: 1705 },
   { outcome: 'CI_GREEN' },
 );
@@ -6502,9 +6502,9 @@ setMachinery('makefile-item',
   { outcome: 'CREATED', path: '/tmp/repo.wt/makefile-item' },
   { outcome: 'REVIEW_DIFF', files: ['Makefile'], tsv: stripped, tsv_rows: tsvRows(stripped), tsv_checksum: tsvChecksum(stripped) },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-mk' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'a3a' },
   { outcome: 'SCAN_CLEAN' },
-  { outcome: 'PUSHED', sha: 'sha-mk', branch: 'build/makefile-item' },
+  { outcome: 'PUSHED', sha: 'a3a', branch: 'build/makefile-item' },
   { outcome: 'PR_OPENED', pr_number: 1705 },
   { outcome: 'CI_GREEN' },
 );
@@ -6535,9 +6535,9 @@ setMachinery('nested-item',
   { outcome: 'CREATED', path: '/tmp/repo.wt/nested-item' },
   { outcome: 'REVIEW_DIFF', files: ['sub/dir/Makefile'], tsv, tsv_rows: tsvRows(tsv), tsv_checksum: tsvChecksum(tsv) },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-n' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'a3f' },
   { outcome: 'SCAN_CLEAN' },
-  { outcome: 'PUSHED', sha: 'sha-n', branch: 'build/nested-item' },
+  { outcome: 'PUSHED', sha: 'a3f', branch: 'build/nested-item' },
   { outcome: 'PR_OPENED', pr_number: 1706 },
   { outcome: 'CI_GREEN' },
 );
@@ -6548,9 +6548,9 @@ setMachinery('suffix-item',
   { outcome: 'CREATED', path: '/tmp/repo.wt/suffix-item' },
   { outcome: 'REVIEW_DIFF', files: ['tools/NotAMakefile'], tsv, tsv_rows: tsvRows(tsv), tsv_checksum: tsvChecksum(tsv) },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-s' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'a55' },
   { outcome: 'SCAN_CLEAN' },
-  { outcome: 'PUSHED', sha: 'sha-s', branch: 'build/suffix-item' },
+  { outcome: 'PUSHED', sha: 'a55', branch: 'build/suffix-item' },
   { outcome: 'PR_OPENED', pr_number: 1707 },
   { outcome: 'CI_GREEN' },
 );
@@ -6589,14 +6589,14 @@ setMachinery('cifix-clean',
   { outcome: 'CREATED', path: '/tmp/repo.wt/cifix-clean' },
   { outcome: 'REVIEW_DIFF', files: ['claude/commands/build.md'], tsv: '', tsv_rows: 0, tsv_checksum: 0 },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-v1' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'a15e' },
   { outcome: 'SCAN_CLEAN' },
-  { outcome: 'PUSHED', sha: 'sha-v1', branch: 'build/cifix-clean' },
+  { outcome: 'PUSHED', sha: 'a15e', branch: 'build/cifix-clean' },
   { outcome: 'PR_OPENED', pr_number: 700 },
   { outcome: 'CI_FAILED', failed_run_ids: [1] },
   // The re-review's OWN diff fetch — a SEPARATE machinery call from the first.
   { outcome: 'REVIEW_DIFF', files: ['claude/commands/build.md'], tsv: '', tsv_rows: 0, tsv_checksum: 0 },
-  { outcome: 'PUSHED', sha: 'sha-v2', branch: 'build/cifix-clean' },
+  { outcome: 'PUSHED', sha: 'a25f', branch: 'build/cifix-clean' },
   { outcome: 'CI_GREEN' },
   // temperloop#1846: the fix round ran a reviewer, so 3g.5 re-renders the PR
   // body (pr-body-update solo call) with the merged review evidence.
@@ -6638,9 +6638,9 @@ setMachinery('cifix-block',
   { outcome: 'CREATED', path: '/tmp/repo.wt/cifix-block' },
   { outcome: 'REVIEW_DIFF', files: ['claude/commands/build.md'], tsv: '', tsv_rows: 0, tsv_checksum: 0 },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-v1' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'a15e' },
   { outcome: 'SCAN_CLEAN' },
-  { outcome: 'PUSHED', sha: 'sha-v1', branch: 'build/cifix-block' },
+  { outcome: 'PUSHED', sha: 'a15e', branch: 'build/cifix-block' },
   { outcome: 'PR_OPENED', pr_number: 701 },
   { outcome: 'CI_FAILED', failed_run_ids: [1] },
   { outcome: 'REVIEW_DIFF', files: ['claude/commands/build.md'], tsv: '', tsv_rows: 0, tsv_checksum: 0 },
@@ -6710,15 +6710,15 @@ setMachinery('two-rev',
   // Original round: an .md-only diff — docs-reviewer alone.
   { outcome: 'REVIEW_DIFF', files: ['docs/notes.md'], tsv: '', tsv_rows: 0, tsv_checksum: 0 },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-v1' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'a15e' },
   { outcome: 'SCAN_CLEAN' },
-  { outcome: 'PUSHED', sha: 'sha-v1', branch: 'build/two-rev' },
+  { outcome: 'PUSHED', sha: 'a15e', branch: 'build/two-rev' },
   { outcome: 'PR_OPENED', pr_number: 1846 },
   { outcome: 'CI_FAILED', failed_run_ids: [1] },
   // CI-fix round: the fix touches a .sh file too — docs-reviewer AND
   // shell-reviewer (tsv-routed) both run against the fix diff.
   { outcome: 'REVIEW_DIFF', files: ['docs/notes.md', 'workflows/scripts/thing.sh'], tsv, tsv_rows: tsvRows(tsv), tsv_checksum: tsvChecksum(tsv) },
-  { outcome: 'PUSHED', sha: 'sha-v2', branch: 'build/two-rev' },
+  { outcome: 'PUSHED', sha: 'a25f', branch: 'build/two-rev' },
   { outcome: 'CI_GREEN' },
   // 3g.5 re-render (the fix under test): pr.sh open --update-pr.
   { outcome: 'BODY_UPDATED', pr_number: 1846 },
@@ -6776,14 +6776,14 @@ setMachinery('norev-fix',
   { outcome: 'CREATED', path: '/tmp/repo.wt/norev-fix' },
   { outcome: 'REVIEW_DIFF', files: ['docs/notes.md'], tsv: '', tsv_rows: 0, tsv_checksum: 0 },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-v1' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'a15e' },
   { outcome: 'SCAN_CLEAN' },
-  { outcome: 'PUSHED', sha: 'sha-v1', branch: 'build/norev-fix' },
+  { outcome: 'PUSHED', sha: 'a15e', branch: 'build/norev-fix' },
   { outcome: 'PR_OPENED', pr_number: 1847 },
   { outcome: 'CI_FAILED', failed_run_ids: [1] },
   // CI-fix round routes nothing (no files in the fix diff match any axis).
   { outcome: 'REVIEW_DIFF', files: [] },
-  { outcome: 'PUSHED', sha: 'sha-v2', branch: 'build/norev-fix' },
+  { outcome: 'PUSHED', sha: 'a25f', branch: 'build/norev-fix' },
   { outcome: 'CI_GREEN' },
   // Deliberately NO BODY_UPDATED entry: if 3g.5 wrongly fires, the solo-call
   // fallback returns ERROR and the assertion below catches the spurious call.
@@ -6843,9 +6843,9 @@ setMachinery('droptsv-a',
   { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/state-graph.sh'] },
   { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/state-graph.sh'] },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-dra' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'ada19' },
   { outcome: 'SCAN_CLEAN' },
-  { outcome: 'PUSHED', sha: 'sha-dra', branch: 'build/droptsv-a' },
+  { outcome: 'PUSHED', sha: 'ada19', branch: 'build/droptsv-a' },
   { outcome: 'PR_OPENED', pr_number: 2020 },
   { outcome: 'CI_GREEN' },
 );
@@ -6898,9 +6898,9 @@ setMachinery('gapcmddoc-a',
   { outcome: 'REVIEW_DIFF', files: ['claude/commands/build.md', 'workflows/scripts/state-graph.sh'] },
   { outcome: 'REVIEW_DIFF', files: ['claude/commands/build.md', 'workflows/scripts/state-graph.sh'] },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-gcd' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'acd22' },
   { outcome: 'SCAN_CLEAN' },
-  { outcome: 'PUSHED', sha: 'sha-gcd', branch: 'build/gapcmddoc-a' },
+  { outcome: 'PUSHED', sha: 'acd22', branch: 'build/gapcmddoc-a' },
   { outcome: 'PR_OPENED', pr_number: 2021 },
   { outcome: 'CI_GREEN' },
 );
@@ -6947,9 +6947,9 @@ setMachinery('gapcmddoc-b',
   { outcome: 'REVIEW_DIFF', files: ['claude/commands/fix.md'] },
   { outcome: 'REVIEW_DIFF', files: ['claude/commands/fix.md'] },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-gcdb' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'acdb23' },
   { outcome: 'SCAN_CLEAN' },
-  { outcome: 'PUSHED', sha: 'sha-gcdb', branch: 'build/gapcmddoc-b' },
+  { outcome: 'PUSHED', sha: 'acdb23', branch: 'build/gapcmddoc-b' },
   { outcome: 'PR_OPENED', pr_number: 2022 },
   { outcome: 'CI_GREEN' },
 );
@@ -6987,9 +6987,9 @@ setMachinery('droptsv-b',
   { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/state-graph.sh'] },
   { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/state-graph.sh'], tsv, tsv_rows: tsvRows(tsv), tsv_checksum: tsvChecksum(tsv) },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-drb' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'adb1a' },
   { outcome: 'SCAN_CLEAN' },
-  { outcome: 'PUSHED', sha: 'sha-drb', branch: 'build/droptsv-b' },
+  { outcome: 'PUSHED', sha: 'adb1a', branch: 'build/droptsv-b' },
   { outcome: 'PR_OPENED', pr_number: 1976 },
   { outcome: 'CI_GREEN' },
 );
@@ -7024,9 +7024,9 @@ setMachinery('droptsv-c',
   { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/foo.py'], tsv, tsv_rows: 0 },
   { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/foo.py'], tsv, tsv_rows: 0 },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-drc' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'adc1b' },
   { outcome: 'SCAN_CLEAN' },
-  { outcome: 'PUSHED', sha: 'sha-drc', branch: 'build/droptsv-c' },
+  { outcome: 'PUSHED', sha: 'adc1b', branch: 'build/droptsv-c' },
   { outcome: 'PR_OPENED', pr_number: 2021 },
   { outcome: 'CI_GREEN' },
 );
@@ -7058,9 +7058,9 @@ setMachinery('droptsv-cc',
   { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/foo.py'], tsv },
   { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/foo.py'], tsv },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-drcc' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'adcc1c' },
   { outcome: 'SCAN_CLEAN' },
-  { outcome: 'PUSHED', sha: 'sha-drcc', branch: 'build/droptsv-cc' },
+  { outcome: 'PUSHED', sha: 'adcc1c', branch: 'build/droptsv-cc' },
   { outcome: 'PR_OPENED', pr_number: 2022 },
   { outcome: 'CI_GREEN' },
 );
@@ -7098,9 +7098,9 @@ setMachinery('droptsv-d',
   { outcome: 'CREATED', path: '/tmp/repo.wt/droptsv-d' },
   { outcome: 'REVIEW_DIFF', files: ['docs/plain.md'], tsv: '', tsv_rows: 0, tsv_checksum: 0 },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-drd' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'add1d' },
   { outcome: 'SCAN_CLEAN' },
-  { outcome: 'PUSHED', sha: 'sha-drd', branch: 'build/droptsv-d' },
+  { outcome: 'PUSHED', sha: 'add1d', branch: 'build/droptsv-d' },
   { outcome: 'PR_OPENED', pr_number: 1977 },
   { outcome: 'CI_GREEN' },
 );
@@ -7161,9 +7161,9 @@ setMachinery('contentgarble-a',
   { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/foo.sh'], tsv: corruptTsv, tsv_rows: tsvRows(corruptTsv), tsv_checksum: tsvChecksum(realTsv) },
   { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/foo.sh'], tsv: corruptTsv, tsv_rows: tsvRows(corruptTsv), tsv_checksum: tsvChecksum(realTsv) },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-cga' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'aca0c' },
   { outcome: 'SCAN_CLEAN' },
-  { outcome: 'PUSHED', sha: 'sha-cga', branch: 'build/contentgarble-a' },
+  { outcome: 'PUSHED', sha: 'aca0c', branch: 'build/contentgarble-a' },
   { outcome: 'PR_OPENED', pr_number: 2023 },
   { outcome: 'CI_GREEN' },
 );
@@ -7204,9 +7204,9 @@ setMachinery('contentgarble-b',
   { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/foo.sh'], tsv: corruptTsv, tsv_rows: tsvRows(corruptTsv), tsv_checksum: tsvChecksum(realTsv) },
   { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/foo.sh'], tsv: realTsv, tsv_rows: tsvRows(realTsv), tsv_checksum: tsvChecksum(realTsv) },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-cgb' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'acb0d' },
   { outcome: 'SCAN_CLEAN' },
-  { outcome: 'PUSHED', sha: 'sha-cgb', branch: 'build/contentgarble-b' },
+  { outcome: 'PUSHED', sha: 'acb0d', branch: 'build/contentgarble-b' },
   { outcome: 'PR_OPENED', pr_number: 1982 },
   { outcome: 'CI_GREEN' },
 );
@@ -7283,9 +7283,9 @@ setMachinery('rowswap-a',
   { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/foo.sh'], tsv: swappedTsv, tsv_rows: tsvRows(swappedTsv), tsv_checksum: tsvChecksum(tsv) },
   { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/foo.sh'], tsv: swappedTsv, tsv_rows: tsvRows(swappedTsv), tsv_checksum: tsvChecksum(tsv) },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-rsa' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'aa53' },
   { outcome: 'SCAN_CLEAN' },
-  { outcome: 'PUSHED', sha: 'sha-rsa', branch: 'build/rowswap-a' },
+  { outcome: 'PUSHED', sha: 'aa53', branch: 'build/rowswap-a' },
   { outcome: 'PR_OPENED', pr_number: 2024 },
   { outcome: 'CI_GREEN' },
 );
@@ -7446,9 +7446,9 @@ setMachinery('k2020-lines',
   { outcome: 'CREATED', path: '/tmp/repo.wt/k2020-lines' },
   { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/foo.sh'], tsv_lines: tsvLines(realTsv), tsv_rows: tsvRows(realTsv), tsv_checksum: tsvChecksum(realTsv) },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-k2020l' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'a20202d' },
   { outcome: 'SCAN_CLEAN' },
-  { outcome: 'PUSHED', sha: 'sha-k2020l', branch: 'build/k2020-lines' },
+  { outcome: 'PUSHED', sha: 'a20202d', branch: 'build/k2020-lines' },
   { outcome: 'PR_OPENED', pr_number: 2025 },
   { outcome: 'CI_GREEN' },
 );
@@ -7503,9 +7503,9 @@ setMachinery('k2020-arm1',
   // The observed drop: files intact, the table field gone entirely.
   { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/foo.sh'], tsv_rows: tsvRows(realTsv), tsv_checksum: tsvChecksum(realTsv) },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-k2020a1' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'a2020a2b' },
   { outcome: 'SCAN_CLEAN' },
-  { outcome: 'PUSHED', sha: 'sha-k2020a1', branch: 'build/k2020-arm1' },
+  { outcome: 'PUSHED', sha: 'a2020a2b', branch: 'build/k2020-arm1' },
   { outcome: 'PR_OPENED', pr_number: 2026 },
   { outcome: 'CI_GREEN' },
 );
@@ -7543,9 +7543,9 @@ setMachinery('k2020-arm2',
   { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/foo.sh'], tsv_rows: tsvRows(realTsv), tsv_checksum: tsvChecksum(realTsv) },
   { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/foo.sh'], tsv_rows: tsvRows(realTsv), tsv_checksum: tsvChecksum(realTsv) },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-k2020a2' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'a2020a2c' },
   { outcome: 'SCAN_CLEAN' },
-  { outcome: 'PUSHED', sha: 'sha-k2020a2', branch: 'build/k2020-arm2' },
+  { outcome: 'PUSHED', sha: 'a2020a2c', branch: 'build/k2020-arm2' },
   { outcome: 'PR_OPENED', pr_number: 2027 },
   { outcome: 'CI_GREEN' },
 );
@@ -7638,7 +7638,7 @@ console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
 
 run_node_case "K2020 preserve scope: a PARKED item never pays a preservation push — 3f already pushed it and opened its PR" "
 $PREAMBLE
-happyMachinery('k2020-park', 2028, 'sha-k2020p');
+happyMachinery('k2020-park', 2028, 'a20202e');
 happyWorker('k2020-park');
 
 globalThis.args = { ...baseArgs, items: [
@@ -7935,9 +7935,9 @@ setMachinery('multi-match',
   { outcome: 'CREATED', path: '/tmp/repo.wt/multi-match' },
   { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/thing.sh', 'CONTRIBUTING.md'], tsv, tsv_rows: tsvRows(tsv), tsv_checksum: tsvChecksum(tsv) },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-mm' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'a3b' },
   { outcome: 'SCAN_CLEAN' },
-  { outcome: 'PUSHED', sha: 'sha-mm', branch: 'build/multi-match' },
+  { outcome: 'PUSHED', sha: 'a3b', branch: 'build/multi-match' },
   { outcome: 'PR_OPENED', pr_number: 1983 },
   { outcome: 'CI_GREEN' },
 );
@@ -8209,9 +8209,9 @@ setMachinery('item-act-ok',
   { outcome: 'GATE_PASS' },
   { outcome: 'ACTIVATION_CONTROL_DISCRIMINATES', base: 'deadbeefcafe', exitCode: 1, detail: '' },
   { outcome: 'ACTIVATION_PASS', exitCode: 0, detail: '' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-ok' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'a43' },
   { outcome: 'SCAN_CLEAN' },
-  { outcome: 'PUSHED', sha: 'sha-ok', branch: 'build/item-act-ok' },
+  { outcome: 'PUSHED', sha: 'a43', branch: 'build/item-act-ok' },
   { outcome: 'PR_OPENED', pr_number: 777 },
   { outcome: 'CI_GREEN' },
 );
@@ -8313,9 +8313,9 @@ console.log(JSON.stringify({ ok: true }));
 run_node_case "1219 activation: an item with NO block, or class B/C, takes the byte-identical path — zero activation agent spawns" "
 $PREAMBLE
 
-happyMachinery('item-none', 201, 'sha-none');
-happyMachinery('item-b', 202, 'sha-b');
-happyMachinery('item-c', 203, 'sha-c');
+happyMachinery('item-none', 201, 'ae42');
+happyMachinery('item-b', 202, 'ab06');
+happyMachinery('item-c', 203, 'ac09');
 happyWorker('item-none');
 happyWorker('item-b');
 happyWorker('item-c');
@@ -9000,9 +9000,9 @@ setMachinery('qcib',
   { outcome: 'CREATED', path: '/tmp/repo.wt/qcib' },
   { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-cib' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'acb0e' },
   { outcome: 'SCAN_CLEAN' },
-  { outcome: 'PUSHED', sha: 'sha-cib', branch: 'build/qcib' },
+  { outcome: 'PUSHED', sha: 'acb0e', branch: 'build/qcib' },
   { outcome: 'PR_OPENED', pr_number: 601 },
   null,   // ci-poll slice dies on the session limit → the whole ci-batch is denied
 );
@@ -9019,7 +9019,7 @@ if ((result.parked ?? []).length !== 0 || esc.length !== 1 || esc[0].kind !== 'q
 const p = esc[0].payload;
 if (p.where !== 'machinery:ci-batch')
   { console.log(JSON.stringify({ ok: false, reason: 'payload.where must name the ci-batch step, got ' + JSON.stringify(p) })); process.exit(0); }
-if (p.sha !== 'sha-cib' || p.pr !== 601)
+if (p.sha !== 'acb0e' || p.pr !== 601)
   { console.log(JSON.stringify({ ok: false, reason: 'the unwrap must carry sha + pr through ciPollLoop\\'s {escalation, payload} return, got ' + JSON.stringify(p) })); process.exit(0); }
 if (p.worktree_left_intact !== true || !p.denied_out || p.denied_out.outcome !== 'SPINE_DENIED')
   { console.log(JSON.stringify({ ok: false, reason: 'payload must state worktree_left_intact and carry denied_out for the audit trail, got ' + JSON.stringify(p) })); process.exit(0); }
@@ -9032,9 +9032,9 @@ setMachinery('gcib',
   { outcome: 'CREATED', path: '/tmp/repo.wt/gcib' },
   { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-gcib' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'acb24' },
   { outcome: 'SCAN_CLEAN' },
-  { outcome: 'PUSHED', sha: 'sha-gcib', branch: 'build/gcib' },
+  { outcome: 'PUSHED', sha: 'acb24', branch: 'build/gcib' },
   { outcome: 'PR_OPENED', pr_number: 602 },
   null,   // ci-batch denied by the classifier; the harness itself is fine
 );
@@ -9049,7 +9049,7 @@ const esc = result.escalations ?? [];
 if (esc.length !== 1 || esc[0].kind !== 'machinery-denied')
   { console.log(JSON.stringify({ ok: false, reason: 'expected machinery-denied unchanged at the ci-batch site, got ' + JSON.stringify(result) })); process.exit(0); }
 const p = esc[0].payload;
-if (p.step !== 'ci-batch' || p.sha !== 'sha-gcib' || p.pr !== 602)
+if (p.step !== 'ci-batch' || p.sha !== 'acb24' || p.pr !== 602)
   { console.log(JSON.stringify({ ok: false, reason: 'machinery-denied payload must keep step=ci-batch with sha + pr, got ' + JSON.stringify(p) })); process.exit(0); }
 const canaries = callLog.filter(c => /^canary:/.test(String(c.opts.label))).length;
 if (canaries !== 1)
@@ -9063,9 +9063,9 @@ setMachinery('qpret',
   { outcome: 'CREATED', path: '/tmp/repo.wt/qpret' },
   { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-p1' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'a145' },
   { outcome: 'SCAN_CLEAN' },
-  { outcome: 'PUSHED', sha: 'sha-p1', branch: 'build/qpret' },
+  { outcome: 'PUSHED', sha: 'a145', branch: 'build/qpret' },
   { outcome: 'PR_OPENED', pr_number: 603 },
   { outcome: 'CI_FAILED', failed_run_ids: [9101] },
   { outcome: 'REVIEW_DIFF' },   // temperloop#1450 re-review of the CI-fix commit
@@ -9087,7 +9087,7 @@ if (esc.length !== 1 || esc[0].kind !== 'quota-exhausted')
 const p = esc[0].payload;
 if (p.where !== 'machinery:push-retry')
   { console.log(JSON.stringify({ ok: false, reason: 'payload.where must name the push-retry step, got ' + JSON.stringify(p) })); process.exit(0); }
-if (p.sha !== 'sha-p1' || p.pr !== 603 || p.worktree_left_intact !== true)
+if (p.sha !== 'a145' || p.pr !== 603 || p.worktree_left_intact !== true)
   { console.log(JSON.stringify({ ok: false, reason: 'the unwrap must carry the pre-fix pinned sha + pr with worktree_left_intact, got ' + JSON.stringify(p) })); process.exit(0); }
 console.log(JSON.stringify({ ok: true }));
 "
@@ -9098,9 +9098,9 @@ setMachinery('gpret',
   { outcome: 'CREATED', path: '/tmp/repo.wt/gpret' },
   { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-g1' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'a121' },
   { outcome: 'SCAN_CLEAN' },
-  { outcome: 'PUSHED', sha: 'sha-g1', branch: 'build/gpret' },
+  { outcome: 'PUSHED', sha: 'a121', branch: 'build/gpret' },
   { outcome: 'PR_OPENED', pr_number: 604 },
   { outcome: 'CI_FAILED', failed_run_ids: [9102] },
   { outcome: 'REVIEW_DIFF' },
@@ -9120,7 +9120,7 @@ const esc = result.escalations ?? [];
 if (esc.length !== 1 || esc[0].kind !== 'machinery-denied')
   { console.log(JSON.stringify({ ok: false, reason: 'expected machinery-denied unchanged at the push-retry site, got ' + JSON.stringify(result) })); process.exit(0); }
 const p = esc[0].payload;
-if (p.step !== 'push-retry' || p.sha !== 'sha-g1' || p.pr !== 604)
+if (p.step !== 'push-retry' || p.sha !== 'a121' || p.pr !== 604)
   { console.log(JSON.stringify({ ok: false, reason: 'machinery-denied payload must keep step=push-retry with sha + pr, got ' + JSON.stringify(p) })); process.exit(0); }
 const canaries = callLog.filter(c => /^canary:/.test(String(c.opts.label))).length;
 if (canaries !== 1)
@@ -9134,10 +9134,10 @@ setMachinery('qres',
   { outcome: 'CREATED', path: '/tmp/repo.wt/qres' },
   { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-rs' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'a52' },
   { outcome: 'SCAN_CLEAN' },
   lostReturn(),   // push ran; its JSON line was dropped (temperloop#1067)
-  { outcome: 'RECOVER_COMMITTED', sha: 'sha-rs', pushed: false, verification_surface_present: false },
+  { outcome: 'RECOVER_COMMITTED', sha: 'a52', pushed: false, verification_surface_present: false },
   null,           // the resume batch (push + pr-open) dies on the session limit
 );
 setMachinery('quota-probe', null);
@@ -9164,10 +9164,10 @@ setMachinery('gres',
   { outcome: 'CREATED', path: '/tmp/repo.wt/gres' },
   { outcome: 'REVIEW_DIFF' },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-gr' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'a28' },
   { outcome: 'SCAN_CLEAN' },
   lostReturn(),
-  { outcome: 'RECOVER_COMMITTED', sha: 'sha-gr', pushed: false, verification_surface_present: false },
+  { outcome: 'RECOVER_COMMITTED', sha: 'a28', pushed: false, verification_surface_present: false },
   null,   // resume batch denied by the classifier; the harness itself is fine
 );
 // NO quota-probe override → alive.
@@ -9276,9 +9276,9 @@ setMachinery('bound-at',
   // default bound: the loop stops here and the item ships with its notes.
   { outcome: 'REVIEW_DIFF', files: ['claude/commands/build.md'], tsv: '', tsv_rows: 0, tsv_checksum: 0, review_rounds: 2 },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-ba' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'aba07' },
   { outcome: 'SCAN_CLEAN' },
-  { outcome: 'PUSHED', sha: 'sha-ba', branch: 'build/bound-at' },
+  { outcome: 'PUSHED', sha: 'aba07', branch: 'build/bound-at' },
   { outcome: 'PR_OPENED', pr_number: 1970 },
   { outcome: 'CI_GREEN' },
 );
@@ -9326,9 +9326,9 @@ setMachinery('bound-cfg',
   // setting is the only thing that can make it ship instead.
   { outcome: 'REVIEW_DIFF', files: ['claude/commands/build.md'], tsv: '', tsv_rows: 0, tsv_checksum: 0 },
   { outcome: 'GATE_PASS' },
-  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-bc' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'abc08' },
   { outcome: 'SCAN_CLEAN' },
-  { outcome: 'PUSHED', sha: 'sha-bc', branch: 'build/bound-cfg' },
+  { outcome: 'PUSHED', sha: 'abc08', branch: 'build/bound-cfg' },
   { outcome: 'PR_OPENED', pr_number: 1971 },
   { outcome: 'CI_GREEN' },
 );
@@ -9592,6 +9592,237 @@ K1970_ZEROS="$(sh "$K1970_E2E/review-diff.sh" 2>/dev/null | grep -o '"review_rou
 [ "$K1970_ZEROS" = '"review_rounds":0' ] \
   || fail "#1970-octal: an all-zeros marker must fall back to 0 (the empty result of stripping leading zeros), never emit an empty field; got '$K1970_ZEROS'"
 echo "PASS: #1970-octal corrupted marker — a leading-zero count reads as decimal and an all-zeros one degrades to 0, so a hand-edited marker never aborts the step with an octal arithmetic error"
+
+# ============================================================================
+# temperloop#2014: the push -> ci-poll SHA hand-off
+# ============================================================================
+# `ci-poll.sh --sha` is the #254 false-green pin, and build-level.mjs — not the
+# machinery — owns the value. sq() stringifies whatever it is handed, so a
+# `pushedSha` that never got populated reaches the poll as the LITERAL string
+# `undefined`; ci-poll.sh refuses to run on it, and the driver used to read that
+# refusal back through its catch-all ERROR arm as `ci-failed` — reporting a
+# healthy, still-running PR (the reproduction: PR #2013, OPEN, checks
+# IN_PROGRESS) as a red one. Four cases, one per half of the fix.
+
+# --- 1. the hand-off itself: the poll is pinned to the SHA the push reported --
+run_node_case "#2014 hand-off: the ci-poll --sha is the SAME sha the push step reported" "
+$PREAMBLE
+
+setMachinery('item-handoff',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/item-handoff' },
+  { outcome: 'REVIEW_DIFF' },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'c0ffee1' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: '4f96deb', branch: 'build/item-handoff' },
+  { outcome: 'PR_OPENED', pr_number: 2013 },
+  { outcome: 'CI_GREEN' },
+);
+happyWorker('item-handoff');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'item-handoff', branch: 'build/item-handoff', title: 'Handoff Item', kind: 'impl' },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+
+if ((result.escalations ?? []).length !== 0)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected no escalation: ' + JSON.stringify(result) })); process.exit(0); }
+// The ci-batch prompt carries the literal ci-poll.sh command line; the pin is
+// asserted on the EMITTED ARGUMENT, not on an internal variable, because the
+// argument is what ci-poll.sh validates and what went wrong.
+const ciCall = callLog.find(c => /^ci-batch:item-handoff/.test(String(c.opts.label || '')));
+if (!ciCall)
+  { console.log(JSON.stringify({ ok: false, reason: 'no ci-batch call was made' })); process.exit(0); }
+if (!/--sha '4f96deb'/.test(ciCall.promptFull))
+  { console.log(JSON.stringify({ ok: false, reason: 'poll not pinned to the pushed sha: ' + (ciCall.promptFull.match(/ci-poll[^\n]*/) || [''])[0] })); process.exit(0); }
+if (/--sha '(undefined|null)'/.test(ciCall.promptFull))
+  { console.log(JSON.stringify({ ok: false, reason: 'poll pinned to a stringified nullish value' })); process.exit(0); }
+// …and the same sha is what the item parks with, so the PR body and the merge
+// gate agree with what was actually polled.
+if (result.parked[0].pushed_sha !== '4f96deb')
+  { console.log(JSON.stringify({ ok: false, reason: 'parked pushed_sha diverged from the polled sha: ' + JSON.stringify(result.parked[0]) })); process.exit(0); }
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+# --- 2. push reports PUSHED but no sha → its OWN kind, and NO poll is spawned --
+run_node_case "#2014 pre-flight: a PUSHED with no sha escalates ci-poll-bad-argument, never ci-failed, and spawns no poll" "
+$PREAMBLE
+
+setMachinery('item-nosha',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/item-nosha' },
+  { outcome: 'REVIEW_DIFF' },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'c0ffee2' },
+  { outcome: 'SCAN_CLEAN' },
+  // The reproduction's shape: the step reports success, its sha key is absent.
+  { outcome: 'PUSHED', branch: 'build/item-nosha' },
+  { outcome: 'PR_OPENED', pr_number: 2013 },
+);
+happyWorker('item-nosha');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'item-nosha', branch: 'build/item-nosha', title: 'No-Sha Item', kind: 'impl' },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+
+if ((result.escalations ?? []).length !== 1)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected 1 escalation: ' + JSON.stringify(result) })); process.exit(0); }
+const esc = result.escalations[0];
+if (esc.kind === 'ci-failed')
+  { console.log(JSON.stringify({ ok: false, reason: 'a bad argument was reported as a red CI run (the #2014 regression)' })); process.exit(0); }
+if (esc.kind !== 'ci-poll-bad-argument')
+  { console.log(JSON.stringify({ ok: false, reason: 'escalation kind wrong: ' + esc.kind })); process.exit(0); }
+if (esc.payload?.sha_seen !== 'undefined')
+  { console.log(JSON.stringify({ ok: false, reason: 'payload must show the literal value the poll would have received: ' + JSON.stringify(esc.payload) })); process.exit(0); }
+if (esc.payload?.pr !== 2013)
+  { console.log(JSON.stringify({ ok: false, reason: 'payload must name the PR that is actually open: ' + JSON.stringify(esc.payload) })); process.exit(0); }
+// The pre-flight half: no poll slice may be spent on an argument ci-poll.sh is
+// certain to reject.
+if (stepsRun('item-nosha').includes('ci-poll'))
+  { console.log(JSON.stringify({ ok: false, reason: 'a ci-poll step ran on an unusable sha: ' + JSON.stringify(stepsRun('item-nosha')) })); process.exit(0); }
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+# --- 3. a bad-argument ERROR from ci-poll.sh itself is NOT ci-failed ----------
+# The belt to the pre-flight's braces: a vendored/older ci-poll.sh, or a
+# validation this driver does not model, still refuses to run. That refusal
+# carries no information about CI, so it must not ride `ci-failed`.
+run_node_case "#2014 classify: a ci-poll.sh usage_error ERROR escalates ci-poll-bad-argument, not ci-failed" "
+$PREAMBLE
+
+setMachinery('item-usageerr',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/item-usageerr' },
+  { outcome: 'REVIEW_DIFF' },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'c0ffee3' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'beef123', branch: 'build/item-usageerr' },
+  { outcome: 'PR_OPENED', pr_number: 2013 },
+  { outcome: 'ERROR', error: \"sha 'undefined' invalid — must be a hex commit SHA\", usage_error: true },
+);
+happyWorker('item-usageerr');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'item-usageerr', branch: 'build/item-usageerr', title: 'Usage Error Item', kind: 'impl' },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+
+if ((result.escalations ?? []).length !== 1)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected 1 escalation: ' + JSON.stringify(result) })); process.exit(0); }
+if (result.escalations[0].kind !== 'ci-poll-bad-argument')
+  { console.log(JSON.stringify({ ok: false, reason: 'escalation kind wrong: ' + result.escalations[0].kind })); process.exit(0); }
+if (!/invalid/.test(String(result.escalations[0].payload?.ciOut?.error)))
+  { console.log(JSON.stringify({ ok: false, reason: 'payload lost ci-poll.sh own error: ' + JSON.stringify(result.escalations[0].payload) })); process.exit(0); }
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+# --- 4. the DISCRIMINATING control: a genuine ci-poll ERROR is STILL ci-failed -
+# If every ERROR were re-routed the new kind would classify nothing. An ERROR
+# that is not an argument refusal keeps its unchanged `ci-failed` path.
+run_node_case "#2014 control: a NON-argument ci-poll ERROR still escalates ci-failed (the new kind discriminates)" "
+$PREAMBLE
+
+setMachinery('item-realerr',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/item-realerr' },
+  { outcome: 'REVIEW_DIFF' },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'c0ffee4' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'beef456', branch: 'build/item-realerr' },
+  { outcome: 'PR_OPENED', pr_number: 2013 },
+  { outcome: 'ERROR', error: 'gh api failed after 3 attempts', transient_retries_exhausted: true },
+);
+happyWorker('item-realerr');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'item-realerr', branch: 'build/item-realerr', title: 'Real Error Item', kind: 'impl' },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+
+if ((result.escalations ?? []).length !== 1)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected 1 escalation: ' + JSON.stringify(result) })); process.exit(0); }
+if (result.escalations[0].kind !== 'ci-failed')
+  { console.log(JSON.stringify({ ok: false, reason: 'a non-argument ERROR was re-routed away from ci-failed: ' + result.escalations[0].kind })); process.exit(0); }
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+# --- 5. the CI-fix re-push: the FIFTH sha assignment, guarded the same way ----
+# Not on the issue's own audit list: the re-push's sha arrives through the same
+# executor transport as the 3f push and can go missing the same way. It must not
+# silently re-poll the PRE-FIX head either — that is the #254 false green.
+run_node_case "#2014 ci-fix re-push: a PUSHED re-push with no sha escalates ci-poll-bad-argument, never re-polls the stale head" "
+$PREAMBLE
+
+setMachinery('item-fixnosha',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/item-fixnosha' },
+  { outcome: 'REVIEW_DIFF' },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'ddd1' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'ddd1', branch: 'build/item-fixnosha' },
+  { outcome: 'PR_OPENED', pr_number: 2013 },
+  { outcome: 'CI_FAILED', failed_run_ids: [7] },
+  { outcome: 'REVIEW_DIFF' },
+  { outcome: 'PUSHED', branch: 'build/item-fixnosha' },   // re-push, sha absent
+);
+setWorker('item-fixnosha',
+  { status: 'done', summary: 'first', acceptance_results: [{ criterion: 'c', passed: true, evidence: 'e' }], commits: [] },
+  { status: 'done', summary: 'ci fix', acceptance_results: [{ criterion: 'c', passed: true, evidence: 'e' }], commits: [] },
+);
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'item-fixnosha', branch: 'build/item-fixnosha', title: 'Fix No-Sha Item', kind: 'impl' },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+
+if ((result.escalations ?? []).length !== 1)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected 1 escalation: ' + JSON.stringify(result) })); process.exit(0); }
+const e5 = result.escalations[0];
+if (e5.kind !== 'ci-poll-bad-argument')
+  { console.log(JSON.stringify({ ok: false, reason: 'escalation kind wrong: ' + e5.kind + ' ' + JSON.stringify(e5.payload) })); process.exit(0); }
+if (e5.payload?.stage !== 'ci-fix-push')
+  { console.log(JSON.stringify({ ok: false, reason: 'payload must name the ci-fix-push stage: ' + JSON.stringify(e5.payload) })); process.exit(0); }
+// Exactly one poll ran — the pre-fix one. A second would be pinned to the stale
+// head the re-push replaced.
+const polls = stepsRun('item-fixnosha').filter(k => k === 'ci-poll').length;
+if (polls !== 1)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected exactly 1 ci-poll before the escalation, got ' + polls })); process.exit(0); }
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+# --- 6. static guard: the hand-off choke point stays wired --------------------
+# The pre-flight is one `if` in a 6000-line file. Without a guard, a future edit
+# to the 3f->3g seam can drop it and every case above still passes, because they
+# all exercise the arms that DO set a sha. Pin the call site by name.
+K2014_MJS="$(cat "$MJS")"
+case "$K2014_MJS" in
+  *"if (hexSha(pushedSha) === null)"*) : ;;
+  *) fail "#2014: the 3f->3g pre-flight guard on pushedSha is gone from build-level.mjs — every arm that sets pushedSha is unprotected again" ;;
+esac
+case "$K2014_MJS" in
+  *"if (hexSha(fpush.sha) === null)"*) : ;;
+  *) fail "#2014: the CI-fix re-push pre-flight guard is gone from build-level.mjs" ;;
+esac
+case "$K2014_MJS" in
+  *"if (isBadArgumentError(out))"*) : ;;
+  *) fail "#2014: ci-poll.sh argument refusals are no longer split out of the ci-failed catch-all" ;;
+esac
+echo "PASS: #2014 static guard — both pushedSha pre-flights and the bad-argument split are wired in build-level.mjs"
 
 echo ""
 echo "All test_workflow.sh cases passed."

@@ -23,7 +23,10 @@
 #   - --sha pins the head: the pulls endpoint is never queried
 #   - head SHA is resolved exactly ONCE; only REST endpoints are ever called
 #     (no `gh pr checks` — the GH #53 GraphQL-budget rule, enforced by stub)
-#   - bad args (owner/repo, pr, interval) → structured ERROR + non-zero exit
+#   - bad args (owner/repo, pr, interval) → structured ERROR + non-zero exit,
+#     each stamped usage_error:true (temperloop#2014), while a non-argument
+#     ERROR is NOT stamped — the field a caller uses to tell "the poll never
+#     ran" from "the poll ran and CI is red"
 set -euo pipefail
 
 SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/ci-poll.sh"
@@ -250,5 +253,27 @@ for args in "not-a-repo 42" "Towheads/foundation abc" "Towheads/foundation 42 --
   out="$(bash "$SCRIPT" $args 2>/dev/null)" || rc=$?
   [ "$rc" -ne 0 ] || fail "bad args '$args' did not exit non-zero"
   [ "$(jq -r .outcome <<<"$out")" = "ERROR" ] || fail "bad args '$args' not ERROR (got: $out)"
+  # temperloop#2014: an argument refusal must be MARKED as one. Without this
+  # field the caller cannot tell "the poll never ran" from "the poll ran and CI
+  # is red", and build-level.mjs reported the former as the latter — turning a
+  # healthy, still-running PR into a `ci-failed` escalation.
+  [ "$(jq -r '.usage_error // false' <<<"$out")" = "true" ] \
+    || fail "bad args '$args' carries no usage_error:true stamp (got: $out)"
 done
-echo "PASS: invalid owner/repo, pr, interval, sha, or missing args → structured ERROR + non-zero exit"
+echo "PASS: invalid owner/repo, pr, interval, sha, or missing args → structured ERROR + usage_error:true + non-zero exit"
+
+# --- the DISCRIMINATING half: a non-argument ERROR must NOT be stamped ---------
+# If every ERROR carried usage_error the field would classify nothing. A poll
+# that ran and failed for a reason of its own (here: the PR resolves to an empty
+# head SHA) stays an unstamped ERROR, so build-level.mjs keeps escalating it
+# through the unchanged `ci-failed` path.
+reset_state
+cat > "$TMP/state/pull.json" <<'EOF'
+{"head":{"sha":""}}
+EOF
+rc=0; out="$(bash "$SCRIPT" Towheads/foundation 42 2>/dev/null)" || rc=$?
+[ "$rc" -ne 0 ] || fail "empty head SHA did not exit non-zero"
+[ "$(jq -r .outcome <<<"$out")" = "ERROR" ] || fail "empty head SHA not ERROR (got: $out)"
+[ "$(jq -r 'has("usage_error")' <<<"$out")" = "false" ] \
+  || fail "a non-argument ERROR was stamped usage_error — the field discriminates nothing (got: $out)"
+echo "PASS: a non-argument ERROR carries NO usage_error stamp — the field tells the two apart"
