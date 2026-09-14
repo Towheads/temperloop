@@ -159,6 +159,14 @@ Rows 4–6 are the kernel § Environment hygiene worktree rule verbatim: a dirty
 
 The target is drivable. Claim is the **first mutating action** (owned by `build-level.mjs` 3a). **Immediately before invoking**, print the **Workflow launch line** template (`claude/message-schema.md`) — `caller: fix`, this being a 1-item level, `round 1` for this fresh drive (an escalation with a committed build behind it re-invokes the same Workflow at `round 2`+ as a 3d-esc-shaped continuation — see Step 4a's escalation branch below; one with nothing behind it parks instead, so it never mints a round 2) — so a `/fix` run is distinguishable in the transcript from any concurrent `/build`/`/sweep` drive on the same repo (temperloop#903, temperloop#1941). Invoke the saved Workflow as a **1-item level**, exactly as `/sweep` Phase 2 does (invoke by `scriptPath`; `args` delivered as a JSON string the script parses):
 
+**Probe the engine's hand-off capability immediately before invoking (temperloop#2018).** Run `claude/commands/build.md` Step 3's "Probe the engine's hand-off capability" bullet verbatim (`bash workflows/scripts/build/handoff-capability.sh check "$HOME/.claude/workflows/build-level.mjs" "$handoffKeys"`) against the `args` object below — that bullet is the single statement site and this is a pointer, not a second spec — deriving the key list from the JSON you are actually about to pass, never a hand-copy. The additive hand-off means a **stale install or an older vendored copy silently ignores** a key this spec tells you to pass, which is how a `/fix` run that was itself fixing the §3e reviewer relay dropped `reviewerRoutingTsv` and fell back to the relay it was replacing. **Degrade, never halt:** `CAPABILITIES_DEGRADED` and `CAPABILITIES_INDETERMINATE` each print their `notice` verbatim and the drive proceeds; `CAPABILITIES_INDETERMINATE` is never read as a pass, and an absent probe script is that outcome, not a silent skip. **This spec passes its OWN key set — 18 keys, NOT `build.md`'s 21** (it never passes `workerSummaryMaxWords`, `workerEvidenceMaxWords` or `requireDiscriminationEvidence`), so name that set here rather than reusing `build.md`'s literal:
+
+```bash
+handoffKeys="repoRoot,board,ownerRepo,claimCmd,machineryBinDir,reviewerRoutingTsv,principlesSummaries,principlesDefaultRepo,machinerySoloModel,machineryBatchModel,gateSliceSecs,reviewAgentCeilingSecs,reviewAgentSlowSecs,reviewBlockingMaxRounds,machineryStepCeilingSecs,machineryStepSlowSecs,planLink,items,verdicts,onlySlugs"
+```
+
+The set is a **static property of this spec** — it changes only when an author edits the args block below, never per run — so keeping it in step is an authoring-time obligation, which temperloop#2024's registry + lint takes over (and replaces this literal) once it lands.
+
 ```
 Workflow({ scriptPath: workflowPath, args: {
   repoRoot, board: <BOARD>, ownerRepo, claimCmd, machineryBinDir,

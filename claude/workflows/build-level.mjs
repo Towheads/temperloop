@@ -309,6 +309,93 @@ export const meta = {
   version: '1.0.0',
 };
 
+// -----------------------------------------------------------------------------
+// THE HAND-OFF CAPABILITY DECLARATION (temperloop#2018)
+// -----------------------------------------------------------------------------
+//
+// Every key below is a top-level `input.*` key THIS COPY of the engine reads.
+// The orchestrator->engine hand-off is deliberately ADDITIVE — an absent key
+// falls back to an in-file default, so a new key can never regress an
+// un-migrated caller (see the `machineryBinDir`, `principlesSummaries` and
+// `reviewerRoutingTsv` comments below, which each say so in their own words).
+// That property is correct and is NOT changed here. Its cost is that the
+// converse is silent too: a STALE installed engine simply ignores a key a
+// current orchestrator passes, and neither side says anything. Live case:
+// an installed copy 18 days behind had zero `reviewerRoutingTsv` support, so
+// following the driver spec literally dropped the key and fell back to the
+// very agent relay the run was fixing.
+//
+// This list is what makes that DETECTABLE. It is read TEXTUALLY — never by
+// importing this module, which cannot be imported at all outside the Workflow
+// runtime (the `args` reference below throws ReferenceError) — by
+// `workflows/scripts/build/handoff-capability.sh`, which a driver runs at
+// Step 0 against the engine path it is about to invoke. That is why the
+// sentinel comments are load-bearing and why the list is a flat array of
+// single-quoted literals: the probe must work against ANY copy of this file,
+// including a consuming repo's older VENDORED one, with no repo checkout to
+// diff against and no Node available.
+//
+// KEEPING IT HONEST. A declaration that drifts from what the code actually
+// reads would be a second list to maintain, so it is not maintained by hand:
+// `workflows/scripts/build/tests/test_handoff_capability.sh` asserts SET
+// EQUALITY between this block and every `input.<key>` occurrence in this file
+// — add a key read without declaring it (or declare one nothing reads) and
+// `make test-build` goes red.
+//
+// KNOWN BOUNDARY, stated rather than implied: this declares TOP-LEVEL keys
+// only. Nested per-item fields (`items[].activation`, `items[].dependsOn`)
+// are a real hand-off surface with the same drop-silently property — the
+// `activation` block's own absence was temperloop#1219 — and are NOT covered
+// by this declaration. The probe reports what it covers; it never implies
+// more.
+//
+// CONVERGENCE WITH temperloop#2024 (the hand-off key REGISTRY + author-side
+// lint): the same key set seen from the other side — #2024 asks "did the
+// author wire this new key into all three drivers", this block answers "does
+// THIS engine understand this key". This block is the per-ENGINE half and
+// must stay in the file (a vendored copy travels alone); #2024's registry is
+// the per-REPO half and adds the authoring columns (which drivers wire a key,
+// since-version, owner). They converge by DERIVATION, not duplication: the
+// registry's lint reads this declaration via `handoff-capability.sh declared`
+// and asserts the two agree, exactly as the test above already does for the
+// code. Do not create a second hand-maintained list.
+//
+// NOT `export`ed, deliberately. Nothing imports this — the probe reads it as
+// TEXT — and `export const meta` is the ONE export the offline harness
+// (workflows/scripts/build/tests/test_workflow.sh) strips before wrapping this
+// file's body in an AsyncFunction, so a second top-level `export` is a
+// SyntaxError there. A plain `const` runs identically in the Workflow runtime
+// and in the harness.
+//
+// HANDOFF-CAPABILITIES-BEGIN (machine-parsed — workflows/scripts/build/handoff-capability.sh)
+const inputCapabilities = [
+  'board',
+  'claimCmd',
+  'gateSliceSecs',
+  'items',
+  'machineryAgentType',
+  'machineryBatchModel',
+  'machineryBinDir',
+  'machinerySoloModel',
+  'machineryStepCeilingSecs',
+  'machineryStepSlowSecs',
+  'onlySlugs',
+  'ownerRepo',
+  'planLink',
+  'principlesDefaultRepo',
+  'principlesSummaries',
+  'repoRoot',
+  'requireDiscriminationEvidence',
+  'reviewAgentCeilingSecs',
+  'reviewAgentSlowSecs',
+  'reviewBlockingMaxRounds',
+  'reviewerRoutingTsv',
+  'verdicts',
+  'workerEvidenceMaxWords',
+  'workerSummaryMaxWords',
+];
+// HANDOFF-CAPABILITIES-END
+
 // `args` arrives from the Workflow tool as a JSON STRING, not a parsed object
 // (established by live probe, #437). Parse it once into `input` and read input.*
 // throughout. Helpers below close over `input`; it is assigned before any of
