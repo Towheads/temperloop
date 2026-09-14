@@ -415,8 +415,9 @@ const SPINE_OUTCOME_SCHEMA = {
         // at the ONE escalation choke point (preserveOnEscalation). Three
         // outcomes, deliberately distinct so a payload never has to infer
         // which: WORK_PRESERVED (the branch is on origin), WORK_PRESERVE_SKIP
-        // (there was nothing to preserve — no worktree, or no commit ahead of
-        // the default branch), WORK_PRESERVE_FAILED (there WAS unlanded work
+        // (there was PROVABLY nothing to preserve — no worktree, or a RESOLVED
+        // default branch with no commit ahead of it; an unresolvable base is
+        // never a skip, it pushes), WORK_PRESERVE_FAILED (there WAS unlanded work
         // and the push did not land it — the one shape that must stay visible,
         // because a later `worktree.sh remove` is then the last copy's last
         // chance).
@@ -2500,9 +2501,21 @@ function escalate(slug, kind, payload) {
 // worktree IS the only copy.
 //
 // NOT a substitute for 3f: this pushes the BRANCH only — no PR, no CI, no
-// rebase, no closing-keyword scan. A pushed `build/<slug>` branch with no PR
-// merges into nothing; it is a durable copy, not a landing.
-function preserveCommittedWorkCmd(wt) {
+// rebase, no closing-keyword scan. A pushed branch with no PR merges into
+// nothing; it is a durable copy, not a landing.
+//
+// `branch` is the PLAN's `item.branch` (`<type>/<slug>`), NOT the worktree's
+// throwaway local `build/<slug>` HEAD (worktree.sh's own header). It has to be:
+// 3f pushes via `pr.sh push <wt> <item.branch>`, which sends
+// `$sha:refs/heads/$branch` — so preserving `HEAD` under its LOCAL name would
+// mint a SECOND remote ref (`build/<slug>`) on every post-3f escalation
+// (ci-failed, gate-fail, review-blocking), one that no PR watches and that
+// neither `delete_branch_on_merge` nor prune-merged-branches.sh can ever
+// reclaim. That is precisely the two-ref split pr.sh's PUSHED_UNWATCHED logic
+// (temperloop#1688) exists to make visible. Pushing the ref 3f already owns
+// makes the idempotency claim below TRUE of what the code does, and leaves the
+// rescue copy on a ref a human already has a handle for.
+function preserveCommittedWorkCmd(wt, branch) {
   return [
     // No worktree (an escalation from before 3b, e.g. claim-conflict) — there
     // is nothing to preserve and that is a normal, expected arm.
@@ -2516,33 +2529,70 @@ function preserveCommittedWorkCmd(wt) {
     `    if git show-ref --verify --quiet "refs/remotes/origin/$b"; then default="$b"; break; fi`,
     `  done`,
     `fi`,
-    `[ -n "$default" ] || default=main`,
-    `branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"`,
-    `ahead="$(git rev-list --count "origin/$default..HEAD" 2>/dev/null || echo 0)"`,
+    // NO `|| default=main` guess. worktree.sh's own default_branch() (its
+    // "The repo's default branch" helper) `return 1`s rather than inventing a
+    // base, and this path must do the same, because the guess does not fail
+    // LOUDLY here — it fails into a rev-list that errors, `ahead` that reads 0
+    // and a WORK_PRESERVE_SKIP "no unlanded commits". Verified against a
+    // throwaway fixture (bare origin defaulting to `trunk`, origin/HEAD
+    // deleted, one real unpushed commit): the old chain emitted
+    // `{"outcome":"WORK_PRESERVE_SKIP","commits_ahead":0}` over real work. And
+    // because preserveOnEscalation logs its "the worktree may be the ONLY
+    // copy" warning on every outcome EXCEPT the skip, that false negative
+    // silenced the one warning this whole seam exists to raise.
+    //
+    // So: `base_resolved` splits "genuinely zero commits ahead" from "could
+    // not compute". Only the FIRST may skip. The second PUSHES ANYWAY —
+    // pushing is the fail-safe direction on a preservation path: the cost of a
+    // needless push is one ref on the branch 3f already owns, while the cost
+    // of a needless skip is the destroyed-work incident this file documents.
+    // `ahead` is normalized before it is ever read as a number, so nothing
+    // non-numeric can reach the unquoted `"commits_ahead":%s` position and
+    // make the line unparseable (the pr.sh `case` idiom, e.g. its cmd_push
+    // ahead-count normalization).
+    `base_resolved=false`,
+    `ahead=0`,
+    `if [ -n "$default" ] && count="$(git rev-list --count "origin/$default..HEAD" 2>/dev/null)"; then`,
+    `  case "$count" in ''|*[!0-9]*) : ;; *) base_resolved=true; ahead="$count" ;; esac`,
+    `fi`,
+    `branch=${sq(branch)}`,
     // `$branch` goes into the hand-built JSON below through a bare printf
     // `%s`, deliberately NOT through the `jq -R -s -c .` idiom reviewDiffCmd
-    // uses for tsv_lines/files. Two reasons it is safe here and jq is not
-    // worth it: (a) this branch is always `build/<kebab-slug>` — the driver
-    // mints it (`branch: 'build/<slug>'`) and a plan slug is kebab-case, so it
-    // carries no quote or backslash; (b) `git check-ref-format` structurally
-    // forbids a backslash in ANY ref name, so the one character that could
-    // break out of a JSON string by pairing with the next is impossible even
-    // for a hand-checked-out branch. Adding jq would also put a new binary
-    // dependency on the one path whose entire job is to work when things are
-    // already failing — the opposite of fail-soft.
-    // Nothing committed beyond the base — 3f never ran and never needed to.
-    // Pushing here would mint an empty remote branch for no benefit.
-    `if [ "$ahead" -eq 0 ] 2>/dev/null; then`,
-    `  printf '{"outcome":"WORK_PRESERVE_SKIP","branch":"%s","commits_ahead":0,"detail":"no unlanded commits"}\\n' "$branch"`,
+    // uses for tsv_lines/files. The reason it is safe here: this is the PLAN's
+    // `branch:` field, which plan-schema pins to `<type>/<slug>` with type in
+    // a closed set {feat,fix,chore,refactor,docs,test} and slug kebab-case
+    // ([a-z0-9-]+), validated at Step 1 — so it carries neither a double quote
+    // nor a backslash. Note what is NOT an argument: `git check-ref-format`
+    // bans a backslash in a ref name but ACCEPTS a double quote
+    // (`git check-ref-format 'refs/heads/build/a"b'` exits 0), and a double
+    // quote alone terminates a JSON string. The ref grammar is therefore not a
+    // JSON-safety guarantee; the plan schema is. Adding jq would also put a new
+    // binary dependency on the one path whose entire job is to work when things
+    // are already failing — the opposite of fail-soft.
+    // Nothing committed beyond a RESOLVED base — 3f never ran and never needed
+    // to. Pushing here would mint an empty remote branch for no benefit.
+    `if [ "$base_resolved" = true ] && [ "$ahead" = 0 ]; then`,
+    `  printf '{"outcome":"WORK_PRESERVE_SKIP","branch":"%s","base_resolved":true,"commits_ahead":0,"detail":"no unlanded commits"}\\n' "$branch"`,
     `  exit 0`,
     `fi`,
-    // Idempotent: when 3f already pushed this branch, git reports
-    // "Everything up-to-date" and exits 0, so a post-push escalation (a CI
-    // failure, say) costs one no-op push and reports WORK_PRESERVED truthfully.
-    `if git push -u origin HEAD >/dev/null 2>&1; then`,
-    `  printf '{"outcome":"WORK_PRESERVED","branch":"%s","commits_ahead":%s,"pushed":true}\\n' "$branch" "$ahead"`,
+    // The count rides along only when it is real; on the unresolved arm the
+    // detail says so instead, so `commits_ahead` is never a fabricated figure
+    // and never a non-number in a JSON number position.
+    `if [ "$base_resolved" = true ]; then`,
+    `  extra=",\\"commits_ahead\\":$ahead"`,
     `else`,
-    `  printf '{"outcome":"WORK_PRESERVE_FAILED","branch":"%s","commits_ahead":%s,"pushed":false}\\n' "$branch" "$ahead"`,
+    `  extra=",\\"detail\\":\\"base unresolved — pushed unconditionally\\""`,
+    `fi`,
+    // Idempotent, and now TRULY so: this pushes the same `refs/heads/$branch`
+    // 3f pushes, so when 3f already pushed this sha git reports "Everything
+    // up-to-date" and exits 0 — a post-3f escalation (a CI failure, say) costs
+    // one no-op push and reports WORK_PRESERVED truthfully, minting no second
+    // ref. No `-u`: this is a one-shot rescue push and has no business writing
+    // branch.<name>.remote/.merge into the worktree's config.
+    `if git push origin "HEAD:refs/heads/$branch" >/dev/null 2>&1; then`,
+    `  printf '{"outcome":"WORK_PRESERVED","branch":"%s","base_resolved":%s,"pushed":true%s}\\n' "$branch" "$base_resolved" "$extra"`,
+    `else`,
+    `  printf '{"outcome":"WORK_PRESERVE_FAILED","branch":"%s","base_resolved":%s,"pushed":false%s}\\n' "$branch" "$base_resolved" "$extra"`,
     `fi`,
   ].join('\n');
 }
@@ -2556,9 +2606,14 @@ function preserveCommittedWorkCmd(wt) {
 async function preserveOnEscalation(item, result) {
   if (!result || result._kind !== 'escalation') return result;
   const wt = `${input.repoRoot}.wt/${item.slug}`;
+  // The plan's branch — the ref 3f pushes — not the worktree's local
+  // `build/<slug>` HEAD; see preserveCommittedWorkCmd's header for why. The
+  // fallback is the worktree's own name only for a malformed item that somehow
+  // reached here without the schema-required `branch:`.
+  const preserveBranch = item?.branch || `build/${item.slug}`;
   let out;
   try {
-    out = await runMachinery(preserveCommittedWorkCmd(wt), {
+    out = await runMachinery(preserveCommittedWorkCmd(wt, preserveBranch), {
       label: `preserve-push:${item.slug}`,
       slug: item.slug,
     });
@@ -2572,7 +2627,7 @@ async function preserveOnEscalation(item, result) {
   // that "the worktree stays intact" means the work is safe.
   const record = {
     outcome,
-    branch: out?.branch ?? `build/${item.slug}`,
+    branch: out?.branch ?? preserveBranch,
     preserved: outcome === 'WORK_PRESERVED',
     ...(out?.commits_ahead === undefined ? {} : { commits_ahead: out.commits_ahead }),
     ...(out?.detail ? { detail: out.detail } : {}),

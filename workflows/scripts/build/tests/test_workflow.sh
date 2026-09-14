@@ -7393,14 +7393,32 @@ console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
 #     B  clean clone at base     -> WORK_PRESERVE_SKIP, commits_ahead 0
 #     C  push rigged to fail     -> WORK_PRESERVE_FAILED, pushed false
 #     D  no worktree at all      -> WORK_PRESERVE_SKIP, detail 'no worktree'
-#     E  no refs/remotes/origin/HEAD -> the default_branch() fallback chain
-#                                   still resolves (a misresolve makes rev-list
+#     E  no refs/remotes/origin/HEAD -> the main/master show-ref fallback still
+#                                   resolves (a misresolve makes rev-list
 #                                   fail, ahead read 0, and the arm silently
 #                                   become a SKIP — the quiet failure)
 #     F  re-run over an already-pushed branch -> still WORK_PRESERVED
 #                                   (the documented idempotency claim)
+#     G  (round 3) NO origin/HEAD **and** a default branch that is neither main
+#                                   nor master ('trunk'), over a REAL unpushed
+#                                   commit -> the base is unresolvable, so the
+#                                   arm must NOT skip: it pushes anyway and
+#                                   reports base_resolved:false. Arm E only ever
+#                                   covered the case where the fallback SUCCEEDS;
+#                                   this is the state E's own comment described
+#                                   and left unasserted, and it is a FALSE
+#                                   NEGATIVE on the data-loss path — a skip is
+#                                   the ONE outcome preserveOnEscalation does not
+#                                   warn about, so real unpushed work read as
+#                                   'nothing to preserve' with no warning at all.
+#
+#   Every arm passes an EXPLICIT branch (the plan's `item.branch`, e.g.
+#   `fix/<slug>`) that is deliberately DIFFERENT from the worktree's local
+#   `build/<slug>` HEAD, and asserts the ref lands on origin under the PASSED
+#   name — the round-3 MEDIUM: pushing HEAD under its local name mints a second,
+#   PR-less `build/<slug>` ref on every post-3f escalation.
 # ============================================================================
-run_node_case "K2020 preserve bash: the REAL generated shell (executed, not mocked) preserves an unpushed commit to origin, skips a clean tree, reports a failed push, handles a missing worktree, resolves default without origin/HEAD, and is idempotent" "
+run_node_case "K2020 preserve bash: the REAL generated shell (executed, not mocked) preserves an unpushed commit to origin under the PLAN's branch, skips a clean tree, reports a failed push, handles a missing worktree, resolves default without origin/HEAD, pushes rather than skipping when the base is unresolvable, and is idempotent" "
 $PREAMBLE
 const { execFileSync } = await import('node:child_process');
 const { mkdtempSync, rmSync } = await import('node:fs');
@@ -7418,8 +7436,8 @@ if (internalsSrc === MJS_SRC) {
   const G = 'git -c user.email=t@example.invalid -c user.name=T -c commit.gpgsign=false -c init.defaultBranch=main';
   const root = mkdtempSync(tmpdir() + '/k2020-presv-');
   const sh = (cmd, cwd) => execFileSync('bash', ['-c', cmd], { encoding: 'utf8', cwd: cwd || root, env: GITENV });
-  const run = (wt) => {
-    const out = execFileSync('bash', ['-c', I.preserveCommittedWorkCmd(wt)], { encoding: 'utf8', cwd: root, env: GITENV });
+  const run = (wt, branch) => {
+    const out = execFileSync('bash', ['-c', I.preserveCommittedWorkCmd(wt, branch)], { encoding: 'utf8', cwd: root, env: GITENV });
     const lines = out.trim().split('\\n').filter(Boolean);
     return JSON.parse(lines[lines.length - 1]);
   };
@@ -7432,31 +7450,42 @@ if (internalsSrc === MJS_SRC) {
     const clone = (name) => sh(G + ' clone -q origin.git ' + name);
 
     // --- A: a real committed-but-unpushed commit --------------------------
+    // The local HEAD is \`build/wta\` (what worktree.sh mints); the PLAN branch
+    // handed to the step is \`fix/wta\` (what 3f pushes). They differ on
+    // purpose — the ref must land under the PLAN name.
     clone('wtA');
     commitOn('wtA', 'build/wta', 'g.txt');
-    const a = run(root + '/wtA');
+    const a = run(root + '/wtA', 'fix/wta');
     if (a.outcome !== 'WORK_PRESERVED') reason = 'A: an unpushed commit must be preserved, got ' + JSON.stringify(a);
-    else if (a.branch !== 'build/wta') reason = 'A: the generated shell must report the real branch, got ' + JSON.stringify(a);
+    else if (a.branch !== 'fix/wta') reason = 'A: the generated shell must report the PLAN branch it was handed, not the worktree HEAD, got ' + JSON.stringify(a);
     else if (Number(a.commits_ahead) !== 1) reason = 'A: commits_ahead must count the real unlanded commits, got ' + JSON.stringify(a);
+    else if (a.base_resolved !== true) reason = 'A: with origin/HEAD present the base is resolved and must say so, got ' + JSON.stringify(a);
     else if (a.pushed !== true) reason = 'A: pushed must be true on the success arm, got ' + JSON.stringify(a);
     else {
       // THE POINT: assert against ORIGIN, not against the script's own claim.
-      const landed = sh(G + ' --git-dir=' + root + '/origin.git show-ref --verify --quiet refs/heads/build/wta && printf YES || printf NO');
+      const landed = sh(G + ' --git-dir=' + root + '/origin.git show-ref --verify --quiet refs/heads/fix/wta && printf YES || printf NO');
       if (landed !== 'YES') reason = 'A: WORK_PRESERVED must mean the branch really exists on origin — it does not, so the report was optimistic';
+      else {
+        // The round-3 MEDIUM: pushing HEAD under its LOCAL name would mint a
+        // second, PR-less \`build/<slug>\` ref that nothing reclaims.
+        const stray = sh(G + ' --git-dir=' + root + '/origin.git show-ref --verify --quiet refs/heads/build/wta && printf YES || printf NO');
+        if (stray === 'YES') reason = 'A: the preserve push must target the PLAN branch ONLY — a second build/<slug> ref on origin is the PR-less two-ref split temperloop#1688 exists to avoid, and nothing ever reclaims it';
+      }
     }
 
     // --- B: a clean clone sitting at base ---------------------------------
     if (!reason) {
       clone('wtB');
-      const b = run(root + '/wtB');
+      const b = run(root + '/wtB', 'fix/wtb');
       if (b.outcome !== 'WORK_PRESERVE_SKIP') reason = 'B: nothing ahead of base must SKIP, never mint an empty remote branch, got ' + JSON.stringify(b);
       else if (Number(b.commits_ahead) !== 0) reason = 'B: the skip arm must report commits_ahead 0, got ' + JSON.stringify(b);
-      else if (b.branch !== 'main') reason = 'B: the skip arm must still name the branch it looked at, got ' + JSON.stringify(b);
+      else if (b.base_resolved !== true) reason = 'B: a SKIP is only legitimate over a RESOLVED base — the skip line must prove it resolved one, got ' + JSON.stringify(b);
+      else if (b.branch !== 'fix/wtb') reason = 'B: the skip arm must still name the branch it looked at, got ' + JSON.stringify(b);
       else {
-        // Origin holds exactly main + build/wta from arm A at this point; the
+        // Origin holds exactly main + fix/wta from arm A at this point; the
         // skip arm must not add a third head.
         const heads = Number(sh(G + ' --git-dir=' + root + '/origin.git for-each-ref refs/heads/ | wc -l').trim());
-        if (heads !== 2) reason = 'B: the skip arm must push nothing — origin should still hold exactly main and build/wta, got ' + heads + ' heads';
+        if (heads !== 2) reason = 'B: the skip arm must push nothing — origin should still hold exactly main and fix/wta, got ' + heads + ' heads';
       }
     }
 
@@ -7467,7 +7496,7 @@ if (internalsSrc === MJS_SRC) {
       // Push URL only — the fetch refs (and so origin/main) stay intact, so the
       // ahead count is real and ONLY the push fails.
       sh('cd wtC && ' + G + ' remote set-url --push origin ' + root + '/no-such-repo.git');
-      const c = run(root + '/wtC');
+      const c = run(root + '/wtC', 'fix/wtc');
       if (c.outcome !== 'WORK_PRESERVE_FAILED') reason = 'C: a rejected push must be reported as FAILED — never silently optimistic, got ' + JSON.stringify(c);
       else if (c.pushed !== false) reason = 'C: the failing arm must say pushed:false, got ' + JSON.stringify(c);
       else if (Number(c.commits_ahead) !== 1) reason = 'C: the failing arm must still carry HOW MUCH work is at risk, got ' + JSON.stringify(c);
@@ -7475,25 +7504,55 @@ if (internalsSrc === MJS_SRC) {
 
     // --- D: no worktree at all --------------------------------------------
     if (!reason) {
-      const d = run(root + '/never-created');
+      const d = run(root + '/never-created', 'fix/wtd');
       if (d.outcome !== 'WORK_PRESERVE_SKIP' || d.detail !== 'no worktree') reason = 'D: a missing worktree is a normal, named skip, got ' + JSON.stringify(d);
     }
 
-    // --- E: default_branch() fallback with no refs/remotes/origin/HEAD ----
+    // --- E: main/master fallback with no refs/remotes/origin/HEAD ---------
     if (!reason) {
       clone('wtE');
       sh('cd wtE && ' + G + ' remote set-head origin -d >/dev/null 2>&1 || true');
       commitOn('wtE', 'build/wte', 'i.txt');
-      const e = run(root + '/wtE');
-      // A misresolving fallback makes rev-list fail, ahead read 0 via the
-      // \`|| echo 0\` guard, and this arm degrade SILENTLY into a skip.
-      if (e.outcome !== 'WORK_PRESERVED' || Number(e.commits_ahead) !== 1) reason = 'E: with origin/HEAD absent the show-ref fallback must still resolve the default branch — a misresolve turns into a silent SKIP, got ' + JSON.stringify(e);
+      const e = run(root + '/wtE', 'fix/wte');
+      // origin/main still exists here, so the show-ref fallback must resolve it
+      // and count for real — a misresolve is arm G's territory.
+      if (e.outcome !== 'WORK_PRESERVED' || Number(e.commits_ahead) !== 1 || e.base_resolved !== true) reason = 'E: with origin/HEAD absent the main/master show-ref fallback must still resolve the default branch and count for real, got ' + JSON.stringify(e);
     }
 
     // --- F: idempotent re-run over an already-pushed branch ---------------
     if (!reason) {
-      const f = run(root + '/wtA');
+      const headCount = () => Number(sh(G + ' --git-dir=' + root + '/origin.git for-each-ref refs/heads/ | wc -l').trim());
+      const before = headCount();
+      const f = run(root + '/wtA', 'fix/wta');
       if (f.outcome !== 'WORK_PRESERVED' || f.pushed !== true) reason = 'F: a second preserve on an already-pushed branch is Everything up-to-date and must still report WORK_PRESERVED, got ' + JSON.stringify(f);
+      else if (headCount() !== before) reason = 'F: the idempotent re-run must push to the SAME ref 3f owns and add NO new head — origin went from ' + before + ' to ' + headCount() + ' heads';
+    }
+
+    // --- G: UNRESOLVABLE base (round 3 HIGH) ------------------------------
+    // Its own origin, defaulting to \`trunk\`: no origin/HEAD, and neither
+    // origin/main nor origin/master exists, so nothing the resolver knows can
+    // name a base. There IS one real unpushed commit. Before the fix, rev-list
+    // failed, \`|| echo 0\` swallowed it, and this emitted
+    // {\"outcome\":\"WORK_PRESERVE_SKIP\",\"commits_ahead\":0,\"detail\":\"no
+    // unlanded commits\"} — and because preserveOnEscalation warns on every
+    // outcome EXCEPT the skip, the operator saw nothing at all.
+    if (!reason) {
+      sh(G + ' init -q --bare origin2.git');
+      sh(G + ' init -q seed2');
+      sh('cd seed2 && printf base > f.txt && ' + G + ' add -A && ' + G + ' commit -q -m base && ' + G + ' remote add origin ../origin2.git && ' + G + ' push -q origin HEAD:trunk');
+      sh(G + ' clone -q origin2.git wtG');
+      sh('cd wtG && ' + G + ' remote set-head origin -d >/dev/null 2>&1 || true');
+      commitOn('wtG', 'build/wtg', 'j.txt');
+      const g = run(root + '/wtG', 'fix/wtg');
+      if (g.outcome === 'WORK_PRESERVE_SKIP') reason = 'G: an UNRESOLVABLE base must never read as a genuine zero — a SKIP here is a false negative over real unpushed work, and it is the one outcome that suppresses the \"the worktree may be the ONLY copy\" warning, got ' + JSON.stringify(g);
+      else if (g.outcome !== 'WORK_PRESERVED') reason = 'G: pushing is the fail-safe direction when the base cannot be computed — the work must reach origin, got ' + JSON.stringify(g);
+      else if (g.base_resolved !== false) reason = 'G: the line must say the base was unresolved, so commits_ahead being absent is legible rather than a mystery, got ' + JSON.stringify(g);
+      else if (g.commits_ahead !== undefined) reason = 'G: with no base there is no honest count — commits_ahead must be OMITTED, never fabricated and never a non-number in an unquoted JSON number position, got ' + JSON.stringify(g);
+      else if (!/base unresolved/.test(String(g.detail || ''))) reason = 'G: the detail must name the unresolved base, got ' + JSON.stringify(g);
+      else {
+        const landed = sh(G + ' --git-dir=' + root + '/origin2.git show-ref --verify --quiet refs/heads/fix/wtg && printf YES || printf NO');
+        if (landed !== 'YES') reason = 'G: WORK_PRESERVED on the unresolved-base arm must mean the branch really reached origin';
+      }
     }
   } catch (err) {
     reason = 'the REAL generated shell (or its git fixture) threw: ' + ((err && err.message) || err);
@@ -7519,8 +7578,27 @@ grep -q 'function preserveOnEscalation' "$MJS" \
   || fail "#2020: build-level.mjs must define preserveOnEscalation() — the ONE escalation choke point, so every escalation kind (including ones added later) is covered without a per-call-site list"
 grep -q '.then((r) => preserveOnEscalation(item, r))' "$MJS" \
   || fail "#2020: preserveOnEscalation must be applied to driveItem's SETTLED result at the parallel() call site — after the #437/#1819 catch, so a THROWN item's synthesized escalation is preserved too"
-grep -q 'git push -u origin HEAD' "$MJS" \
-  || fail "#2020: the preservation step must actually push the branch to origin — a local preservation ref does not survive \`git branch -D\`"
+# Round-3 guards read the preservation step's OWN body, not the whole file:
+# reviewDiffCmd and the merge-base builder each carry their own `default` chain
+# (and may legitimately keep guessing `main` — a misresolve there costs a review
+# route, not committed work), so a whole-file grep would bind the wrong code.
+PRESERVE_BODY="$(awk '/^function preserveCommittedWorkCmd\(/,/^}$/' "$MJS")"
+[ -n "$PRESERVE_BODY" ] \
+  || fail "#2020: could not extract preserveCommittedWorkCmd()'s body — the guards below would silently pass over nothing"
+printf '%s\n' "$PRESERVE_BODY" | grep 'git push origin "HEAD:refs/heads/\$branch"' >/dev/null \
+  || fail "#2020: the preservation step must push HEAD to an EXPLICIT refs/heads/\$branch on origin — a local preservation ref does not survive \`git branch -D\`, and a bare \`git push origin HEAD\` sends the worktree's throwaway build/<slug> name instead of the plan branch 3f owns, minting a PR-less second ref nothing reclaims (temperloop#1688)"
+if printf '%s\n' "$PRESERVE_BODY" | grep 'git push -u ' >/dev/null; then
+  fail "#2020: the preservation push must not use -u — it is a one-shot rescue push and has no business writing branch.<name>.remote/.merge into the worktree config"
+fi
+grep -q 'preserveCommittedWorkCmd(wt, preserveBranch)' "$MJS" \
+  || fail "#2020: preserveOnEscalation must hand preserveCommittedWorkCmd the PLAN's item.branch — the ref 3f pushes — not let the step read the worktree's local HEAD name"
+printf '%s\n' "$PRESERVE_BODY" | grep 'base_resolved' >/dev/null \
+  || fail "#2020: the preservation step must split 'zero commits ahead' from 'could not resolve a base' — a rev-list that failed because origin/\$default does not exist must never read as a genuine zero and take the WORK_PRESERVE_SKIP arm, which is the one outcome that suppresses the 'the worktree may be the ONLY copy' warning"
+# Anchored at a template-literal backtick so it reads the emitted SHELL, not the
+# comment that quotes the retired line.
+if printf '%s\n' "$PRESERVE_BODY" | grep -E '^[[:space:]]*`.*default=main' >/dev/null; then
+  fail "#2020: the preservation step must not GUESS a default branch — worktree.sh's default_branch() returns 1 rather than inventing one, and a wrong guess here degrades silently into a false 'no unlanded commits'"
+fi
 echo "PASS: #2020 review-diff relay + data-loss guards — the table ships as a tsv_lines ARRAY (no inline scalar), reviewDiffTsvText normalizes both shapes, a persistent gap DEGRADES instead of halting, and every escalation pushes committed work to origin at one choke point before returning"
 
 # ============================================================================

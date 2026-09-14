@@ -37,3 +37,16 @@
   result — pushed, nothing to push, or push failed — is recorded on the
   stopped build's report so whoever cleans up can see whether a remote copy
   exists before deleting the local one.
+
+  Two details of that rescue push matter to anyone reading its report. It goes
+  to **the same remote branch the build's own pull request uses**, so a rescue
+  after that pull request already exists adds nothing to the remote rather than
+  leaving a second, orphaned branch that no pull request tracks and no cleanup
+  ever reclaims. And **"nothing to push" is now reported only when the build
+  could genuinely compare** the work against the branch it started from. On a
+  repository whose main branch is named something other than `main` or
+  `master`, and that records no default, that comparison is impossible — and it
+  previously came back as a plain zero, so real unpushed work was reported as
+  nothing to preserve, with none of the warning a stopped build otherwise
+  prints when it cannot save your work. The build now pushes anyway in that
+  case and says the comparison could not be made.
