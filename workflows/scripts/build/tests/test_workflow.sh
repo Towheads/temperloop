@@ -9135,6 +9135,33 @@ grep -q 'routing_degraded: routingDegraded' "$MJS" \
   || fail "#2020: the report surfaces above render a field build-level.mjs must actually emit — reviewTally's producer half is missing"
 echo "PASS: #2020 report-surface guards — build.md Step 6, sweep.md Step 4 and fix.md Step 7 each render the routing_degraded tally the .mjs emits, section-scoped"
 
+# --- temperloop#2020 disposition-surface guards: committed_work -------------
+# The routing_degraded guards above cover the REPORT surface. This pair covers
+# the DISPOSITION surface: every spec that removes an escalated item's worktree
+# must first consult `committed_work`, the remote-durability signal
+# preserveOnEscalation() records on the payload. The failure this closes is the
+# named incident itself — a review-blocking escalation whose work was committed
+# but un-PR'd reached a caller's removal step and 515 verified lines were
+# destroyed (Towheads/foundation, wf_967c2878-0a7). fix.md carried the guard
+# from the first commit; build.md's 3d-esc skip/abort and sweep.md's
+# escalation-park step did not, which left the DEFAULT build path unguarded.
+#
+# Deliberately file-scoped, not section-scoped: unlike the report surfaces
+# above (one named heading each), the removal decision points are mid-section
+# bullets with no stable heading to anchor on. A file-level assertion is the
+# honest guard here — it catches a spec that never mentions the signal at all,
+# and does not pretend to a precision it cannot deliver.
+for spec_rel in claude/commands/build.md claude/commands/sweep.md claude/commands/fix.md; do
+  spec_abs="$REPO_ROOT/$spec_rel"
+  [ -f "$spec_abs" ] \
+    || fail "#2020: $spec_rel is missing — the disposition-surface half of this contract pair cannot be verified"
+  grep -q 'committed_work' "$spec_abs" \
+    || fail "#2020: $spec_rel removes an escalated item's worktree but never names committed_work — the remote-durability signal must be read BEFORE the removal, or the 515-line data-loss incident this mechanism exists to close can recur through this caller"
+done
+grep -q 'committed_work' "$MJS" \
+  || fail "#2020: the disposition surfaces above read a field build-level.mjs must actually emit — preserveOnEscalation's producer half is missing"
+echo "PASS: #2020 disposition-surface guards — build.md, sweep.md and fix.md each consult committed_work before removing an escalated worktree"
+
 # ============================================================================
 # TEST (K1970-e2e): the round counter's GENERATED SHELL, executed for real
 #   against a REAL LINKED worktree.
