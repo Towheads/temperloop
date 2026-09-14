@@ -145,7 +145,7 @@ KERNEL_GATES=(
   # registered here too by-name, same convention as the two entries above.
   "bash workflows/scripts/build/tests/test_state_graph_queries.sh"
   # `state-graph.sh soak` (temperloop#1910, this item): the mechanical
-  # `STATE_GRAPH_SOAK_DAYS`-day cross-check between `query status-drift` and
+  # cross-check (day count set by `STATE_GRAPH_SOAK_DAYS`) between `query status-drift` and
   # the INDEPENDENT `reconcile.sh --status` read, plus `--count`/`--audit` and
   # `bench`'s soak-log capture — already glob-covered by `make test-build`
   # above, registered here too by-name, same convention as the entries above.

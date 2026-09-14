@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 #
-# Tests for `state-graph.sh soak` — the mechanical `STATE_GRAPH_SOAK_DAYS`-day
-# cross-check between the four board/PR/worktree-comparable queries and the
-# INDEPENDENT `reconcile.sh --status` read ADR 0033's independence claim rests on
+# Tests for `state-graph.sh soak` — the mechanical cross-check (day count set
+# by `STATE_GRAPH_SOAK_DAYS`) between the four board/PR/worktree-comparable
+# queries and the INDEPENDENT `reconcile.sh --status` read ADR 0033's
+# independence claim rests on
 # (temperloop#1910; PER-CLASS scope rewrite temperloop#1978; stale-claims's
 # liveness oracle corrected to transcripts, gated on host, temperloop#1980
 # round 3). Sibling of test_state_graph.sh / test_state_graph_local.sh /
