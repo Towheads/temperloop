@@ -641,6 +641,50 @@ fi
 # deliberately NOT applied to the SOLO executor calls: those return exactly ONE
 # JSON object by contract, so a second notice line there would break the schema.
 : "${BUILD_MACHINERY_STEP_SLOW_SECS:=300}"
+
+# claude/workflows/build-level.mjs §3e — the REVIEW-AGENT liveness ceiling
+# (temperloop#2003), the sibling of BUILD_MACHINERY_STEP_CEILING_SECS one layer
+# up. That setting bounds a machinery STEP (a shell command, bounded by a
+# watchdog compiled into the command text); a §3e reviewer is an
+# `agent({agentType})` call with no shell to wrap, so it had no liveness bound at
+# all. THE INCIDENT: run wf_f3b9c160-6ca routed four reviewers, two returned,
+# `shell-reviewer` was spawned and never returned (its transcript ends
+# mid-sentence), the workflow stopped writing its journal, and ~41 minutes of
+# silence followed until a human ran TaskStop. The MANDATORY `workflow-reviewer`
+# for that item's claude/commands/*.md diff never launched at all — and because
+# the pass never resolved, the `review.mandatory_ok` tally that would have
+# reported the gap was never evaluated either.
+#
+# WHAT IT BOUNDS: the whole §3e fanout's wall clock, measured from the moment the
+# reviewers are spawned (they now run CONCURRENTLY, so one hang can no longer
+# keep a later reviewer from launching). A reviewer still unreturned at the
+# ceiling is ABANDONED — this runtime cannot cancel an agent — and dispositioned
+# by kind: an ADVISORY one degrades to a legible `skipped — <agent> unavailable`
+# notice and the item carries on, a MANDATORY one escalates
+# `review-agent-timeout` so the gate can never read as if it had passed.
+#
+# CEILING, NOT A DEADLINE — it must never fire on healthy work. A real §3e review
+# runs single-digit minutes; the default sits well clear of that, and
+# build-level.mjs FLOORS it at one CI-poll/gate slice so no operator value can
+# manufacture a false timeout. Handed to build-level.mjs on the SAME
+# orchestrator->workflow input seam as the settings above
+# (`input.reviewAgentCeilingSecs`, resolved at build.md / sweep.md / fix.md
+# Step 0) — this runtime has no shell to source this file, and no `Date.now()`
+# either, which is why the bound is a race against a `sleep` executor rather than
+# a timer.
+: "${BUILD_REVIEW_AGENT_CEILING_SECS:=1200}"
+
+# claude/workflows/build-level.mjs §3e — the OBSERVABILITY half of the pair: a
+# §3e fanout still running after this many seconds emits a `log()` progress
+# notice naming which reviewers are still outstanding, so a long-but-alive review
+# is VISIBLE well before BUILD_REVIEW_AGENT_CEILING_SECS gives up on it — instead
+# of being the 41 minutes of silence the #2003 incident was. A slow review is NOT
+# abandoned and NOT dispositioned. Set to 0 to disable the notice entirely.
+#
+# It also sets the timer's FIRST slice, so a review that finishes inside this
+# threshold costs exactly one cheap `sleep` executor spawn — the micro-agent cost
+# temperloop#942 exists to keep down. Handed in as `input.reviewAgentSlowSecs`.
+: "${BUILD_REVIEW_AGENT_SLOW_SECS:=300}"
 # claude/workflows/build-level.mjs §3c worker return contract — WORD BOUNDS on
 # the two free-prose slots of the worker's structured verdict (temperloop#1080).
 #
@@ -1720,6 +1764,7 @@ export BUILD_QUOTA_PAUSE_PCT BUILD_QUOTA_CACHE BUILD_QUOTA_WAIT_BUFFER \
        FIX_WORKER_MODEL INTERVIEW_PROBE_MODEL BUILD_MACHINERY_SOLO_MODEL BUILD_MACHINERY_BATCH_MODEL BUILD_GATE_SLICE_SECS \
        BUILD_REVIEW_BLOCKING_MAX_ROUNDS BUILD_PR_BODY_MAX_BYTES \
        BUILD_MACHINERY_STEP_CEILING_SECS BUILD_MACHINERY_STEP_SLOW_SECS \
+       BUILD_REVIEW_AGENT_CEILING_SECS BUILD_REVIEW_AGENT_SLOW_SECS \
        PIPELINE_OPERATOR PIPELINE_REQUIRED_CHECK \
        PIPELINE_DRIVE PIPELINE_DRIVE_CAP PIPELINE_DRIVE_MODEL PIPELINE_DRIVE_SETTINGS \
        PIPELINE_DRIVE_MERGE PIPELINE_DRIVE_MERGE_CAP PIPELINE_DRIVE_MERGE_MODEL PIPELINE_DRIVE_MERGE_SETTINGS \

@@ -171,6 +171,18 @@
 //                  HIGH finding is carried into the PR body instead of
 //                  escalating `review-blocking` again. Absent / empty /
 //                  non-positive → the in-file default; never unbounded.
+//     reviewAgentCeilingSecs / reviewAgentSlowSecs
+//                — the §3e review-agent LIVENESS bound and its progress-notice
+//                  threshold (temperloop#2003), resolved from
+//                  $BUILD_REVIEW_AGENT_CEILING_SECS / $BUILD_REVIEW_AGENT_SLOW_SECS
+//                  at build.md / sweep.md / fix.md Step 0 and handed in on the
+//                  SAME seam as reviewBlockingMaxRounds above. The ceiling bounds
+//                  the WHOLE §3e fanout's wall clock so a reviewer that never
+//                  returns cannot stall the level; the slow threshold makes a
+//                  long-but-alive review visible first. Both are clamped in this
+//                  file (the ceiling floored at one CI-poll/gate slice) so no
+//                  operator value can manufacture a false timeout on healthy
+//                  work. Absent / empty / non-positive → the in-file defaults.
 //     verdicts   — escalation-continuation map. Empty/absent on a fresh level;
 //                  on a 3d-esc continuation, keyed by slug:
 //                    { [slug]: { kind, verdict_section } }
@@ -422,6 +434,14 @@ const SPINE_OUTCOME_SCHEMA = {
         // because a later `worktree.sh remove` is then the last copy's last
         // chance).
         'WORK_PRESERVED', 'WORK_PRESERVE_SKIP', 'WORK_PRESERVE_FAILED',
+        // The §3e REVIEW-AGENT liveness bound's timer (temperloop#2003). Like
+        // STEP_TIMEOUT/STEP_SLOW above this comes from no machinery script: it
+        // is the closed outcome of the one-command `sleep` executor
+        // reviewWaitAgent() spawns to give this runtime the wall-clock tick it
+        // otherwise has none of (`Date.now()` THROWS here — DESIGN NOTE 1). It
+        // reports only "the interval elapsed" and says nothing whatsoever about
+        // the review it bounds.
+        'REVIEW_WAIT_ELAPSED',
         'ERROR',
       ],
     },
@@ -829,6 +849,113 @@ const REVIEW_BLOCKING_MAX_ROUNDS = Math.max(
     ? Math.floor(Number(input.reviewBlockingMaxRounds))
     : REVIEW_BLOCKING_MAX_ROUNDS_DEFAULT,
 );
+// --- §3e review-agent LIVENESS BOUND (temperloop#2003) -----------------------
+// THE FAILURE THIS BOUNDS — the sibling of temperloop#1071 one layer up. Run
+// `wf_f3b9c160-6ca` routed four §3e reviewers. Two returned. `shell-reviewer`
+// was spawned and never returned: its own agent transcript ends mid-sentence at
+// "Now compiling the final review output", the workflow stopped writing its
+// journal, and ~41 minutes of silence followed until a human ran `TaskStop`.
+// `workflow-reviewer` — MANDATORY for that item's `claude/commands/*.md` diff —
+// never launched at all, because the §3e pass awaited each reviewer in turn and
+// the second one never resolved.
+//
+// WHY THAT IS WORSE THAN A PLAIN HANG. The mandatory-reviewer contract
+// (foundation#1007) guarantees `workflow-reviewer` RUNS, and `review.
+// mandatory_ok` reports whether it did. A hang UPSTREAM of it in the same pass
+// means neither the guarantee nor the tally is ever EVALUATED: the gate does not
+// fail, it never resolves. An operator watching the tally sees nothing wrong,
+// because there is no tally yet — which is exactly why the incident stayed
+// invisible for 41 minutes. So the bound's job is not only to stop waiting; it
+// is to make the pass ALWAYS produce a disposition.
+//
+// WHY THE BOUND CANNOT BE A TIMER. Same two runtime facts temperloop#1071 hit:
+// `Date.now()` THROWS here and there is no timer primitive, so a deadline is not
+// directly expressible. But `Promise.race` IS — what #1071 lacked was something
+// that resolves ON A CLOCK to race against, and this file already owns one: a
+// machinery executor running a single `sleep`. reviewWaitAgent() is that tick.
+// A reviewer is an `agent({agentType})` call, NOT a shell command, so #1071's
+// emitted-shell watchdog cannot reach it; the race is the only seam that can.
+//
+// THE SHAPE, mirroring #1071's ceiling+observability pair exactly:
+//   • REVIEW_AGENT_CEILING_SECS — the wall-clock ceiling on the WHOLE §3e pass,
+//     measured from fanout start. Every routed reviewer is spawned CONCURRENTLY
+//     (they are independent read-only passes; nothing ordered them), so one
+//     hung agent can no longer keep a later one from launching — the observed
+//     failure — and the pass costs max(reviewer) rather than sum(reviewer).
+//     A reviewer still unsettled at the ceiling is ABANDONED, not killed: this
+//     runtime cannot cancel an agent, and the promise is simply never awaited
+//     again. Its disposition then respects mandatory-vs-advisory (runReviewers).
+//   • REVIEW_AGENT_SLOW_SECS — the observability half: a pass still running at
+//     this threshold emits a log() progress notice naming who is outstanding, so
+//     a long review is VISIBLE well before it is given up on. 0 disables it.
+// Both are NAMED SETTINGS (BUILD_REVIEW_AGENT_CEILING_SECS /
+// BUILD_REVIEW_AGENT_SLOW_SECS), handed in by the orchestrator at Step 0 on the
+// SAME seam as GATE_SLICE_SECS / the #1071 pair above, for the same structural
+// reason (this runtime has no shell to source build.config.sh).
+const REVIEW_AGENT_CEILING_SECS_DEFAULT = 1200;
+const REVIEW_AGENT_SLOW_SECS_DEFAULT = 300;
+// FLOOR — a ceiling below the longest LEGITIMATE wait would manufacture false
+// timeouts on healthy work, which is strictly worse than the stall it bounds.
+// The reference length for "one legitimate long-running unit of this pipeline"
+// is one CI-poll slice or one 3e.5 gate slice, so the floor is the larger of the
+// two and no operator value can go under it. Derived, never typed twice —
+// retuning either slice length carries here automatically.
+const REVIEW_AGENT_CEILING_FLOOR_SECS = Math.max(CI_POLL_SLICE_SECS, GATE_SLICE_SECS);
+const REVIEW_AGENT_CEILING_SECS = Math.max(
+  REVIEW_AGENT_CEILING_FLOOR_SECS,
+  Number(input.reviewAgentCeilingSecs) > 0
+    ? Math.floor(Number(input.reviewAgentCeilingSecs))
+    : REVIEW_AGENT_CEILING_SECS_DEFAULT,
+);
+// The SLOW threshold is advisory, so it only needs to be sane: non-negative (0
+// disables the notice) and never at/above the ceiling, where it could never
+// fire. The explicit blank check is NOT redundant with the `> 0` form used
+// above: 0 is a MEANINGFUL value here (disable), and `Number('')` is 0 — so an
+// orchestrator that resolves an unset setting to "" would otherwise silently
+// disable the notice instead of landing on the in-file default. Same
+// empty-vs-absent hazard STEP_SLOW_SECS spells out, for the same reason.
+const reviewSlowInput = input.reviewAgentSlowSecs;
+const reviewSlowGiven =
+  reviewSlowInput !== undefined && reviewSlowInput !== null && String(reviewSlowInput).trim() !== '';
+const REVIEW_AGENT_SLOW_SECS = Math.min(
+  REVIEW_AGENT_CEILING_SECS - 1,
+  reviewSlowGiven && Number(reviewSlowInput) >= 0
+    ? Math.floor(Number(reviewSlowInput))
+    : REVIEW_AGENT_SLOW_SECS_DEFAULT,
+);
+// The longest single `sleep` one timer executor may hold: the Bash tool's own
+// hard cap less headroom for process startup and the executor's own turn. A
+// longer wait is SLICED across several timer spawns rather than asking one Bash
+// invocation to outlive the cap — the same arithmetic-not-comment discipline
+// CI_POLL_SLICES_PER_BATCH uses. It also stays under STEP_CEILING_FLOOR_SECS, so
+// the #1071 watchdog wrapped around every machinery command never kills a timer
+// that is doing exactly what it was asked to do.
+const REVIEW_WAIT_SLICE_MAX_SECS = Math.floor((AGENT_BASH_CAP_MS - 60_000) / 1000);
+// reviewWaitSlices() — the wait, expressed as the sequence of sleeps that reach
+// first the SLOW mark and then the CEILING. Deriving it from the two marks (not
+// from a fixed slice length) is what keeps the timer CHEAP: a healthy pass that
+// finishes inside the slow threshold pays for exactly ONE timer spawn, and a
+// genuinely hung one pays a handful — never one spawn per poll interval, the
+// micro-agent cost temperloop#942 exists to prevent.
+function reviewWaitSlices() {
+  const marks = [];
+  if (REVIEW_AGENT_SLOW_SECS > 0 && REVIEW_AGENT_SLOW_SECS < REVIEW_AGENT_CEILING_SECS) {
+    marks.push(REVIEW_AGENT_SLOW_SECS);
+  }
+  marks.push(REVIEW_AGENT_CEILING_SECS);
+  const slices = [];
+  let at = 0;
+  for (const mark of marks) {
+    let left = mark - at;
+    while (left > 0) {
+      const slice = Math.min(left, REVIEW_WAIT_SLICE_MAX_SECS);
+      slices.push(slice);
+      left -= slice;
+    }
+    at = mark;
+  }
+  return slices;
+}
 // The gate executor's Bash-tool timeout — derived, never typed twice. Kept under
 // this name because it is still exactly that: the tool-level timeout threaded to
 // the gate runMachinery call (and only that call).
@@ -3496,7 +3623,10 @@ function reviewDiffTsvGap(diffOut, files) {
 
 // runReviewers — the §3e driver. Fetches the routing inputs (one machinery
 // call), resolves the matching reviewer set, and spawns EACH directly via
-// `agent({agentType})` — never delegated to the 3c worker. Returns:
+// `agent({agentType})` — never delegated to the 3c worker. Every routed reviewer
+// is spawned CONCURRENTLY and the whole fanout waits under one wall-clock
+// ceiling (temperloop#2003, awaitReviewFanout), so one agent that never returns
+// can neither block a later one from launching nor stall the level. Returns:
 //   { escalation }                                   — the diff fetch itself failed
 //   { summary, notes, blocking: [], ran, skipped }   — normal return (blocking may be non-empty)
 // A THIRD shape (temperloop#2020) is a normal return, not a third branch: when
@@ -3510,6 +3640,10 @@ function reviewDiffTsvGap(diffOut, files) {
 // `kind: architectural` axis — all computed from `item`/`files`, never from
 // the table — still route and still run, and `ran` is therefore NOT
 // necessarily empty in this shape.
+//   { …the normal return, plus `escalation` }        — a MANDATORY reviewer hit
+//     the ceiling (temperloop#2003): the tally is still computed and returned,
+//     AND the item escalates `review-agent-timeout` rather than reading as if the
+//     mandatory gate had passed. Callers check `.escalation` first either way.
 // `summary` is a short tally line for the PR body (criterion: the PR must
 // carry real evidence of a real pass, never a guaranteed-skip default).
 // `notes` (temperloop#1450) is the FULL findings text for every reviewer that
@@ -3650,24 +3784,70 @@ async function runReviewers(item, wt) {
   // (`### <reviewer> (ci-fix round N)`) without regex surgery on reviewer
   // text that may itself contain `### ` lines.
   const sections = [];
-  for (const route of routes) {
+  // temperloop#2003 — SPAWN EVERY ROUTED REVIEWER FIRST, then wait on the set
+  // under one wall-clock ceiling. Before this the pass awaited each reviewer in
+  // turn, so a single agent that never returned kept every LATER one from
+  // launching at all: in the observed incident the mandatory `workflow-reviewer`
+  // for a `claude/commands/*.md` diff was never spawned, because the reviewer
+  // ahead of it in the loop hung. Spawning is synchronous and in route order, so
+  // the call ORDER (what the journal and a resume's cached prefix key on) and
+  // the per-reviewer result ORDER are both byte-identical to the old loop's.
+  const slots = routes.map((route) => {
+    const slot = { route, done: false, value: undefined, error: undefined };
+    // No `schema` — a plain read-only advisory pass, not a machine-validated
+    // verdict (build.md §3e: "docs-reviewer is advisory only ... never a
+    // checks gate entry"). Deliberately no `model` override either: the
+    // reviewer's OWN agent definition sets its tier (e.g.
+    // claude/agents/workflow-reviewer.md declares `model: sonnet`).
+    //
+    // The two-arm `.then` is the settlement RECORDER, not error handling: it
+    // makes each reviewer's own outcome readable WITHOUT awaiting it, which is
+    // what lets the ceiling below keep every settled reviewer's findings while
+    // abandoning only the unsettled ones. It also means a rejected reviewer
+    // promise is always handled, so a reviewer that throws after the ceiling has
+    // passed can never surface as an unhandled rejection.
+    slot.promise = agent(reviewPrompt(item, wt, route, files), {
+      // `#<reviewer>` (not `:<reviewer>`) matches the label grammar every
+      // other multi-part label in this file already uses (e.g.
+      // `ci-batch:<slug>#<n>`) — the slug is always the run of characters up
+      // to the first `#`, never a second `:`-delimited segment.
+      label: `review:${item.slug}#${route.reviewer}`,
+      phase: stagePhase(STAGE_REVIEW),
+      agentType: route.reviewer,
+    }).then(
+      (v) => { slot.done = true; slot.value = v; },
+      (e) => { slot.done = true; slot.error = e; },
+    );
+    return slot;
+  });
+  await awaitReviewFanout(item, slots);
+
+  for (const slot of slots) {
+    const route = slot.route;
+    if (!slot.done) {
+      // temperloop#2003 — the CEILING BREACH. This reviewer is abandoned, never
+      // killed: the runtime offers no cancellation, so the promise is simply
+      // never awaited again and the pass proceeds. The note keeps the documented
+      // `skipped — <agent> unavailable` shape (`~/.claude/CLAUDE.md` § Subagent
+      // usage, legible agent-gate degradation) and names the cause, so an
+      // operator reading the PR body sees a bounded outcome rather than the
+      // silence the incident actually produced. Disposition splits
+      // mandatory-vs-advisory below: this is the ADVISORY half (a degraded
+      // notice + a `mandatory_ok`-preserving tally entry); a MANDATORY route
+      // additionally ESCALATES after the loop.
+      const note =
+        `skipped — ${route.reviewer} unavailable ` +
+        `(exceeded the §3e review ceiling of ${REVIEW_AGENT_CEILING_SECS}s — temperloop#2003)`;
+      log(`[${item.slug}] §3e review — ${note}`);
+      // `timed_out` distinguishes this from the other three skip reasons for a
+      // reader of the parked tally; `mandatory` is what drives mandatory_ok, so
+      // the tally reflects reality here exactly as it does on every other skip.
+      skipped.push({ reviewer: route.reviewer, note, mandatory: route.mandatory, timed_out: true });
+      continue;
+    }
     let text;
-    try {
-      // No `schema` — a plain read-only advisory pass, not a machine-validated
-      // verdict (build.md §3e: "docs-reviewer is advisory only ... never a
-      // checks gate entry"). Deliberately no `model` override either: the
-      // reviewer's OWN agent definition sets its tier (e.g.
-      // claude/agents/workflow-reviewer.md declares `model: sonnet`).
-      text = await agent(reviewPrompt(item, wt, route, files), {
-        // `#<reviewer>` (not `:<reviewer>`) matches the label grammar every
-        // other multi-part label in this file already uses (e.g.
-        // `ci-batch:<slug>#<n>`) — the slug is always the run of characters up
-        // to the first `#`, never a second `:`-delimited segment.
-        label: `review:${item.slug}#${route.reviewer}`,
-        phase: stagePhase(STAGE_REVIEW),
-        agentType: route.reviewer,
-      });
-    } catch (err) {
+    if (slot.error) {
+      const err = slot.error;
       const msg = String((err && err.message) || err);
       // Reuse machineryAgent's own resolution-failure detection (temperloop#1014)
       // as the precedent — the SAME two markers of "agent() could not resolve
@@ -3693,6 +3873,8 @@ async function runReviewers(item, wt) {
       log(`[${item.slug}] §3e review — ${note}`);
       skipped.push({ reviewer: route.reviewer, note, mandatory: route.mandatory });
       continue;
+    } else {
+      text = slot.value;
     }
     if (text == null) {
       const note = `skipped — ${route.reviewer} returned no verdict (skip/transient)`;
@@ -3715,7 +3897,7 @@ async function runReviewers(item, wt) {
   const parts = [];
   if (ran.length) parts.push(`§3e review — ran: ${ran.map((r) => r.reviewer).join(', ')}`);
   if (skipped.length) parts.push(skipped.map((s) => s.note).join('; '));
-  return {
+  const result = {
     summary: parts.join(' · '),
     notes: sections.map((s) => `### ${s.reviewer}\n${s.text}`).join('\n\n'),
     sections,
@@ -3725,6 +3907,144 @@ async function runReviewers(item, wt) {
     round,
     ...(routingDegraded ? { routing_degraded: routingDegraded } : {}),
   };
+  // temperloop#2003 — the MANDATORY half of the timeout disposition. An advisory
+  // reviewer that timed out has already degraded to a legible skip notice above
+  // and the item carries on; a MANDATORY route (foundation#1007's command-doc
+  // rule) must never read as if its gate passed, so it escalates instead. The
+  // payload carries the FULL tally — `mandatory_ok` computed, not left
+  // unevaluated — which is precisely what the incident lacked: the pass never
+  // resolved, so nothing ever reported that the mandatory reviewer had not run.
+  const timedOut = skipped.filter((s) => s.timed_out);
+  const mandatoryTimedOut = timedOut.filter((s) => s.mandatory);
+  if (mandatoryTimedOut.length > 0) {
+    log(
+      `[${item.slug}] §3e review — MANDATORY reviewer(s) ` +
+        `${mandatoryTimedOut.map((s) => s.reviewer).join(', ')} exceeded the ` +
+        `${REVIEW_AGENT_CEILING_SECS}s review ceiling — escalating (temperloop#2003)`,
+    );
+    result.escalation = escalate(item.slug, 'review-agent-timeout', {
+      ceiling_secs: REVIEW_AGENT_CEILING_SECS,
+      slow_secs: REVIEW_AGENT_SLOW_SECS,
+      mandatory: mandatoryTimedOut.map((s) => s.reviewer),
+      timed_out: timedOut.map((s) => s.reviewer),
+      review: reviewTally(result),
+      round,
+      remedy:
+        'the mandatory §3e reviewer did not return within the ceiling — re-drive the item, ' +
+        'or raise BUILD_REVIEW_AGENT_CEILING_SECS only if this review is legitimately this slow',
+    });
+  }
+  return result;
+}
+
+// awaitReviewFanout — temperloop#2003's ceiling, applied to the whole §3e
+// fanout. Returns once every reviewer has settled OR the ceiling elapses,
+// whichever comes first; it never rejects and never throws, and the caller reads
+// each slot's own `done` flag to decide the per-reviewer disposition.
+//
+// HOW IT MEASURES TIME WITHOUT A CLOCK. `Date.now()` throws in this runtime and
+// there is no timer primitive, so the wait is raced against something that
+// resolves ON a clock: reviewWaitAgent(), a machinery executor whose entire job
+// is one `sleep`. Each slice is a separate spawn, so the elapsed total is the
+// sum of the slices that have RETURNED — an accounting this file can do with
+// integers alone.
+//
+// FAIL-OPEN, DELIBERATELY. If the timer itself cannot run (the auto-mode safety
+// classifier denies it, the executor returns something else), the bound is
+// simply unavailable and we fall back to the pre-#2003 behaviour — await the
+// fanout — with a legible notice. A timer that resolved without actually
+// sleeping would otherwise manufacture an INSTANT false ceiling breach on
+// perfectly healthy reviews, which is far worse than the stall it bounds
+// (kernel principle 7: advisory over enforced discipline).
+async function awaitReviewFanout(item, slots) {
+  const allSettled = Promise.all(slots.map((s) => s.promise));
+  const pending = () => slots.filter((s) => !s.done);
+  // Drain already-resolved reviewer promises before paying for a timer spawn: a
+  // reviewer that has ALREADY returned is only pending as a MICROTASK here
+  // (spawning is synchronous), and `await null` yields one microtask tick. Pure
+  // cost optimisation — under-draining can only cost one extra timer spawn,
+  // never a wrong verdict, because the race below resolves immediately on a
+  // settled fanout either way.
+  for (let i = 0; i < 8 && pending().length > 0; i++) await null;
+
+  let waited = 0;
+  let slowLogged = false;
+  for (const slice of reviewWaitSlices()) {
+    if (pending().length === 0) return;
+    const tick = await Promise.race([
+      allSettled.then(() => 'SETTLED'),
+      reviewWaitAgent(item, slice, waited + slice),
+    ]);
+    if (tick === 'SETTLED' || pending().length === 0) return;
+    if (tick !== 'REVIEW_WAIT_ELAPSED') {
+      log(
+        `[${item.slug}] §3e review — the wall-clock timer is unavailable (${tick}); ` +
+          `waiting on the fanout unbounded, as before temperloop#2003`,
+      );
+      await allSettled;
+      return;
+    }
+    waited += slice;
+    if (pending().length === 0) return;
+    if (!slowLogged && REVIEW_AGENT_SLOW_SECS > 0 && waited >= REVIEW_AGENT_SLOW_SECS) {
+      slowLogged = true;
+      // The OBSERVABILITY half (mirrors #1071's STEP_SLOW notice): a long review
+      // becomes visible here, well before the ceiling gives up on it.
+      log(
+        `[${item.slug}] §3e review — still running after ${waited}s: ` +
+          `${pending().map((s) => s.route.reviewer).join(', ')} ` +
+          `(ceiling ${REVIEW_AGENT_CEILING_SECS}s). Raise BUILD_REVIEW_AGENT_CEILING_SECS ` +
+          `if this review is legitimately this slow.`,
+      );
+    }
+  }
+  log(
+    `[${item.slug}] §3e review — wall-clock ceiling of ${REVIEW_AGENT_CEILING_SECS}s reached with ` +
+      `${pending().map((s) => s.route.reviewer).join(', ')} still outstanding (temperloop#2003)`,
+  );
+}
+
+// reviewWaitAgent — the wall-clock TICK this runtime does not otherwise have.
+// One machinery executor, one `sleep`, one closed outcome. Resolves to
+// 'REVIEW_WAIT_ELAPSED' when the interval genuinely elapsed (including via the
+// Bash tool's own timeout, which is the same fact about the budget), and to the
+// outcome it actually got otherwise — which the caller reads as "no usable
+// timer" and fails open on.
+//
+// Deliberately NOT runMachinery(): that path frames its command as a named
+// project helper script (worktree.sh / pr.sh / ci-poll.sh — the temperloop#72
+// auto-mode-classifier framing) and wraps it in the #1071 watchdog. A bare
+// `sleep` is neither, and describing it as one would be a lie to the executor.
+async function reviewWaitAgent(item, secs, mark) {
+  const cmd = `sleep ${secs}; printf '%s\\n' '{"outcome":"REVIEW_WAIT_ELAPSED","secs":${secs}}'`;
+  const promptFor = (lean) =>
+    [
+      `Wait quietly for a fixed interval, then report that the interval elapsed. This is a TIMER,`,
+      'not a build step: it inspects nothing and changes nothing.',
+      'Run this single command with the Bash tool, exactly as written — do not add flags, chain',
+      'extra commands, or shorten the interval.',
+      `Set the Bash tool \`timeout\` parameter to ${Math.min(AGENT_BASH_CAP_MS, secs * 1000 + 60_000)}.`,
+      lean ? null : 'The command prints a SINGLE JSON line on stdout; return that object verbatim as your result.',
+      'If the Bash tool\'s own timeout kills the command BEFORE it prints any JSON line, do NOT'
+        + ' guess and do NOT re-run it: return exactly {"outcome":"REVIEW_WAIT_ELAPSED"}. The'
+        + ' interval elapsed either way — that is the only fact this call reports.',
+      '',
+      'Command:',
+      cmd,
+    ].filter(Boolean).join('\n');
+  let out;
+  try {
+    out = await machineryAgent(promptFor, {
+      label: `review-wait:${item.slug}#${mark}`,
+      phase: stagePhase(STAGE_REVIEW),
+      model: input.machinerySoloModel || 'haiku',
+      schema: SPINE_OUTCOME_SCHEMA,
+    });
+  } catch (err) {
+    return `timer-error: ${String((err && err.message) || err)}`;
+  }
+  if (machineryDenied(out)) return 'timer-denied';
+  return out.outcome === 'REVIEW_WAIT_ELAPSED' ? 'REVIEW_WAIT_ELAPSED' : `timer-outcome:${out.outcome}`;
 }
 
 // reviewBoundReached(review) — the §3e convergence bound's ONE predicate
