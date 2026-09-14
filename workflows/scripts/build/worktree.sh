@@ -97,6 +97,20 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/merged-detect.sh
 source "$SCRIPT_DIR/lib/merged-detect.sh"
 
+# run_with_timeout — the portable bounded-subprocess shim (#256), whose
+# dependency-free third tier means the bound holds on a stock macOS with neither
+# GNU `timeout` nor `gtimeout` installed. The ONLY network call this script
+# makes is the origin freshen in § The landed-check's comparison point below,
+# and it runs under this shim so an unreachable origin can never stall a
+# `remove` that must still answer from local state.
+# shellcheck source=../lib/portable-timeout.sh
+source "$SCRIPT_DIR/../lib/portable-timeout.sh"
+
+# Wall-clock bound on that freshen. A fetch that outlives it is killed and the
+# caller judges on the LOCAL ref instead — the conservative basis — so the bound
+# can only ever make a verdict MORE preserving, never less.
+: "${WORKTREE_LANDED_FETCH_TIMEOUT_SECS:=20}"
+
 # fd 3 = the script's real stdout. Helpers like resolve_repo run inside
 # command substitutions, where a die()'s ERROR line would be captured by the
 # caller instead of reaching the orchestrator — emitting via fd 3 keeps the
@@ -149,6 +163,58 @@ default_branch() {
     fi
   done
   return 1
+}
+
+# --- The landed-check's comparison point (temperloop#2030) --------------------
+#
+# Every "did this work land?" test in this file compares against the LOCAL
+# `origin/<default>` ref, and that ref only moves when something fetches. It
+# goes stale between runs, and a stale comparison point makes a verdict of
+# UNLANDED say nothing at all: work merged minutes ago still reads as
+# not-an-ancestor, so `remove` records a `refs/parked/*` preservation for work
+# that is already in the default branch. That is the #2030 reproduction — 4 of
+# the 7 refs it found were ancestors of the merged tip.
+#
+# ONE helper, not a fourth per-call-site fetch. `create`, `prune` and
+# `deps-merged` each already freshened by hand; `preserve_unlanded` — the one
+# whose verdict decides whether work is recorded as lost — did not, and on the
+# `create` path the hand-rolled fetch ran AFTER the probe that needed it.
+# Hoisting the freshen here is what keeps the fix off a single instance.
+#
+# BOUNDED and FAIL-SAFE, in that order:
+#   * bounded — `run_with_timeout $WORKTREE_LANDED_FETCH_TIMEOUT_SECS`, so an
+#     unreachable or hanging origin cannot stall a `remove` that must still
+#     answer.
+#   * fail-safe — a failed, timed-out, offline or raced fetch is NEVER fatal and
+#     NEVER moves a verdict toward destruction: the local ref simply stays the
+#     basis, which can only make work read as LESS landed, i.e. MORE preserved.
+#     `remove` therefore never depends on the network being up. This is the
+#     same posture the reap gates take: an unevaluable check is FALSE.
+#
+# Callers read DEFAULT_REF_FRESH to RECORD which basis they judged on, so a
+# verdict reached against a stale ref is distinguishable after the fact from one
+# reached against a fresh one.
+#
+# Memoized per repo+branch for the life of the process: `create` freshens once
+# and its occupant probe, its base and its ancestry tests all ride that fetch.
+DEFAULT_REF_FRESH=false
+_FRESHEN_MEMO_KEY=""
+_FRESHEN_MEMO_RESULT=false
+freshen_default_ref() {
+  local repo="$1" default="$2" key
+  key="$1|$2"
+  if [ -n "$_FRESHEN_MEMO_KEY" ] && [ "$key" = "$_FRESHEN_MEMO_KEY" ]; then
+    DEFAULT_REF_FRESH="$_FRESHEN_MEMO_RESULT"
+    return 0
+  fi
+  DEFAULT_REF_FRESH=false
+  if run_with_timeout "$WORKTREE_LANDED_FETCH_TIMEOUT_SECS" \
+       git -C "$repo" fetch --quiet origin "$default" >/dev/null 2>&1; then
+    DEFAULT_REF_FRESH=true
+  fi
+  _FRESHEN_MEMO_KEY="$key"
+  _FRESHEN_MEMO_RESULT="$DEFAULT_REF_FRESH"
+  return 0
 }
 
 # Append the build tooling markers to the shared info/exclude (idempotent)
@@ -600,14 +666,24 @@ preserve_capture() {
   printf '%s\n' "$sha"
 }
 
-# preserve_mint_ref <repo> <slug> <sha> — point a local-only preservation ref at
-# <sha> and print its name. Idempotent when the ref already names the SAME sha;
-# a ref that already names a DIFFERENT one (an 8-hex prefix collision, or a
-# hand-created ref) is never clobbered — the mint disambiguates with a `-<n>`
-# suffix instead. Returns non-zero (printing nothing) when no usable name can be
-# claimed, which resolves the caller AWAY from claiming preservation.
+# preserve_mint_ref <repo> <slug> <sha> [reason] — point a local-only
+# preservation ref at <sha> and print its name. Idempotent when the ref already
+# names the SAME sha; a ref that already names a DIFFERENT one (an 8-hex prefix
+# collision, or a hand-created ref) is never clobbered — the mint disambiguates
+# with a `-<n>` suffix instead. Returns non-zero (printing nothing) when no
+# usable name can be claimed, which resolves the caller AWAY from claiming
+# preservation.
+#
+# <reason> is written as the ref's REFLOG message (#2030). `refs/parked/*` is
+# outside the namespaces `core.logAllRefUpdates` covers by default, so
+# `--create-reflog` is what makes the record exist at all. This is the durable
+# half of "distinguishable after the fact": the mint line's `preserved_detail`
+# is ephemeral stdout, while the reflog message travels WITH the ref, so a ref
+# found months later still says whether the verdict behind it was reached
+# against a freshly-fetched comparison point (`basis=refreshed`) or against
+# whatever the local ref happened to hold (`basis=unrefreshed`).
 preserve_mint_ref() {
-  local repo="$1" slug="$2" sha="$3" base ref existing n=1
+  local repo="$1" slug="$2" sha="$3" reason="${4:-parked}" base ref existing n=1
   base="$PARKED_REF_NS/${slug}-${sha:0:8}"
   ref="$base"
   while : ; do
@@ -618,8 +694,19 @@ preserve_mint_ref() {
     [ "$n" -le 20 ] || return 1
     ref="${base}-${n}"
   done
-  git -C "$repo" update-ref "$ref" "$sha" 2>/dev/null || return 1
+  git -C "$repo" update-ref --create-reflog -m "$reason" "$ref" "$sha" 2>/dev/null || return 1
   printf '%s\n' "$ref"
+}
+
+# parked_ref_basis <repo> <ref> — the `basis=` field preserve_mint_ref recorded
+# in the ref's reflog message, or EMPTY when the ref carries none (a
+# hand-created ref, or one minted before #2030). Read-only and never fatal: a
+# ref with no reflog simply reports nothing.
+parked_ref_basis() {
+  local msg re
+  msg="$(git -C "$1" log -g --format='%gs' -1 "$2" 2>/dev/null)" || msg=""
+  re='basis=([a-z]+)'
+  if [[ "$msg" =~ $re ]]; then printf '%s\n' "${BASH_REMATCH[1]}"; fi
 }
 
 # preserve_unlanded <repo> <wt_path> <branch> — sets PRESERVED / PRESERVED_REF /
@@ -656,7 +743,7 @@ preserve_mint_ref() {
 preserve_unlanded() {
   local repo="$1" wt_path="$2" branch="$3"
   local slug default have_wt=0 have_branch=0 probe="" outcome="" sha ref
-  local dirty=0 merged="false" tip=""
+  local dirty=0 merged="false" tip="" basis="unrefreshed" detail
   PRESERVED="false"
   PRESERVED_REF=""
   PRESERVED_DETAIL="nothing-to-preserve"
@@ -720,6 +807,17 @@ preserve_unlanded() {
     tip="$(git -C "$wt_path" rev-parse HEAD 2>/dev/null)" || tip=""
   fi
 
+  # Freshen the comparison point BEFORE judging (§ The landed-check's comparison
+  # point, #2030). BOTH tests below resolve against the LOCAL origin/<default> —
+  # the ancestry test directly, and merged_detect's Method-2 patch-id heuristic
+  # through its own merge-base against it — so judging "unlanded" on a ref last
+  # updated before the merge is not a verdict at all, it is an artifact of when
+  # something last fetched. The freshen is best-effort by contract: on failure
+  # `basis` stays `unrefreshed`, the local ref remains the basis, and the
+  # could-not-establish case lands on the SAME preserving branch it always did.
+  freshen_default_ref "$repo" "$default"
+  if [ "$DEFAULT_REF_FRESH" = true ]; then basis="refreshed"; fi
+
   # Already in the merged tip => nothing can be lost. Cheap ancestor test first
   # (the ordinary case), falling through to the merge-queue-safe helper only
   # when the tip is NOT an ancestor — the squash/rebase shape.
@@ -753,15 +851,19 @@ preserve_unlanded() {
     return 1
   fi
 
-  ref="$(preserve_mint_ref "$repo" "$slug" "$sha" 2>/dev/null)" || ref=""
+  # `basis` rides the detail AND the ref's own reflog: this preservation says
+  # whether the "unlanded" verdict behind it was reached against a freshly
+  # fetched comparison point or against whatever the local ref held (#2030).
+  detail="preserved:$outcome sha=$sha dirty=$dirty basis=$basis"
+  ref="$(preserve_mint_ref "$repo" "$slug" "$sha" "$detail" 2>/dev/null)" || ref=""
   if [ -z "$ref" ]; then
-    PRESERVED_DETAIL="capture-failed:ref-mint outcome=$outcome sha=$sha"
+    PRESERVED_DETAIL="capture-failed:ref-mint outcome=$outcome sha=$sha basis=$basis"
     return 1
   fi
 
   PRESERVED="true"
   PRESERVED_REF="$ref"
-  PRESERVED_DETAIL="preserved:$outcome sha=$sha dirty=$dirty"
+  PRESERVED_DETAIL="$detail"
   printf 'worktree.sh: preserved unlanded work for %s at %s (%s)\n' \
     "$branch" "$ref" "$PRESERVED_DETAIL" >&2
   return 0
@@ -1278,6 +1380,23 @@ create_core() {
   CREATE_BRANCH="$branch"
   CREATE_BASE="origin/$default"
 
+  # Freshen the base BEFORE the probe, not after it (#2030). TWO things on this
+  # path resolve against the LOCAL origin/<default>, and both used to read
+  # whatever it happened to hold:
+  #   * `worktree add` bases the new branch on it, and a stale base silently
+  #     builds the item on an old main (two stale-base incidents in the
+  #     workflow-evals run, #337) — the original reason this fetch exists;
+  #   * clear_path_probe's own landed-check judges the OCCUPANT against it, so
+  #     ordering the fetch AFTER the probe left that verdict reading a pre-merge
+  #     tip and recording landed work as an unlanded preservation.
+  # Best-effort, bounded and fail-safe per § The landed-check's comparison
+  # point: offline (tests/planes) is fine — the local ref is then the
+  # conservative basis. OUTSIDE the lock, for the same reason as the probe
+  # below: it is the one network call on this path, and it needs no
+  # serialization — git locks the remote-tracking ref itself, and a lost race is
+  # treated exactly as being offline is (fall back to the local ref).
+  freshen_default_ref "$repo" "$default"
+
   # BEFORE the lock, deliberately. Classifying the occupant shells out to
   # `pr.sh recover-probe` and `merged_detect_is_merged`, both gh-backed, and the
   # lock's SCOPE rule (§ Repo-wide mutation lock) forbids holding it across a
@@ -1286,17 +1405,6 @@ create_core() {
   # ERRORs. `prune_one` acquires below its own gh-backed detection for exactly
   # this reason; create now matches it.
   clear_path_probe "$repo" "$wt_path" "$branch"
-
-  # Freshen the base before branching off it. `worktree add` bases the new branch
-  # on the LOCAL origin/<default> ref, which goes stale between runs — branching
-  # off a stale base silently builds the item on an old main (two stale-base
-  # incidents in the workflow-evals run, #337). Best-effort, mirroring cmd_prune:
-  # offline (tests/planes) is fine — the local ref is then the conservative basis.
-  # Also OUTSIDE the lock, for the same reason as the probe above: it is the one
-  # remaining network call on this path. It needs no serialization — git locks
-  # the remote-tracking ref itself, and the `|| true` already treats a lost race
-  # exactly as it treats being offline (fall back to the local ref).
-  git -C "$repo" fetch --quiet origin "$default" 2>/dev/null || true
 
   # Everything from here to the CREATED-side bookkeeping below mutates SHARED
   # repo state — `.git/config` (the branch-delete in clear_path_destroy, the
@@ -1560,9 +1668,13 @@ cmd_prune() {
   local repo force="$1" default prefix line wt_path branch
   repo="$(resolve_repo "$2")"
   default="$(default_branch "$repo")" || die "cannot resolve origin's default branch in '$repo'"
-  # Best-effort freshen of the merge target; offline (tests, planes) is fine —
-  # the local origin/<default> is then the basis, which is conservative.
-  git -C "$repo" fetch --quiet origin "$default" 2>/dev/null || true
+  # Freshen the merge target every gate below compares against — the worktree
+  # gates, the sidelined-worktree owner and the parked-ref reap all test
+  # ancestry of origin/<default> (§ The landed-check's comparison point).
+  # Best-effort: offline (tests, planes) is fine — the local origin/<default> is
+  # then the basis, which is conservative (an unfetched merge reads as unmerged,
+  # so nothing is reaped that should not be).
+  freshen_default_ref "$repo" "$default"
   git -C "$repo" worktree prune 2>/dev/null || true
 
   prefix="${repo}.wt/"
@@ -1640,13 +1752,19 @@ _worktree_gh() {
 # a parked-ref line must never inflate that count.
 prune_parked_refs() {
   local repo="$1" default="$2"
-  local ref sha slug issue landed terminal issue_state state reason
+  local ref sha slug issue landed terminal issue_state state reason basis
   while IFS= read -r ref; do
     [ -n "$ref" ] || continue
     sha="$(git -C "$repo" rev-parse --verify --quiet "${ref}^{commit}" 2>/dev/null)" || sha=""
     [ -n "$sha" ] || continue
     slug="$(parked_ref_slug "$ref")"
     issue="$(parked_ref_issue "$slug")"
+    # The basis the MINT judged on, read back off the ref's own reflog (#2030).
+    # Reported on both lines so a reader can tell a preservation reached against
+    # a stale comparison point from one reached against a fresh one, without
+    # re-deriving anything — the after-the-fact half of the #2030 contract. It
+    # is REPORTING ONLY: neither reap gate consults it.
+    basis="$(parked_ref_basis "$repo" "$ref")"
 
     landed=false
     if git -C "$repo" merge-base --is-ancestor "$sha" "origin/$default" 2>/dev/null; then
@@ -1669,16 +1787,18 @@ prune_parked_refs() {
       if git -C "$repo" update-ref -d "$ref" "$sha" 2>/dev/null; then
         jq -cn --arg ref "$ref" --arg sha "$sha" --arg slug "$slug" --arg issue "$issue" \
                --arg issue_state "$issue_state" --argjson landed "$landed" --arg reason "$reason" \
+               --arg basis "$basis" \
           '{outcome:"PARKED_REF_REAPED", ref:$ref, sha:$sha, slug:$slug, issue:$issue,
-            issue_state:$issue_state, landed:$landed, reason:$reason}'
+            issue_state:$issue_state, landed:$landed, reason:$reason, basis:$basis}'
         continue
       fi
       reason="held:reap-failed"
     fi
     jq -cn --arg ref "$ref" --arg sha "$sha" --arg slug "$slug" --arg issue "$issue" \
            --arg issue_state "$issue_state" --argjson landed "$landed" --arg reason "$reason" \
+           --arg basis "$basis" \
       '{outcome:"PARKED_REF", ref:$ref, sha:$sha, slug:$slug, issue:$issue,
-        issue_state:$issue_state, landed:$landed, reason:$reason}'
+        issue_state:$issue_state, landed:$landed, reason:$reason, basis:$basis}'
   done < <(git -C "$repo" for-each-ref --format='%(refname)' "$PARKED_REF_NS/*" 2>/dev/null || true)
 }
 
@@ -1837,10 +1957,11 @@ cmd_deps_merged() {
   shas_csv="$2"
   [ -n "$shas_csv" ] || die "deps-merged requires a non-empty comma-separated SHA list"
   default="$(default_branch "$repo")" || die "cannot resolve origin's default branch in '$repo'"
-  # Freshen the merge target before the ancestry test — mirrors cmd_create /
-  # cmd_prune. Offline (tests/planes) is fine: the local origin/<default> is then
-  # the conservative basis (a not-yet-fetched merge simply reads as unmerged).
-  git -C "$repo" fetch --quiet origin "$default" 2>/dev/null || true
+  # Freshen the merge target before the ancestry test — the same shared helper
+  # cmd_create / cmd_prune use (§ The landed-check's comparison point). Offline
+  # (tests/planes) is fine: the local origin/<default> is then the conservative
+  # basis (a not-yet-fetched merge simply reads as unmerged).
+  freshen_default_ref "$repo" "$default"
 
   local unmerged=()
   local IFS=','
