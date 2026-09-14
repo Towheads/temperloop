@@ -68,6 +68,21 @@
 #     `type:"run"` at `schema:2`), 0 on an empty/missing log — and correctly
 #     EXCLUDES a pre-temperloop#1978 flat-schema run record (no `type` field
 #     at all) from the count (acceptance criterion 4).
+#   - `--status` (temperloop#2016) reports the soak clock's staleness as ONE
+#     closed JSON line carrying all three figures — days recorded, days
+#     required (`STATE_GRAPH_SOAK_DAYS`, read not restated), and how LONG
+#     since the most recent record — plus a TYPED `state` whose values never
+#     collapse into one another: `never-recorded` (nothing ever ran:
+#     days_recorded 0, last_day/days_since_last NULL, never 0) vs `stale`
+#     (records exist, the newest older than `STATE_GRAPH_SOAK_STALE_DAYS`) vs
+#     `current` vs `unreadable` (a torn line, or a qualifying record whose
+#     `day` is not a date — its own answer, never a silent never-recorded).
+#     Covered at the BOUNDARY too (exactly at the threshold still reads
+#     current; one day past reads stale), plus: it exits 0 in every state
+#     (it reports, it never gates), it writes nothing to the log, and its
+#     day set is the SAME `_sg_soak_qualifying_days` filter `--count` reads
+#     — so a legacy flat-schema record is excluded from the recency exactly
+#     as it is from the count, and the two can never drift apart.
 #   - `--audit --items <file>` appends a `{day, type:"audit",
 #     audited_items}` record, extracting one issue number per line
 #     (bare/`#N`/`Issue:N` all accepted); a zero-issue file is a legitimate
@@ -606,6 +621,140 @@ printf '%s' "$malformed_out" | grep -F -- 'unreadable soak log' >/dev/null || fa
 echo "PASS: soak --count — a torn/malformed log line surfaces a diagnostic and exits non-zero"
 
 # =============================================================================
+# --status: the read-only staleness report (temperloop#2016)
+#
+# The three figures (days recorded / days required / how long since the most
+# recent record) plus a TYPED state, in ONE closed JSON line. Every case below
+# pins `_sg_soak_day` so "how long ago" is deterministic rather than a function
+# of the calendar the suite happens to run on, and writes its own log lines by
+# hand (no network, no real cache dir — `fresh_cache` gives each case its own
+# CACHE_STORE_ROOT under $TMP).
+# =============================================================================
+
+# A small accessor: write N literal log lines into THIS case's soak log.
+seed_soak_log() {
+  local dir file
+  dir="$(cache_repo_dir "$BOARD" state-graph-soak)"
+  mkdir -p "$dir"
+  file="$(cache_snapshot_file "$BOARD" state-graph-soak)"
+  printf '%s\n' "$@" >"$file"
+  printf '%s' "$file"
+}
+
+# one closed JSON line, always — never two lines, never a bare figure.
+assert_one_json_line() {
+  local out="$1" what="$2"
+  [ "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" = 1 ] || fail "$what should print exactly ONE line (got: $out)"
+  jq -e . >/dev/null 2>&1 <<<"$out" || fail "$what should print parseable JSON (got: $out)"
+}
+
+# --- never recorded: nothing has EVER run ------------------------------------
+# days_recorded is 0 and last_day/days_since_last are NULL — there is no "how
+# long ago" for a clock that never started, and a 0 there would read as "ran
+# today", the exact typed-state collapse this report exists to avoid.
+fresh_cache status-never
+_sg_soak_day() { echo "2026-09-14"; }
+rc=0; never_out="$(cmd_soak --status --board "$BOARD")" || rc=$?
+[ "$rc" -eq 0 ] || fail "soak --status on a board with no soak log should exit 0, not gate (got rc=$rc)"
+assert_one_json_line "$never_out" "soak --status"
+[ "$(jq -r '.state' <<<"$never_out")" = "never-recorded" ] || fail "an empty/missing soak log must read state=never-recorded (got: $never_out)"
+[ "$(jq -r '.days_recorded' <<<"$never_out")" = "0" ] || fail "never-recorded must report days_recorded 0 (got: $never_out)"
+[ "$(jq -r '.last_day' <<<"$never_out")" = "null" ] || fail "never-recorded has no last_day — it must be null, never a date (got: $never_out)"
+[ "$(jq -r '.days_since_last' <<<"$never_out")" = "null" ] || fail "never-recorded has no days_since_last — it must be null, never 0 (got: $never_out)"
+echo "PASS: soak --status — a log with no qualifying record reads never-recorded, with a NULL days_since_last (never 0)"
+
+# --- stale: records exist, the newest is old ---------------------------------
+# The payload is the FIGURE: "no soak record in 6 days" carries information on
+# day 6 that a repeated "soak is stale" boolean does not.
+fresh_cache status-stale
+seed_soak_log \
+  '{"day":"2026-09-05","type":"audit","audited_items":[]}' \
+  '{"day":"2026-09-08","type":"run","schema":2,"classes":{}}' >/dev/null
+rc=0; stale_out="$(cmd_soak --status --board "$BOARD")" || rc=$?
+[ "$rc" -eq 0 ] || fail "soak --status over a stale clock must still exit 0 — it reports, it never gates (got rc=$rc)"
+assert_one_json_line "$stale_out" "soak --status"
+[ "$(jq -r '.state' <<<"$stale_out")" = "stale" ] || fail "records ending 6 days ago must read state=stale (got: $stale_out)"
+[ "$(jq -r '.days_since_last' <<<"$stale_out")" = "6" ] || fail "soak --status must report HOW LONG since the most recent record, not merely THAT it is stale (got: $stale_out)"
+[ "$(jq -r '.last_day' <<<"$stale_out")" = "2026-09-08" ] || fail "stale must name the most recent recorded day (got: $stale_out)"
+[ "$(jq -r '.days_recorded' <<<"$stale_out")" = "2" ] || fail "stale must still report the distinct days recorded (got: $stale_out)"
+[ "$(jq -r '.days_required' <<<"$stale_out")" = "$STATE_GRAPH_SOAK_DAYS" ] || fail "days_required must come from STATE_GRAPH_SOAK_DAYS (got: $stale_out)"
+echo "PASS: soak --status — a stopped clock reports how LONG it has been stopped (days_since_last), alongside recorded/required"
+
+# --- the three figures never collapse into a boolean -------------------------
+[ "$(jq -c '[.days_recorded, .days_required, .days_since_last] | map(type) | unique' <<<"$stale_out")" = '["number"]' ] \
+  || fail "all three figures must be numbers on a stale clock, never booleans/nulls (got: $stale_out)"
+echo "PASS: soak --status — all three figures (recorded, required, since-last) are present as numbers, not a boolean"
+
+# --- days_required is READ from the setting, never a restated literal --------
+rc=0; req_out="$(STATE_GRAPH_SOAK_DAYS=21 cmd_soak --status --board "$BOARD")" || rc=$?
+[ "$(jq -r '.days_required' <<<"$req_out")" = "21" ] || fail "days_required must track STATE_GRAPH_SOAK_DAYS, never a hardcoded 14 (got: $req_out)"
+echo "PASS: soak --status — days_required reads STATE_GRAPH_SOAK_DAYS rather than restating its default"
+
+# --- current: a record from today --------------------------------------------
+fresh_cache status-current
+seed_soak_log '{"day":"2026-09-14","type":"run","schema":2,"classes":{}}' >/dev/null
+current_out="$(cmd_soak --status --board "$BOARD")"
+[ "$(jq -r '.state' <<<"$current_out")" = "current" ] || fail "a record from today must read state=current (got: $current_out)"
+[ "$(jq -r '.days_since_last' <<<"$current_out")" = "0" ] || fail "a record from today is 0 days old (got: $current_out)"
+echo "PASS: soak --status — a record from today reads current at days_since_last 0"
+
+# --- THE BOUNDARY: exactly at the threshold is still current -----------------
+# STATE_GRAPH_SOAK_STALE_DAYS is the oldest age still acceptable (`<=`), not
+# the youngest that is not — so a record exactly that many days old is the
+# LAST current one, and one day older is the first stale one.
+fresh_cache status-boundary
+seed_soak_log '{"day":"2026-09-11","type":"run","schema":2,"classes":{}}' >/dev/null
+boundary_out="$(STATE_GRAPH_SOAK_STALE_DAYS=3 cmd_soak --status --board "$BOARD")"
+[ "$(jq -r '.days_since_last' <<<"$boundary_out")" = "3" ] || fail "boundary fixture should be exactly 3 days old (got: $boundary_out)"
+[ "$(jq -r '.state' <<<"$boundary_out")" = "current" ] || fail "EXACTLY at STATE_GRAPH_SOAK_STALE_DAYS must still read current (got: $boundary_out)"
+just_past_out="$(STATE_GRAPH_SOAK_STALE_DAYS=2 cmd_soak --status --board "$BOARD")"
+[ "$(jq -r '.state' <<<"$just_past_out")" = "stale" ] || fail "one day past STATE_GRAPH_SOAK_STALE_DAYS must read stale (got: $just_past_out)"
+echo "PASS: soak --status — exactly at STATE_GRAPH_SOAK_STALE_DAYS reads current; one day past reads stale"
+
+# --- unreadable is its OWN answer, never a silent never-recorded -------------
+fresh_cache status-unreadable
+seed_soak_log '{not valid json' >/dev/null
+rc=0; unreadable_out="$(cmd_soak --status --board "$BOARD" 2>/dev/null)" || rc=$?
+[ "$rc" -eq 0 ] || fail "soak --status over a torn log still reports rather than gating (got rc=$rc)"
+assert_one_json_line "$unreadable_out" "soak --status over a torn log"
+[ "$(jq -r '.state' <<<"$unreadable_out")" = "unreadable" ] || fail "a torn soak log must read state=unreadable, never never-recorded (got: $unreadable_out)"
+[ "$(jq -r '.days_recorded' <<<"$unreadable_out")" = "null" ] || fail "an unreadable log knows NO day count — days_recorded must be null, never 0 (got: $unreadable_out)"
+printf '%s' "$(cmd_soak --status --board "$BOARD" 2>&1 >/dev/null)" | grep -F -- 'unreadable soak log' >/dev/null \
+  || fail "soak --status over a torn log should name the unreadable log path on stderr"
+echo "PASS: soak --status — a torn log reads unreadable (its own state, days_recorded null), exits 0, and says why on stderr"
+
+# --- a qualifying record whose `day` is not a date is also unreadable --------
+fresh_cache status-badday
+seed_soak_log '{"day":"whenever","type":"run","schema":2,"classes":{}}' >/dev/null
+rc=0; badday_out="$(cmd_soak --status --board "$BOARD" 2>/dev/null)" || rc=$?
+[ "$rc" -eq 0 ] || fail "soak --status over an unparseable day should report, not gate (got rc=$rc)"
+[ "$(jq -r '.state' <<<"$badday_out")" = "unreadable" ] || fail "a non-date day value must read unreadable, never be silently treated as never-recorded or current (got: $badday_out)"
+echo "PASS: soak --status — a qualifying record whose day is not a YYYY-MM-DD date reads unreadable, not never-recorded"
+
+# --- --count and --status read the SAME qualifying-day filter ----------------
+# One filter, two readers (temperloop#2016): a pre-temperloop#1978 flat-schema
+# record is excluded from BOTH the count and the recency — if the two filters
+# could drift apart, the stalled clock would be invisible in exactly the way
+# this report exists to fix.
+fresh_cache status-shared-filter
+seed_soak_log \
+  '{"day":"2026-09-10","type":"run","schema":2,"classes":{}}' \
+  '{"day":"2026-09-13","drift_query_set":[],"reconcile_set":[],"diff":{"only_in_drift_query":[],"only_in_reconcile":[],"agree":true}}' >/dev/null
+shared_out="$(cmd_soak --status --board "$BOARD")"
+shared_count="$(cmd_soak --count --board "$BOARD")"
+[ "$(jq -r '.days_recorded' <<<"$shared_out")" = "$shared_count" ] || fail "soak --status days_recorded must equal soak --count (got: $shared_out vs $shared_count)"
+[ "$(jq -r '.last_day' <<<"$shared_out")" = "2026-09-10" ] || fail "a legacy flat-schema record must not become last_day — --count and --status share one filter (got: $shared_out)"
+[ "$(jq -r '.days_since_last' <<<"$shared_out")" = "4" ] || fail "recency must be measured from the newest QUALIFYING day (got: $shared_out)"
+echo "PASS: soak --status — days_recorded equals --count and recency skips a non-qualifying record: one shared filter, never two"
+
+# --- --status is READ-ONLY: it appends nothing to the log --------------------
+log_before="$(cat "$(cache_snapshot_file "$BOARD" state-graph-soak)")"
+cmd_soak --status --board "$BOARD" >/dev/null
+[ "$(cat "$(cache_snapshot_file "$BOARD" state-graph-soak)")" = "$log_before" ] \
+  || fail "soak --status must never write to the soak log (it is a read-only report)"
+echo "PASS: soak --status — read-only: the soak log is byte-identical after a status read"
+
+# =============================================================================
 # --audit --items <file>
 # =============================================================================
 fresh_cache audit
@@ -743,6 +892,11 @@ echo "── soak CLI: --help prints usage naming --count (THE class-A activatio
 PATH="$SHIM_PATH" bash "$STATE_GRAPH_BIN" soak --help 2>/dev/null | grep -- '--count' >/dev/null \
   || fail "the exact activation-gate predicate (soak --help | grep -q -- '--count') failed"
 echo "PASS: soak CLI — --help satisfies the class-A activation predicate verbatim"
+
+echo "── soak CLI: --help names --status (discoverability of the staleness report) ──"
+PATH="$SHIM_PATH" bash "$STATE_GRAPH_BIN" soak --help 2>/dev/null | grep -- '--status' >/dev/null \
+  || fail "soak --help must name --status — an undiscoverable report is a report nobody runs"
+echo "PASS: soak CLI — --help names --status alongside --count"
 
 echo "── soak CLI: --help exits 0 ──"
 rc=0; PATH="$SHIM_PATH" bash "$STATE_GRAPH_BIN" soak --help >/dev/null 2>&1 || rc=$?
