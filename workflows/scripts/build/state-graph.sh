@@ -54,11 +54,14 @@
 #                                                 against today
 #
 # SOAK (temperloop#1910; PER-CLASS scope rewrite temperloop#1978): the
-# fourteen-day cross-check ADR 0033's independence claim rests on — "one
+# multi-day cross-check ADR 0033's independence claim rests on — "one
 # derivation (`build`) plus one INDEPENDENT read (`reconcile.sh --status`,
 # which never touches this file's own snapshot store) should keep agreeing"
 # — made MECHANICAL rather than a human diffing two command outputs by eye
-# every day.
+# every day. How many recorded days the check needs before it is trusted is
+# the named setting `STATE_GRAPH_SOAK_DAYS`, never a literal in prose
+# (§ Named-setting convention); build.config.sh states its default and the
+# rationale for it.
 #
 # PER-CLASS, never one flat set diff (temperloop#1978): status-drift and
 # reconcile.sh --status have different SCOPE — status-drift only ever
@@ -153,19 +156,19 @@
 # criterion.)
 #
 # Practically: every day whose only record predates this rewrite drops out
-# of `--count`, so the fourteen-day independence check restarts from zero
-# and needs fourteen new `schema:2` days before it is trustworthy again. An
-# operator watching `--count` fall after this deploys should read that as
-# this expected reset, not a regression.
+# of `--count`, so the independence check restarts from zero and needs a
+# full `STATE_GRAPH_SOAK_DAYS` worth of new `schema:2` days before it is
+# trustworthy again. An operator watching `--count` fall after this deploys
+# should read that as this expected reset, not a regression.
 #
 # temperloop#1996 stays at `schema:2` DELIBERATELY. It adds a field
 # (`not_covered_kinds`) and narrows what `drift_query_set` contains; it does
 # not change the per-class record SHAPE `--count` keys on, and a `schema:3`
-# would reset the fourteen-day count a second time for a correctness fix
-# that makes the older records MORE comparable, not less (their
-# `only_in_drift_query` entries for an uncounterpartable kind were never a
-# real disagreement in the first place). Same call temperloop#1980 round 4
-# made when its In-Progress gate changed what stale-claims's own set
+# would reset the `STATE_GRAPH_SOAK_DAYS` count a second time for a
+# correctness fix that makes the older records MORE comparable, not less
+# (their `only_in_drift_query` entries for an uncounterpartable kind were
+# never a real disagreement in the first place). Same call temperloop#1980
+# round 4 made when its In-Progress gate changed what stale-claims's own set
 # contains: a query-side correctness fix is not a schema break.
 #
 # `--count` prints the number of distinct `day` values recorded (any
