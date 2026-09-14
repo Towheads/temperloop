@@ -4482,7 +4482,7 @@ happyWorker('nar1');
 const origAgent = globalThis.agent;
 let attempts = 0;
 // temperloop#2020: count the PIPELINE's machinery attempts only. The
-// escalation-path work-preservation push (`preserve-push:<slug>`) is a
+// escalation-path work-preservation push (\`preserve-push:<slug>\`) is a
 // DIFFERENT command issued after the item has already escalated, not a
 // re-issue of the failed one — counting it here would silently convert this
 // assertion from 'never retried' into 'never touched machinery again'. It is
@@ -6556,6 +6556,112 @@ if (!reason && reviewCalls.length !== 0) reason = 'no reviewer may be spawned fr
 console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
 "
 
+# ============================================================================
+# TEST (K2020 round 2 — THE MANDATORY ROUTE SURVIVES A TABLE GAP): every drop/
+#   garble case in this file pairs a broken table with a `.sh`/`.py` diff, i.e.
+#   with routes that genuinely need the table. That left the most dangerous
+#   pairing untested. determineReviewers()'s mandatory command-doc rule
+#   (foundation#1007) is computed PURELY from `files` — the field that relays
+#   reliably — and fires regardless of any tsv row; the table is needed only by
+#   the extension axis and the prose-`*.md` fallback. A degraded arm that
+#   withdrew ALL routing therefore reported a `claude/commands/*.md` diff as
+#   `mandatory_ok: true` with workflow-reviewer never run — byte-identical to a
+#   clean pass, which is the K.49 / foundation#164 silent-skip class and the
+#   K.52 mandatory-step birth rule reintroduced through this very fallback.
+#   Two arms, because `mandatory_ok` has to track reality in BOTH directions:
+#     1  the reviewer is available  -> it RUNS, mandatory_ok stays true HONESTLY
+#     2  the reviewer is unavailable -> mandatory_ok goes FALSE, as it would on
+#                                       an intact table
+#   Both also assert the extension-axis route (`.sh` -> shell-reviewer) is
+#   still withdrawn — the degradation is partial, not cancelled.
+# ============================================================================
+run_node_case "K2020 mandatory survives a gap: a DROPPED table on a diff touching claude/commands/*.md still routes and RUNS workflow-reviewer (the rule never needed the table), while the .sh extension-axis route stays withdrawn" "
+$PREAMBLE
+
+setMachinery('gapcmddoc-a',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/gapcmddoc-a' },
+  { outcome: 'REVIEW_DIFF', files: ['claude/commands/build.md', 'workflows/scripts/state-graph.sh'] },
+  { outcome: 'REVIEW_DIFF', files: ['claude/commands/build.md', 'workflows/scripts/state-graph.sh'] },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-gcd' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'sha-gcd', branch: 'build/gapcmddoc-a' },
+  { outcome: 'PR_OPENED', pr_number: 2021 },
+  { outcome: 'CI_GREEN' },
+);
+happyWorker('gapcmddoc-a');
+setReview('gapcmddoc-a', '## Summary\\nno findings\\n');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'gapcmddoc-a', branch: 'build/gapcmddoc-a', title: 'Touch a command doc and a shell script', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+let reason = null;
+const diffCalls = callLog.filter(c => (c.opts.label||'').startsWith('review-diff:gapcmddoc-a'));
+const reviewCalls = callLog.filter(c => isReviewCall(c.opts));
+if (diffCalls.length !== 2) reason = 'the gap detectors must be unchanged — exactly one retry, got ' + diffCalls.length + ' review-diff calls';
+else if ((result.escalations ?? []).length !== 0) reason = 'a dropped table must still DEGRADE, never halt: ' + JSON.stringify(result.escalations);
+else if ((result.parked ?? []).length !== 1) reason = 'expected the item to park: ' + JSON.stringify(result);
+const rec = (result.parked ?? [])[0];
+if (!reason && !(rec.review.ran ?? []).some(r => r.reviewer === 'workflow-reviewer'))
+  reason = 'THE ACCEPTANCE: the MANDATORY command-doc route is computed from files, never from the table — it must still RUN on a dropped relay: ' + JSON.stringify(rec.review);
+if (!reason && !(rec.review.ran ?? []).some(r => r.reviewer === 'workflow-reviewer' && r.mandatory === true))
+  reason = 'the surviving route must still be flagged mandatory, or reviewTally cannot tell a real pass from an optional one: ' + JSON.stringify(rec.review.ran);
+if (!reason && rec.review.mandatory_ok !== true)
+  reason = 'mandatory_ok must read true HONESTLY here — the reviewer actually ran: ' + JSON.stringify(rec.review);
+if (!reason && (rec.review.ran ?? []).some(r => r.reviewer === 'shell-reviewer'))
+  reason = 'the extension-axis route DOES need the table — it must stay withdrawn, never guessed: ' + JSON.stringify(rec.review.ran);
+if (!reason && !reviewCalls.some(c => c.opts.agentType === 'workflow-reviewer'))
+  reason = 'the mandatory reviewer must actually be SPAWNED, not merely listed: ' + JSON.stringify(reviewCalls.map(c => c.opts.agentType));
+if (!reason && reviewCalls.length !== 1)
+  reason = 'exactly one reviewer (the table-independent one) may be spawned from a dropped table: ' + JSON.stringify(reviewCalls.map(c => c.opts.agentType));
+if (!reason && !rec.review.routing_degraded)
+  reason = 'the degradation must still be recorded — a partially-routed roster is not a clean one: ' + JSON.stringify(rec.review);
+if (!reason && !(rec.review.skipped ?? []).some(s => /^skipped — /.test(s.note) && /routing unavailable/.test(s.note)))
+  reason = 'the withdrawn axes must still be named in a mode-2 skip notice: ' + JSON.stringify(rec.review.skipped);
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+run_node_case "K2020 mandatory honesty on a gap: when workflow-reviewer is UNAVAILABLE the same dropped-table command-doc diff reports mandatory_ok FALSE — the degraded arm may never launder a real mandatory skip into a clean tally" "
+$PREAMBLE
+
+setMachinery('gapcmddoc-b',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/gapcmddoc-b' },
+  { outcome: 'REVIEW_DIFF', files: ['claude/commands/fix.md'] },
+  { outcome: 'REVIEW_DIFF', files: ['claude/commands/fix.md'] },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-gcdb' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'sha-gcdb', branch: 'build/gapcmddoc-b' },
+  { outcome: 'PR_OPENED', pr_number: 2022 },
+  { outcome: 'CI_GREEN' },
+);
+happyWorker('gapcmddoc-b');
+setReview('gapcmddoc-b', reviewUnavailable('workflow-reviewer'));
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'gapcmddoc-b', branch: 'build/gapcmddoc-b', title: 'Touch a command doc', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+let reason = null;
+if ((result.parked ?? []).length !== 1) reason = 'expected the item to park: ' + JSON.stringify(result);
+const rec = (result.parked ?? [])[0];
+if (!reason && rec.review.mandatory_ok !== false)
+  reason = 'THE ACCEPTANCE: a genuinely-skipped mandatory reviewer must read mandatory_ok:false even on a degraded relay — the tally is a real signal, not a default: ' + JSON.stringify(rec.review);
+if (!reason && !(rec.review.skipped ?? []).some(s => s.reviewer === 'workflow-reviewer' && s.mandatory === true))
+  reason = 'the mandatory route must be recorded as a mandatory SKIP, which is what makes mandatory_ok false: ' + JSON.stringify(rec.review.skipped);
+if (!reason && !(rec.review.routed_not_run ?? []).includes('workflow-reviewer'))
+  reason = 'a resolved-then-skipped reviewer must appear in routed_not_run: ' + JSON.stringify(rec.review);
+if (!reason && !rec.review.routing_degraded)
+  reason = 'the routing degradation must still be carried alongside the mandatory skip: ' + JSON.stringify(rec.review);
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+
 run_node_case "K1976 recovered: a retry that returns a complete tsv routes normally — shell-reviewer runs, no escalation" "
 $PREAMBLE
 const TAB = String.fromCharCode(9);
@@ -6994,7 +7100,7 @@ if (internalsSrc === MJS_SRC) {
       } else if ('tsv' in parsed) {
         reason = 'K2020: the step must NOT ship the table as an inline scalar any more — found a tsv key: ' + JSON.stringify(String(parsed.tsv).slice(0, 80));
       } else if (!Array.isArray(parsed.tsv_lines)) {
-        reason = 'K2020: tsv_lines must be a real JSON ARRAY (the shape `files` uses), got ' + typeof parsed.tsv_lines + ': ' + JSON.stringify(parsed.tsv_lines).slice(0, 120);
+        reason = 'K2020: tsv_lines must be a real JSON ARRAY (the shape \`files\` uses), got ' + typeof parsed.tsv_lines + ': ' + JSON.stringify(parsed.tsv_lines).slice(0, 120);
       } else if (parsed.tsv_lines.length !== Number(parsed.tsv_rows)) {
         reason = 'K2020: tsv_lines must carry exactly the rows tsv_rows counted — ' + parsed.tsv_lines.length + ' vs ' + parsed.tsv_rows;
       } else {
@@ -7233,6 +7339,172 @@ else if (callLog.some(c => (c.opts.label||'').startsWith('preserve-push:')))
 console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
 "
 
+run_node_case "K2020 preserve DENIED: the auto-mode classifier denying the preservation push is recorded as SPINE_DENIED with preserved:false — the arm the function's own comment lists and the one that must never read as a silent success" "
+$PREAMBLE
+setMachinery('k2020-presvd',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/k2020-presvd' },
+);
+// A queued null models agent() coming back DENIED for the preserve-push label.
+// runMachinery() normalises that to { outcome: 'SPINE_DENIED', denied: true }
+// rather than throwing, so this arm reaches preserveOnEscalation as a
+// well-formed outcome object — and must be reported as NOT preserved.
+setPreserve('k2020-presvd', null);
+setWorker('k2020-presvd', { status: 'done', summary: 'built it', acceptance_results: [{ criterion: 'c', passed: false, evidence: 'e' }], commits: ['abc1234'] });
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'k2020-presvd', branch: 'build/k2020-presvd', title: 'Committed then escalated', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+let reason = null;
+if ((result.escalations ?? []).length !== 1) reason = 'expected exactly 1 escalation: ' + JSON.stringify(result);
+else {
+  const cw = result.escalations[0].payload.committed_work;
+  if (!cw) reason = 'a denied preservation push must still record committed_work — an absent field reads as an older workflow, not as a denial';
+  else if (cw.outcome !== 'SPINE_DENIED') reason = 'a denied executor must be named as such, never flattened to a generic ERROR: ' + JSON.stringify(cw);
+  else if (cw.preserved !== false) reason = 'a DENIED push landed nothing — preserved must be false so the disposing caller reads the worktree as the last copy: ' + JSON.stringify(cw);
+  else if (cw.branch !== 'build/k2020-presvd') reason = 'committed_work must still name the branch at risk even when the push never ran: ' + JSON.stringify(cw);
+  else if (result.escalations[0].kind !== 'acceptance-incomplete') reason = 'a denied preservation must not change the escalation the item was carrying: ' + result.escalations[0].kind;
+}
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+# ============================================================================
+# TEST (K2020 round 2 — preserveCommittedWorkCmd's GENERATED BASH, EXECUTED
+#   not mocked): every case above drives the JS CONSUMER of this step against a
+#   hand-written JSON object, so none of them executes a single line of the
+#   shell text preserveCommittedWorkCmd() actually emits. That text is the
+#   data-loss mechanism itself — it exists because a prose guard failed and 515
+#   verified lines were destroyed — so a quoting bug, a misresolving \`default\`
+#   chain, a silently-failing \`git rev-list --count\` or an off-by-one in the
+#   \`ahead -eq 0\` skip would surface only in production, on the one path built
+#   to prevent loss. The sibling tsv_lines change got a real-bash test for
+#   exactly this reason; this is its counterpart.
+#
+#   Runs the REAL generated command under bash against throwaway git repos (a
+#   bare 'origin' plus local clones, all under mkdtemp, git config fully
+#   isolated via GIT_CONFIG_GLOBAL/SYSTEM=/dev/null), splicing
+#   preserveCommittedWorkCmd out of the .mjs source rather than reimplementing
+#   it. Six arms, one per branch of the generated script:
+#     A  committed-but-unpushed  -> WORK_PRESERVED, and the branch REALLY lands
+#                                   in the bare origin (asserted against origin,
+#                                   not against the script's own claim)
+#     B  clean clone at base     -> WORK_PRESERVE_SKIP, commits_ahead 0
+#     C  push rigged to fail     -> WORK_PRESERVE_FAILED, pushed false
+#     D  no worktree at all      -> WORK_PRESERVE_SKIP, detail 'no worktree'
+#     E  no refs/remotes/origin/HEAD -> the default_branch() fallback chain
+#                                   still resolves (a misresolve makes rev-list
+#                                   fail, ahead read 0, and the arm silently
+#                                   become a SKIP — the quiet failure)
+#     F  re-run over an already-pushed branch -> still WORK_PRESERVED
+#                                   (the documented idempotency claim)
+# ============================================================================
+run_node_case "K2020 preserve bash: the REAL generated shell (executed, not mocked) preserves an unpushed commit to origin, skips a clean tree, reports a failed push, handles a missing worktree, resolves default without origin/HEAD, and is idempotent" "
+$PREAMBLE
+const { execFileSync } = await import('node:child_process');
+const { mkdtempSync, rmSync } = await import('node:fs');
+const { tmpdir } = await import('node:os');
+let reason = null;
+const internalsSrc = MJS_SRC.replace(/return await buildLevel\(\);\s*\$/, 'return { preserveCommittedWorkCmd };');
+if (internalsSrc === MJS_SRC) {
+  reason = 'internals-splice failed: the buildLevel() tail was not found in build-level.mjs — this test needs updating alongside that refactor';
+} else {
+  globalThis.args = '{}';
+  const I = await (new AsyncFunction(internalsSrc))();
+  // Fully isolated git: no user/system config can lend this test an identity,
+  // a hooksPath, or a default branch, so it asserts the SCRIPT's behaviour.
+  const GITENV = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null', GIT_TERMINAL_PROMPT: '0' };
+  const G = 'git -c user.email=t@example.invalid -c user.name=T -c commit.gpgsign=false -c init.defaultBranch=main';
+  const root = mkdtempSync(tmpdir() + '/k2020-presv-');
+  const sh = (cmd, cwd) => execFileSync('bash', ['-c', cmd], { encoding: 'utf8', cwd: cwd || root, env: GITENV });
+  const run = (wt) => {
+    const out = execFileSync('bash', ['-c', I.preserveCommittedWorkCmd(wt)], { encoding: 'utf8', cwd: root, env: GITENV });
+    const lines = out.trim().split('\\n').filter(Boolean);
+    return JSON.parse(lines[lines.length - 1]);
+  };
+  const commitOn = (name, br, f) =>
+    sh('cd ' + name + ' && ' + G + ' checkout -q -b ' + br + ' && printf work > ' + f + ' && ' + G + ' add -A && ' + G + ' commit -q -m work');
+  try {
+    sh(G + ' init -q --bare origin.git');
+    sh(G + ' init -q seed');
+    sh('cd seed && printf base > f.txt && ' + G + ' add -A && ' + G + ' commit -q -m base && ' + G + ' remote add origin ../origin.git && ' + G + ' push -q -u origin HEAD:main');
+    const clone = (name) => sh(G + ' clone -q origin.git ' + name);
+
+    // --- A: a real committed-but-unpushed commit --------------------------
+    clone('wtA');
+    commitOn('wtA', 'build/wta', 'g.txt');
+    const a = run(root + '/wtA');
+    if (a.outcome !== 'WORK_PRESERVED') reason = 'A: an unpushed commit must be preserved, got ' + JSON.stringify(a);
+    else if (a.branch !== 'build/wta') reason = 'A: the generated shell must report the real branch, got ' + JSON.stringify(a);
+    else if (Number(a.commits_ahead) !== 1) reason = 'A: commits_ahead must count the real unlanded commits, got ' + JSON.stringify(a);
+    else if (a.pushed !== true) reason = 'A: pushed must be true on the success arm, got ' + JSON.stringify(a);
+    else {
+      // THE POINT: assert against ORIGIN, not against the script's own claim.
+      const landed = sh(G + ' --git-dir=' + root + '/origin.git show-ref --verify --quiet refs/heads/build/wta && printf YES || printf NO');
+      if (landed !== 'YES') reason = 'A: WORK_PRESERVED must mean the branch really exists on origin — it does not, so the report was optimistic';
+    }
+
+    // --- B: a clean clone sitting at base ---------------------------------
+    if (!reason) {
+      clone('wtB');
+      const b = run(root + '/wtB');
+      if (b.outcome !== 'WORK_PRESERVE_SKIP') reason = 'B: nothing ahead of base must SKIP, never mint an empty remote branch, got ' + JSON.stringify(b);
+      else if (Number(b.commits_ahead) !== 0) reason = 'B: the skip arm must report commits_ahead 0, got ' + JSON.stringify(b);
+      else if (b.branch !== 'main') reason = 'B: the skip arm must still name the branch it looked at, got ' + JSON.stringify(b);
+      else {
+        // Origin holds exactly main + build/wta from arm A at this point; the
+        // skip arm must not add a third head.
+        const heads = Number(sh(G + ' --git-dir=' + root + '/origin.git for-each-ref refs/heads/ | wc -l').trim());
+        if (heads !== 2) reason = 'B: the skip arm must push nothing — origin should still hold exactly main and build/wta, got ' + heads + ' heads';
+      }
+    }
+
+    // --- C: a push rigged to fail -----------------------------------------
+    if (!reason) {
+      clone('wtC');
+      commitOn('wtC', 'build/wtc', 'h.txt');
+      // Push URL only — the fetch refs (and so origin/main) stay intact, so the
+      // ahead count is real and ONLY the push fails.
+      sh('cd wtC && ' + G + ' remote set-url --push origin ' + root + '/no-such-repo.git');
+      const c = run(root + '/wtC');
+      if (c.outcome !== 'WORK_PRESERVE_FAILED') reason = 'C: a rejected push must be reported as FAILED — never silently optimistic, got ' + JSON.stringify(c);
+      else if (c.pushed !== false) reason = 'C: the failing arm must say pushed:false, got ' + JSON.stringify(c);
+      else if (Number(c.commits_ahead) !== 1) reason = 'C: the failing arm must still carry HOW MUCH work is at risk, got ' + JSON.stringify(c);
+    }
+
+    // --- D: no worktree at all --------------------------------------------
+    if (!reason) {
+      const d = run(root + '/never-created');
+      if (d.outcome !== 'WORK_PRESERVE_SKIP' || d.detail !== 'no worktree') reason = 'D: a missing worktree is a normal, named skip, got ' + JSON.stringify(d);
+    }
+
+    // --- E: default_branch() fallback with no refs/remotes/origin/HEAD ----
+    if (!reason) {
+      clone('wtE');
+      sh('cd wtE && ' + G + ' remote set-head origin -d >/dev/null 2>&1 || true');
+      commitOn('wtE', 'build/wte', 'i.txt');
+      const e = run(root + '/wtE');
+      // A misresolving fallback makes rev-list fail, ahead read 0 via the
+      // \`|| echo 0\` guard, and this arm degrade SILENTLY into a skip.
+      if (e.outcome !== 'WORK_PRESERVED' || Number(e.commits_ahead) !== 1) reason = 'E: with origin/HEAD absent the show-ref fallback must still resolve the default branch — a misresolve turns into a silent SKIP, got ' + JSON.stringify(e);
+    }
+
+    // --- F: idempotent re-run over an already-pushed branch ---------------
+    if (!reason) {
+      const f = run(root + '/wtA');
+      if (f.outcome !== 'WORK_PRESERVED' || f.pushed !== true) reason = 'F: a second preserve on an already-pushed branch is Everything up-to-date and must still report WORK_PRESERVED, got ' + JSON.stringify(f);
+    }
+  } catch (err) {
+    reason = 'the REAL generated shell (or its git fixture) threw: ' + ((err && err.message) || err);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+
 # --- K2020 static lockstep guards ------------------------------------------
 grep -q '"tsv_lines":%s' "$MJS" \
   || fail "#2020: reviewDiffCmd's printf must emit tsv_lines (the surviving array shape), not the table as an inline scalar"
@@ -7328,8 +7600,18 @@ grep -q 'fetchReviewDiff(stagePhase(STAGE_REVIEW), false)' "$MJS" \
 # `routing_degraded`, so the expected/got figures the detectors computed remain
 # on the record — pin THAT, so a regression back to a fatal escalation (or to a
 # silent drop of the payload) fails here.
-grep -q 'routing_degraded: gap' "$MJS" \
+grep -q 'routingDegraded = gap' "$MJS" \
   || fail "#1976/#2020: a still-incomplete tsv after the retry must DEGRADE carrying the gap payload as routing_degraded (never escalate review-diff-error, and never discard the missing/mismatch figures)"
+grep -q 'routing_degraded: routingDegraded' "$MJS" \
+  || fail "#1976/#2020: the carried gap payload must reach the returned record as routing_degraded — the field the Step 6 tally and the parked record read"
+# temperloop#2020 round 2: the gap arm must FALL THROUGH to the routing
+# decision with only the table-dependent axes withdrawn, never return early.
+# Returning early dropped the MANDATORY command-doc route (foundation#1007),
+# which is computed from `files` and never needed the table at all — so a
+# `claude/commands/*.md` diff whose relay dropped reported mandatory_ok:true
+# with workflow-reviewer never run. Pin the option that keeps them apart.
+grep -q 'tableAvailable: !routingDegraded' "$MJS" \
+  || fail "#2020: the degraded arm must call determineReviewers with tableAvailable:false (withdrawing ONLY the extension axis and the prose-*.md fallback) rather than returning before the routing decision — the mandatory command-doc rule never needed the table"
 # `if grep`, never `grep && fail`: under `set -euo pipefail` a grep MISS is a
 # non-zero exit that would abort the suite on the GOOD case (the same trap the
 # comment at the top of this file's static-guard block already names).
@@ -8755,6 +9037,25 @@ printf '%s\n' "$K1970_FIX_REPORT" | grep 'residual_blocking' >/dev/null \
 printf '%s\n' "$K1970_FIX_REPORT" | grep '## Review notes' >/dev/null \
   || fail "#1970: fix.md Step 7's residual_blocking line must point at the PR's ## Review notes"
 echo "PASS: #1970 report-surface guards — build.md Step 6, sweep.md Step 4 and fix.md Step 7 each render the residual_blocking tally the .mjs emits, section-scoped"
+
+# --- temperloop#2020 report-surface guards: routing_degraded ----------------
+# The SAME failure shape as #1970's above, one field over. `routing_degraded`
+# is emitted by reviewTally() on every parked record whose reviewer-routing
+# relay did not survive, and that item's `ran`/`mandatory_ok` read clean — the
+# table-independent routes really did run. So without a rollup clause a
+# partially-routed roster is visible ONLY inside one PR body's skip notice, and
+# an unreviewed .sh/.mjs diff reads byte-identically to a fully-reviewed one.
+# Section-scoped against the SAME three declared readers, reusing #1970's own
+# k1970_section helper so the two guards cannot drift apart.
+printf '%s\n' "$K1970_STEP6" | grep 'routing_degraded' >/dev/null \
+  || fail "#2020: build.md Step 6's summary must name routing_degraded — a degraded roster the .mjs emits and the Step 6 prose never renders is a signal that dead-ends, exactly the #1970 shape one field over"
+printf '%s\n' "$K1970_SWEEP_REPORT" | grep 'routing_degraded' >/dev/null \
+  || fail "#2020: sweep.md Step 4's report must name routing_degraded — /sweep drives the same build-level.mjs review path, so it can ship a partially-routed roster exactly like /build"
+printf '%s\n' "$K1970_FIX_REPORT" | grep 'routing_degraded' >/dev/null \
+  || fail "#2020: fix.md Step 7's report must name routing_degraded — /fix drives the same build-level.mjs review path, so it can ship a partially-routed roster exactly like /build"
+grep -q 'routing_degraded: routingDegraded' "$MJS" \
+  || fail "#2020: the report surfaces above render a field build-level.mjs must actually emit — reviewTally's producer half is missing"
+echo "PASS: #2020 report-surface guards — build.md Step 6, sweep.md Step 4 and fix.md Step 7 each render the routing_degraded tally the .mjs emits, section-scoped"
 
 # ============================================================================
 # TEST (K1970-e2e): the round counter's GENERATED SHELL, executed for real

@@ -15,13 +15,18 @@
   verify what arrives.
 
   When the table is still missing after one automatic retry, the build now
-  **finishes and says no reviewer ran**, instead of stopping. Review is
+  **finishes on a reduced set of reviewers**, instead of stopping. Review is
   advisory here — it is not one of the checks that gate a merge — and it
   happens after the work is written, tested and committed, so stopping there
   abandoned a finished change over a step that was never allowed to block it.
-  The pull request now carries a plain line saying the routing was
-  unavailable and no reviewer was routed, so an empty review section can no
-  longer be misread as a clean review.
+  Only the rules that actually read the table are dropped: the rules decided
+  from the change itself — above all the one that **always** requires a
+  workflow review when a command document is edited — still pick their
+  reviewer and still run it, so a missing table can never quietly turn a
+  required review into no review. The pull request carries a plain line naming
+  what was dropped, and the run summary counts the builds that reviewed on a
+  reduced set, so a thin review section can no longer be misread as a clean
+  review.
 
   And **whenever a build stops early, any commits it already made are pushed
   to the remote first**. Previously those commits existed only in a local

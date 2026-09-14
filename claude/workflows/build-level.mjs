@@ -2519,6 +2519,17 @@ function preserveCommittedWorkCmd(wt) {
     `[ -n "$default" ] || default=main`,
     `branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"`,
     `ahead="$(git rev-list --count "origin/$default..HEAD" 2>/dev/null || echo 0)"`,
+    // `$branch` goes into the hand-built JSON below through a bare printf
+    // `%s`, deliberately NOT through the `jq -R -s -c .` idiom reviewDiffCmd
+    // uses for tsv_lines/files. Two reasons it is safe here and jq is not
+    // worth it: (a) this branch is always `build/<kebab-slug>` — the driver
+    // mints it (`branch: 'build/<slug>'`) and a plan slug is kebab-case, so it
+    // carries no quote or backslash; (b) `git check-ref-format` structurally
+    // forbids a backslash in ANY ref name, so the one character that could
+    // break out of a JSON string by pairing with the next is impossible even
+    // for a hand-checked-out branch. Adding jq would also put a new binary
+    // dependency on the one path whose entire job is to work when things are
+    // already failing — the opposite of fail-soft.
     // Nothing committed beyond the base — 3f never ran and never needed to.
     // Pushing here would mint an empty remote branch for no benefit.
     `if [ "$ahead" -eq 0 ] 2>/dev/null; then`,
@@ -3243,8 +3254,22 @@ const REVIEW_PROSE_MD_RE = /\.md$/;
 // item's changed-file set. Every matching axis is included (build.md: "A
 // change matching more than one axis ... runs each matching reviewer").
 // Returns [{ reviewer, mandatory, reasons[] }, ...], reviewer names deduped.
-function determineReviewers(item, files, tsvText) {
-  const rows = parseTsvRows(tsvText);
+//
+// temperloop#2020 — `opts.tableAvailable: false` runs the TABLE-INDEPENDENT
+// axes ONLY. The rule set splits cleanly in two: the `review:` override, the
+// `kind: architectural` axis and the MANDATORY command-doc rule
+// (foundation#1007) are computed purely from `item`/`files` and never consult
+// reviewer-routing.tsv at all; the extension axis and the prose-`*.md`
+// fallback are the only ones that do. When the table does not survive the
+// machinery relay, only that second half is unknowable — so asking for
+// `tableAvailable: false` drops exactly those and keeps the rest, and a
+// degraded relay can never silently swallow a route that never needed the
+// table. The prose-`*.md` fallback is deliberately on the DROPPED side: it
+// fires precisely when no row matched, and with a broken table "no row
+// matched" is not a fact, it is an absence of evidence.
+function determineReviewers(item, files, tsvText, opts = {}) {
+  const tableAvailable = opts.tableAvailable !== false;
+  const rows = tableAvailable ? parseTsvRows(tsvText) : [];
   const matched = new Map(); // reviewer -> Set(reasons)
   const add = (reviewer, reason) => {
     if (!reviewer) return;
@@ -3261,6 +3286,10 @@ function determineReviewers(item, files, tsvText) {
       anyCommandsDoc = true;
       continue; // the mandatory rule below claims this file, never the tsv/prose fallback
     }
+    // Both remaining axes read `rows`; with no trustworthy table there is
+    // nothing to decide for this file, and guessing is the #1976/#1982
+    // silent-misroute. The command-doc rule above has already been recorded.
+    if (!tableAvailable) continue;
     let tsvHit = false;
     for (const row of rows) {
       if (reviewGlobMatch(row.key, f)) {
@@ -3417,10 +3446,15 @@ function reviewDiffTsvGap(diffOut, files) {
 //   { summary, notes, blocking: [], ran, skipped }   — normal return (blocking may be non-empty)
 // A THIRD shape (temperloop#2020) is a normal return, not a third branch: when
 // the routing table does not survive the relay even after the one-shot retry,
-// this returns the normal shape with `ran: []`, one `skipped` degradation
-// notice, and `routing_degraded` carrying the gap payload — the drive
-// continues to 3e.5/3f with the skip notice on the PR body. A post-commit
-// advisory pass that cannot route is a DEGRADATION, never a halt.
+// this returns the normal shape with one extra `skipped` degradation notice
+// and `routing_degraded` carrying the gap payload — the drive continues to
+// 3e.5/3f with the skip notice on the PR body. A post-commit advisory pass
+// that cannot route is a DEGRADATION, never a halt. The degradation is
+// PARTIAL: only the table-dependent axes are withdrawn, so the mandatory
+// command-doc route (foundation#1007), the `review:` override and the
+// `kind: architectural` axis — all computed from `item`/`files`, never from
+// the table — still route and still run, and `ran` is therefore NOT
+// necessarily empty in this shape.
 // `summary` is a short tally line for the PR body (criterion: the PR must
 // carry real evidence of a real pass, never a guaranteed-skip default).
 // `notes` (temperloop#1450) is the FULL findings text for every reviewer that
@@ -3454,6 +3488,12 @@ async function runReviewers(item, wt) {
     : 0;
   const round = priorRounds + 1;
   let files = Array.isArray(diffOut.files) ? diffOut.files : [];
+  // temperloop#2020 — set (not returned from) the gap arm below, so a degraded
+  // relay falls THROUGH to the routing decision with only the table-dependent
+  // axes withdrawn. See the arm's own comment for why an early return here was
+  // wrong.
+  let routingDegraded = null;
+  let degradedSkip = null;
   // temperloop#1976: a dropped/truncated tsv relay is nondeterministic per
   // copy (the same command, re-run, has been observed to carry it intact) —
   // re-run the SAME diff-fetch command once before treating it as a genuine
@@ -3484,54 +3524,70 @@ async function runReviewers(item, wt) {
       //
       // The DETECTORS are untouched — the row/checksum gap check and the
       // one-shot retry above both still run, and this arm is reached only
-      // after both have fired. What changed is what happens next: the routing
-      // decision cannot be made (routing off a missing/partial table is the
-      // #1976/#1982 silent-misroute this whole mechanism exists to prevent),
-      // so NO reviewer is routed and that is said out loud — never implied by
-      // silence. The notice is a mode-2 `skipped — …` line per
+      // after both have fired. What changed is what happens next: the
+      // TABLE-DEPENDENT part of the routing decision cannot be made (routing
+      // off a missing/partial table is the #1976/#1982 silent-misroute this
+      // whole mechanism exists to prevent), so the extension axis and the
+      // prose-`*.md` fallback are withdrawn and that is said out loud — never
+      // implied by silence. The notice is a mode-2 `skipped — …` line per
       // `claude/message-schema.md` § Degradation notice, carried into the PR
       // body by reviewBodySuffix() exactly like every other skip notice, so a
-      // cold reader of the PR sees that §3e did not route rather than reading
-      // an empty review section as a clean pass.
+      // cold reader of the PR sees which part of §3e did not route rather than
+      // reading a thin review section as a clean pass.
+      //
+      // NOT a return (temperloop#2020 round 2). Returning here conflated "the
+      // extension-axis table is broken" with "no route can be determined" and
+      // silently dropped the one route that never needed the table: the
+      // MANDATORY command-doc rule (foundation#1007) is computed purely from
+      // `files`, the field that relays reliably, and fires regardless of any
+      // tsv row. A `claude/commands/*.md` diff whose relay dropped would then
+      // have reported `mandatory_ok: true` with workflow-reviewer never run —
+      // byte-identical to a clean pass, i.e. the K.49/foundation#164 silent-skip
+      // class reintroduced through this very fallback. So the arm now falls
+      // THROUGH with `tableAvailable: false`: every table-independent route
+      // still runs, and `mandatory_ok` is computed from real routes again.
       //
       // Deliberately NOT the remedy-bearing variant: that one clause is
       // sanctioned only for a subagent that ships as source under
       // claude/agents/ and is merely uninstalled. This is a relay fault with
       // no in-the-moment operator fix, so it takes the bare default shape.
       const note =
-        'skipped — §3e reviewer routing unavailable (reviewer-routing.tsv did not survive the ' +
-        'machinery relay; no reviewer was routed for this diff)';
+        'skipped — §3e extension-axis reviewer routing unavailable (reviewer-routing.tsv did not ' +
+        'survive the machinery relay; only table-independent routes were resolved for this diff)';
       log(`[${item.slug}] §3e review — ${note} ${JSON.stringify(gap)}`);
-      return {
-        summary: note,
-        notes: '',
-        sections: [],
-        blocking: [],
-        ran: [],
-        // `mandatory: false` is a statement about this ENTRY, not about the
-        // item: nothing was routed, so no route's own `mandatory` flag was
-        // ever computed and none can be claimed here. reviewTally()'s
-        // `mandatory_ok` therefore stays true, which is honest — the
-        // foundation#1007 command-doc rule was not degraded, the whole
-        // routing step was, and `routing_degraded` below is the field that
-        // says so.
-        skipped: [{ reviewer: '(routing)', note, mandatory: false }],
-        round,
-        routing_degraded: gap,
-      };
+      routingDegraded = gap;
+      // `mandatory: false` is a statement about this ENTRY, not about the
+      // item: this entry records the withdrawn TABLE-DEPENDENT axes, none of
+      // which can ever be the foundation#1007 mandatory rule. The mandatory
+      // rule is routed for real below and carries its own `mandatory: true`
+      // into `ran`/`skipped`, so reviewTally()'s `mandatory_ok` reflects
+      // whether workflow-reviewer actually ran — it is no longer a claim this
+      // arm makes on its behalf.
+      degradedSkip = { reviewer: '(routing)', note, mandatory: false };
     }
   }
   // The orchestrator-supplied table wins outright when present (#1982); the
   // relayed table (`tsv_lines`, or the legacy `tsv` scalar — reviewDiffTsvText
   // normalizes both) is the legacy path, kept for an un-migrated caller.
   const tsvText = REVIEWER_ROUTING_TSV || reviewDiffTsvText(diffOut) || '';
-  const routes = determineReviewers(item, files, tsvText);
+  const routes = determineReviewers(item, files, tsvText, { tableAvailable: !routingDegraded });
   if (routes.length === 0) {
-    return { summary: '', notes: '', sections: [], blocking: [], ran: [], skipped: [], round };
+    return {
+      summary: degradedSkip ? degradedSkip.note : '',
+      notes: '',
+      sections: [],
+      blocking: [],
+      ran: [],
+      skipped: degradedSkip ? [degradedSkip] : [],
+      round,
+      ...(routingDegraded ? { routing_degraded: routingDegraded } : {}),
+    };
   }
 
   const ran = [];
-  const skipped = [];
+  // Seeded, not appended: the degradation notice must reach the PR body and
+  // the Step 6 tally whether or not any table-independent route then ran.
+  const skipped = degradedSkip ? [degradedSkip] : [];
   const blocking = [];
   // sections — the STRUCTURED per-reviewer findings ({ reviewer, text }, ran
   // order), alongside the pre-joined `notes` string (temperloop#1846). The
@@ -3612,6 +3668,7 @@ async function runReviewers(item, wt) {
     ran,
     skipped,
     round,
+    ...(routingDegraded ? { routing_degraded: routingDegraded } : {}),
   };
 }
 
