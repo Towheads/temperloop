@@ -411,6 +411,16 @@ const SPINE_OUTCOME_SCHEMA = {
         // notice riding alongside a step's real result, never a result itself —
         // runMachineryBatch partitions it out and logs it.
         'STEP_TIMEOUT', 'STEP_SLOW',
+        // temperloop#2020 — the post-commit work-preservation push that runs
+        // at the ONE escalation choke point (preserveOnEscalation). Three
+        // outcomes, deliberately distinct so a payload never has to infer
+        // which: WORK_PRESERVED (the branch is on origin), WORK_PRESERVE_SKIP
+        // (there was nothing to preserve — no worktree, or no commit ahead of
+        // the default branch), WORK_PRESERVE_FAILED (there WAS unlanded work
+        // and the push did not land it — the one shape that must stay visible,
+        // because a later `worktree.sh remove` is then the last copy's last
+        // chance).
+        'WORK_PRESERVED', 'WORK_PRESERVE_SKIP', 'WORK_PRESERVE_FAILED',
         'ERROR',
       ],
     },
@@ -459,9 +469,20 @@ const SPINE_OUTCOME_SCHEMA = {
     // operator sees WHY it failed without opening a log.
     exitCode: { type: ['number', 'string'] },
     // REVIEW_DIFF passthrough (temperloop#1430) — the changed-file list (repo-
-    // relative paths, from `git diff --name-only` in the worktree) and the raw
-    // reviewer-routing.tsv text (empty string when the worktree ships none).
+    // relative paths, from `git diff --name-only` in the worktree) and the
+    // reviewer-routing table's data rows (an empty array when the worktree
+    // ships no tsv — never an omitted key).
     files: { type: 'array', items: { type: 'string' } },
+    // temperloop#2020: the routing table's DATA ROWS as an array of strings —
+    // the shape reviewDiffCmd emits today, chosen because this exact jq
+    // array-of-strings idiom (`files` above) survived every relay mangling
+    // that dropped, paraphrased or double-encoded the `tsv` scalar. See
+    // reviewDiffCmd's own comment for the evidence and reviewDiffTsvText for
+    // the reader.
+    tsv_lines: { type: 'array', items: { type: 'string' } },
+    // LEGACY (pre-#2020), still accepted so an un-migrated caller or a
+    // replayed older payload keeps routing: the raw reviewer-routing.tsv text
+    // (empty string when the worktree ships none). No longer emitted.
     tsv: { type: 'string' },
     // temperloop#1976: the tsv's own non-comment row count, computed by
     // reviewDiffCmd off the worktree file itself — the guard runReviewers()
@@ -2445,6 +2466,121 @@ function escalate(slug, kind, payload) {
   return { _kind: 'escalation', slug, escalation: { slug, kind, payload } };
 }
 
+// -----------------------------------------------------------------------------
+// preserveCommittedWorkCmd / preserveOnEscalation — temperloop#2020.
+// -----------------------------------------------------------------------------
+// THE DATA-LOSS SEAM. An escalation leaves the worktree intact, and every
+// downstream spec says so — but "intact" is a promise about a LOCAL directory
+// and a LOCAL `build/<slug>` branch, and the specs that dispose an escalated
+// item are AI-executed prose. On Towheads/foundation (kernel v0.39.0, run
+// wf_967c2878-0a7 driving foundation#1869) a §3e `review-diff-error` fired
+// with the worker's work committed but un-pushed and un-PR'd; /fix's 4a
+// escalation-park path then ran `worktree.sh remove`, taking the directory and
+// the only branch pointing at those commits with it. 515 verified lines were
+// hand-rescued from the parent session's transcript. fix.md's prose guard for
+// exactly this hazard (its `FX.8 class:escalated-work-destruction` cite, and a
+// worktree state table that permits removal on one row only) was already in
+// place and did not hold — which is the whole argument for fixing it HERE:
+// kernel principle 5, counter a known AI failure mode STRUCTURALLY rather than
+// with more prose the next agent may also misread.
+//
+// So: before an escalation LEAVES this driver, any commit the worker made that
+// is not yet on origin is PUSHED. After that, every destructive disposition a
+// caller can take — `worktree.sh remove`, its `git branch -D`, a force-clearing
+// `worktree.sh create` on a later run — destroys only a local copy of work that
+// already exists on the remote. This protects callers whose escalation paths
+// this file cannot see, which a fix in any one caller's prose cannot.
+//
+// Fail-soft in every direction, and deliberately so — this runs on a path that
+// is ALREADY failing, and must never convert an escalation into a worse one:
+// no worktree, no commits, a rejected push, a denied executor, a thrown
+// machinery call — each returns the original escalation unchanged, annotated
+// with what happened. The annotation is the point on the failing arm:
+// WORK_PRESERVE_FAILED tells the operator disposing this escalation that the
+// worktree IS the only copy.
+//
+// NOT a substitute for 3f: this pushes the BRANCH only — no PR, no CI, no
+// rebase, no closing-keyword scan. A pushed `build/<slug>` branch with no PR
+// merges into nothing; it is a durable copy, not a landing.
+function preserveCommittedWorkCmd(wt) {
+  return [
+    // No worktree (an escalation from before 3b, e.g. claim-conflict) — there
+    // is nothing to preserve and that is a normal, expected arm.
+    `if [ ! -d ${sq(wt)} ]; then printf '{"outcome":"WORK_PRESERVE_SKIP","detail":"no worktree"}\\n'; exit 0; fi`,
+    `cd ${sq(wt)} || { printf '{"outcome":"WORK_PRESERVE_SKIP","detail":"worktree unreadable"}\\n'; exit 0; }`,
+    // Same default_branch() fallback chain reviewDiffCmd uses, for the same
+    // reason: this must not depend on pr.sh having run first.
+    `default="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##')"`,
+    `if [ -z "$default" ]; then`,
+    `  for b in main master; do`,
+    `    if git show-ref --verify --quiet "refs/remotes/origin/$b"; then default="$b"; break; fi`,
+    `  done`,
+    `fi`,
+    `[ -n "$default" ] || default=main`,
+    `branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"`,
+    `ahead="$(git rev-list --count "origin/$default..HEAD" 2>/dev/null || echo 0)"`,
+    // Nothing committed beyond the base — 3f never ran and never needed to.
+    // Pushing here would mint an empty remote branch for no benefit.
+    `if [ "$ahead" -eq 0 ] 2>/dev/null; then`,
+    `  printf '{"outcome":"WORK_PRESERVE_SKIP","branch":"%s","commits_ahead":0,"detail":"no unlanded commits"}\\n' "$branch"`,
+    `  exit 0`,
+    `fi`,
+    // Idempotent: when 3f already pushed this branch, git reports
+    // "Everything up-to-date" and exits 0, so a post-push escalation (a CI
+    // failure, say) costs one no-op push and reports WORK_PRESERVED truthfully.
+    `if git push -u origin HEAD >/dev/null 2>&1; then`,
+    `  printf '{"outcome":"WORK_PRESERVED","branch":"%s","commits_ahead":%s,"pushed":true}\\n' "$branch" "$ahead"`,
+    `else`,
+    `  printf '{"outcome":"WORK_PRESERVE_FAILED","branch":"%s","commits_ahead":%s,"pushed":false}\\n' "$branch" "$ahead"`,
+    `fi`,
+  ].join('\n');
+}
+
+// preserveOnEscalation(item, result) — the ONE choke point. Applied at the
+// `parallel()` call site over driveItem's settled result, so it covers EVERY
+// escalation kind this driver can return, including ones added later: there is
+// no per-call-site list to keep in sync, which is exactly the maintenance
+// failure a 30-site sprinkle would re-introduce. A `parked` result passes
+// through untouched (3f already pushed it and opened its PR).
+async function preserveOnEscalation(item, result) {
+  if (!result || result._kind !== 'escalation') return result;
+  const wt = `${input.repoRoot}.wt/${item.slug}`;
+  let out;
+  try {
+    out = await runMachinery(preserveCommittedWorkCmd(wt), {
+      label: `preserve-push:${item.slug}`,
+      slug: item.slug,
+    });
+  } catch (err) {
+    out = { outcome: 'ERROR', error: String((err && err.message) || err) };
+  }
+  const outcome = String(out?.outcome ?? 'ERROR');
+  // `committed_work` is a FACT the escalation carries, never a verdict: it
+  // says what is (or is not) on origin, so the human or agent disposing this
+  // escalation decides about removal against evidence instead of an assumption
+  // that "the worktree stays intact" means the work is safe.
+  const record = {
+    outcome,
+    branch: out?.branch ?? `build/${item.slug}`,
+    preserved: outcome === 'WORK_PRESERVED',
+    ...(out?.commits_ahead === undefined ? {} : { commits_ahead: out.commits_ahead }),
+    ...(out?.detail ? { detail: out.detail } : {}),
+  };
+  if (outcome === 'WORK_PRESERVED') {
+    log(
+      `[${item.slug}] escalating — pushed ${record.branch} to origin first (temperloop#2020): ` +
+        `committed work is durable regardless of what disposes this escalation`,
+    );
+  } else if (outcome !== 'WORK_PRESERVE_SKIP') {
+    log(
+      `[${item.slug}] escalating — could NOT preserve committed work (${outcome}): ` +
+        `the worktree may be the ONLY copy — do not remove it`,
+    );
+  }
+  result.escalation.payload = { ...(result.escalation.payload ?? {}), committed_work: record };
+  return result;
+}
+
 // --- 3e.5 gate verdict reconciliation (temperloop#1587) ----------------------
 // The defect this pair of helpers closes: the slice loop maintained TWO
 // independent failure counters — an accumulated `gateFailed` and the terminal
@@ -2969,8 +3105,29 @@ function reviewDiffCmd(wt, bump = true) {
     //
     // MITIGATION, NOT A PROOF: a model can still paraphrase 699 bytes. The
     // structural fix — keeping the table out of the relay entirely, or emitting
-    // parsed rows the executor has no prose reading of — stays open on #1982.
-    `  tsv_json="$(awk ${sq(rowFilterAwk)} ${sq(tsvPath)} | jq -R -s -c .)"`,
+    // parsed rows the executor has no prose reading of — stayed open on #1982
+    // and is closed HERE (temperloop#2020, second half): the field is no longer
+    // a `tsv` SCALAR holding a multi-line table, it is `tsv_lines`, a JSON
+    // ARRAY OF ROW STRINGS built by the SAME
+    // `jq -R -s -c 'split("\n") | map(select(length>0))'` idiom `files_json`
+    // above already uses. The shape is chosen on evidence, not taste: across
+    // every observed mangling (#1976 wf_cbc556f5-7be; #1982's three shapes;
+    // #2020's own foundation#1869 reproduction, where BOTH retry agents
+    // dropped it identically) `files` — a jq array of strings produced by this
+    // exact idiom — arrived INTACT in the same JSON line whose `tsv` blob was
+    // dropped, paraphrased, or double-encoded. An array of short opaque row
+    // strings offers no English reading to paraphrase into and no "quote the
+    // table" framing to re-encode; a ~700-byte tab-delimited blob offers both.
+    //
+    // Invariant-neutral for the SECOND time by construction: the array's rows
+    // joined on `\n` are byte-identical to the string this used to emit (see
+    // reviewDiffTsvText), so `tsv_rows`, `tsv_checksum`, parseTsvRows() and
+    // tsvChecksum() all yield exactly the values they did before — the
+    // #1976/#1982 gap checks are untouched DETECTORS, not weakened ones.
+    // `tsv` itself is no longer emitted; the reader still ACCEPTS it
+    // (reviewDiffTsvText) so a relay or caller that yields the legacy scalar
+    // keeps routing rather than degrading.
+    `  tsv_json="$(awk ${sq(rowFilterAwk)} ${sq(tsvPath)} | jq -R -s -c 'split("\\n") | map(select(length>0))')"`,
     `  tsv_rows="$(awk 'BEGIN{c=0} { l=$0; sub(/\\r$/,"",l); t=l; gsub(/^[ \\t]+|[ \\t]+$/,"",t); if (t != "" && substr(t,1,1) != "#") c++ } END{print c+0}' ${sq(tsvPath)})"`,
     // POSITION-WEIGHTED (temperloop#1982 round 2): `n` is a running counter
     // over EVERY byte of the row-filtered stream, NOT reset between od's own
@@ -2981,11 +3138,14 @@ function reviewDiffCmd(wt, bump = true) {
     // corruption shape this defeats.
     `  tsv_checksum="$(awk ${sq(rowFilterAwk)} ${sq(tsvPath)} | od -An -v -tu1 | awk '{for(i=1;i<=NF;i++){n++; s+=$i*n}} END{print s+0}')"`,
     `else`,
-    `  tsv_json='""'`,
+    // The no-tsv worktree emits an EMPTY ARRAY, the `tsv_lines` analogue of the
+    // `tsv:""` it used to emit — still never an OMITTED key, so "missing" keeps
+    // meaning "the relay dropped it", never "this worktree ships no table".
+    `  tsv_json='[]'`,
     `  tsv_rows=0`,
     `  tsv_checksum=0`,
     `fi`,
-    `printf '{"outcome":"REVIEW_DIFF","files":%s,"tsv":%s,"tsv_rows":%s,"tsv_checksum":%s,"review_rounds":%s}\\n' "$files_json" "$tsv_json" "$tsv_rows" "$tsv_checksum" "$review_rounds"`,
+    `printf '{"outcome":"REVIEW_DIFF","files":%s,"tsv_lines":%s,"tsv_rows":%s,"tsv_checksum":%s,"review_rounds":%s}\\n' "$files_json" "$tsv_json" "$tsv_rows" "$tsv_checksum" "$review_rounds"`,
   ].join('\n');
 }
 
@@ -3158,15 +3318,22 @@ function reviewHasBlockingFinding(text) {
 }
 
 // reviewDiffTsvGap — temperloop#1976 (row-count), extended by temperloop#1982
-// (content). `diffOut.tsv` is hand-copied by the machinery-executor agent
-// from the diff-fetch command's own JSON line, a SEPARATE step from the one
-// that computed `tsv_rows`/`tsv_checksum` off the same worktree file — so
-// any of the three can disagree only if the relay dropped, truncated, or
-// otherwise garbled the (potentially large) `tsv` field on the way through.
+// (content). The routing-table field (`tsv_lines` since temperloop#2020, the
+// legacy `tsv` scalar before it — reviewDiffTsvText normalizes both) is
+// hand-copied by the machinery-executor agent from the diff-fetch command's
+// own JSON line, a SEPARATE step from the one that computed
+// `tsv_rows`/`tsv_checksum` off the same worktree file — so any of the three
+// can disagree only if the relay dropped, truncated, or otherwise garbled the
+// (potentially large) table field on the way through.
+//
+// Both detectors below are UNCHANGED by #2020 — that item moved only the
+// DISPOSITION after detection (runReviewers now degrades legibly rather than
+// escalating `review-diff-error` on a persistent gap), never how much is
+// detected.
 //
 // PATH A (missing/truncated — temperloop#1976, evidence: wf_cbc556f5-7be):
-// `tsv` isn't even a string, or its own non-comment row count disagrees with
-// the relayed `tsv_rows` — a row-count mismatch.
+// neither table shape is present, or the received table's own non-comment row
+// count disagrees with the relayed `tsv_rows` — a row-count mismatch.
 //
 // PATH B (content-preserving garble — temperloop#1982, evidence:
 // temperloop#1978 round 4): `tsv` IS a string, and its row count DOES match
@@ -3184,26 +3351,58 @@ function reviewHasBlockingFinding(text) {
 // tsvChecksum()'s own comment for why the prior sha256 attempt, temperloop
 // #1976 round 1, couldn't close this gap and this can).
 //
-// Returns null when `tsv` is trustworthy, else the escalation payload naming
-// what's wrong, always carrying `files` (the changed-file list) so a
-// `review-diff-error` names what would have been routed: `{ missing: 'tsv',
-// files }` when the field isn't even a string; `{ mismatch: { expected,
-// got }, files }` on a row-count disagreement (`got` is `?? null` since
-// `tsv_rows` can itself be absent, and JSON.stringify silently drops an
-// `undefined` key); `{ content_mismatch: { expected, got }, files }` when
-// the row count agrees but the checksum doesn't (`got` is likewise `?? null`
-// for an absent `tsv_checksum`). Only checked when `files` is non-empty: an
-// empty diff never needs a routing table, so this never fires on the
-// legitimate no-tsv-worktree case (`tsv:''`, `tsv_rows:0`,
-// `tsv_checksum:0`) either, regardless of `files` — a genuinely empty tsv is
-// complete by construction (0 === 0 and tsvChecksum('') === 0).
+// Returns null when the table is trustworthy, else the payload naming what's
+// wrong, always carrying `files` (the changed-file list) so the degradation
+// notice names what would have been routed: `{ missing: 'tsv', files }` when
+// neither shape is present (the key stays `'tsv'` — it names the ROUTING
+// TABLE, not one wire field, and is a stable payload key across both
+// shapes); `{ mismatch: { expected, got }, files }` on a row-count
+// disagreement (`got` is `?? null` since `tsv_rows` can itself be absent, and
+// JSON.stringify silently drops an `undefined` key); `{ content_mismatch: {
+// expected, got }, files }` when the row count agrees but the checksum
+// doesn't (`got` is likewise `?? null` for an absent `tsv_checksum`). Only
+// checked when `files` is non-empty: an empty diff never needs a routing
+// table, so this never fires on the legitimate no-tsv-worktree case
+// (`tsv_lines: []`, `tsv_rows:0`, `tsv_checksum:0`) either, regardless of
+// `files` — a genuinely empty tsv is complete by construction (0 === 0 and
+// tsvChecksum('') === 0).
+
+// reviewDiffTsvText(diffOut) — temperloop#2020. The ONE place that turns a
+// REVIEW_DIFF result's routing-table field into the text parseTsvRows() and
+// tsvChecksum() consume, so the gap check and the routing decision can never
+// read two different renderings of the same payload.
+//
+// Accepts BOTH wire shapes, in this precedence:
+//   `tsv_lines` — the current shape (an array of data-row strings, #2020).
+//                 Joined on `\n`, which is byte-identical to the string the
+//                 previous `tsv` scalar carried: reviewDiffCmd's awk `print`
+//                 emitted one kept line per row, and both consumers re-append
+//                 their own trailing newline per kept line, so a joined array
+//                 and the old blob canonicalize to the same bytes and hence
+//                 the same row count and the same checksum.
+//   `tsv`       — the legacy scalar, still ACCEPTED (never emitted). An
+//                 un-migrated caller, a replayed older payload, or a relay
+//                 that reconstructed the old field keeps routing normally
+//                 instead of degrading.
+// Returns null when NEITHER shape is present in a usable form — the caller
+// distinguishes "dropped" from "legitimately empty" (`tsv_lines: []` is an
+// empty ARRAY, a real zero-row table, not a missing field).
+function reviewDiffTsvText(diffOut) {
+  if (Array.isArray(diffOut?.tsv_lines)) {
+    return diffOut.tsv_lines.map((l) => String(l)).join('\n');
+  }
+  if (typeof diffOut?.tsv === 'string') return diffOut.tsv;
+  return null;
+}
+
 function reviewDiffTsvGap(diffOut, files) {
   if (!files.length) return null;
-  if (typeof diffOut.tsv !== 'string') return { missing: 'tsv', files };
-  const expected = parseTsvRows(diffOut.tsv).length;
+  const tsvText = reviewDiffTsvText(diffOut);
+  if (tsvText === null) return { missing: 'tsv', files };
+  const expected = parseTsvRows(tsvText).length;
   const got = Number(diffOut.tsv_rows);
   if (expected !== got) return { mismatch: { expected, got: diffOut.tsv_rows ?? null }, files };
-  const expectedChecksum = tsvChecksum(diffOut.tsv);
+  const expectedChecksum = tsvChecksum(tsvText);
   const gotChecksum = Number(diffOut.tsv_checksum);
   if (expectedChecksum !== gotChecksum) {
     return { content_mismatch: { expected: expectedChecksum, got: diffOut.tsv_checksum ?? null }, files };
@@ -3216,6 +3415,12 @@ function reviewDiffTsvGap(diffOut, files) {
 // `agent({agentType})` — never delegated to the 3c worker. Returns:
 //   { escalation }                                   — the diff fetch itself failed
 //   { summary, notes, blocking: [], ran, skipped }   — normal return (blocking may be non-empty)
+// A THIRD shape (temperloop#2020) is a normal return, not a third branch: when
+// the routing table does not survive the relay even after the one-shot retry,
+// this returns the normal shape with `ran: []`, one `skipped` degradation
+// notice, and `routing_degraded` carrying the gap payload — the drive
+// continues to 3e.5/3f with the skip notice on the PR body. A post-commit
+// advisory pass that cannot route is a DEGRADATION, never a halt.
 // `summary` is a short tally line for the PR body (criterion: the PR must
 // carry real evidence of a real pass, never a guaranteed-skip default).
 // `notes` (temperloop#1450) is the FULL findings text for every reviewer that
@@ -3266,15 +3471,60 @@ async function runReviewers(item, wt) {
     files = Array.isArray(diffOut.files) ? diffOut.files : [];
     const gap = reviewDiffTsvGap(diffOut, files);
     if (gap) {
-      // Still incomplete after the one retry — escalate rather than let the
-      // routing decision run against a missing/partial table.
-      return { escalation: escalate(item.slug, 'review-diff-error', gap) };
+      // temperloop#2020 — DEGRADE, never halt. Before this item a persistent
+      // gap escalated `review-diff-error`, and that disposition was the
+      // reported harm, not the drop: by the time §3e runs the worker has
+      // ALREADY COMMITTED (3c) and passed acceptance (3d), so escalating here
+      // stops a drive whose work is complete, for the sake of an ADVISORY pass
+      // that is explicitly never a `checks` gate (build.md §3e). On
+      // Towheads/foundation at kernel v0.39.0 (run wf_967c2878-0a7, driving
+      // foundation#1869) that cost 515 verified lines: the item escalated
+      // committed-but-un-PR'd, and /fix's escalation-park path removed the
+      // worktree and its local `build/` branch.
+      //
+      // The DETECTORS are untouched — the row/checksum gap check and the
+      // one-shot retry above both still run, and this arm is reached only
+      // after both have fired. What changed is what happens next: the routing
+      // decision cannot be made (routing off a missing/partial table is the
+      // #1976/#1982 silent-misroute this whole mechanism exists to prevent),
+      // so NO reviewer is routed and that is said out loud — never implied by
+      // silence. The notice is a mode-2 `skipped — …` line per
+      // `claude/message-schema.md` § Degradation notice, carried into the PR
+      // body by reviewBodySuffix() exactly like every other skip notice, so a
+      // cold reader of the PR sees that §3e did not route rather than reading
+      // an empty review section as a clean pass.
+      //
+      // Deliberately NOT the remedy-bearing variant: that one clause is
+      // sanctioned only for a subagent that ships as source under
+      // claude/agents/ and is merely uninstalled. This is a relay fault with
+      // no in-the-moment operator fix, so it takes the bare default shape.
+      const note =
+        'skipped — §3e reviewer routing unavailable (reviewer-routing.tsv did not survive the ' +
+        'machinery relay; no reviewer was routed for this diff)';
+      log(`[${item.slug}] §3e review — ${note} ${JSON.stringify(gap)}`);
+      return {
+        summary: note,
+        notes: '',
+        sections: [],
+        blocking: [],
+        ran: [],
+        // `mandatory: false` is a statement about this ENTRY, not about the
+        // item: nothing was routed, so no route's own `mandatory` flag was
+        // ever computed and none can be claimed here. reviewTally()'s
+        // `mandatory_ok` therefore stays true, which is honest — the
+        // foundation#1007 command-doc rule was not degraded, the whole
+        // routing step was, and `routing_degraded` below is the field that
+        // says so.
+        skipped: [{ reviewer: '(routing)', note, mandatory: false }],
+        round,
+        routing_degraded: gap,
+      };
     }
   }
-  // The orchestrator-supplied table wins outright when present (#1982);
-  // `diffOut.tsv` is the legacy relay path, kept for an un-migrated caller.
-  const tsvText = REVIEWER_ROUTING_TSV
-    || (typeof diffOut.tsv === 'string' ? diffOut.tsv : '');
+  // The orchestrator-supplied table wins outright when present (#1982); the
+  // relayed table (`tsv_lines`, or the legacy `tsv` scalar — reviewDiffTsvText
+  // normalizes both) is the legacy path, kept for an un-migrated caller.
+  const tsvText = REVIEWER_ROUTING_TSV || reviewDiffTsvText(diffOut) || '';
   const routes = determineReviewers(item, files, tsvText);
   if (routes.length === 0) {
     return { summary: '', notes: '', sections: [], blocking: [], ran: [], skipped: [], round };
@@ -3508,10 +3758,18 @@ function reviewTally(...rounds) {
   const ran = [];
   const skipped = [];
   const residual = [];
+  // temperloop#2020 — the gap payload behind a routing degradation, carried
+  // into the parked record so the Step 6 tally (and a human reading it) can
+  // tell "no reviewer matched this diff" (a legitimate empty roster) from
+  // "the routing table never arrived" (a degraded one). The skip notice says
+  // it in prose; this says it in a field, with the expected/got figures the
+  // #1976/#1982 detectors actually computed.
+  let routingDegraded = null;
   for (const r of rounds) {
     if (!r) continue;
     ran.push(...(r.ran ?? []));
     skipped.push(...(r.skipped ?? []));
+    if (r.routing_degraded && !routingDegraded) routingDegraded = r.routing_degraded;
     if (r.residualBlocking) {
       residual.push({
         round: r.round ?? null,
@@ -3526,6 +3784,7 @@ function reviewTally(...rounds) {
     mandatory_ok: !skipped.some((s) => s.mandatory),
     routed_not_run: Array.from(new Set(skipped.map((s) => s.reviewer))),
     ...(residual.length > 0 ? { residual_blocking: residual } : {}),
+    ...(routingDegraded ? { routing_degraded: routingDegraded } : {}),
   };
 }
 
@@ -5573,6 +5832,12 @@ async function buildLevel() {
   // silently lost, violating the no-silent-stall invariant. Convert any throw into
   // a generic `worker-error` escalation so it always surfaces. (#437: a real run
   // hit item.acceptance.map on a string and the item was silently dropped.)
+  // temperloop#2020: `.then(preserveOnEscalation)` is applied to the SETTLED
+  // result — after the #437/#1819 catch above, so a THROWN item's synthesized
+  // escalation gets the same work-preservation push a returned one does. This
+  // is the single choke point for "an escalation is about to leave this
+  // driver"; see preserveOnEscalation's own comment for why it lives here and
+  // not at the ~30 individual escalate() call sites.
   const results = await parallel(
     activeItems.map((item) => () =>
       driveItem(item).catch((err) => {
@@ -5588,7 +5853,7 @@ async function buildLevel() {
           });
         }
         return escalate(item.slug, 'worker-error', { error: String((err && err.stack) || err) });
-      }),
+      }).then((r) => preserveOnEscalation(item, r)),
     ),
   );
 

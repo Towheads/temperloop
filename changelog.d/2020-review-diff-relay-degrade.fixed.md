@@ -1,0 +1,34 @@
+- **A build no longer stops — or loses committed work — because the reviewer
+  routing table went missing in transit** (#2020). Choosing which review
+  agents a change needs requires a small table of file-type-to-reviewer rules.
+  On a caller that does not supply that table up front, the build reads it
+  and passes it back through an intermediate step, and that copy has
+  repeatedly arrived damaged or not at all. Three things change.
+
+  The table is now passed back as a **list of its rows** rather than as one
+  block of text. The same intermediate step has always carried the list of
+  changed files in exactly that form, and that list has survived every
+  observed failure that destroyed the block of text — so the table now
+  travels the way the thing next to it already travels reliably. The block-of-
+  text form is still accepted, so a caller or a stored result produced before
+  this release keeps working, and the existing count and checksum still
+  verify what arrives.
+
+  When the table is still missing after one automatic retry, the build now
+  **finishes and says no reviewer ran**, instead of stopping. Review is
+  advisory here — it is not one of the checks that gate a merge — and it
+  happens after the work is written, tested and committed, so stopping there
+  abandoned a finished change over a step that was never allowed to block it.
+  The pull request now carries a plain line saying the routing was
+  unavailable and no reviewer was routed, so an empty review section can no
+  longer be misread as a clean review.
+
+  And **whenever a build stops early, any commits it already made are pushed
+  to the remote first**. Previously those commits existed only in a local
+  working copy, and the cleanup path for a stopped build deletes that copy and
+  its local branch; on one run that destroyed 515 lines of finished, verified
+  work, recovered only by hand. The push happens at a single point every early
+  stop passes through, so it covers every reason a build can stop, and the
+  result — pushed, nothing to push, or push failed — is recorded on the
+  stopped build's report so whoever cleans up can see whether a remote copy
+  exists before deleting the local one.
