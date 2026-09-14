@@ -27,8 +27,19 @@
 #      restated as the property rather than as a banned string).
 #   3. The three sibling §3e reviewers still declare `sonnet` — the no-op
 #      assertion: whatever fixes case 1 must not move them.
-#   4. runReviewers()'s spawn passes no `model` override, so frontmatter
-#      remains the single tier authority for all four seats.
+#   4. runReviewers() passes no `model` override anywhere in its body, so
+#      frontmatter remains the single tier authority for all four seats.
+#
+# WHY CASE 4 ANCHORS ON THE FUNCTION, NOT ON ONE SPAWN SITE INSIDE IT. It
+# originally located the spawn by its `for (const route of routes)` loop header.
+# That spawn shape has now moved TWICE — most recently the loop became
+# `routes.map(...)` feeding a bounded fanout wait (temperloop#2003) — and the
+# move silently disarmed the locator: the invariant still held, but the guard
+# could no longer find the thing it guards. The property was never about one
+# loop. It is about the WHOLE of runReviewers(): no `model` override may be
+# passed from anywhere in it, however the spawn is arranged internally. So the
+# locator is the function's own declaration line and its closing brace, which no
+# internal restructure changes.
 #
 # Scope: the four seats /build §3e routes. The `claude/agents/reviewers/**`
 # language catalog is deliberately NOT covered — those seats are inert,
@@ -121,18 +132,24 @@ pass "3: workflow-reviewer, docs-reviewer and requirements-auditor still declare
 # competing tier authority — and would have to be re-applied at every one of
 # this seat's call sites (/build §3e, /assess Step 3, /workshop Step 3.3/3.5),
 # which is the reason the fix went into the frontmatter instead.
+#
+# The extraction is anchored on the FUNCTION (declaration line -> first
+# column-0 `}`), never on the spawn's current internal arrangement — see the
+# header's "WHY CASE 4 ANCHORS ON THE FUNCTION". Every nested construct in this
+# function (the arrow helpers, the `.then` recorder, the `routes.map`) closes at
+# an indented brace, so the first column-0 `}` is the function's own end.
 # ---------------------------------------------------------------------------
 [ -f "$BUILD_LEVEL" ] || fail "4: build-level.mjs not found at $BUILD_LEVEL"
 
 spawn_block="$(awk '
-  /for \(const route of routes\)/ { inblock = 1 }
+  /^async function runReviewers/ { inblock = 1 }
   inblock { print }
-  inblock && /} catch \(err\)/ { exit }
+  inblock && /^}/ { exit }
 ' "$BUILD_LEVEL")"
-[ -n "$spawn_block" ] || fail "4: could not locate runReviewers()'s per-route spawn block in build-level.mjs"
+[ -n "$spawn_block" ] || fail "4: could not locate the runReviewers() function in build-level.mjs (expected a line starting \`async function runReviewers\`) — the locator, not the invariant, is what broke; re-anchor it rather than relaxing the assertion"
 
 if printf '%s\n' "$spawn_block" | grep -vE '^[[:space:]]*(//|\*|/\*)' | grep -E '\bmodel[[:space:]]*:' >/dev/null; then
-  fail "4: runReviewers()'s spawn block passes a 'model' override — the reviewer frontmatter is no longer the single tier authority (temperloop#1456)"
+  fail "4: runReviewers() passes a 'model' override — the reviewer frontmatter is no longer the single tier authority (temperloop#1456)"
 fi
 pass "4: runReviewers() passes no model override; frontmatter remains the single tier authority"
 
