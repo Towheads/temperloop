@@ -210,6 +210,17 @@ const mergeCheckMap = new Map();
 // (map miss): FRESHNESS_CURRENT, so the hundred-plus existing tests that never
 // call setFreshness() — none of which model a stale worktree — need no changes.
 const freshnessMap = new Map();
+// preserveMap: slug → [outcome, ...] — temperloop#2020's post-commit
+// work-preservation push (`preserve-push:<slug>`), which fires at the ONE
+// escalation choke point. Its OWN queue, mirroring freshnessMap/mergeCheckMap
+// and for the identical reason: it runs AFTER every other machinery step of an
+// escalating item, so routing it through the shared per-slug machineryMap FIFO
+// would consume whatever entry that test queued for something else (and, on the
+// common exhausted-queue case, silently turn a fixture's ERROR default into a
+// preservation reading). Default (map miss): WORK_PRESERVED — every escalation
+// case predating this item models a worktree holding the worker's commits,
+// which is exactly the case the push preserves, so none of them need changing.
+const preserveMap = new Map();
 
 function slugFromLabel(label) {
   // Labels from runMachineryBatch (temperloop#942): "prelude:slug",
@@ -272,6 +283,7 @@ globalThis.workerMap = workerMap;
 globalThis.mergeCheckMap = mergeCheckMap;
 globalThis.reviewMap = reviewMap;
 globalThis.freshnessMap = freshnessMap;
+globalThis.preserveMap = preserveMap;
 
 globalThis.agent = async function agent(prompt, opts = {}) {
   callLog.push({ prompt: String(prompt).slice(0, 120), promptFull: String(prompt), opts: { label: opts.label, phase: opts.phase, model: opts.model, agentType: opts.agentType } });
@@ -285,6 +297,12 @@ globalThis.agent = async function agent(prompt, opts = {}) {
       // comment for why that sharing would desync every existing test.
       if (/^gate-freshness:/.test(String(opts.label || ''))) {
         return nextFromMap(freshnessMap, slug, { outcome: 'FRESHNESS_CURRENT', worktree_base: 'wt-base', main: 'main-tip' });
+      }
+      // temperloop#2020: the escalation-path work-preservation push keeps its
+      // OWN queue too — see preserveMap's comment for why it must not share
+      // the machineryMap FIFO.
+      if (/^preserve-push:/.test(String(opts.label || ''))) {
+        return nextFromMap(preserveMap, slug, { outcome: 'WORK_PRESERVED', branch: 'build/' + slug, commits_ahead: 1, pushed: true });
       }
       // Solo executor (gate / recover-probe / push-retry) — routed by slug.
       return nextFromMap(machineryMap, slug, { outcome: 'ERROR', error: 'unexpected machinery call for ' + slug });
@@ -359,6 +377,7 @@ globalThis.setMachinery = (slug, ...outcomes) => { machineryMap.set(slug, outcom
 globalThis.setWorker = (slug, ...verdicts) => { workerMap.set(slug, verdicts); };
 globalThis.setMergeCheck = (slug, ...states) => { mergeCheckMap.set(slug, states); };
 globalThis.setFreshness = (slug, ...outcomes) => { freshnessMap.set(slug, outcomes); };
+globalThis.setPreserve = (slug, ...outcomes) => { preserveMap.set(slug, outcomes); };
 globalThis.setReview = (slug, ...responses) => { reviewMap.set(slug, responses); };
 // tsvRows(text) — temperloop#1976: the harness's OWN independent restatement
 // of reviewDiffCmd's row-count rule (non-blank, non-`#` lines — the same
@@ -393,6 +412,17 @@ globalThis.tsvChecksum = (t) => {
   for (let i = 0; i < canon.length; i++) sum += canon.charCodeAt(i) * (i + 1);
   return sum;
 };
+// tsvLines(text) — temperloop#2020: the harness's OWN independent restatement
+// of reviewDiffCmd's `tsv_lines` wire shape (the row-filtered data rows as a
+// JSON array of strings, the same filter tsvRows/tsvChecksum apply). Fixtures
+// use it to build the CURRENT shape from the same text they hand tsvRows() and
+// tsvChecksum(), so a case's three fields stay mutually consistent by
+// construction and a production change that broke the "joined rows == the old
+// blob" equivalence would desync the checksum and fail here.
+globalThis.tsvLines = (t) => String(t ?? '')
+  .split('\n')
+  .map((l) => l.replace(/\r$/, ''))
+  .filter((l) => l.trim() && !l.trim().startsWith('#'));
 // reviewResolutionFailure — the SAME two-marker shape machineryAgent()'s own
 // MACHINERY_RESOLUTION_ERR regex matches (temperloop#1014/#1430): agent()
 // rejecting an unresolvable/denied agentType BEFORE any subagent spawns.
@@ -4451,9 +4481,16 @@ happyWorker('nar1');
 // non-idempotent machinery step. It must propagate, not fall back.
 const origAgent = globalThis.agent;
 let attempts = 0;
+// temperloop#2020: count the PIPELINE's machinery attempts only. The
+// escalation-path work-preservation push (\`preserve-push:<slug>\`) is a
+// DIFFERENT command issued after the item has already escalated, not a
+// re-issue of the failed one — counting it here would silently convert this
+// assertion from 'never retried' into 'never touched machinery again'. It is
+// asserted separately below, including that it too throws and is swallowed.
+let preserveAttempts = 0;
 globalThis.agent = async function(prompt, opts = {}) {
   if (isMachineryCall(opts)) {
-    attempts++;
+    if (/^preserve-push:/.test(String(opts.label || ''))) preserveAttempts++; else attempts++;
     callLog.push({ prompt: '', promptFull: String(prompt), opts: { label: opts.label, phase: opts.phase, agentType: opts.agentType } });
     throw new Error('agent({schema}): StructuredOutput retry cap (3) exceeded');
   }
@@ -4467,6 +4504,10 @@ const result = await mod.default();
 let reason = null;
 if (attempts !== 1) reason = 'a non-resolution failure must NOT be retried under another agent type, got ' + attempts + ' machinery attempts';
 else if ((result.escalations ?? []).length !== 1 || result.escalations[0].kind !== 'worker-error') reason = 'the throw must surface as a worker-error escalation: ' + JSON.stringify(result);
+// #2020 fail-soft: the preservation push ran once and THREW, and that throw
+// must not have changed the escalation the item was already carrying.
+else if (preserveAttempts !== 1) reason = 'the escalation path must attempt work preservation exactly once, got ' + preserveAttempts;
+else if (result.escalations[0].payload.committed_work.outcome !== 'ERROR') reason = 'a THROWN preservation push must be swallowed and recorded as ERROR, never re-thrown: ' + JSON.stringify(result.escalations[0].payload.committed_work);
 console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
 "
 
@@ -6467,21 +6508,31 @@ echo "PASS: #1846 review-evidence re-render guard — one renderer for 3f and 3g
 #   with files but no `tsv` key at all ran only docs-reviewer, never the
 #   shell-reviewer a later run of the SAME item routed to via an intact tsv).
 #   reviewDiffCmd now also emits `tsv_rows`, computed off the worktree file
-#   itself; runReviewers treats a missing (non-string) `tsv` or
-#   a `parseTsvRows(tsv).length` disagreeing with `tsv_rows` as a relay drop
-#   on any non-empty `files` diff, re-runs the SAME review-diff command once,
-#   and escalates review-diff-error (never computing a roster from an
-#   empty/partial table) if the retry is still incomplete. A worktree that
-#   genuinely ships no tsv (`tsv:''`, `tsv_rows:0`) is unaffected — 0 rows is
-#   a COMPLETE table, not a dropped one.
+#   itself; runReviewers treats a missing table or a received-row-count
+#   disagreeing with `tsv_rows` as a relay drop on any non-empty `files` diff
+#   and re-runs the SAME review-diff command once.
+#
+#   temperloop#2020 changed only what happens AFTER that retry still comes back
+#   incomplete: the item DEGRADES (no reviewer routed, a legible skip notice on
+#   the PR body) instead of escalating `review-diff-error`. The detectors below
+#   are unchanged — every case still asserts the gap is SEEN, the retry fires
+#   exactly once, and NO roster is ever computed from a missing/partial table.
+#   A worktree that genuinely ships no tsv (`tsv_lines: []`/`tsv:''`,
+#   `tsv_rows:0`) is unaffected — 0 rows is a COMPLETE table, not a dropped one.
 # ============================================================================
-run_node_case "K1976 drop: REVIEW_DIFF with no tsv key on a non-empty .sh diff retries once, then escalates review-diff-error naming the missing field — no reviewer roster is ever computed" "
+run_node_case "K1976/K2020 drop: REVIEW_DIFF with no table on a non-empty .sh diff retries once, then DEGRADES (no escalation, no reviewer roster) with a legible skip notice" "
 $PREAMBLE
 
 setMachinery('droptsv-a',
   { outcome: 'CREATED', path: '/tmp/repo.wt/droptsv-a' },
   { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/state-graph.sh'] },
   { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/state-graph.sh'] },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-dra' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'sha-dra', branch: 'build/droptsv-a' },
+  { outcome: 'PR_OPENED', pr_number: 2020 },
+  { outcome: 'CI_GREEN' },
 );
 happyWorker('droptsv-a');
 
@@ -6494,14 +6545,122 @@ const result = await mod.default();
 let reason = null;
 const diffCalls = callLog.filter(c => (c.opts.label||'').startsWith('review-diff:droptsv-a'));
 if (diffCalls.length !== 2) reason = 'expected exactly one retry (2 review-diff calls total), got ' + diffCalls.length;
-else if ((result.parked ?? []).length !== 0) reason = 'a missing tsv must never park the item: ' + JSON.stringify(result);
-else if ((result.escalations ?? []).length !== 1) reason = 'expected exactly 1 escalation: ' + JSON.stringify(result.escalations);
-else if (result.escalations[0].kind !== 'review-diff-error') reason = 'wrong escalation kind: ' + result.escalations[0].kind;
-else if (result.escalations[0].payload.missing !== 'tsv') reason = 'escalation payload must name the missing field: ' + JSON.stringify(result.escalations[0].payload);
+else if ((result.escalations ?? []).length !== 0) reason = 'K2020: a dropped table must DEGRADE, never halt a drive whose work is complete: ' + JSON.stringify(result.escalations);
+else if ((result.parked ?? []).length !== 1) reason = 'expected the item to park (drive completed): ' + JSON.stringify(result);
+const rec = (result.parked ?? [])[0];
+if (!reason && (!rec.review || (rec.review.ran ?? []).length !== 0)) reason = 'no reviewer roster may ever be computed from a dropped table: ' + JSON.stringify(rec && rec.review);
+if (!reason && !(rec.review.skipped ?? []).some(s => /^skipped — /.test(s.note) && /routing unavailable/.test(s.note)))
+  reason = 'the degradation must be LEGIBLE — a mode-2 skip notice naming that no reviewer was routed: ' + JSON.stringify(rec.review);
 const reviewCalls = callLog.filter(c => isReviewCall(c.opts));
-if (!reason && reviewCalls.length !== 0) reason = 'no reviewer roster may ever be computed from a dropped tsv: ' + JSON.stringify(reviewCalls.map(c => c.opts.agentType));
+if (!reason && reviewCalls.length !== 0) reason = 'no reviewer may be spawned from a dropped table: ' + JSON.stringify(reviewCalls.map(c => c.opts.agentType));
 console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
 "
+
+# ============================================================================
+# TEST (K2020 round 2 — THE MANDATORY ROUTE SURVIVES A TABLE GAP): every drop/
+#   garble case in this file pairs a broken table with a `.sh`/`.py` diff, i.e.
+#   with routes that genuinely need the table. That left the most dangerous
+#   pairing untested. determineReviewers()'s mandatory command-doc rule
+#   (foundation#1007) is computed PURELY from `files` — the field that relays
+#   reliably — and fires regardless of any tsv row; the table is needed only by
+#   the extension axis and the prose-`*.md` fallback. A degraded arm that
+#   withdrew ALL routing therefore reported a `claude/commands/*.md` diff as
+#   `mandatory_ok: true` with workflow-reviewer never run — byte-identical to a
+#   clean pass, which is the K.49 / foundation#164 silent-skip class and the
+#   K.52 mandatory-step birth rule reintroduced through this very fallback.
+#   Two arms, because `mandatory_ok` has to track reality in BOTH directions:
+#     1  the reviewer is available  -> it RUNS, mandatory_ok stays true HONESTLY
+#     2  the reviewer is unavailable -> mandatory_ok goes FALSE, as it would on
+#                                       an intact table
+#   Both also assert the extension-axis route (`.sh` -> shell-reviewer) is
+#   still withdrawn — the degradation is partial, not cancelled.
+# ============================================================================
+run_node_case "K2020 mandatory survives a gap: a DROPPED table on a diff touching claude/commands/*.md still routes and RUNS workflow-reviewer (the rule never needed the table), while the .sh extension-axis route stays withdrawn" "
+$PREAMBLE
+
+setMachinery('gapcmddoc-a',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/gapcmddoc-a' },
+  { outcome: 'REVIEW_DIFF', files: ['claude/commands/build.md', 'workflows/scripts/state-graph.sh'] },
+  { outcome: 'REVIEW_DIFF', files: ['claude/commands/build.md', 'workflows/scripts/state-graph.sh'] },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-gcd' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'sha-gcd', branch: 'build/gapcmddoc-a' },
+  { outcome: 'PR_OPENED', pr_number: 2021 },
+  { outcome: 'CI_GREEN' },
+);
+happyWorker('gapcmddoc-a');
+setReview('gapcmddoc-a', '## Summary\\nno findings\\n');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'gapcmddoc-a', branch: 'build/gapcmddoc-a', title: 'Touch a command doc and a shell script', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+let reason = null;
+const diffCalls = callLog.filter(c => (c.opts.label||'').startsWith('review-diff:gapcmddoc-a'));
+const reviewCalls = callLog.filter(c => isReviewCall(c.opts));
+if (diffCalls.length !== 2) reason = 'the gap detectors must be unchanged — exactly one retry, got ' + diffCalls.length + ' review-diff calls';
+else if ((result.escalations ?? []).length !== 0) reason = 'a dropped table must still DEGRADE, never halt: ' + JSON.stringify(result.escalations);
+else if ((result.parked ?? []).length !== 1) reason = 'expected the item to park: ' + JSON.stringify(result);
+const rec = (result.parked ?? [])[0];
+if (!reason && !(rec.review.ran ?? []).some(r => r.reviewer === 'workflow-reviewer'))
+  reason = 'THE ACCEPTANCE: the MANDATORY command-doc route is computed from files, never from the table — it must still RUN on a dropped relay: ' + JSON.stringify(rec.review);
+if (!reason && !(rec.review.ran ?? []).some(r => r.reviewer === 'workflow-reviewer' && r.mandatory === true))
+  reason = 'the surviving route must still be flagged mandatory, or reviewTally cannot tell a real pass from an optional one: ' + JSON.stringify(rec.review.ran);
+if (!reason && rec.review.mandatory_ok !== true)
+  reason = 'mandatory_ok must read true HONESTLY here — the reviewer actually ran: ' + JSON.stringify(rec.review);
+if (!reason && (rec.review.ran ?? []).some(r => r.reviewer === 'shell-reviewer'))
+  reason = 'the extension-axis route DOES need the table — it must stay withdrawn, never guessed: ' + JSON.stringify(rec.review.ran);
+if (!reason && !reviewCalls.some(c => c.opts.agentType === 'workflow-reviewer'))
+  reason = 'the mandatory reviewer must actually be SPAWNED, not merely listed: ' + JSON.stringify(reviewCalls.map(c => c.opts.agentType));
+if (!reason && reviewCalls.length !== 1)
+  reason = 'exactly one reviewer (the table-independent one) may be spawned from a dropped table: ' + JSON.stringify(reviewCalls.map(c => c.opts.agentType));
+if (!reason && !rec.review.routing_degraded)
+  reason = 'the degradation must still be recorded — a partially-routed roster is not a clean one: ' + JSON.stringify(rec.review);
+if (!reason && !(rec.review.skipped ?? []).some(s => /^skipped — /.test(s.note) && /routing unavailable/.test(s.note)))
+  reason = 'the withdrawn axes must still be named in a mode-2 skip notice: ' + JSON.stringify(rec.review.skipped);
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+run_node_case "K2020 mandatory honesty on a gap: when workflow-reviewer is UNAVAILABLE the same dropped-table command-doc diff reports mandatory_ok FALSE — the degraded arm may never launder a real mandatory skip into a clean tally" "
+$PREAMBLE
+
+setMachinery('gapcmddoc-b',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/gapcmddoc-b' },
+  { outcome: 'REVIEW_DIFF', files: ['claude/commands/fix.md'] },
+  { outcome: 'REVIEW_DIFF', files: ['claude/commands/fix.md'] },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-gcdb' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'sha-gcdb', branch: 'build/gapcmddoc-b' },
+  { outcome: 'PR_OPENED', pr_number: 2022 },
+  { outcome: 'CI_GREEN' },
+);
+happyWorker('gapcmddoc-b');
+setReview('gapcmddoc-b', reviewUnavailable('workflow-reviewer'));
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'gapcmddoc-b', branch: 'build/gapcmddoc-b', title: 'Touch a command doc', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+let reason = null;
+if ((result.parked ?? []).length !== 1) reason = 'expected the item to park: ' + JSON.stringify(result);
+const rec = (result.parked ?? [])[0];
+if (!reason && rec.review.mandatory_ok !== false)
+  reason = 'THE ACCEPTANCE: a genuinely-skipped mandatory reviewer must read mandatory_ok:false even on a degraded relay — the tally is a real signal, not a default: ' + JSON.stringify(rec.review);
+if (!reason && !(rec.review.skipped ?? []).some(s => s.reviewer === 'workflow-reviewer' && s.mandatory === true))
+  reason = 'the mandatory route must be recorded as a mandatory SKIP, which is what makes mandatory_ok false: ' + JSON.stringify(rec.review.skipped);
+if (!reason && !(rec.review.routed_not_run ?? []).includes('workflow-reviewer'))
+  reason = 'a resolved-then-skipped reviewer must appear in routed_not_run: ' + JSON.stringify(rec.review);
+if (!reason && !rec.review.routing_degraded)
+  reason = 'the routing degradation must still be carried alongside the mandatory skip: ' + JSON.stringify(rec.review);
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
 
 run_node_case "K1976 recovered: a retry that returns a complete tsv routes normally — shell-reviewer runs, no escalation" "
 $PREAMBLE
@@ -6549,6 +6708,12 @@ setMachinery('droptsv-c',
   { outcome: 'CREATED', path: '/tmp/repo.wt/droptsv-c' },
   { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/foo.py'], tsv, tsv_rows: 0 },
   { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/foo.py'], tsv, tsv_rows: 0 },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-drc' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'sha-drc', branch: 'build/droptsv-c' },
+  { outcome: 'PR_OPENED', pr_number: 2021 },
+  { outcome: 'CI_GREEN' },
 );
 happyWorker('droptsv-c');
 
@@ -6561,21 +6726,14 @@ const result = await mod.default();
 let reason = null;
 const diffCalls = callLog.filter(c => (c.opts.label||'').startsWith('review-diff:droptsv-c'));
 if (diffCalls.length !== 2) reason = 'expected exactly one retry (2 review-diff calls total), got ' + diffCalls.length;
-else if ((result.parked ?? []).length !== 0) reason = 'a persistent row-count mismatch must never park the item: ' + JSON.stringify(result);
-else if ((result.escalations ?? []).length !== 1) reason = 'expected exactly 1 escalation: ' + JSON.stringify(result.escalations);
-else if (result.escalations[0].kind !== 'review-diff-error') reason = 'wrong escalation kind: ' + result.escalations[0].kind;
-else {
-  const payload = result.escalations[0].payload;
-  const mm = payload.mismatch;
-  if (!mm || mm.expected !== 2 || mm.got !== 0) reason = 'escalation payload must name the expected/got row counts: ' + JSON.stringify(payload);
-  else if (!Array.isArray(payload.files) || payload.files[0] !== 'workflows/scripts/foo.py') reason = 'escalation payload must carry the changed-file list: ' + JSON.stringify(payload);
-}
+else if ((result.escalations ?? []).length !== 0) reason = 'K2020: a persistent row-count mismatch must DEGRADE, not halt: ' + JSON.stringify(result.escalations);
+else if ((result.parked ?? []).length !== 1) reason = 'expected the item to park (drive completed): ' + JSON.stringify(result);
 const reviewCalls = callLog.filter(c => isReviewCall(c.opts));
 if (!reason && reviewCalls.length !== 0) reason = 'no reviewer roster may ever be computed from a mismatched tsv: ' + JSON.stringify(reviewCalls.map(c => c.opts.agentType));
 console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
 "
 
-run_node_case "K1976 mismatch (tsv_rows absent): tsv present with no tsv_rows key follows the same retry-then-escalate path, and 'got' survives JSON serialization as null rather than vanishing as undefined" "
+run_node_case "K1976/K2020 mismatch (tsv_rows absent): a table with no tsv_rows key follows the same retry-then-DEGRADE path, and the parked record's routing_degraded keeps 'got' as null through JSON serialization rather than vanishing as undefined" "
 $PREAMBLE
 const TAB = String.fromCharCode(9);
 const tsv = '.py' + TAB + 'python-reviewer' + TAB + 'claude/agents/reviewers/python-reviewer.md\\n';
@@ -6584,6 +6742,12 @@ setMachinery('droptsv-cc',
   { outcome: 'CREATED', path: '/tmp/repo.wt/droptsv-cc' },
   { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/foo.py'], tsv },
   { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/foo.py'], tsv },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-drcc' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'sha-drcc', branch: 'build/droptsv-cc' },
+  { outcome: 'PR_OPENED', pr_number: 2022 },
+  { outcome: 'CI_GREEN' },
 );
 happyWorker('droptsv-cc');
 
@@ -6596,12 +6760,18 @@ const result = await mod.default();
 let reason = null;
 const diffCalls = callLog.filter(c => (c.opts.label||'').startsWith('review-diff:droptsv-cc'));
 if (diffCalls.length !== 2) reason = 'expected exactly one retry (2 review-diff calls total), got ' + diffCalls.length;
-else if ((result.escalations ?? []).length !== 1) reason = 'expected exactly 1 escalation: ' + JSON.stringify(result.escalations);
+else if ((result.escalations ?? []).length !== 0) reason = 'K2020: this must DEGRADE, not halt: ' + JSON.stringify(result.escalations);
+else if ((result.parked ?? []).length !== 1) reason = 'expected the item to park: ' + JSON.stringify(result);
 else {
-  const serialized = JSON.parse(JSON.stringify(result.escalations[0].payload));
-  const mm = serialized.mismatch;
-  if (!mm || !('got' in mm) || mm.got !== null) reason = 'got must survive JSON serialization as null, never vanish as undefined: ' + JSON.stringify(serialized);
-  else if (mm.expected !== 1) reason = 'expected must still be the real row count: ' + JSON.stringify(serialized);
+  const serialized = JSON.parse(JSON.stringify(result.parked[0].review));
+  const deg = serialized.routing_degraded;
+  if (!deg) reason = 'the parked record must carry the gap payload behind the degradation: ' + JSON.stringify(serialized);
+  else {
+    const mm = deg.mismatch;
+    if (!mm || !('got' in mm) || mm.got !== null) reason = 'got must survive JSON serialization as null, never vanish as undefined: ' + JSON.stringify(deg);
+    else if (mm.expected !== 1) reason = 'expected must still be the real row count: ' + JSON.stringify(deg);
+    else if (!Array.isArray(deg.files) || deg.files[0] !== 'workflows/scripts/foo.py') reason = 'the gap payload must carry the changed-file list it would have routed: ' + JSON.stringify(deg);
+  }
 }
 console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
 "
@@ -6656,7 +6826,7 @@ console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
 #   RECEIVED `tsv` string and compared against the reliably-short relayed
 #   scalar exactly like `tsv_rows` already is.
 # ============================================================================
-run_node_case "K1982 content-mismatch: row count agrees but content disagrees — retries once, then escalates review-diff-error naming the checksum gap, no reviewer roster ever computed (temperloop#1978 round 4 shape)" "
+run_node_case "K1982/K2020 content-mismatch: row count agrees but content disagrees — retries once, then DEGRADES naming the checksum gap, no reviewer roster ever computed (temperloop#1978 round 4 shape)" "
 $PREAMBLE
 const TAB = String.fromCharCode(9);
 const realTsv = '.sh' + TAB + 'shell-reviewer' + TAB + 'claude/agents/reviewers/shell-reviewer.md\\n';
@@ -6675,6 +6845,12 @@ setMachinery('contentgarble-a',
   // delivered. tsv_rows agrees (by construction) so the K1976 guard is silent.
   { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/foo.sh'], tsv: corruptTsv, tsv_rows: tsvRows(corruptTsv), tsv_checksum: tsvChecksum(realTsv) },
   { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/foo.sh'], tsv: corruptTsv, tsv_rows: tsvRows(corruptTsv), tsv_checksum: tsvChecksum(realTsv) },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-cga' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'sha-cga', branch: 'build/contentgarble-a' },
+  { outcome: 'PR_OPENED', pr_number: 2023 },
+  { outcome: 'CI_GREEN' },
 );
 happyWorker('contentgarble-a');
 
@@ -6687,14 +6863,13 @@ const result = await mod.default();
 let reason = null;
 const diffCalls = callLog.filter(c => (c.opts.label||'').startsWith('review-diff:contentgarble-a'));
 if (diffCalls.length !== 2) reason = 'expected exactly one retry (2 review-diff calls total), got ' + diffCalls.length;
-else if ((result.parked ?? []).length !== 0) reason = 'a persistent content mismatch must never park the item: ' + JSON.stringify(result);
-else if ((result.escalations ?? []).length !== 1) reason = 'expected exactly 1 escalation: ' + JSON.stringify(result.escalations);
-else if (result.escalations[0].kind !== 'review-diff-error') reason = 'wrong escalation kind: ' + result.escalations[0].kind;
+else if ((result.escalations ?? []).length !== 0) reason = 'K2020: a persistent content mismatch must DEGRADE, not halt: ' + JSON.stringify(result.escalations);
+else if ((result.parked ?? []).length !== 1) reason = 'expected the item to park: ' + JSON.stringify(result);
 else {
-  const payload = result.escalations[0].payload;
-  const cm = payload.content_mismatch;
-  if (!cm || typeof cm.expected !== 'number' || cm.expected === cm.got) reason = 'escalation payload must name a real checksum disagreement: ' + JSON.stringify(payload);
-  else if (!Array.isArray(payload.files) || payload.files[0] !== 'workflows/scripts/foo.sh') reason = 'escalation payload must carry the changed-file list: ' + JSON.stringify(payload);
+  const payload = result.parked[0].review.routing_degraded;
+  const cm = payload && payload.content_mismatch;
+  if (!cm || typeof cm.expected !== 'number' || cm.expected === cm.got) reason = 'the degradation payload must name a real checksum disagreement: ' + JSON.stringify(payload);
+  else if (!Array.isArray(payload.files) || payload.files[0] !== 'workflows/scripts/foo.sh') reason = 'the degradation payload must carry the changed-file list: ' + JSON.stringify(payload);
   else if (payload.mismatch) reason = 'a row-count-VALID case must never carry the row-count mismatch field too: ' + JSON.stringify(payload);
 }
 const reviewCalls = callLog.filter(c => isReviewCall(c.opts));
@@ -6792,6 +6967,12 @@ setMachinery('rowswap-a',
   // relay actually delivered, same row count, same character multiset.
   { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/foo.sh'], tsv: swappedTsv, tsv_rows: tsvRows(swappedTsv), tsv_checksum: tsvChecksum(tsv) },
   { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/foo.sh'], tsv: swappedTsv, tsv_rows: tsvRows(swappedTsv), tsv_checksum: tsvChecksum(tsv) },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-rsa' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'sha-rsa', branch: 'build/rowswap-a' },
+  { outcome: 'PR_OPENED', pr_number: 2024 },
+  { outcome: 'CI_GREEN' },
 );
 happyWorker('rowswap-a');
 
@@ -6803,13 +6984,12 @@ const mod = await loadLevel();
 const result = await mod.default();
 const diffCalls = callLog.filter(c => (c.opts.label||'').startsWith('review-diff:rowswap-a'));
 if (diffCalls.length !== 2) reason = 'expected exactly one retry (2 review-diff calls total), got ' + diffCalls.length;
-else if ((result.parked ?? []).length !== 0) reason = 'a persistent content mismatch must never park the item: ' + JSON.stringify(result);
-else if ((result.escalations ?? []).length !== 1) reason = 'expected exactly 1 escalation: ' + JSON.stringify(result.escalations);
-else if (result.escalations[0].kind !== 'review-diff-error') reason = 'wrong escalation kind: ' + result.escalations[0].kind;
+else if ((result.escalations ?? []).length !== 0) reason = 'K2020: a persistent content mismatch must DEGRADE, not halt: ' + JSON.stringify(result.escalations);
+else if ((result.parked ?? []).length !== 1) reason = 'expected the item to park: ' + JSON.stringify(result);
 else {
-  const payload = result.escalations[0].payload;
-  const cm = payload.content_mismatch;
-  if (!cm || typeof cm.expected !== 'number' || cm.expected === cm.got) reason = 'escalation payload must name a real checksum disagreement: ' + JSON.stringify(payload);
+  const payload = result.parked[0].review.routing_degraded;
+  const cm = payload && payload.content_mismatch;
+  if (!cm || typeof cm.expected !== 'number' || cm.expected === cm.got) reason = 'the degradation payload must name a real checksum disagreement: ' + JSON.stringify(payload);
   else if (payload.mismatch) reason = 'a row-count-VALID case must never carry the row-count mismatch field too: ' + JSON.stringify(payload);
 }
 const reviewCalls = callLog.filter(c => isReviewCall(c.opts));
@@ -6871,6 +7051,557 @@ console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
 "
 
 # ============================================================================
+# TEST (K2020 — wire shape, EXECUTED not asserted): temperloop#2020 stopped
+#   shipping the routing table as an inline `tsv` SCALAR and ships `tsv_lines`
+#   — a JSON array of data-row strings, the same jq idiom `files` uses, which
+#   is the field observed to survive every relay mangling that destroyed the
+#   blob. Two properties have to hold together or the change is unsafe:
+#     (1) the step no longer emits `tsv` at all, and emits `tsv_lines` as a
+#         real ARRAY (not a stringified one);
+#     (2) the array is EQUIVALENT to the old blob — joined on newlines it
+#         reproduces, bit for bit, the SAME tsv_rows and tsv_checksum the
+#         #1976/#1982 detectors compare against, so neither detector is
+#         weakened by the reshape.
+#   Both are checked against the REAL reviewDiffCmd()-generated bash pipeline
+#   executed over this repo's own realistically-sized tracked tsv (~3.8KB, 11
+#   data rows — the exact file whose relay was dropped in production), with
+#   production's own reviewDiffTsvText/parseTsvRows/tsvChecksum spliced out of
+#   the .mjs source rather than reimplemented here.
+# ============================================================================
+run_node_case "K2020 wire shape: the REAL bash pipeline emits tsv_lines as an ARRAY and no tsv scalar, and the array joined on newlines reproduces the SAME tsv_rows/tsv_checksum the #1976/#1982 detectors compare against" "
+$PREAMBLE
+const { execFileSync } = await import('node:child_process');
+let reason = null;
+const internalsSrc = MJS_SRC.replace(/return await buildLevel\(\);\s*\$/, 'return { reviewDiffCmd, tsvChecksum, parseTsvRows, reviewDiffTsvText, reviewDiffTsvGap };');
+if (internalsSrc === MJS_SRC) {
+  reason = 'internals-splice failed: the literal tail \\'return await buildLevel();\\' was not found in build-level.mjs — this test needs updating alongside that refactor';
+} else {
+  globalThis.args = '{}';
+  const internalsFn = new AsyncFunction(internalsSrc);
+  const I = await internalsFn();
+  const wt = '$REPO_ROOT';
+  let out;
+  try {
+    out = execFileSync('bash', ['-c', I.reviewDiffCmd(wt)], { encoding: 'utf8', cwd: wt });
+  } catch (e) {
+    reason = 'the REAL bash pipeline threw: ' + ((e && e.message) || e);
+  }
+  if (!reason) {
+    const outLines = out.trim().split('\\n').filter(Boolean);
+    let parsed;
+    try { parsed = JSON.parse(outLines[outLines.length - 1]); }
+    catch (e) { reason = 'the real bash pipeline did not emit parseable JSON on its last line: ' + out; }
+    if (!reason) {
+      const realTsv = readFileSync(wt + '/workflows/scripts/config/reviewer-routing.tsv', 'utf8');
+      // Guard the fixture itself: a shrunken table would make this case pass
+      // for the wrong reason (a 1-row table was never the relay's problem).
+      if (realTsv.length < 1000 || I.parseTsvRows(realTsv).length < 5) {
+        reason = 'setup: the tracked reviewer-routing.tsv is no longer realistically sized (' + realTsv.length + ' bytes, ' + I.parseTsvRows(realTsv).length + ' rows) — this case needs a table big enough to be the relay drop it models';
+      } else if ('tsv' in parsed) {
+        reason = 'K2020: the step must NOT ship the table as an inline scalar any more — found a tsv key: ' + JSON.stringify(String(parsed.tsv).slice(0, 80));
+      } else if (!Array.isArray(parsed.tsv_lines)) {
+        reason = 'K2020: tsv_lines must be a real JSON ARRAY (the shape \`files\` uses), got ' + typeof parsed.tsv_lines + ': ' + JSON.stringify(parsed.tsv_lines).slice(0, 120);
+      } else if (parsed.tsv_lines.length !== Number(parsed.tsv_rows)) {
+        reason = 'K2020: tsv_lines must carry exactly the rows tsv_rows counted — ' + parsed.tsv_lines.length + ' vs ' + parsed.tsv_rows;
+      } else {
+        // THE EQUIVALENCE INVARIANT: reshaping the field must not move either
+        // detector's value. Recompute both from the received array through
+        // PRODUCTION's own normalizer.
+        const text = I.reviewDiffTsvText(parsed);
+        if (I.parseTsvRows(text).length !== Number(parsed.tsv_rows)) {
+          reason = 'K2020: the #1976 row-count detector no longer agrees with the reshaped payload — ' + I.parseTsvRows(text).length + ' vs ' + parsed.tsv_rows;
+        } else if (I.tsvChecksum(text) !== Number(parsed.tsv_checksum)) {
+          reason = 'K2020: the #1982 checksum detector no longer agrees with the reshaped payload — ' + I.tsvChecksum(text) + ' vs ' + parsed.tsv_checksum + ' (the joined array must be byte-identical to the blob this used to emit)';
+        } else if (I.tsvChecksum(text) !== I.tsvChecksum(realTsv)) {
+          reason = 'K2020: the relayed rows must canonicalize to the SAME checksum as the source file itself — ' + I.tsvChecksum(text) + ' vs ' + I.tsvChecksum(realTsv);
+        } else if (I.reviewDiffTsvGap(parsed, ['workflows/scripts/foo.sh']) !== null) {
+          reason = 'K2020: an INTACT reshaped payload must read as complete, never as a gap: ' + JSON.stringify(I.reviewDiffTsvGap(parsed, ['workflows/scripts/foo.sh']));
+        }
+      }
+    }
+  }
+}
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+run_node_case "K2020 relay-shape routing: a REVIEW_DIFF carrying the LIVE tsv in the tsv_lines array shape routes normally — shell-reviewer runs, no retry, no degradation" "
+$PREAMBLE
+const realTsv = readFileSync('$REPO_ROOT/workflows/scripts/config/reviewer-routing.tsv', 'utf8');
+setMachinery('k2020-lines',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/k2020-lines' },
+  { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/foo.sh'], tsv_lines: tsvLines(realTsv), tsv_rows: tsvRows(realTsv), tsv_checksum: tsvChecksum(realTsv) },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-k2020l' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'sha-k2020l', branch: 'build/k2020-lines' },
+  { outcome: 'PR_OPENED', pr_number: 2025 },
+  { outcome: 'CI_GREEN' },
+);
+happyWorker('k2020-lines');
+setReview('k2020-lines', '## Summary\\nclean\\n');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'k2020-lines', branch: 'build/k2020-lines', title: 'Touch a shell script', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+let reason = null;
+const diffCalls = callLog.filter(c => (c.opts.label||'').startsWith('review-diff:k2020-lines'));
+if (diffCalls.length !== 1) reason = 'an INTACT tsv_lines payload must need no retry, got ' + diffCalls.length + ' review-diff calls';
+else if ((result.escalations ?? []).length !== 0) reason = 'no escalation expected: ' + JSON.stringify(result.escalations);
+else if ((result.parked ?? []).length !== 1) reason = 'expected 1 parked: ' + JSON.stringify(result);
+const rec = (result.parked ?? [])[0];
+if (!reason && (!rec.review || !(rec.review.ran ?? []).some(r => r.reviewer === 'shell-reviewer')))
+  reason = 'the routing decision must be reached from the array shape — shell-reviewer must run: ' + JSON.stringify(rec && rec.review);
+if (!reason && rec.review.routing_degraded) reason = 'an intact payload must never be reported as degraded: ' + JSON.stringify(rec.review.routing_degraded);
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+# ============================================================================
+# TEST (K2020 — THE REGRESSION CASE, acceptance 3): drive the review-diff step
+#   with a REALISTICALLY-SIZED table (the live tracked reviewer-routing.tsv,
+#   the same ~3.8KB/11-row file the production relay dropped on
+#   Towheads/foundation run wf_967c2878-0a7) and model the drop itself — the
+#   REVIEW_DIFF line arrives with `files` intact and NO table field at all,
+#   byte-for-byte the observed failure shape. Two arms, because "the routing
+#   decision is still reached" means different things depending on whether a
+#   table is reachable at all:
+#     ARM 1 (orchestrator hand-off present, #1982): the decision is reached in
+#       full — shell-reviewer routes off the authoritative copy, the relay is
+#       not consulted, and no retry is even attempted.
+#     ARM 2 (no hand-off — an un-migrated caller, the foundation v0.39.0 case):
+#       the decision that is reached is the DEGRADATION — a legible skip, and
+#       the drive still completes to a PR. Never a halt.
+#   Deterministic: the fixture is a tracked file plus queued outcomes; nothing
+#   here depends on a live relay.
+# ============================================================================
+run_node_case "K2020 regression ARM 1: a realistically-sized table DROPPED from the relay still reaches the routing decision when the orchestrator supplied it — shell-reviewer runs, zero retries, no degradation" "
+$PREAMBLE
+const realTsv = readFileSync('$REPO_ROOT/workflows/scripts/config/reviewer-routing.tsv', 'utf8');
+if (realTsv.length < 1000 || tsvRows(realTsv) < 5) {
+  console.log(JSON.stringify({ ok: false, reason: 'setup: the tracked tsv is no longer realistically sized — this case must model a table big enough to be the observed drop' }));
+} else {
+
+setMachinery('k2020-arm1',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/k2020-arm1' },
+  // The observed drop: files intact, the table field gone entirely.
+  { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/foo.sh'], tsv_rows: tsvRows(realTsv), tsv_checksum: tsvChecksum(realTsv) },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-k2020a1' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'sha-k2020a1', branch: 'build/k2020-arm1' },
+  { outcome: 'PR_OPENED', pr_number: 2026 },
+  { outcome: 'CI_GREEN' },
+);
+happyWorker('k2020-arm1');
+setReview('k2020-arm1', '## Summary\\nclean\\n');
+
+globalThis.args = { ...baseArgs, reviewerRoutingTsv: realTsv, items: [
+  { slug: 'k2020-arm1', branch: 'build/k2020-arm1', title: 'Touch a shell script', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+let reason = null;
+const diffCalls = callLog.filter(c => (c.opts.label||'').startsWith('review-diff:k2020-arm1'));
+if (diffCalls.length !== 1) reason = 'the authoritative hand-off must skip the relay gap-check and its retry entirely, got ' + diffCalls.length + ' review-diff calls';
+else if ((result.escalations ?? []).length !== 0) reason = 'a dropped relay with an authoritative table must never escalate: ' + JSON.stringify(result.escalations);
+else if ((result.parked ?? []).length !== 1) reason = 'expected 1 parked: ' + JSON.stringify(result);
+const rec = (result.parked ?? [])[0];
+if (!reason && !(rec.review.ran ?? []).some(r => r.reviewer === 'shell-reviewer'))
+  reason = 'THE ACCEPTANCE: the routing decision must still be REACHED despite the drop — shell-reviewer must run: ' + JSON.stringify(rec.review);
+if (!reason && rec.review.routing_degraded) reason = 'the decision was reachable, so nothing may be reported degraded: ' + JSON.stringify(rec.review.routing_degraded);
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+}
+"
+
+run_node_case "K2020 regression ARM 2: the same realistically-sized drop with NO orchestrator hand-off degrades legibly and the drive still completes to a PR — never the review-diff-error halt that stranded committed work" "
+$PREAMBLE
+const realTsv = readFileSync('$REPO_ROOT/workflows/scripts/config/reviewer-routing.tsv', 'utf8');
+if (realTsv.length < 1000 || tsvRows(realTsv) < 5) {
+  console.log(JSON.stringify({ ok: false, reason: 'setup: the tracked tsv is no longer realistically sized — this case must model a table big enough to be the observed drop' }));
+} else {
+
+setMachinery('k2020-arm2',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/k2020-arm2' },
+  { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/foo.sh'], tsv_rows: tsvRows(realTsv), tsv_checksum: tsvChecksum(realTsv) },
+  { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/foo.sh'], tsv_rows: tsvRows(realTsv), tsv_checksum: tsvChecksum(realTsv) },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-k2020a2' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'sha-k2020a2', branch: 'build/k2020-arm2' },
+  { outcome: 'PR_OPENED', pr_number: 2027 },
+  { outcome: 'CI_GREEN' },
+);
+happyWorker('k2020-arm2');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'k2020-arm2', branch: 'build/k2020-arm2', title: 'Touch a shell script', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+let reason = null;
+const diffCalls = callLog.filter(c => (c.opts.label||'').startsWith('review-diff:k2020-arm2'));
+if (diffCalls.length !== 2) reason = 'the #1976 one-shot retry must still fire on the drop, got ' + diffCalls.length + ' review-diff calls';
+else if ((result.escalations ?? []).length !== 0) reason = 'THE ACCEPTANCE: a drop must not halt a drive whose work is complete: ' + JSON.stringify(result.escalations);
+else if ((result.parked ?? []).length !== 1) reason = 'the drive must still reach a PR and park: ' + JSON.stringify(result);
+const rec = (result.parked ?? [])[0];
+if (!reason && rec.pr !== 2027) reason = 'the PR must still have been opened: ' + JSON.stringify(rec);
+if (!reason && (rec.review.ran ?? []).length !== 0) reason = 'no roster may be computed from a table that never arrived: ' + JSON.stringify(rec.review);
+if (!reason && !(rec.review.skipped ?? []).some(s => /^skipped — /.test(s.note)))
+  reason = 'the degradation must be legible as a mode-2 skip notice: ' + JSON.stringify(rec.review);
+if (!reason && !rec.review.routing_degraded) reason = 'the gap payload must ride the record so the degradation is diagnosable: ' + JSON.stringify(rec.review);
+if (!reason && rec.review.routing_degraded.missing !== 'tsv') reason = 'the gap payload must name WHICH detector fired: ' + JSON.stringify(rec.review.routing_degraded);
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+}
+"
+
+# ============================================================================
+# TEST (K2020 — acceptance 4, THE DATA-LOSS CRITERION): an escalation that
+#   fires AFTER the 3c worker has committed must not hand the caller a state
+#   where the only copy of that work is a local worktree a downstream prose
+#   step may delete. driveItem's result passes through preserveOnEscalation at
+#   the parallel() choke point, which pushes the branch first and records what
+#   happened on the escalation payload. Three cases: the push succeeds, the
+#   push FAILS (the payload must say so — that is when the worktree is the
+#   last copy), and a PARKED item is never touched by any of this.
+# ============================================================================
+run_node_case "K2020 preserve: a post-commit escalation pushes the branch to origin BEFORE returning, and records committed_work on the payload" "
+$PREAMBLE
+setMachinery('k2020-presv',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/k2020-presv' },
+);
+// A failing acceptance verdict — an escalation raised AFTER 3c committed.
+setWorker('k2020-presv', { status: 'done', summary: 'built it', acceptance_results: [{ criterion: 'c', passed: false, evidence: 'e' }], commits: ['abc1234'] });
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'k2020-presv', branch: 'build/k2020-presv', title: 'Committed then escalated', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+let reason = null;
+if ((result.escalations ?? []).length !== 1) reason = 'expected exactly 1 escalation: ' + JSON.stringify(result);
+else {
+  const pushCalls = callLog.filter(c => (c.opts.label||'') === 'preserve-push:k2020-presv');
+  const cw = result.escalations[0].payload.committed_work;
+  if (pushCalls.length !== 1) reason = 'THE ACCEPTANCE: an escalation must attempt exactly one work-preservation push before returning, got ' + pushCalls.length;
+  else if (!cw || cw.preserved !== true) reason = 'the escalation payload must record that the committed work is on origin: ' + JSON.stringify(cw);
+  else if (cw.outcome !== 'WORK_PRESERVED') reason = 'committed_work must name the outcome it observed: ' + JSON.stringify(cw);
+  else if (result.escalations[0].kind !== 'acceptance-incomplete') reason = 'preservation must not change the escalation the item was carrying: ' + result.escalations[0].kind;
+}
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+run_node_case "K2020 preserve FAILED: when the push does not land the work, the escalation says so — preserved:false, so a caller deciding about worktree removal reads the worktree as the last copy" "
+$PREAMBLE
+setMachinery('k2020-presvf',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/k2020-presvf' },
+);
+setPreserve('k2020-presvf', { outcome: 'WORK_PRESERVE_FAILED', branch: 'build/k2020-presvf', commits_ahead: 3, pushed: false });
+setWorker('k2020-presvf', { status: 'done', summary: 'built it', acceptance_results: [{ criterion: 'c', passed: false, evidence: 'e' }], commits: ['abc1234'] });
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'k2020-presvf', branch: 'build/k2020-presvf', title: 'Committed then escalated', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+let reason = null;
+if ((result.escalations ?? []).length !== 1) reason = 'expected exactly 1 escalation: ' + JSON.stringify(result);
+else {
+  const cw = result.escalations[0].payload.committed_work;
+  if (!cw || cw.preserved !== false) reason = 'a failed push must be reported as NOT preserved — never silently optimistic: ' + JSON.stringify(cw);
+  else if (cw.outcome !== 'WORK_PRESERVE_FAILED') reason = 'committed_work must name the failing outcome: ' + JSON.stringify(cw);
+  else if (Number(cw.commits_ahead) !== 3) reason = 'committed_work must carry HOW MUCH work is at risk: ' + JSON.stringify(cw);
+  else if (result.escalations[0].kind !== 'acceptance-incomplete') reason = 'a failed preservation must not change the escalation kind: ' + result.escalations[0].kind;
+}
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+run_node_case "K2020 preserve scope: a PARKED item never pays a preservation push — 3f already pushed it and opened its PR" "
+$PREAMBLE
+happyMachinery('k2020-park', 2028, 'sha-k2020p');
+happyWorker('k2020-park');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'k2020-park', branch: 'build/k2020-park', title: 'Green', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+let reason = null;
+if ((result.parked ?? []).length !== 1) reason = 'expected 1 parked: ' + JSON.stringify(result);
+else if (callLog.some(c => (c.opts.label||'').startsWith('preserve-push:')))
+  reason = 'a green, parked item must not pay an extra machinery spawn: ' + JSON.stringify(callLog.filter(c => (c.opts.label||'').startsWith('preserve-push:')).map(c => c.opts.label));
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+run_node_case "K2020 preserve DENIED: the auto-mode classifier denying the preservation push is recorded as SPINE_DENIED with preserved:false — the arm the function's own comment lists and the one that must never read as a silent success" "
+$PREAMBLE
+setMachinery('k2020-presvd',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/k2020-presvd' },
+);
+// A queued null models agent() coming back DENIED for the preserve-push label.
+// runMachinery() normalises that to { outcome: 'SPINE_DENIED', denied: true }
+// rather than throwing, so this arm reaches preserveOnEscalation as a
+// well-formed outcome object — and must be reported as NOT preserved.
+setPreserve('k2020-presvd', null);
+setWorker('k2020-presvd', { status: 'done', summary: 'built it', acceptance_results: [{ criterion: 'c', passed: false, evidence: 'e' }], commits: ['abc1234'] });
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'k2020-presvd', branch: 'build/k2020-presvd', title: 'Committed then escalated', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+let reason = null;
+if ((result.escalations ?? []).length !== 1) reason = 'expected exactly 1 escalation: ' + JSON.stringify(result);
+else {
+  const cw = result.escalations[0].payload.committed_work;
+  if (!cw) reason = 'a denied preservation push must still record committed_work — an absent field reads as an older workflow, not as a denial';
+  else if (cw.outcome !== 'SPINE_DENIED') reason = 'a denied executor must be named as such, never flattened to a generic ERROR: ' + JSON.stringify(cw);
+  else if (cw.preserved !== false) reason = 'a DENIED push landed nothing — preserved must be false so the disposing caller reads the worktree as the last copy: ' + JSON.stringify(cw);
+  else if (cw.branch !== 'build/k2020-presvd') reason = 'committed_work must still name the branch at risk even when the push never ran: ' + JSON.stringify(cw);
+  else if (result.escalations[0].kind !== 'acceptance-incomplete') reason = 'a denied preservation must not change the escalation the item was carrying: ' + result.escalations[0].kind;
+}
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+# ============================================================================
+# TEST (K2020 round 2 — preserveCommittedWorkCmd's GENERATED BASH, EXECUTED
+#   not mocked): every case above drives the JS CONSUMER of this step against a
+#   hand-written JSON object, so none of them executes a single line of the
+#   shell text preserveCommittedWorkCmd() actually emits. That text is the
+#   data-loss mechanism itself — it exists because a prose guard failed and 515
+#   verified lines were destroyed — so a quoting bug, a misresolving \`default\`
+#   chain, a silently-failing \`git rev-list --count\` or an off-by-one in the
+#   \`ahead -eq 0\` skip would surface only in production, on the one path built
+#   to prevent loss. The sibling tsv_lines change got a real-bash test for
+#   exactly this reason; this is its counterpart.
+#
+#   Runs the REAL generated command under bash against throwaway git repos (a
+#   bare 'origin' plus local clones, all under mkdtemp, git config fully
+#   isolated via GIT_CONFIG_GLOBAL/SYSTEM=/dev/null), splicing
+#   preserveCommittedWorkCmd out of the .mjs source rather than reimplementing
+#   it. Six arms, one per branch of the generated script:
+#     A  committed-but-unpushed  -> WORK_PRESERVED, and the branch REALLY lands
+#                                   in the bare origin (asserted against origin,
+#                                   not against the script's own claim)
+#     B  clean clone at base     -> WORK_PRESERVE_SKIP, commits_ahead 0
+#     C  push rigged to fail     -> WORK_PRESERVE_FAILED, pushed false
+#     D  no worktree at all      -> WORK_PRESERVE_SKIP, detail 'no worktree'
+#     E  no refs/remotes/origin/HEAD -> the main/master show-ref fallback still
+#                                   resolves (a misresolve makes rev-list
+#                                   fail, ahead read 0, and the arm silently
+#                                   become a SKIP — the quiet failure)
+#     F  re-run over an already-pushed branch -> still WORK_PRESERVED
+#                                   (the documented idempotency claim)
+#     G  (round 3) NO origin/HEAD **and** a default branch that is neither main
+#                                   nor master ('trunk'), over a REAL unpushed
+#                                   commit -> the base is unresolvable, so the
+#                                   arm must NOT skip: it pushes anyway and
+#                                   reports base_resolved:false. Arm E only ever
+#                                   covered the case where the fallback SUCCEEDS;
+#                                   this is the state E's own comment described
+#                                   and left unasserted, and it is a FALSE
+#                                   NEGATIVE on the data-loss path — a skip is
+#                                   the ONE outcome preserveOnEscalation does not
+#                                   warn about, so real unpushed work read as
+#                                   'nothing to preserve' with no warning at all.
+#
+#   Every arm passes an EXPLICIT branch (the plan's `item.branch`, e.g.
+#   `fix/<slug>`) that is deliberately DIFFERENT from the worktree's local
+#   `build/<slug>` HEAD, and asserts the ref lands on origin under the PASSED
+#   name — the round-3 MEDIUM: pushing HEAD under its local name mints a second,
+#   PR-less `build/<slug>` ref on every post-3f escalation.
+# ============================================================================
+run_node_case "K2020 preserve bash: the REAL generated shell (executed, not mocked) preserves an unpushed commit to origin under the PLAN's branch, skips a clean tree, reports a failed push, handles a missing worktree, resolves default without origin/HEAD, pushes rather than skipping when the base is unresolvable, and is idempotent" "
+$PREAMBLE
+const { execFileSync } = await import('node:child_process');
+const { mkdtempSync, rmSync } = await import('node:fs');
+const { tmpdir } = await import('node:os');
+let reason = null;
+const internalsSrc = MJS_SRC.replace(/return await buildLevel\(\);\s*\$/, 'return { preserveCommittedWorkCmd };');
+if (internalsSrc === MJS_SRC) {
+  reason = 'internals-splice failed: the buildLevel() tail was not found in build-level.mjs — this test needs updating alongside that refactor';
+} else {
+  globalThis.args = '{}';
+  const I = await (new AsyncFunction(internalsSrc))();
+  // Fully isolated git: no user/system config can lend this test an identity,
+  // a hooksPath, or a default branch, so it asserts the SCRIPT's behaviour.
+  const GITENV = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null', GIT_TERMINAL_PROMPT: '0' };
+  const G = 'git -c user.email=t@example.invalid -c user.name=T -c commit.gpgsign=false -c init.defaultBranch=main';
+  const root = mkdtempSync(tmpdir() + '/k2020-presv-');
+  const sh = (cmd, cwd) => execFileSync('bash', ['-c', cmd], { encoding: 'utf8', cwd: cwd || root, env: GITENV });
+  const run = (wt, branch) => {
+    const out = execFileSync('bash', ['-c', I.preserveCommittedWorkCmd(wt, branch)], { encoding: 'utf8', cwd: root, env: GITENV });
+    const lines = out.trim().split('\\n').filter(Boolean);
+    return JSON.parse(lines[lines.length - 1]);
+  };
+  const commitOn = (name, br, f) =>
+    sh('cd ' + name + ' && ' + G + ' checkout -q -b ' + br + ' && printf work > ' + f + ' && ' + G + ' add -A && ' + G + ' commit -q -m work');
+  try {
+    sh(G + ' init -q --bare origin.git');
+    sh(G + ' init -q seed');
+    sh('cd seed && printf base > f.txt && ' + G + ' add -A && ' + G + ' commit -q -m base && ' + G + ' remote add origin ../origin.git && ' + G + ' push -q -u origin HEAD:main');
+    const clone = (name) => sh(G + ' clone -q origin.git ' + name);
+
+    // --- A: a real committed-but-unpushed commit --------------------------
+    // The local HEAD is \`build/wta\` (what worktree.sh mints); the PLAN branch
+    // handed to the step is \`fix/wta\` (what 3f pushes). They differ on
+    // purpose — the ref must land under the PLAN name.
+    clone('wtA');
+    commitOn('wtA', 'build/wta', 'g.txt');
+    const a = run(root + '/wtA', 'fix/wta');
+    if (a.outcome !== 'WORK_PRESERVED') reason = 'A: an unpushed commit must be preserved, got ' + JSON.stringify(a);
+    else if (a.branch !== 'fix/wta') reason = 'A: the generated shell must report the PLAN branch it was handed, not the worktree HEAD, got ' + JSON.stringify(a);
+    else if (Number(a.commits_ahead) !== 1) reason = 'A: commits_ahead must count the real unlanded commits, got ' + JSON.stringify(a);
+    else if (a.base_resolved !== true) reason = 'A: with origin/HEAD present the base is resolved and must say so, got ' + JSON.stringify(a);
+    else if (a.pushed !== true) reason = 'A: pushed must be true on the success arm, got ' + JSON.stringify(a);
+    else {
+      // THE POINT: assert against ORIGIN, not against the script's own claim.
+      const landed = sh(G + ' --git-dir=' + root + '/origin.git show-ref --verify --quiet refs/heads/fix/wta && printf YES || printf NO');
+      if (landed !== 'YES') reason = 'A: WORK_PRESERVED must mean the branch really exists on origin — it does not, so the report was optimistic';
+      else {
+        // The round-3 MEDIUM: pushing HEAD under its LOCAL name would mint a
+        // second, PR-less \`build/<slug>\` ref that nothing reclaims.
+        const stray = sh(G + ' --git-dir=' + root + '/origin.git show-ref --verify --quiet refs/heads/build/wta && printf YES || printf NO');
+        if (stray === 'YES') reason = 'A: the preserve push must target the PLAN branch ONLY — a second build/<slug> ref on origin is the PR-less two-ref split temperloop#1688 exists to avoid, and nothing ever reclaims it';
+      }
+    }
+
+    // --- B: a clean clone sitting at base ---------------------------------
+    if (!reason) {
+      clone('wtB');
+      const b = run(root + '/wtB', 'fix/wtb');
+      if (b.outcome !== 'WORK_PRESERVE_SKIP') reason = 'B: nothing ahead of base must SKIP, never mint an empty remote branch, got ' + JSON.stringify(b);
+      else if (Number(b.commits_ahead) !== 0) reason = 'B: the skip arm must report commits_ahead 0, got ' + JSON.stringify(b);
+      else if (b.base_resolved !== true) reason = 'B: a SKIP is only legitimate over a RESOLVED base — the skip line must prove it resolved one, got ' + JSON.stringify(b);
+      else if (b.branch !== 'fix/wtb') reason = 'B: the skip arm must still name the branch it looked at, got ' + JSON.stringify(b);
+      else {
+        // Origin holds exactly main + fix/wta from arm A at this point; the
+        // skip arm must not add a third head.
+        const heads = Number(sh(G + ' --git-dir=' + root + '/origin.git for-each-ref refs/heads/ | wc -l').trim());
+        if (heads !== 2) reason = 'B: the skip arm must push nothing — origin should still hold exactly main and fix/wta, got ' + heads + ' heads';
+      }
+    }
+
+    // --- C: a push rigged to fail -----------------------------------------
+    if (!reason) {
+      clone('wtC');
+      commitOn('wtC', 'build/wtc', 'h.txt');
+      // Push URL only — the fetch refs (and so origin/main) stay intact, so the
+      // ahead count is real and ONLY the push fails.
+      sh('cd wtC && ' + G + ' remote set-url --push origin ' + root + '/no-such-repo.git');
+      const c = run(root + '/wtC', 'fix/wtc');
+      if (c.outcome !== 'WORK_PRESERVE_FAILED') reason = 'C: a rejected push must be reported as FAILED — never silently optimistic, got ' + JSON.stringify(c);
+      else if (c.pushed !== false) reason = 'C: the failing arm must say pushed:false, got ' + JSON.stringify(c);
+      else if (Number(c.commits_ahead) !== 1) reason = 'C: the failing arm must still carry HOW MUCH work is at risk, got ' + JSON.stringify(c);
+    }
+
+    // --- D: no worktree at all --------------------------------------------
+    if (!reason) {
+      const d = run(root + '/never-created', 'fix/wtd');
+      if (d.outcome !== 'WORK_PRESERVE_SKIP' || d.detail !== 'no worktree') reason = 'D: a missing worktree is a normal, named skip, got ' + JSON.stringify(d);
+    }
+
+    // --- E: main/master fallback with no refs/remotes/origin/HEAD ---------
+    if (!reason) {
+      clone('wtE');
+      sh('cd wtE && ' + G + ' remote set-head origin -d >/dev/null 2>&1 || true');
+      commitOn('wtE', 'build/wte', 'i.txt');
+      const e = run(root + '/wtE', 'fix/wte');
+      // origin/main still exists here, so the show-ref fallback must resolve it
+      // and count for real — a misresolve is arm G's territory.
+      if (e.outcome !== 'WORK_PRESERVED' || Number(e.commits_ahead) !== 1 || e.base_resolved !== true) reason = 'E: with origin/HEAD absent the main/master show-ref fallback must still resolve the default branch and count for real, got ' + JSON.stringify(e);
+    }
+
+    // --- F: idempotent re-run over an already-pushed branch ---------------
+    if (!reason) {
+      const headCount = () => Number(sh(G + ' --git-dir=' + root + '/origin.git for-each-ref refs/heads/ | wc -l').trim());
+      const before = headCount();
+      const f = run(root + '/wtA', 'fix/wta');
+      if (f.outcome !== 'WORK_PRESERVED' || f.pushed !== true) reason = 'F: a second preserve on an already-pushed branch is Everything up-to-date and must still report WORK_PRESERVED, got ' + JSON.stringify(f);
+      else if (headCount() !== before) reason = 'F: the idempotent re-run must push to the SAME ref 3f owns and add NO new head — origin went from ' + before + ' to ' + headCount() + ' heads';
+    }
+
+    // --- G: UNRESOLVABLE base (round 3 HIGH) ------------------------------
+    // Its own origin, defaulting to \`trunk\`: no origin/HEAD, and neither
+    // origin/main nor origin/master exists, so nothing the resolver knows can
+    // name a base. There IS one real unpushed commit. Before the fix, rev-list
+    // failed, \`|| echo 0\` swallowed it, and this emitted
+    // {\"outcome\":\"WORK_PRESERVE_SKIP\",\"commits_ahead\":0,\"detail\":\"no
+    // unlanded commits\"} — and because preserveOnEscalation warns on every
+    // outcome EXCEPT the skip, the operator saw nothing at all.
+    if (!reason) {
+      sh(G + ' init -q --bare origin2.git');
+      sh(G + ' init -q seed2');
+      sh('cd seed2 && printf base > f.txt && ' + G + ' add -A && ' + G + ' commit -q -m base && ' + G + ' remote add origin ../origin2.git && ' + G + ' push -q origin HEAD:trunk');
+      sh(G + ' clone -q origin2.git wtG');
+      sh('cd wtG && ' + G + ' remote set-head origin -d >/dev/null 2>&1 || true');
+      commitOn('wtG', 'build/wtg', 'j.txt');
+      const g = run(root + '/wtG', 'fix/wtg');
+      if (g.outcome === 'WORK_PRESERVE_SKIP') reason = 'G: an UNRESOLVABLE base must never read as a genuine zero — a SKIP here is a false negative over real unpushed work, and it is the one outcome that suppresses the \"the worktree may be the ONLY copy\" warning, got ' + JSON.stringify(g);
+      else if (g.outcome !== 'WORK_PRESERVED') reason = 'G: pushing is the fail-safe direction when the base cannot be computed — the work must reach origin, got ' + JSON.stringify(g);
+      else if (g.base_resolved !== false) reason = 'G: the line must say the base was unresolved, so commits_ahead being absent is legible rather than a mystery, got ' + JSON.stringify(g);
+      else if (g.commits_ahead !== undefined) reason = 'G: with no base there is no honest count — commits_ahead must be OMITTED, never fabricated and never a non-number in an unquoted JSON number position, got ' + JSON.stringify(g);
+      else if (!/base unresolved/.test(String(g.detail || ''))) reason = 'G: the detail must name the unresolved base, got ' + JSON.stringify(g);
+      else {
+        const landed = sh(G + ' --git-dir=' + root + '/origin2.git show-ref --verify --quiet refs/heads/fix/wtg && printf YES || printf NO');
+        if (landed !== 'YES') reason = 'G: WORK_PRESERVED on the unresolved-base arm must mean the branch really reached origin';
+      }
+    }
+  } catch (err) {
+    reason = 'the REAL generated shell (or its git fixture) threw: ' + ((err && err.message) || err);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+
+# --- K2020 static lockstep guards ------------------------------------------
+grep -q '"tsv_lines":%s' "$MJS" \
+  || fail "#2020: reviewDiffCmd's printf must emit tsv_lines (the surviving array shape), not the table as an inline scalar"
+if grep -q '"tsv":%s' "$MJS"; then
+  fail "#2020: reviewDiffCmd must no longer ship the routing table inline as a \`tsv\` scalar — that blob is the field the relay drops, paraphrases and double-encodes"
+fi
+grep -q 'function reviewDiffTsvText' "$MJS" \
+  || fail "#2020: build-level.mjs must define reviewDiffTsvText() — the ONE normalizer for both wire shapes, so the gap check and the routing decision can never read the payload differently"
+grep -q 'function preserveCommittedWorkCmd' "$MJS" \
+  || fail "#2020: build-level.mjs must define preserveCommittedWorkCmd() — the post-commit branch push that makes an escalated item's work durable on origin"
+grep -q 'function preserveOnEscalation' "$MJS" \
+  || fail "#2020: build-level.mjs must define preserveOnEscalation() — the ONE escalation choke point, so every escalation kind (including ones added later) is covered without a per-call-site list"
+grep -q '.then((r) => preserveOnEscalation(item, r))' "$MJS" \
+  || fail "#2020: preserveOnEscalation must be applied to driveItem's SETTLED result at the parallel() call site — after the #437/#1819 catch, so a THROWN item's synthesized escalation is preserved too"
+# Round-3 guards read the preservation step's OWN body, not the whole file:
+# reviewDiffCmd and the merge-base builder each carry their own `default` chain
+# (and may legitimately keep guessing `main` — a misresolve there costs a review
+# route, not committed work), so a whole-file grep would bind the wrong code.
+PRESERVE_BODY="$(awk '/^function preserveCommittedWorkCmd\(/,/^}$/' "$MJS")"
+[ -n "$PRESERVE_BODY" ] \
+  || fail "#2020: could not extract preserveCommittedWorkCmd()'s body — the guards below would silently pass over nothing"
+printf '%s\n' "$PRESERVE_BODY" | grep 'git push origin "HEAD:refs/heads/\$branch"' >/dev/null \
+  || fail "#2020: the preservation step must push HEAD to an EXPLICIT refs/heads/\$branch on origin — a local preservation ref does not survive \`git branch -D\`, and a bare \`git push origin HEAD\` sends the worktree's throwaway build/<slug> name instead of the plan branch 3f owns, minting a PR-less second ref nothing reclaims (temperloop#1688)"
+if printf '%s\n' "$PRESERVE_BODY" | grep 'git push -u ' >/dev/null; then
+  fail "#2020: the preservation push must not use -u — it is a one-shot rescue push and has no business writing branch.<name>.remote/.merge into the worktree config"
+fi
+grep -q 'preserveCommittedWorkCmd(wt, preserveBranch)' "$MJS" \
+  || fail "#2020: preserveOnEscalation must hand preserveCommittedWorkCmd the PLAN's item.branch — the ref 3f pushes — not let the step read the worktree's local HEAD name"
+printf '%s\n' "$PRESERVE_BODY" | grep 'base_resolved' >/dev/null \
+  || fail "#2020: the preservation step must split 'zero commits ahead' from 'could not resolve a base' — a rev-list that failed because origin/\$default does not exist must never read as a genuine zero and take the WORK_PRESERVE_SKIP arm, which is the one outcome that suppresses the 'the worktree may be the ONLY copy' warning"
+# Anchored at a template-literal backtick so it reads the emitted SHELL, not the
+# comment that quotes the retired line.
+if printf '%s\n' "$PRESERVE_BODY" | grep -E '^[[:space:]]*`.*default=main' >/dev/null; then
+  fail "#2020: the preservation step must not GUESS a default branch — worktree.sh's default_branch() returns 1 rather than inventing one, and a wrong guess here degrades silently into a false 'no unlanded commits'"
+fi
+echo "PASS: #2020 review-diff relay + data-loss guards — the table ships as a tsv_lines ARRAY (no inline scalar), reviewDiffTsvText normalizes both shapes, a persistent gap DEGRADES instead of halting, and every escalation pushes committed work to origin at one choke point before returning"
+
+# ============================================================================
 # TEST (K1982 multi-match): build.md 3e's run-both rule ("A change matching
 #   more than one axis ... runs each matching reviewer") exercised in ONE
 #   review round against a diff that matches BOTH the tsv extension axis
@@ -6919,7 +7650,7 @@ grep -q 'function tsvChecksum' "$MJS" \
 grep -q 'tsv_checksum' "$MJS" \
   || fail "#1982: reviewDiffCmd must emit tsv_checksum alongside tsv_rows, and reviewDiffTsvGap must check it — the content guard against a relay copy that preserves row count but not content"
 grep -q 'content_mismatch' "$MJS" \
-  || fail "#1982: a row-count-valid but checksum-mismatched tsv must escalate review-diff-error naming content_mismatch, distinct from the row-count mismatch field"
+  || fail "#1982: a row-count-valid but checksum-mismatched tsv must be reported naming content_mismatch, distinct from the row-count mismatch field"
 # Round 2: the checksum must be POSITION-SENSITIVE, not a bare (commutative)
 # sum — a commutative sum is blind to a same-row-count row REASSIGNMENT, the
 # exact corruption shape temperloop#1978 round 4 showed. Pinning the literal
@@ -6941,9 +7672,31 @@ grep -q 'tsv_rows' "$MJS" \
 # guard pins the closure call WITH that argument rather than the bare form.
 grep -q 'fetchReviewDiff(stagePhase(STAGE_REVIEW), false)' "$MJS" \
   || fail "#1976/#1970: the relay-drop guard must re-run the review-diff step through the SAME fetchReviewDiff() closure (never a re-derived command), and NON-BUMPING so one driver round advances the review-round counter exactly once"
-grep -q "escalate(item.slug, 'review-diff-error', gap)" "$MJS" \
-  || fail "#1976: a still-incomplete tsv after the retry must escalate review-diff-error naming the gap (missing/mismatch)"
-echo "PASS: #1976 review-diff tsv-guard wiring — reviewDiffCmd emits tsv_rows, reviewDiffTsvGap detects a missing/mismatched tsv, runReviewers retries once through the same command before escalating"
+# temperloop#2020 replaced the DISPOSITION after the retry: the still-incomplete
+# gap now degrades (no reviewer routed, a legible skip notice) instead of
+# escalating `review-diff-error`. The gap payload is still carried, now as
+# `routing_degraded`, so the expected/got figures the detectors computed remain
+# on the record — pin THAT, so a regression back to a fatal escalation (or to a
+# silent drop of the payload) fails here.
+grep -q 'routingDegraded = gap' "$MJS" \
+  || fail "#1976/#2020: a still-incomplete tsv after the retry must DEGRADE carrying the gap payload as routing_degraded (never escalate review-diff-error, and never discard the missing/mismatch figures)"
+grep -q 'routing_degraded: routingDegraded' "$MJS" \
+  || fail "#1976/#2020: the carried gap payload must reach the returned record as routing_degraded — the field the Step 6 tally and the parked record read"
+# temperloop#2020 round 2: the gap arm must FALL THROUGH to the routing
+# decision with only the table-dependent axes withdrawn, never return early.
+# Returning early dropped the MANDATORY command-doc route (foundation#1007),
+# which is computed from `files` and never needed the table at all — so a
+# `claude/commands/*.md` diff whose relay dropped reported mandatory_ok:true
+# with workflow-reviewer never run. Pin the option that keeps them apart.
+grep -q 'tableAvailable: !routingDegraded' "$MJS" \
+  || fail "#2020: the degraded arm must call determineReviewers with tableAvailable:false (withdrawing ONLY the extension axis and the prose-*.md fallback) rather than returning before the routing decision — the mandatory command-doc rule never needed the table"
+# `if grep`, never `grep && fail`: under `set -euo pipefail` a grep MISS is a
+# non-zero exit that would abort the suite on the GOOD case (the same trap the
+# comment at the top of this file's static-guard block already names).
+if grep -q "escalate(item.slug, 'review-diff-error', gap)" "$MJS"; then
+  fail "#2020: the post-retry gap must NOT escalate review-diff-error — that disposition halted a drive whose work was already committed (foundation#1869, run wf_967c2878-0a7)"
+fi
+echo "PASS: #1976/#2020 review-diff tsv-guard wiring — reviewDiffCmd emits tsv_rows, reviewDiffTsvGap detects a missing/mismatched tsv, runReviewers retries once through the same command and then DEGRADES with the gap payload rather than halting the drive"
 
 # --- temperloop#1982 STRUCTURAL close: the reviewer-routing table is a STATIC
 # repo file, so it rides the Step-0 orchestrator hand-off (the same seam as
@@ -6962,8 +7715,14 @@ grep -q '!REVIEWER_ROUTING_TSV && reviewDiffTsvGap' "$MJS" \
   || fail "#1982: the relay gap-check + retry must be SKIPPED when the orchestrator supplied the table — otherwise a run still pays a retry round-trip guarding a value it is not using"
 grep -q 'const tsvText = REVIEWER_ROUTING_TSV' "$MJS" \
   || fail "#1982: determineReviewers must prefer REVIEWER_ROUTING_TSV over diffOut.tsv — the supplied table is authoritative when present"
-grep -q "typeof diffOut.tsv === 'string' ? diffOut.tsv : ''" "$MJS" \
-  || fail "#1982: the legacy diffOut.tsv relay path must REMAIN as the fallback — an un-migrated caller (older orchestrator, consuming repo) must keep working unchanged"
+# temperloop#2020 moved the relayed-table reader behind reviewDiffTsvText(),
+# which accepts BOTH the current `tsv_lines` array and the legacy `tsv` scalar.
+# The fallback this guard protects is unchanged in substance — an un-migrated
+# caller must keep routing — so it now pins the normalizer and its legacy arm.
+grep -q 'const tsvText = REVIEWER_ROUTING_TSV || reviewDiffTsvText(diffOut)' "$MJS" \
+  || fail "#1982/#2020: the relayed-table fallback must REMAIN, read through reviewDiffTsvText() — an un-migrated caller (older orchestrator, consuming repo) must keep working unchanged"
+grep -q "typeof diffOut?.tsv === 'string') return diffOut.tsv" "$MJS" \
+  || fail "#2020: reviewDiffTsvText must still ACCEPT the legacy \`tsv\` scalar — dropping it would break a caller or replayed payload that carries the pre-#2020 wire shape"
 echo "PASS: #1982 reviewer-routing hand-off — the static routing table is supplied by the orchestrator (input.reviewerRoutingTsv), is authoritative when present, skips the relay gap-check/retry it makes moot, and leaves the legacy relay path intact for an un-migrated caller"
 
 
@@ -8356,6 +9115,52 @@ printf '%s\n' "$K1970_FIX_REPORT" | grep 'residual_blocking' >/dev/null \
 printf '%s\n' "$K1970_FIX_REPORT" | grep '## Review notes' >/dev/null \
   || fail "#1970: fix.md Step 7's residual_blocking line must point at the PR's ## Review notes"
 echo "PASS: #1970 report-surface guards — build.md Step 6, sweep.md Step 4 and fix.md Step 7 each render the residual_blocking tally the .mjs emits, section-scoped"
+
+# --- temperloop#2020 report-surface guards: routing_degraded ----------------
+# The SAME failure shape as #1970's above, one field over. `routing_degraded`
+# is emitted by reviewTally() on every parked record whose reviewer-routing
+# relay did not survive, and that item's `ran`/`mandatory_ok` read clean — the
+# table-independent routes really did run. So without a rollup clause a
+# partially-routed roster is visible ONLY inside one PR body's skip notice, and
+# an unreviewed .sh/.mjs diff reads byte-identically to a fully-reviewed one.
+# Section-scoped against the SAME three declared readers, reusing #1970's own
+# k1970_section helper so the two guards cannot drift apart.
+printf '%s\n' "$K1970_STEP6" | grep 'routing_degraded' >/dev/null \
+  || fail "#2020: build.md Step 6's summary must name routing_degraded — a degraded roster the .mjs emits and the Step 6 prose never renders is a signal that dead-ends, exactly the #1970 shape one field over"
+printf '%s\n' "$K1970_SWEEP_REPORT" | grep 'routing_degraded' >/dev/null \
+  || fail "#2020: sweep.md Step 4's report must name routing_degraded — /sweep drives the same build-level.mjs review path, so it can ship a partially-routed roster exactly like /build"
+printf '%s\n' "$K1970_FIX_REPORT" | grep 'routing_degraded' >/dev/null \
+  || fail "#2020: fix.md Step 7's report must name routing_degraded — /fix drives the same build-level.mjs review path, so it can ship a partially-routed roster exactly like /build"
+grep -q 'routing_degraded: routingDegraded' "$MJS" \
+  || fail "#2020: the report surfaces above render a field build-level.mjs must actually emit — reviewTally's producer half is missing"
+echo "PASS: #2020 report-surface guards — build.md Step 6, sweep.md Step 4 and fix.md Step 7 each render the routing_degraded tally the .mjs emits, section-scoped"
+
+# --- temperloop#2020 disposition-surface guards: committed_work -------------
+# The routing_degraded guards above cover the REPORT surface. This pair covers
+# the DISPOSITION surface: every spec that removes an escalated item's worktree
+# must first consult `committed_work`, the remote-durability signal
+# preserveOnEscalation() records on the payload. The failure this closes is the
+# named incident itself — a review-blocking escalation whose work was committed
+# but un-PR'd reached a caller's removal step and 515 verified lines were
+# destroyed (Towheads/foundation, wf_967c2878-0a7). fix.md carried the guard
+# from the first commit; build.md's 3d-esc skip/abort and sweep.md's
+# escalation-park step did not, which left the DEFAULT build path unguarded.
+#
+# Deliberately file-scoped, not section-scoped: unlike the report surfaces
+# above (one named heading each), the removal decision points are mid-section
+# bullets with no stable heading to anchor on. A file-level assertion is the
+# honest guard here — it catches a spec that never mentions the signal at all,
+# and does not pretend to a precision it cannot deliver.
+for spec_rel in claude/commands/build.md claude/commands/sweep.md claude/commands/fix.md; do
+  spec_abs="$REPO_ROOT/$spec_rel"
+  [ -f "$spec_abs" ] \
+    || fail "#2020: $spec_rel is missing — the disposition-surface half of this contract pair cannot be verified"
+  grep -q 'committed_work' "$spec_abs" \
+    || fail "#2020: $spec_rel removes an escalated item's worktree but never names committed_work — the remote-durability signal must be read BEFORE the removal, or the 515-line data-loss incident this mechanism exists to close can recur through this caller"
+done
+grep -q 'committed_work' "$MJS" \
+  || fail "#2020: the disposition surfaces above read a field build-level.mjs must actually emit — preserveOnEscalation's producer half is missing"
+echo "PASS: #2020 disposition-surface guards — build.md, sweep.md and fix.md each consult committed_work before removing an escalated worktree"
 
 # ============================================================================
 # TEST (K1970-e2e): the round counter's GENERATED SHELL, executed for real
