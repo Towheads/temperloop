@@ -14,6 +14,437 @@ reads that marker; a stranger greps for it before pulling.
 
 ## [Unreleased]
 
+## [0.40.0] - 2026-09-14 — BREAKING
+
+### Added
+
+- **`/build`, `/sweep` and `/fix` now tell you when the installed build engine
+  is too old to understand a setting they are passing it** (#2018). Those three
+  commands hand their work to a single installed script,
+  `~/.claude/workflows/build-level.mjs`, along with a bag of settings. The
+  hand-off has always been forgiving on purpose: a setting the installed script
+  does not recognise is ignored and a built-in default takes over, so an older
+  copy keeps working rather than crashing. The cost was that the same silence
+  covered a copy that was simply **stale** — or, in a repo that vendors this
+  kernel, an older **vendored** copy — which quietly ignored a setting the
+  command believed it had applied, with nothing said on either side. Observed
+  live: an installed copy 18 days behind ignored the setting that routes code
+  reviewers, and the run fell back to the exact path it was in the middle of
+  replacing.
+
+  `claude/workflows/build-level.mjs` now publishes the list of settings that
+  copy understands, and a new probe,
+  `workflows/scripts/build/handoff-capability.sh`, compares that list against
+  what a command is about to pass. All three commands run it immediately before
+  handing off. Nothing is blocked — the fallback behaviour is unchanged — but
+  you now get a one-line notice **naming each setting that will be ignored**,
+  rather than a generic "your copy is old". The probe compares against whatever
+  copy you point it at, so it works for a vendored copy in your own repo, not
+  only for an overdue `make install`.
+
+  If the probe cannot determine the answer at all — the file is missing or
+  unreadable, or it is an older copy that publishes no list — it reports that
+  as its own third result and says why. It never reports an undetermined check
+  as a clean one.
+
+### Changed — BREAKING
+
+- **`/build` §3e's per-item review tally now names every routed-but-unrun
+  reviewer** (#1984). `park()`'s `review` record gains a `routed_not_run` field
+  alongside `ran`/`skipped`/`mandatory_ok`, and `/build`'s Step 6 summary
+  renders it. `mandatory_ok` covers only the `claude/commands/*.md` →
+  `workflow-reviewer` rule (foundation#1007 — the workflow-reviewer mandatory rule), so an extension-axis reviewer
+  routed by `reviewer-routing.tsv` — `shell-reviewer` for a `.sh` diff, say —
+  could resolve, be skipped, and still leave the tally reading fully clean.
+  `routed_not_run` is non-empty exactly when `skipped` is. It is a visibility
+  field, not a second gate: a per-language reviewer is routinely inactive in a
+  consuming checkout by design (ADR 0007), so blocking on one would go red in
+  the ordinary case. Rationale and the rejected alternatives are in
+  [ADR 0037](docs/adr/0037-routed-but-unrun-reviewers-are-visible-not-blocking.md).
+
+- **`PROSE_BUDGET_TIER2_FILE_CAP` raised 1186 → 1201**, reseeded with zero
+  headroom to `claude/commands/workshop.md`, which the `/workshop` two-phase
+  rewrite (#1958) takes to 1201 lines — passing `claude/commands/build.md` at
+  1186 as the largest tracked `claude/**/*.md` file (#1998). The cap is
+  **uniform by design** ("never a per-file table"), so this relaxes the
+  tier-2 budget for every tracked kernel doc by 15 lines, not `workshop.md`
+  alone — an adopter vendoring `build.config.sh` picks up the looser cap for
+  their whole kernel doc set. Epic #1938's plan projected the rewrite as net
+  *negative* on line count (it removes the coverage walk); measured, it came
+  in at **+136** (1065 → 1201), so the plan's own contingency fired — the
+  raise ships as its own PR ahead of the item rather than as a mid-build
+  config change. **No subtraction pass ran**, deliberately: trimming would
+  not have avoided the raise (a ~1195 floor after re-wrapping the touched
+  sections is still over 1186), and the spec had just been reviewed clean by
+  `docs-reviewer` and `workflow-reviewer` with no redundancy finding, so
+  cutting reviewed contract surface on the critical path would delete more
+  contract than the ratchet step costs. A genuine subtraction pass over the
+  rewritten `workshop.md` is filed as #1999, off the critical path — the same
+  two-step #954 took when it filed #956, which then cut that file 1181 →
+  1041. Worth stating plainly, since the ratchet is documented as moving both
+  ways: since #956 lowered the cap to 1100 it has moved **up eight times** to
+  1201 with no subtraction pass in between.
+
+- **`changelog.d/README.md` now states who a changelog entry is written for,
+  and the register that follows from it** (#2007). Fragments were being
+  written for the person who had just made the change — leaning on step
+  letters from a command spec, field names from an implementation file, and
+  in one case a mechanism name that existed nowhere in the tree — and then
+  folded verbatim into `CHANGELOG.md`, which is read by someone holding none
+  of that context. The README now names that reader (the adopter deciding
+  whether and how to pull an update), gives three concrete do-not rules, and
+  shows a bad/good pair for each, drawn from real review findings. It also
+  records the finding rate that prompted it, so the next check is a
+  comparison rather than an impression. No gate or command behaviour
+  changed: if you write changelog entries for this repo, read that file
+  before the next one.
+
+- **`/workshop` is now two phases with two operator gates, and its
+  per-dimension coverage walk is removed** (temperloop#1958 — two-phase
+  rewrite; epic #1938 — `/workshop` redesign; ADR 0035). The command used
+  to walk a design brief's coverage dimensions one at a time, stopping the
+  operator at each; a prototype run took 26 modal stops, 10 of which asked
+  for nothing but an acknowledgement. It now stops twice. **Phase 1** is an
+  interview: `/interview` runs inline in the same session, and its very
+  first question is the **premise gate** — a chance to kill the idea
+  outright before any design work happens. **Phase 2** then runs unattended
+  start to finish: it drafts every dimension the interview did not reach
+  (marking each as facilitator-drafted rather than operator-stated),
+  validates the brief before spawning any reviewer, runs the adversarial
+  review panel and the cross-dimension congruence pass, and ends at the
+  second gate — a **delta report** that shows the operator, in roughly two
+  batches, the full before/after of everything Phase 2 changed, and takes
+  one verdict per dimension rather than one per batch. **Phase 3** ratifies
+  and materializes the epic as before, additionally asking whether any
+  batch of that report was rubber-stamped, and printing a per-run tally of
+  how often the operator was interrupted. The pipeline diagrams in the two
+  peer front-door specs — `claude/commands/triage.md` and
+  `claude/commands/assess.md` — now name the new phases instead of the
+  removed walk.
+
+  **Removed in this release** (the BREAKING half — documented steps drop,
+  per `VERSIONING.md` § The contract surface): the per-dimension coverage
+  walk and its tier-split proposal stop, the per-dimension `walk` verdict,
+  the three-free-rounds challenge bound, and the pre-ratify walkthrough
+  pass.
+
+  **Migration:** briefs ratified under the walk grammar keep validating
+  (unstamped ⇒ legacy); a brief authored under the new grammar carries
+  `record_grammar: delta` in its frontmatter. Nothing checks that stamp
+  automatically — `workflows/scripts/validate-design-brief.sh --brief
+  <path>` is an **on-demand lint you run yourself**, not a pipeline gate.
+
+### Fixed
+
+- **`/build`'s §3e pre-push review no longer loops unboundedly on serially-discovered HIGH findings** (#1970). Two halves. (1) `claude/agents/workflow-reviewer.md` now instructs the seat to enumerate **every** HIGH-severity finding it can identify on the diff in one pass before it ranks or narrows, and names a later pass surfacing a pre-existing HIGH as the failure the instruction exists to prevent; MEDIUM/LOW triage is unchanged. (2) `claude/workflows/build-level.mjs` carries a convergence bound — `BUILD_REVIEW_BLOCKING_MAX_ROUNDS` (default 3, handed in as `input.reviewBlockingMaxRounds` at `/build`, `/sweep` and `/fix` Step 0) — on the review rounds one item's worktree may spend. Past it, both blocking sites (the 3e pass and §3g's CI-fix re-review) stop re-escalating `review-blocking` and instead open the PR with the residual findings carried in its `## Review notes`, plus a `review.residual_blocking` entry on the parked record for the Step 6 tally. Findings are carried, never suppressed, and any item that converges within the bound behaves exactly as before. That tally is **rendered where its contract says it is**: `/build` Step 6's `Review (…)` summary line, `/sweep` Step 4's report and `/fix` Step 7's report each carry a `residual_blocking` case naming the affected slugs, each one's `round`/`max_rounds`, and that the PR's `## Review notes` must be read before merging — so an item that shipped with an unresolved HIGH no longer reads byte-identically to a clean one in the run summary. Previously unbounded: one live item spent five consecutive §3e passes, four distinct HIGHs, zero repeats, ~2h45m and ~1.05M subagent tokens, with pass 4's HIGH caused by pass 3's directed fix and the reviewed spec growing 447 → 635 lines across the rounds, so each pass enlarged the surface the next one read.
+
+  The per-worktree round marker the bound reads degrades softly on a corrupted-but-present value as well as a missing one: its count is normalised to a bare decimal before the arithmetic, so a hand-edited or snapshot-restored marker holding `08`/`09` reads as 8/9 rather than aborting the whole review-diff step on a POSIX octal arithmetic error — the `review-diff-error` escalation §3e is least able to act on.
+
+  `claude/agents/workflow-reviewer.md` is kernel **source**: the reviewer half takes effect in a session only once `workflows/scripts/install/project-agents.sh` re-installs the agent into `~/.claude/agents/`.
+
+- **`state-graph.sh`'s `stale-claims` query now decides liveness from a new
+  `transcripts` source — Claude Code's own per-session
+  `$CLAUDE_PROJECTS_DIR/*/<sess>*.jsonl` mtime, within
+  `RECONCILE_STALE_AFTER_SECS` — the SAME evidence `reconcile.sh --status`
+  itself checks (`_reconcile_session_live`), instead of a tmux
+  `@claimed_issue` marker or the journal's step-outcome ledger** (#1980).
+  ADR 0033 (`docs/adr/0033-derived-state-graph-composes-one-way-with-one-
+  independent-cross-check.md`) rests on `state-graph.sh soak` diffing this
+  query against reconcile.sh's own claim-liveness class; two prior fixes each
+  keyed liveness off a source that comparison never actually invokes — round
+  1 off the journal (records *work done*, not *a session existing*: a
+  genuinely live session with no step-outcome line yet read as a confident
+  false positive), round 2 off tmux markers (`reconcile.sh --status` never
+  touches tmux at all — that lens lives only in its separate `markers` mode,
+  whose own `board-without-marker` class the soak never diffs). Both were
+  scope artifacts manufacturing exactly the standing disagreement this
+  cross-check exists to catch. The query now also **gates on host**: a claim
+  stamped to another host is excluded from findings entirely, never reported
+  stale from local transcript evidence that cannot speak to a foreign host's
+  liveness — this host's claim-liveness lens (`reconcile.sh`'s
+  `status_reconcile_main`) gates the exact same way before ever checking a
+  session's mtime. This matters because the claim stamp is the cross-session
+  work lock: a false stale verdict on a live claim invites a second session
+  to pick up work already in flight, one host across if the gate were
+  missing. The soak's per-class mapping is also narrowed: reconcile's
+  `stranded claim stamps on closed issues` class is no longer folded into
+  `stale-claims` — the board source's closed-issue residue read never
+  attaches a claim stamp to a closed Issue node, so that reconcile class
+  could only ever land in `only_in_reconcile`, a class that can never agree
+  is not a cross-check. `status:"unknown"` is still reported only when the
+  transcripts source itself cannot be read (no transcript directory at all),
+  never a confident stale set computed against an incomplete or unrelated
+  liveness signal. Scoped to `_sg_query_stale_claims` and
+  `_sg_reconcile_class_set`'s awk mapping; `_sg_degraded`, `status-drift`,
+  and `resume` are unchanged.
+- **`stale-claims` now also gates its claim set on Status: In Progress**,
+  matching reconcile.sh's own producer (`reconcile.sh:876-879`), which emits
+  its "stale claims" class only for an In-Progress issue. Without this, a
+  claim stamp left behind on an issue moved off In Progress — the ordinary
+  "Park, don't abandon" residue, since `board_set_status` never clears the
+  claim stamp (only `release.sh` does) — surfaced as a confident stale
+  finding reconcile.sh structurally never reports, a standing false
+  disagreement the mirror image of the closed-issue exclusion above. `_sg_now`
+  is a new seam (mirrors `_sg_git`/`_sg_soak_day`) so a test can pin
+  `_sg_read_transcripts`'s liveness cutoff comparison exactly on its boundary.
+
+- **`state-graph.sh`'s `pr_list` source now routes its `gh pr list` payload
+  through `_board_sanitize_control_chars` before any `jq` touches it** (#1981),
+  so one stray control byte in a single PR no longer takes the whole source
+  down. The read projects `title` and `body` — user-authored fields — and `jq`
+  exits 5 on a literal control byte, which the `count` guard converted into a
+  source-wide `error`. That error was **sticky**: it recurred on every run for
+  as long as that one PR stayed open, out of up to 100 open PRs, and
+  `_sg_query_unlinked_prs` correctly refuses to answer over a degraded source,
+  so `unlinked-prs` reported `unknown` for the duration. Each run stayed
+  individually legible. Nobody reads every run, so the practical effect was a
+  query class silently contributing nothing across the fourteen-day soak that
+  ADR 0033 / #1921 depends on. The sanitize stage is applied once, right after
+  the read and after the empty-output default; that ordering is load-bearing
+  because the `count` guard treats empty `jq` output as unparseable, so a
+  payload of nothing but control bytes reports `error` — the honest answer for
+  a page that could not be read — rather than being defaulted to `[]` and
+  reported `absent`. Scoped to `_sg_read_pr_list`; `board.sh` is unchanged.
+
+  **Also closed here: `_sg_read_pr_list` could return non-zero — PRE-EXISTING,
+  not introduced by this change.** It was the lone `_sg_read_*` in the file
+  able to escape the return-0 contract, and `_sg_build_snapshot` reads it with
+  a bare `r_pr=$(...)` assignment, so under `set -euo pipefail` that return
+  aborted the **whole snapshot build** rather than degrading one source. The
+  `count` guard tested only `jq`'s exit status, and `jq` exits **zero with no
+  output** on empty or whitespace-only input; it is now arity- and type-aware,
+  yielding a count only for a single top-level JSON array. The
+  `nodes=`/`edges=` transforms report `error` and return 0 on any failure
+  rather than falling back to an empty array — they are modelled on the
+  closed-residue block's belt-and-suspenders shape (`state-graph.sh`
+  ~`:583-593`, where it guards `extra=`), and the difference is deliberate:
+  `extra` there is supplementary data, whereas `nodes` here IS the answer, so
+  an empty fallback would manufacture a confident false negative. The hole was
+  already reachable pre-#1981 (SPACE is `0x20`, outside `tr -d '\000-\037'`,
+  so a whitespace-bearing payload survived sanitizing and landed in it); what
+  this change did was widen the trigger set, which is why it is closed here.
+
+  **Behavior change:** a `null` PR-list payload now reports `error` rather than
+  `absent` — `null` is not a legitimately empty PR list. A genuine `[]` still
+  reports `absent`. Six new tests cover the recovered and honest-`error`
+  routes; the five `error` cases each assert a zero return **and** valid JSON
+  **and** status `error`, since the defects were a non-zero return with empty
+  stdout and a confident `ok` over a payload that could not be projected.
+
+  **Audit (confirmed, not assumed):** `pr_list` was the last unsanitized
+  `gh → jq` seam in `state-graph.sh`, and is now covered. The other two `gh`
+  reads reachable from this file were already sanitized — the closed-issue
+  residue read (`state-graph.sh:583`/`:589`) and everything arriving via
+  `BOARD_ITEMS_JSON`, which `board.sh`'s `_board_issues_item_list` sanitizes on
+  **both** its cache-read and live-`gh` arms. The `worktrees` source parses git
+  porcelain (not `gh`) and never feeds raw text to `jq`'s parser; `transcripts`
+  reads local JSONL validated per line with `jq -e .`.
+
+  The issue also asked for a lint flagging any unsanitized `_board_gh … | jq`.
+  Deliberately **not** added, on kernel engineering principle 7 — after this
+  fix there are zero remaining sites to catch, and a grep-shaped check cannot
+  tell a user-content read from a structural-field projection. The full cost
+  analysis is in the PR body.
+
+- **The reviewer-routing table is now supplied by the caller instead of being
+  copied back out of the build machinery** (#1982). Deciding which review
+  agents a change needs requires two inputs: the list of files the change
+  touched, and the routing table that maps file types to reviewers. Only the
+  first genuinely has to be discovered while the build runs — the routing
+  table is a fixed file in the repo, the same on every run. It was
+  nevertheless being read inside the build and copied back out through an
+  intermediate step, and that copy was unreliable: across eight observed
+  occurrences it arrived empty, arrived as a sentence *describing* the table
+  rather than the table, and arrived with its tab and line breaks turned into
+  literal backslash characters so that eleven rows parsed as one. Each failure
+  stalled the change with no review having run, and four of them landed
+  consecutively on a single change. A count and a checksum sent alongside the
+  table were correct every time, which is what identified the copying step —
+  not the reading of the file — as the fault. The caller now reads the file
+  directly and passes its contents in, so the unreliable copy is no longer
+  part of the path. Earlier attempts guarded the copy (a row count, then a
+  content checksum, then one automatic retry); those guards remain as a
+  fallback for a caller that has not been updated, and nothing changes for
+  such a caller. **No routing behavior changes** — the same table produces the
+  same reviewers; only how it reaches the decision changes.
+
+- **`/fix` no longer throws away a finished fix when something blocks it late**
+  (#1988). A blocking review finding, or a single acceptance bullet coming
+  back false, used to be handled like an unanswered question: the target was
+  parked, its claim released and its worktree deleted — discarding a complete,
+  committed fix so the whole thing had to be built again from scratch, often
+  over a few lines. `/fix` now decides on **facts it can check** — does the
+  worktree exist, does it hold a commit ahead of the base, and is it clean? —
+  rather than on the name of the escalation, and it spells out every
+  combination of those three readings in a single table so no state is left to
+  judgement. A commit **and** a clean tree **resumes in place**: it keeps the
+  worktree and the claim, hands the findings to the same worker, and carries
+  on through the usual gates. Every other state parks, and the worktree is
+  deleted only once the tree is **confirmed** to hold neither a commit nor
+  uncommitted edits — a dirty tree is kept whatever else it holds, and so is a
+  tree the check could not read at all — with its path reported on the issue,
+  so parking can no longer quietly destroy work.
+  The same table now also gates the *other* half of the hazard: **starting** a
+  drive force-clears the worktree just as deleting it would, so every path
+  that re-enters a drive — answering the parked question, answering an issue
+  that arrived already carrying an open question, adopting an issue whose PR
+  vanished, overriding a dependency block — reads the table first and resumes
+  against the preserved build instead of rebuilding over it. Resuming also has
+  to re-take the board claim that parking released, and that can lose a race to
+  another session that picked the issue up in the meantime; if it does, `/fix`
+  stops and reports the owning session and the path to the preserved build
+  rather than driving on unclaimed or taking a claim that is not its own. And
+  the comment `/fix` leaves on a parked issue now says which of the two will
+  happen, so it can no longer point the operator at the action that throws the
+  work away.
+
+- **The reviewer-routing fix now covers `/fix` and `/sweep`, not just `/build`**
+  (#1992). #1982 stopped the reviewer-routing table being copied back out of
+  the build machinery — the caller reads the file and hands its contents in
+  instead — but only `/build` was updated to do so. `/fix` and `/sweep` drive
+  the same machinery and were still on the old, unreliable copying path, so the
+  same three mangled shapes (empty, a sentence describing the table, tabs and
+  line breaks turned into literal backslash characters) could still stall a
+  change with no review having run. Both now read the table themselves and pass
+  it in. This matters most for `/sweep`, which runs unattended by default —
+  there the stall happens with nobody watching. If the file cannot be read,
+  both omit it and the existing fallback path stands, so neither ever stops on
+  this. **No routing behavior changes** — the same table produces the same
+  reviewers.
+
+- **`state-graph.sh soak` no longer manufactures a standing false
+  disagreement for a status-drift finding kind `reconcile.sh --status`
+  cannot report** (#1996). `_sg_query_status_drift` emits three finding
+  kinds; only two have a counterpart in the `--status` lens the soak
+  compares against. The third, `claimed_not_in_progress`, has its real
+  counterpart in reconcile class (m) `PARKED claim stamps on OPEN issues` —
+  which lives in `label_reconcile_main`, the `--labels` lens `_sg_soak_run`
+  never invokes — so every parked-but-stamped item landed in
+  `only_in_drift_query` and could never agree. That is not a corner case:
+  the kernel's own "Park, don't abandon" flow produces the residue every
+  time (`board_set_status` moves an issue off In Progress without clearing
+  its claim stamp; only `release.sh` clears it). The soak now gates the
+  comparison **per finding kind** and records the excluded kinds by name in
+  each class entry's new `not_covered_kinds` field — the per-kind analogue
+  of the class-level `"not-covered"` literal `unlinked-prs` /
+  `orphan-worktrees` already read, and never a silent narrowing.
+- The other two options #1996 listed were rejected on the record:
+  narrowing the **query** would delete a true drift finding that
+  `query status-drift` and `_sg_query_resume` both consume, and widening
+  the soak to **also invoke `reconcile.sh --labels`** would add a second
+  reconcile invocation and a second report-shape parser — more divergence
+  surface in the one place divergence *is* the bug, the same reasoning
+  #1980 round 3 — the stale-claims counterpart gap — rejected its analogue
+  for. The reasoning is recorded beside the code
+  (`_SG_SOAK_STATUS_DRIFT_KIND_COUNTERPART`) together with the
+  kind-by-kind audit, and a test fails if a **fourth** kind is ever added
+  without being dispositioned against what `--status` can emit — this is
+  the third time this mismatch shape has been rediscovered.
+- Run records stay at `schema:2` deliberately: this adds a field and
+  narrows what `drift_query_set` contains, but does not change the
+  per-class shape `soak --count` keys on, so the fourteen-day independence
+  count is **not** reset a second time.
+
+- **A `/build` pre-push review agent that hangs can no longer stall the whole
+  level** (#2003). The reviewers picked for a change now run concurrently under
+  one wall-clock ceiling (`BUILD_REVIEW_AGENT_CEILING_SECS`), with a progress
+  notice first at `BUILD_REVIEW_AGENT_SLOW_SECS` so a genuinely slow review is
+  visible rather than indistinguishable from a stuck one. A reviewer still
+  unreturned at the ceiling is abandoned: an **advisory** one degrades to the
+  documented `skipped — <agent> unavailable` notice and the run carries on, and
+  a **required** one escalates to the human instead of silently marking the
+  review passed. Previously a single reviewer that never returned kept every
+  later reviewer from launching at all — including the required review of a
+  change to a command spec under `claude/commands/` — and the run went quiet
+  with no review verdict ever reached, which looked exactly like a review still
+  in progress.
+
+- **A too-long PR body no longer fails the build at its very last step** (#2009). `workflows/scripts/build/pr.sh` assembled the PR body and handed it straight to `gh`, and GitHub rejects a body over 65536 characters (`GraphQL: Body is too long`) — so an item whose worker, reviewers, quality gates and push had all already succeeded could not publish its result: the branch and commits were safe, only the PR failed to open, and an unattended run parked finished work. It happened to two items in one day, both recovered by hand. `pr.sh` now bounds the body locally before calling `gh`. The bound is a new setting, `BUILD_PR_BODY_MAX_BYTES` in `workflows/scripts/build/build.config.sh` (60000 bytes by default — below GitHub's limit, with headroom for the `Closes #N` linkage and attribution lines that follow). Over the bound, truncation runs in a fixed order: verbatim reviewer prose first, oldest review round first, then the newest round's prose tail, then the middle of the verification surface with its head and tail kept. The unit is a whole review round, not one reviewer's block — a round that routed three reviewers renders three blocks and they go together — and in the newest round every reviewer name and finding heading is kept even when its prose is trimmed, so a carried-over finding is never silently dropped. The `Closes #N` lines, the `## Acceptance` checklist, the `## Verification` section and the attribution footer are never cut. Every cut leaves an inline marker in the body naming what went, how many rounds and bytes, and where the full text can still be read. `pr.sh open --body-only` prints exactly the bounded body, so the preview and what is sent cannot disagree, and a body under the bound is passed through byte-for-byte. The `PR_OPENED` / `EXISTS` / `BODY_UPDATED` outcomes carry a new `body_truncated_bytes` count, normally 0.
+
+  Where one review round's prose ends is decided by the producer, not inferred from the text. `reviewBodySuffix()` in `claude/workflows/build-level.mjs` now opens each reviewer's block with an explicit `<!-- 3e-review-block reviewer="…" round="N" -->` delimiter — invisible in rendered Markdown — and `pr.sh` matches that token exactly, at line start, consulting no heading. Reviewer text is spliced verbatim and routinely contains `### ` headings of its own, so any Markdown-shaped boundary is spoofable by ordinary prose: a bare `### Notes` was enough to mint a phantom round and make the newest round's carried-over findings droppable. Any occurrence of the delimiter inside spliced reviewer text is neutralized before splicing, so quoting it in a review cannot forge a boundary.
+
+  This composes with the review-round bound added in #1970, which carries unresolved review findings into the PR body instead of looping another review round: the fix that reduces review rounds is also what raises body pressure, which is why reviewer prose is dropped oldest round first and the newest round — where a carried-over finding lives — is trimmed only after every older round is gone.
+
+- **`/fix` no longer drops the open-question flag off an issue it turns out it
+  cannot drive** (#2012). When `/fix` asks you about an issue's open question,
+  it clears that question's label the moment you answer — and then re-checks
+  the saved build before driving. If that check says the build cannot be safely
+  driven over (it holds edits nobody has committed, or the check could not read
+  it at all), `/fix` stops. Previously it stopped there and only reported, so
+  the issue went back into the pool with its open question no longer recorded
+  anywhere, and the next run picked it up as if the question had been settled.
+  It now runs the same parking sequence every other stop uses: your answer and
+  the saved build's path go on the issue as a comment, and the open-question
+  label and assignment go back on. `claude/commands/fix.md` states the sequence
+  once and every stop points at it by name.
+
+- **A build item whose push succeeded but reported no head SHA is no longer
+  reported as a failed CI run** (#2014). `/build` pins its CI poll to the
+  commit SHA the push reported; when that value never arrived, the poll was
+  handed the literal string `undefined`,
+  `workflows/scripts/build/ci-poll.sh` refused to run on it, and the refusal
+  came back as the `ci-failed` escalation — parking or re-driving a pull
+  request that was open with its checks still running. The driver now checks
+  the SHA before spawning a poll, on every path that can produce one, and an
+  argument refusal escalates as `ci-poll-bad-argument`, whose disposition (in
+  `claude/commands/build.md`) is to inspect the pull request rather than treat
+  it as red. `ci-poll.sh` now marks every argument refusal with a
+  `usage_error: true` field in its JSON output, so any caller can tell "the
+  poll never ran" from "the poll ran and CI is red".
+
+- **A build no longer stops — or loses committed work — because the reviewer
+  routing table went missing in transit** (#2020). Choosing which review
+  agents a change needs requires a small table of file-type-to-reviewer rules.
+  On a caller that does not supply that table up front, the build reads it
+  and passes it back through an intermediate step, and that copy has
+  repeatedly arrived damaged or not at all. Three things change.
+
+  The table is now passed back as a **list of its rows** rather than as one
+  block of text. The same intermediate step has always carried the list of
+  changed files in exactly that form, and that list has survived every
+  observed failure that destroyed the block of text — so the table now
+  travels the way the thing next to it already travels reliably. The block-of-
+  text form is still accepted, so a caller or a stored result produced before
+  this release keeps working, and the existing count and checksum still
+  verify what arrives.
+
+  When the table is still missing after one automatic retry, the build now
+  **finishes on a reduced set of reviewers**, instead of stopping. Review is
+  advisory here — it is not one of the checks that gate a merge — and it
+  happens after the work is written, tested and committed, so stopping there
+  abandoned a finished change over a step that was never allowed to block it.
+  Only the rules that actually read the table are dropped: the rules decided
+  from the change itself — above all the one that **always** requires a
+  workflow review when a command document is edited — still pick their
+  reviewer and still run it, so a missing table can never quietly turn a
+  required review into no review. The pull request carries a plain line naming
+  what was dropped, and the run summary counts the builds that reviewed on a
+  reduced set, so a thin review section can no longer be misread as a clean
+  review.
+
+  And **whenever a build stops early, any commits it already made are pushed
+  to the remote first**. Previously those commits existed only in a local
+  working copy, and the cleanup path for a stopped build deletes that copy and
+  its local branch; on one run that destroyed 515 lines of finished, verified
+  work, recovered only by hand. The push happens at a single point every early
+  stop passes through, so it covers every reason a build can stop, and the
+  result — pushed, nothing to push, or push failed — is recorded on the
+  stopped build's report so whoever cleans up can see whether a remote copy
+  exists before deleting the local one.
+
+  Two details of that rescue push matter to anyone reading its report. It goes
+  to **the same remote branch the build's own pull request uses**, so a rescue
+  after that pull request already exists adds nothing to the remote rather than
+  leaving a second, orphaned branch that no pull request tracks and no cleanup
+  ever reclaims. And **"nothing to push" is now reported only when the build
+  could genuinely compare** the work against the branch it started from. On a
+  repository whose main branch is named something other than `main` or
+  `master`, and that records no default, that comparison is impossible — and it
+  previously came back as a plain zero, so real unpushed work was reported as
+  nothing to preserve, with none of the warning a stopped build otherwise
+  prints when it cannot save your work. The build now pushes anyway in that
+  case and says the comparison could not be made.
+
 ## [0.39.0] - 2026-09-13
 
 ### Added
