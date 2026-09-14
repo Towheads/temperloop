@@ -126,6 +126,19 @@ H_S1="$(mk_clean_home home-surface1)"
   || fail "3: a file under \$PWD/.claude/agents/ must report installed (got $(state_in "$C_S1" "$H_S1"))"
 echo "PASS: 3 <name>.md under \$PWD/.claude/agents/ reports installed (surface 1)"
 
+# --- 3b. SURFACE 1's reviewers/ catalog subdir (temperloop#2026) -------------
+# The project-scoped half of the #2026 fix: surface 1 is a LIVE agent dir, so
+# the ADR-0007 catalog subdir under it is live too -- a `.claude/agents`
+# symlinked at a kernel `claude/agents`, or a wholesale-copied tree, carries
+# `reviewers/` exactly as the machine dir does. Flat-only here would re-open
+# the same false negative one surface over.
+C_S1R="$TMP/cwd-surface1-reviewers"; mkdir -p "$C_S1R/.claude/agents/reviewers"
+: > "$C_S1R/.claude/agents/reviewers/$FIXTURE_NAME.md"
+H_S1R="$(mk_clean_home home-surface1-reviewers)"
+[ "$(state_in "$C_S1R" "$H_S1R")" = "installed" ] \
+  || fail "3b: a file under \$PWD/.claude/agents/reviewers/ must report installed (got $(state_in "$C_S1R" "$H_S1R"))"
+echo "PASS: 3b <name>.md under \$PWD/.claude/agents/reviewers/ reports installed (surface 1, catalog subdir)"
+
 # --- 4. SURFACE 2: <checkout>/claude/agents/<name>.md -> source-only ---------
 # Built against a COPY of the lib planted inside a throwaway git repo, so
 # checkout-root resolution points at the throwaway repo, not this real one.
@@ -187,6 +200,23 @@ H_S3="$TMP/home-surface3"; mkdir -p "$H_S3/.claude/agents"
   || fail "5: a file under \$HOME/.claude/agents/ must report installed (got $(state_in "$C_S3" "$H_S3"))"
 echo "PASS: 5 <name>.md under \$HOME/.claude/agents/ reports installed (surface 3)"
 
+# --- 5b. THE #2026 REGRESSION CASE ------------------------------------------
+# A catalog reviewer installed under `$HOME/.claude/agents/reviewers/` -- the
+# live shape on the kernel's dogfooding host, where `$HOME/.claude/agents` IS
+# a checkout's `claude/agents`, ADR-0007 catalog subdir and all. Surface 3's
+# flat-only check missed it, so the probe fell through to the provisional
+# surface-2 arm and answered `source-only` for a seat that was live and
+# spawnable. Since `installed` is the SPAWN gate, a caller obeying the
+# contract skipped a review that would have run -- #1462's false negative,
+# one catalog directory down.
+C_2026="$(mk_clean_cwd cwd-2026)"
+H_2026="$TMP/home-2026"; mkdir -p "$H_2026/.claude/agents/reviewers"
+: > "$H_2026/.claude/agents/reviewers/$FIXTURE_NAME.md"
+got5b="$(state_in "$C_2026" "$H_2026")"
+[ "$got5b" = "installed" ] \
+  || fail "5b: the #2026 shape (catalog reviewer installed under \$HOME/.claude/agents/reviewers/) must report installed (got $got5b)"
+echo "PASS: 5b #2026 regression — a catalog reviewer at \$HOME/.claude/agents/reviewers/ reports installed, never source-only"
+
 # --- 6. THE #1462 REGRESSION CASE -------------------------------------------
 # The kernel's own dogfooding checkout: no `CLAUDE.md § Subagents`, no
 # `./.claude/agents/` (gitignored, never deployed in a fresh clone) -- but
@@ -215,6 +245,20 @@ out7="$(state_in_fake_checkout "$C_BOTH" "$H_BOTH")"
 [ "$out7" = "installed" ] \
   || fail "7: shipped AND installed must report installed, not source-only (got $out7)"
 echo "PASS: 7 a live surface-3 install outranks the provisional surface-2 source hit"
+
+# --- 7b. precedence holds for the CATALOG subdir too (temperloop#2026) -------
+# The #2026 fix must not disturb the ordering contract: a catalog reviewer
+# that BOTH ships at <checkout>/claude/agents/reviewers/ (case 4b planted it)
+# and is installed at $HOME/.claude/agents/reviewers/ is INSTALLED. This is
+# the ordering the bug actually broke -- the shipped hit was winning over a
+# live one the probe could not see.
+C_BOTH_CAT="$(mk_clean_cwd cwd-both-catalog)"
+H_BOTH_CAT="$TMP/home-both-catalog"; mkdir -p "$H_BOTH_CAT/.claude/agents/reviewers"
+: > "$H_BOTH_CAT/.claude/agents/reviewers/$CAT_NAME.md"
+out7b="$(state_in_fake_checkout "$C_BOTH_CAT" "$H_BOTH_CAT" "$CAT_NAME")"
+[ "$out7b" = "installed" ] \
+  || fail "7b: a catalog reviewer both shipped and installed must report installed, not source-only (got $out7b)"
+echo "PASS: 7b a catalog reviewer shipped under reviewers/ AND installed under reviewers/ reports installed (precedence unchanged)"
 
 # --- 8. AGENT_DECLARED_OVERRIDE answers entirely from the env ---------------
 set +e
@@ -264,5 +308,30 @@ for real_agent in workflow-reviewer architecture-reviewer requirements-auditor d
   esac
 done
 echo "PASS: 11 every reviewer this checkout ships resolves as installed or source-only, never absent"
+
+# --- 11b. the real ADR-0007 CATALOG resolves too (temperloop#2026) -----------
+# Same non-fixture assertion, one directory down, over the catalog this repo
+# actually ships. Plus the strict arm: on a host that has a catalog reviewer
+# INSTALLED (the dogfooding shape -- $HOME/.claude/agents pointed at a
+# checkout's claude/agents, reviewers/ and all), the answer must be
+# `installed`, because that is the SPAWN gate and the seat is spawnable.
+# The strict arm is skipped, not failed, on a host with no such install.
+catalog_dir="$LIB_DIR/../../../claude/agents/reviewers"
+if [ -d "$catalog_dir" ]; then
+  for cat_agent_md in "$catalog_dir"/*.md; do
+    [ -f "$cat_agent_md" ] || continue
+    cat_agent="$(basename "$cat_agent_md" .md)"
+    got11b="$(agent_declared_state "$cat_agent")"
+    case "$got11b" in
+      installed|source-only) : ;;
+      *) fail "11b: $cat_agent ships under claude/agents/reviewers/ but reports '$got11b'" ;;
+    esac
+    if [ -f "$HOME/.claude/agents/reviewers/$cat_agent.md" ]; then
+      [ "$got11b" = "installed" ] \
+        || fail "11b: $cat_agent is installed at \$HOME/.claude/agents/reviewers/ but reports '$got11b' (#2026)"
+    fi
+  done
+fi
+echo "PASS: 11b every catalog reviewer under claude/agents/reviewers/ resolves, and a HOME-installed one reports installed"
 
 echo "All agent_declared.sh tests passed."
