@@ -195,7 +195,20 @@ const workerMap = new Map();
 // agent() THROWING — a resolution failure when msg matches
 // MACHINERY_RESOLUTION_ERR's shape, any other error otherwise). Default
 // (map miss): null — "reviewer ran but returned nothing", never a crash.
+// temperloop#2003 adds `{__hang: true}` — a reviewer that is SPAWNED and never
+// returns: agent() resolves to a promise that never settles, which is the whole
+// failure class the §3e wall-clock ceiling exists to bound. A mock that can only
+// return or throw cannot model it at all.
 const reviewMap = new Map();
+// reviewWaitMap: slug → [outcome, ...] — the §3e ceiling's own TIMER executor
+// (`review-wait:<slug>#<mark>`, temperloop#2003) keeps its OWN queue, mirroring
+// freshnessMap/mergeCheckMap and for the identical reason: routing it through
+// the shared per-slug machineryMap FIFO would consume the entry every existing
+// test wrote for something else and desync every step after it. Default (map
+// miss): REVIEW_WAIT_ELAPSED — the timer did its job — so a case that models a
+// hung reviewer needs no wiring at all, and a case whose reviewers all return
+// never reaches the timer in the first place.
+const reviewWaitMap = new Map();
 // mergeCheckMap: slug → [mergeState, ...] — consumed in order per slug.
 // Default (map miss): { mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN' }
 // so existing tests need no changes — only CONFLICTING tests override this.
@@ -277,6 +290,13 @@ function nextFromMap(map, slug, fallback) {
   throw new Error(`No mock entry for slug="${slug}" in map; label exhausted`);
 }
 
+// reviewWaitLog — every §3e timer spawn the mock served, in order
+// (temperloop#2003). The ceiling's slicing is asserted against this rather than
+// against wall-clock time, which the Workflow runtime cannot measure anyway.
+const reviewWaitLog = [];
+globalThis.reviewWaitLog = reviewWaitLog;
+globalThis.reviewWaitMap = reviewWaitMap;
+globalThis.setReviewWait = (slug, ...outcomes) => { reviewWaitMap.set(slug, outcomes); };
 globalThis.callLog = callLog;
 globalThis.machineryMap = machineryMap;
 globalThis.workerMap = workerMap;
@@ -303,6 +323,13 @@ globalThis.agent = async function agent(prompt, opts = {}) {
       // the machineryMap FIFO.
       if (/^preserve-push:/.test(String(opts.label || ''))) {
         return nextFromMap(preserveMap, slug, { outcome: 'WORK_PRESERVED', branch: 'build/' + slug, commits_ahead: 1, pushed: true });
+      }
+      // temperloop#2003: the §3e ceiling's timer executor, on its own queue
+      // (see reviewWaitMap). Default REVIEW_WAIT_ELAPSED = "the interval
+      // elapsed", which is the only fact this call ever reports.
+      if (/^review-wait:/.test(String(opts.label || ''))) {
+        reviewWaitLog.push({ slug, label: String(opts.label) });
+        return nextFromMap(reviewWaitMap, slug, { outcome: 'REVIEW_WAIT_ELAPSED' });
       }
       // Solo executor (gate / recover-probe / push-retry) — routed by slug.
       return nextFromMap(machineryMap, slug, { outcome: 'ERROR', error: 'unexpected machinery call for ' + slug });
@@ -362,6 +389,10 @@ globalThis.agent = async function agent(prompt, opts = {}) {
     // the same precedent machineryAgent() uses).
     const v = nextFromMap(reviewMap, slug, null);
     if (v && v.__throw) throw new Error(v.__throw);
+    // temperloop#2003 — the HANG. Not a slow return and not an error: a promise
+    // that never settles, exactly like the reviewer whose transcript stopped
+    // mid-sentence in run wf_f3b9c160-6ca.
+    if (v && v.__hang) return new Promise(() => {});
     return v;
   }
   // Fallback (should not happen in well-formed test cases)
@@ -5005,6 +5036,290 @@ for _md in build sweep fix; do
     || fail "#1071: $_md.md must pass machineryStepCeilingSecs in its build-level.mjs args"
 done
 echo "PASS: #1071 liveness-bound guard — named settings, emitted watchdog, recover-probe disposal, all three callers wired"
+
+# ============================================================================
+# TEMPERLOOP#2003 — the §3e REVIEW-AGENT liveness bound. The sibling of #1071
+# one layer up: that bound wraps a machinery STEP in an emitted-shell watchdog,
+# but a §3e reviewer is an `agent({agentType})` call with no shell to wrap, so
+# it had no bound at all. Observed (run wf_f3b9c160-6ca): four reviewers routed,
+# two returned, `shell-reviewer` spawned and never returned, the workflow stopped
+# writing its journal for ~41 minutes, and the MANDATORY `workflow-reviewer` for
+# that item's claude/commands/*.md diff never launched — so review.mandatory_ok
+# was never even evaluated.
+#
+# The mock's `{__hang: true}` reviewer entry is the failure verbatim: a promise
+# that never settles. Without the bound every case below hangs the node process
+# forever rather than failing — which is itself the point.
+# ============================================================================
+run_node_case "K2003 ceiling: an ADVISORY reviewer that never returns is bounded, and the LATER mandatory reviewer still runs" "
+$PREAMBLE
+const tsv = readFileSync('$REPO_ROOT/workflows/scripts/config/reviewer-routing.tsv', 'utf8');
+const logged = [];
+globalThis.log = (m) => logged.push(String(m));
+
+setMachinery('hang-adv',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/hang-adv' },
+  { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/x.sh', 'claude/commands/build.md'], tsv, tsv_rows: tsvRows(tsv), tsv_checksum: tsvChecksum(tsv) },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-ha' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'sha-ha', branch: 'build/hang-adv' },
+  { outcome: 'PR_OPENED', pr_number: 2003 },
+  { outcome: 'CI_GREEN' },
+);
+happyWorker('hang-adv');
+// Route order is [shell-reviewer (the .sh tsv row), workflow-reviewer (the
+// mandatory command-doc rule, added last)] — so the hung one is spawned FIRST,
+// reproducing the incident's ordering exactly.
+setReview('hang-adv', { __hang: true }, 'no findings');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'hang-adv', branch: 'build/hang-adv', title: 'Hung advisory reviewer', kind: 'impl', acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+const result = await mod.default();
+const parked = (result.parked ?? [])[0];
+const spawned = callLog.filter(c => isReviewCall(c.opts)).map(c => c.opts.agentType);
+let reason = null;
+if ((result.escalations ?? []).length !== 0) reason = 'an advisory timeout must NOT escalate: ' + JSON.stringify(result.escalations);
+else if (!parked || parked.pr !== 2003) reason = 'the level must still resolve and park the item: ' + JSON.stringify(result);
+else if (spawned.indexOf('workflow-reviewer') === -1) reason = 'the reviewer AFTER the hung one never launched — the observed failure: ' + JSON.stringify(spawned);
+else if (!(parked.review || {}).ran.some(r => r.reviewer === 'workflow-reviewer')) reason = 'the later reviewer must still RUN and be tallied: ' + JSON.stringify(parked.review);
+else if ((parked.review || {}).mandatory_ok !== true) reason = 'no MANDATORY route timed out, so mandatory_ok must stay true: ' + JSON.stringify(parked.review);
+else {
+  const skip = (parked.review.skipped || []).find(s => s.reviewer === 'shell-reviewer');
+  if (!skip) reason = 'the hung reviewer must appear in the tally as skipped: ' + JSON.stringify(parked.review);
+  else if (!/^skipped — shell-reviewer unavailable /.test(skip.note)) reason = 'the advisory timeout must degrade to the documented \`skipped — <agent> unavailable\` notice, got: ' + skip.note;
+  else if (!/ceiling of 1200s/.test(skip.note)) reason = 'the notice must name the ceiling it breached, got: ' + skip.note;
+  else if (skip.timed_out !== true) reason = 'the tally entry must distinguish a timeout from the other skip reasons: ' + JSON.stringify(skip);
+  else if ((parked.review.routed_not_run || []).indexOf('shell-reviewer') === -1) reason = 'routed_not_run must name the timed-out reviewer: ' + JSON.stringify(parked.review);
+  else if (!logged.some(m => /still running after 300s: shell-reviewer/.test(m))) reason = 'the progress notice must fire at the SLOW threshold, before the ceiling; logged: ' + JSON.stringify(logged);
+  else if (!logged.some(m => /ceiling of 1200s reached with shell-reviewer still outstanding/.test(m))) reason = 'the ceiling breach itself must be logged; logged: ' + JSON.stringify(logged);
+  else if (reviewWaitLog.length !== 3) reason = 'the wait must be SLICED under the agent Bash cap (300 + 540 + 360), got marks: ' + JSON.stringify(reviewWaitLog.map(w => w.label));
+}
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+run_node_case "K2003 isolation: one hung reviewer does not take the FANOUT down — every other routed reviewer still resolves and is tallied" "
+$PREAMBLE
+// The case above proves the reviewer AFTER the hung one still LAUNCHES. This
+// one proves the stronger, separate property the ceiling is built on: the other
+// routed reviewers still RESOLVE — their verdicts are collected, tallied and
+// spliced into the PR body — while one of their siblings is permanently stuck.
+// Asserted directly rather than inferred from the concurrent-spawn shape, since
+// a future restructure could reintroduce a per-reviewer await and still look
+// concurrent at the spawn site.
+//
+// Three ADVISORY routes, the hang deliberately in the MIDDLE of route order
+// (.sh -> shell-reviewer, .mjs -> typescript-reviewer, docs/** -> docs-reviewer):
+// a hang that only ever sat first or last would leave 'does a hang block the
+// ones BEFORE it from being collected' untested.
+const tsv = readFileSync('$REPO_ROOT/workflows/scripts/config/reviewer-routing.tsv', 'utf8');
+
+setMachinery('hang-mid',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/hang-mid' },
+  { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/x.sh', 'claude/workflows/build-level.mjs', 'docs/guide.md'], tsv, tsv_rows: tsvRows(tsv), tsv_checksum: tsvChecksum(tsv) },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-hm' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'sha-hm', branch: 'build/hang-mid' },
+  { outcome: 'PR_OPENED', pr_number: 2006 },
+  { outcome: 'CI_GREEN' },
+);
+happyWorker('hang-mid');
+setReview('hang-mid', 'SHELL-SIBLING-RESOLVED', { __hang: true }, 'DOCS-SIBLING-RESOLVED');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'hang-mid', branch: 'build/hang-mid', title: 'Hung reviewer mid-fanout', kind: 'impl', acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+const result = await mod.default();
+const parked = (result.parked ?? [])[0];
+const spawned = callLog.filter(c => isReviewCall(c.opts)).map(c => c.opts.agentType);
+const prBatch = callLog.find(c => (c.opts.label||'').startsWith('pr-batch:hang-mid'));
+let reason = null;
+if ((result.escalations ?? []).length !== 0) reason = 'three advisory routes: a hang must not escalate: ' + JSON.stringify(result.escalations);
+else if (!parked) reason = 'the level must still resolve: ' + JSON.stringify(result);
+else if (JSON.stringify(spawned) !== JSON.stringify(['shell-reviewer', 'typescript-reviewer', 'docs-reviewer'])) reason = 'all three routed reviewers must be spawned, in route order: ' + JSON.stringify(spawned);
+else {
+  const ran = (parked.review.ran || []).map(r => r.reviewer);
+  const notRun = parked.review.routed_not_run || [];
+  if (ran.indexOf('shell-reviewer') === -1) reason = 'the sibling spawned BEFORE the hung one must still resolve and be tallied as ran: ' + JSON.stringify(parked.review);
+  else if (ran.indexOf('docs-reviewer') === -1) reason = 'the sibling spawned AFTER the hung one must still resolve and be tallied as ran: ' + JSON.stringify(parked.review);
+  else if (ran.indexOf('typescript-reviewer') !== -1) reason = 'the HUNG reviewer must not be tallied as ran: ' + JSON.stringify(parked.review);
+  else if (JSON.stringify(notRun) !== JSON.stringify(['typescript-reviewer'])) reason = 'exactly the hung reviewer must be routed_not_run: ' + JSON.stringify(notRun);
+  else if (parked.review.mandatory_ok !== true) reason = 'no mandatory route here, so mandatory_ok must stay true: ' + JSON.stringify(parked.review);
+  else if (!prBatch) reason = 'the item must still reach 3f — no pr-batch call was made';
+  else if (prBatch.promptFull.indexOf('SHELL-SIBLING-RESOLVED') === -1) reason = 'the pre-hang sibling VERDICT TEXT must survive into the PR body, not just its name: ' + prBatch.promptFull.slice(0, 600);
+  else if (prBatch.promptFull.indexOf('DOCS-SIBLING-RESOLVED') === -1) reason = 'the post-hang sibling VERDICT TEXT must survive into the PR body: ' + prBatch.promptFull.slice(0, 600);
+}
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+run_node_case "K2003 ceiling: a MANDATORY reviewer that never returns ESCALATES with mandatory_ok EVALUATED, never a silent pass" "
+$PREAMBLE
+const tsv = readFileSync('$REPO_ROOT/workflows/scripts/config/reviewer-routing.tsv', 'utf8');
+
+setMachinery('hang-mand',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/hang-mand' },
+  { outcome: 'REVIEW_DIFF', files: ['claude/commands/build.md'], tsv, tsv_rows: tsvRows(tsv), tsv_checksum: tsvChecksum(tsv) },
+);
+happyWorker('hang-mand');
+setReview('hang-mand', { __hang: true });
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'hang-mand', branch: 'build/hang-mand', title: 'Hung mandatory reviewer', kind: 'impl', acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+const result = await mod.default();
+const esc = (result.escalations ?? [])[0];
+let reason = null;
+if (!esc) reason = 'a mandatory-reviewer timeout must ESCALATE, got: ' + JSON.stringify(result);
+else if (esc.kind !== 'review-agent-timeout') reason = 'wrong escalation kind: ' + esc.kind;
+else if ((esc.payload.mandatory || []).indexOf('workflow-reviewer') === -1) reason = 'the payload must name the mandatory reviewer that timed out: ' + JSON.stringify(esc.payload);
+else if ((esc.payload.review || {}).mandatory_ok !== false) reason = 'mandatory_ok must be EVALUATED and false — being left unevaluated is what made the incident invisible: ' + JSON.stringify(esc.payload.review);
+else if (esc.payload.ceiling_secs !== 1200) reason = 'the payload must name the ceiling: ' + JSON.stringify(esc.payload);
+else if (stepsRun('hang-mand').indexOf('push') !== -1) reason = 'the item must NOT be pushed when its mandatory gate never ran: ' + JSON.stringify(stepsRun('hang-mand'));
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+run_node_case "K2003 setting: input.reviewAgentCeilingSecs drives the ceiling and is FLOORED, never below one slice" "
+$PREAMBLE
+const tsv = readFileSync('$REPO_ROOT/workflows/scripts/config/reviewer-routing.tsv', 'utf8');
+
+setMachinery('floor-item',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/floor-item' },
+  { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/x.sh'], tsv, tsv_rows: tsvRows(tsv), tsv_checksum: tsvChecksum(tsv) },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-fl' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'sha-fl', branch: 'build/floor-item' },
+  { outcome: 'PR_OPENED', pr_number: 2004 },
+  { outcome: 'CI_GREEN' },
+);
+happyWorker('floor-item');
+setReview('floor-item', { __hang: true });
+
+// A 1-second operator ceiling would manufacture a false timeout on every
+// healthy review — strictly worse than the stall it bounds. It must be floored
+// to one CI-poll/gate slice.
+globalThis.args = { ...baseArgs, reviewAgentCeilingSecs: 1, items: [
+  { slug: 'floor-item', branch: 'build/floor-item', title: 'Floored ceiling', kind: 'impl', acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+const result = await mod.default();
+const parked = (result.parked ?? [])[0];
+let reason = null;
+if (!parked) reason = 'expected a parked item: ' + JSON.stringify(result);
+else {
+  const skip = (parked.review.skipped || [])[0];
+  if (!skip) reason = 'expected the hung reviewer in the tally: ' + JSON.stringify(parked.review);
+  else if (/ceiling of 1s/.test(skip.note)) reason = 'a 1s operator ceiling was HONOURED instead of floored: ' + skip.note;
+  else if (!/ceiling of 300s/.test(skip.note)) reason = 'expected the floored ceiling (one gate slice), got: ' + skip.note;
+}
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+run_node_case "K2003 fail-open: a timer that cannot run falls back to the pre-#2003 wait, never an instant false breach" "
+$PREAMBLE
+const tsv = readFileSync('$REPO_ROOT/workflows/scripts/config/reviewer-routing.tsv', 'utf8');
+const logged = [];
+globalThis.log = (m) => logged.push(String(m));
+
+setMachinery('failopen',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/failopen' },
+  { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/x.sh'], tsv, tsv_rows: tsvRows(tsv), tsv_checksum: tsvChecksum(tsv) },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-fo' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'sha-fo', branch: 'build/failopen' },
+  { outcome: 'PR_OPENED', pr_number: 2005 },
+  { outcome: 'CI_GREEN' },
+);
+happyWorker('failopen');
+// The reviewer is SLOW (it settles only after a few microtask ticks — more than
+// the pre-timer drain allows), so the timer is genuinely reached; the timer
+// itself is then DENIED. A bound that treated a non-elapsed timer as an elapsed
+// one would report an instant, false ceiling breach on a review that is fine.
+let slow = Promise.resolve();
+for (let i = 0; i < 40; i++) slow = slow.then(() => undefined);
+setReview('failopen', slow.then(() => 'no findings'));
+setReviewWait('failopen', null);
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'failopen', branch: 'build/failopen', title: 'Timer denied', kind: 'impl', acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+const result = await mod.default();
+const parked = (result.parked ?? [])[0];
+let reason = null;
+if (!parked) reason = 'expected a parked item: ' + JSON.stringify(result);
+else if ((parked.review.skipped || []).some(s => s.timed_out)) reason = 'a denied timer must NEVER be read as a ceiling breach: ' + JSON.stringify(parked.review);
+else if (!parked.review.ran.some(r => r.reviewer === 'shell-reviewer')) reason = 'the reviewer ran — it must be tallied as ran: ' + JSON.stringify(parked.review);
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+run_node_case "K2003 discrimination control: with the bound removed, the SAME hung reviewer never resolves — so the cases above are armed" "
+$PREAMBLE
+// The three K2003 cases above assert that a hung reviewer produces a BOUNDED
+// outcome. That proves nothing unless the unbounded case genuinely does not —
+// so this control loads the SAME .mjs with awaitReviewFanout()'s body replaced
+// by the pre-#2003 unbounded await, feeds it the identical hung reviewer, and
+// requires the level NOT to resolve. (A plain Node test HAS a timer to race
+// against; the Workflow runtime, which does not, is exactly why the production
+// bound races a sleep executor instead.)
+const tsv = readFileSync('$REPO_ROOT/workflows/scripts/config/reviewer-routing.tsv', 'utf8');
+const MARKER = 'async function awaitReviewFanout(item, slots) {';
+if (MJS_SRC.indexOf(MARKER) === -1) {
+  console.log(JSON.stringify({ ok: false, reason: 'awaitReviewFanout() not found — this control is no longer testing what it claims' }));
+} else {
+  const unbounded = MJS_SRC.replace(MARKER, MARKER + '\n  await Promise.all(slots.map((s) => s.promise)); return;');
+  const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+  const fn = new AsyncFunction(unbounded);
+
+  setMachinery('control-item',
+    { outcome: 'CREATED', path: '/tmp/repo.wt/control-item' },
+    { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/x.sh'], tsv, tsv_rows: tsvRows(tsv), tsv_checksum: tsvChecksum(tsv) },
+  );
+  happyWorker('control-item');
+  setReview('control-item', { __hang: true });
+  globalThis.args = JSON.stringify({ ...baseArgs, items: [
+    { slug: 'control-item', branch: 'build/control-item', title: 'Control', kind: 'impl', acceptance: ['c'] },
+  ]});
+  const raced = await Promise.race([
+    fn().then(() => 'RESOLVED'),
+    new Promise((r) => setTimeout(() => r('STILL-HUNG'), 3000)),
+  ]);
+  const reason = raced === 'STILL-HUNG' ? null
+    : 'the unbounded build resolved anyway (' + raced + ') — the hung-reviewer fixture is not actually hanging, so the K2003 assertions prove nothing';
+  console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+  process.exit(0);
+}
+"
+
+# --- K2003 static lockstep guards ---------------------------------------------
+grep -q 'input.reviewAgentCeilingSecs' "$MJS" \
+  || fail "#2003: build-level.mjs must read the review ceiling from the orchestrator hand-off (input.reviewAgentCeilingSecs), not a bare literal"
+grep -q 'async function awaitReviewFanout(' "$MJS" \
+  || fail "#2003: awaitReviewFanout() missing — the §3e fanout would be awaited unbounded again, which is the whole defect"
+grep -q "escalate(item.slug, 'review-agent-timeout'" "$MJS" \
+  || fail "#2003: a MANDATORY reviewer that times out must ESCALATE, never read as if the gate passed"
+_cfg2003="$REPO_ROOT/workflows/scripts/build/build.config.sh"
+for _s in BUILD_REVIEW_AGENT_CEILING_SECS BUILD_REVIEW_AGENT_SLOW_SECS; do
+  grep -q "$_s" "$_cfg2003" \
+    || fail "#2003: $_s must be declared in build.config.sh (the named-setting seam)"
+  grep -qE "^${_s}[[:space:]]" "$REPO_ROOT/workflows/scripts/config/setting-registry.tsv" \
+    || fail "#2003: $_s must carry a setting-registry.tsv row"
+  for _md in build sweep fix; do
+    grep -q "$_s" "$REPO_ROOT/claude/commands/$_md.md" \
+      || fail "#2003: $_md.md Step 0 must resolve $_s (every build-level.mjs caller wires it, not /build alone)"
+  done
+done
+for _md in build sweep fix; do
+  grep -q 'reviewAgentCeilingSecs' "$REPO_ROOT/claude/commands/$_md.md" \
+    || fail "#2003: $_md.md must pass reviewAgentCeilingSecs in its build-level.mjs args"
+done
+echo "PASS: #2003 review-agent liveness bound — named settings, bounded fanout, mandatory escalation, all three callers wired"
 
 # ============================================================================
 # TEMPERLOOP#1067 — probe for a LOST pr-batch return before escalating it as a
