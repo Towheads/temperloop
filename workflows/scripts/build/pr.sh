@@ -824,7 +824,9 @@ assemble_body() {
 #   4. a structural floor — reached only if the linkage block, acceptance recap,
 #      backlinks and footer alone exceed the cap — which cuts the assembled body
 #      and re-appends the linkage lines and footer verbatim; if even that cannot
-#      converge it hard-cuts byte-exactly and says so on stderr, so an over-cap
+#      converge it hard-cuts byte-exactly at a safe UTF-8 boundary (hard_bytes)
+#      and says so on stderr, and refuses with the script's own structured ERROR
+#      if no such boundary exists. So an over-cap, SIGPIPE-killed or invalid-UTF-8
 #      body is never emitted by ANY path.
 # NEVER cut, at any rung: the `Closes #N` linkage lines, the `## Acceptance`
 # recap (where a worker's activation-proof evidence rides), the `§3e review —
@@ -845,66 +847,85 @@ PR_BODY_TRUNC_MARK='_[PR-body cap]'
 
 # Reviewer-prose surgery inside the summary's `## Review notes` section.
 # Modes: `count` (how many review ROUNDS), `bytes-last` (byte size of the last
-# round's cuttable prose, every `### ` heading excluded), `drop` (remove the $2
+# round's cuttable prose, every structural line excluded), `drop` (remove the $2
 # earliest ROUNDS, never the last, leaving a marker), `trim-last` (keep the last
-# round's headings plus $3 bytes of its prose, leaving a marker).
+# round's structural lines plus $3 bytes of its prose, leaving a marker).
 #
-# SECTION EDGES. The section starts at a `## Review notes` line and runs to
-# end-of-input. It is NOT ended at the next `## ` heading, and that is the
-# load-bearing correction (temperloop#2009 review round 1): reviewBodySuffix
-# splices each reviewer's text VERBATIM, and every reviewer in this repo emits
-# `## Summary` / `## Findings` / `## What's solid` as its own top-level shape —
-# so a next-`## ` scan lands on the FIRST reviewer's `## Summary`, sees one
-# block, and no-ops rungs 1-3 on exactly the reviewer-prose-heavy bodies this
-# cap exists for. Running to end-of-input is correct AND smallest: reviewBodySuffix
-# returns `## Review notes\n<sections>` as its LAST element, and both of its call
-# sites (build-level.mjs 3f `summary: (verdict.summary ?? '') + reviewSummarySuffix`
-# and 3g.5 `… + mergedReviewSuffix`) append it to the END of the summary, with
-# nothing after it.
+# BLOCK EDGES COME FROM THE PRODUCER, NOT FROM MARKDOWN (temperloop#2009 review
+# round 2). Each block opens with the delimiter build-level.mjs's
+# reviewBlockMarker() emits — `<!-- 3e-review-block reviewer="…" round="N" -->`
+# — matched here as a FULL token anchored at line start. Nothing else is a
+# boundary, and no heading is consulted at all.
 #
-# A per-ROUND block starts at reviewBodySuffix's own `### <reviewer>` /
-# `### <reviewer> (ci-fix round N)` heading, matched against that exact rendered
-# grammar rather than by eye. The reviewer's findings text nested inside carries
-# `### ` headings too — `### [HIGH|MEDIUM|LOW] <name> in <file>`, every
-# reviewer's shared output contract (ADR 0007) — and prose headings like
-# `### What's solid`; neither matches the reviewer-name grammar (a bare
-# `[A-Za-z0-9_.-]+` token, optionally ` (ci-fix round N)`).
+# That is the whole point, and it is the third shape this parse has taken. The
+# first ended the section at the next `## ` line and lost it to the reviewers'
+# own top-level `## Summary`. The second read a `### <token>` heading as a block
+# head — and a reviewer writing a bare `### Notes`, or quoting one inside a
+# fenced code block, minted a phantom round that let rung 1 drop the NEWEST
+# round's residual HIGH findings (the ones temperloop#1970 routes into this very
+# section for the human at the merge gate). build-level.mjs's own comment above
+# `sections` says the structured render exists precisely so a CI-fix round can be
+# relabeled "without regex surgery on reviewer text that may itself contain
+# `### ` lines" — so reviewer text is not parsed here either. An explicit
+# delimiter cannot be spoofed by prose: the producer neutralizes any occurrence
+# of the token inside the text it splices (neutralizeReviewBlockMark), so a
+# reviewer quoting this design writes `<!-- 3e-review-block-quoted …`, which is
+# legible to a human and matches nothing here.
+#
+# Consequence worth stating: a `## Review notes` section rendered by anything
+# OTHER than reviewBodySuffix carries no delimiters, so every prose rung sees
+# zero rounds and no-ops. That is deliberate — the alternative is guessing, which
+# is the defect. pr.sh and build-level.mjs ship together, and test_pr.sh holds a
+# static guard that the two literals agree byte-for-byte.
 #
 # ROUNDS, NOT BLOCKS. One round renders ONE block PER ROUTED REVIEWER, so a
 # three-reviewer round is three blocks. The unit of truncation is the round:
-# blocks are grouped by the round key their heading carries (`(ci-fix round N)`
-# → N, bare → 0), and a rung drops or trims whole rounds. Counting blocks as
-# rounds would let rung 1 strip two of the FINAL round's three reviewers while
-# still reporting the newest round as protected — and since temperloop#1970
-# carries residual blocking findings into this very section, those are precisely
-# the findings that must survive.
+# blocks are grouped by the `round="N"` attribute their delimiter carries, and a
+# rung drops or trims whole rounds. Counting blocks as rounds would let rung 1
+# strip two of the FINAL round's three reviewers while still reporting the newest
+# round as protected — and since temperloop#1970 carries residual blocking
+# findings into this very section, those are precisely the findings that must
+# survive.
 review_notes() {
   LC_ALL=C awk -v mode="$1" -v drop="${2:-0}" -v keep="${3:-0}" \
       -v cap="$BUILD_PR_BODY_MAX_BYTES" -v journal="$SPEND_TRANSCRIPT_ROOT" \
       -v mark="$PR_BODY_TRUNC_MARK" '
-    function is_block_head(s,   t) {
-      if (s !~ /^### /) return 0
-      t = substr(s, 5)
-      if (t ~ /^[A-Za-z0-9_.-]+$/) return 1
-      return (t ~ /^[A-Za-z0-9_.-]+ \(ci-fix round [0-9]+\)$/)
+    # The producer-emitted delimiter, whole and at line start. Keep this literal
+    # in lockstep with reviewBlockMarker() in claude/workflows/build-level.mjs.
+    function is_block_head(s) {
+      return (s ~ /^<!-- 3e-review-block reviewer="[^"]*" round="[0-9]+" -->$/)
     }
     function round_key(s,   t) {
-      t = substr(s, 5)
-      if (t !~ /\(ci-fix round [0-9]+\)$/) return 0
-      sub(/^.*\(ci-fix round /, "", t); sub(/\)$/, "", t)
-      return t + 0
+      t = s
+      sub(/^.*round="/, "", t); sub(/".*$/, "", t)
+      return t + 0          # string->number here is DECIMAL; a leading 0 is not octal
+    }
+    function block_reviewer(s,   t) {
+      t = s
+      sub(/^.*reviewer="/, "", t); sub(/".*$/, "", t)
+      return t
+    }
+    # How the dropped round is NAMED in the inline marker — the same
+    # `<reviewer>` / `<reviewer> (ci-fix round N)` label the human-facing
+    # heading carries, rebuilt from the delimiter rather than read off prose.
+    function block_name(s,   r) {
+      r = round_key(s)
+      return (r == 0) ? block_reviewer(s) : block_reviewer(s) " (ci-fix round " r ")"
+    }
+    # Structural lines a prose rung never cuts: the delimiter itself, and every
+    # `### ` heading (each reviewer name AND each `### [HIGH] …` finding title).
+    function is_structural(s) {
+      return (is_block_head(s) || s ~ /^### /)
     }
     { lines[NR] = $0 }
     END {
-      start = 0
-      for (i = 1; i <= NR; i++) if (lines[i] == "## Review notes") { start = i; break }
-      # Runs to end-of-input — see the section-edges note above.
+      # No section anchor: a delimiter appears only where the producer put one,
+      # so scanning the whole input is both correct and immune to a `## Review
+      # notes` line appearing inside someone else s prose.
       end = NR + 1
       nb = 0
-      if (start) {
-        for (i = start + 1; i < end; i++) {
-          if (is_block_head(lines[i])) { nb++; bs[nb] = i; bkey[nb] = round_key(lines[i]) }
-        }
+      for (i = 1; i < end; i++) {
+        if (is_block_head(lines[i])) { nb++; bs[nb] = i; bkey[nb] = round_key(lines[i]) }
       }
       # Group consecutive blocks into rounds by their round key.
       ng = 0
@@ -919,7 +940,7 @@ review_notes() {
       if (mode == "count") { print ng; exit }
       if (mode == "bytes-last") {
         n = 0
-        if (ng) for (i = gfrom[ng]; i <= gto[ng]; i++) if (lines[i] !~ /^### /) n += length(lines[i]) + 1
+        if (ng) for (i = gfrom[ng]; i <= gto[ng]; i++) if (!is_structural(lines[i])) n += length(lines[i]) + 1
         print n
         exit
       }
@@ -932,7 +953,7 @@ review_notes() {
         for (i = from; i <= to; i++) bytes += length(lines[i]) + 1
         for (g = 1; g <= drop; g++) {
           for (j = gfirst[g]; j <= glast[g]; j++) {
-            h = substr(lines[bs[j]], 5)
+            h = block_name(lines[bs[j]])
             names = names (names == "" ? "" : ", ") h
           }
         }
@@ -947,9 +968,10 @@ review_notes() {
         for (i = 1; i < from; i++) print lines[i]
         acc = 0; cut = 0; cutlines = 0
         for (i = from; i <= to; i++) {
-          # Every `### ` heading in the newest round is kept: each reviewer name
-          # AND each `### [HIGH] …` finding title stays legible, only prose goes.
-          if (lines[i] ~ /^### /) { print lines[i]; continue }
+          # Every structural line in the newest round is kept: the block
+          # delimiter, each reviewer name AND each `### [HIGH] …` finding
+          # title stays legible, only prose goes.
+          if (is_structural(lines[i])) { print lines[i]; continue }
           if (!cut && acc + length(lines[i]) + 1 <= keep) { acc += length(lines[i]) + 1; print lines[i]; continue }
           cut += length(lines[i]) + 1; cutlines++
         }
@@ -997,6 +1019,45 @@ trim_middle() {
 # bytes, so the bare form agrees here and on CI by luck, not by contract.
 head_bytes() {
   LC_ALL=C awk -v keep="$1" '{ n += length($0) + 1; if (n > keep) exit; print }'
+}
+
+# hard_bytes — the last-resort, BYTE-EXACT cut. Keeps at most $1 bytes of stdin
+# and prints them; prints nothing and exits 1 if it cannot do so safely, so the
+# caller refuses structurally rather than emitting something broken.
+#
+# Two properties it exists for, both learned the hard way (temperloop#2009
+# review round 2):
+#
+#   1. It READS ALL OF STDIN. The previous form was
+#      `printf %s "$body" | head -c "$cap"` — `head -c` exits the moment it has
+#      its bytes, `printf` then takes SIGPIPE and exits 141, `pipefail`
+#      propagates that, and `set -e` aborts pr.sh at the assignment. That is a
+#      bare exit 141 with no `{"outcome":"ERROR",…}` line and no body at all, on
+#      the ONE rung whose entire contract is "cannot fail" and which is reached
+#      only on a pathological (i.e. large) body — strictly worse than the
+#      over-cap send it replaces, because 3f gets something unparseable instead
+#      of something diagnosable. Reproduced locally on a 300KB string.
+#   2. It NEVER SPLITS A MULTI-BYTE SEQUENCE. A raw cut at byte N can land
+#      inside a UTF-8 character and hand `gh` invalid UTF-8. So it backs off
+#      from the budget to the last ASCII whitespace byte, and failing that to
+#      the last ASCII printable byte: a truncation directly after an ASCII byte
+#      is always a valid UTF-8 boundary. In the C locale a byte >= 0x80 is
+#      neither `[[:print:]]` nor `[[:space:]]`, which is what makes the test
+#      "is this byte ASCII?" — and `LC_ALL=C` therefore load-bearing here for a
+#      second reason beyond `length()`.
+hard_bytes() {
+  LC_ALL=C awk -v keep="$1" '
+    { all = all $0 "\n" }
+    END {
+      if (length(all) <= keep) { printf "%s", all; exit 0 }
+      s = substr(all, 1, keep)
+      for (k = length(s); k > 0; k--)
+        if (substr(s, k, 1) ~ /^[[:space:]]$/) { printf "%s", substr(s, 1, k); exit 0 }
+      for (k = length(s); k > 0; k--)
+        if (substr(s, k, 1) ~ /^[[:print:]]$/) { printf "%s", substr(s, 1, k); exit 0 }
+      exit 1
+    }
+  '
 }
 
 # bound_body — the ladder above. $1 is the already-assembled body (so the
@@ -1108,10 +1169,16 @@ bound_body() {
       # shellcheck disable=SC2016  # $BUILD_PR_BODY_MAX_BYTES is the setting NAME, shown to a human, not expanded
       printf 'ERROR: PR-body cap ladder exhausted at rung 4 — %s bytes still over the %s-byte cap ($BUILD_PR_BODY_MAX_BYTES) after %s shrink attempts; hard-cutting to %s bytes. Full text: the workflow journal (agent-*.jsonl under %s).\n' \
         "$resid" "$cap" "$attempt" "$cap" "$SPEND_TRANSCRIPT_ROOT" >&2
-      # Prefer a LINE-boundary hard cut (never splits a multi-byte character);
-      # fall back to a raw byte cut only when even the first line is over cap.
-      hard="$(head_bytes "$cap" <<<"$body")"
-      if [ -n "$hard" ]; then body="$hard"; else body="$(LC_ALL=C printf %s "$body" | head -c "$cap")"; fi
+      # One consumer, always: hard_bytes reads all of stdin (no SIGPIPE can
+      # reach its producer under `set -o pipefail`) and cuts at the last ASCII
+      # boundary inside the budget, so the result can neither overshoot the cap
+      # nor split a multi-byte character. It refuses — empty, non-zero — only
+      # when the budget holds no ASCII byte to cut after at all; there is
+      # nothing safe left to emit then, so this dies with the script's own
+      # structured ERROR on real stdout rather than handing `gh` a mangled body.
+      hard="$(hard_bytes "$cap" <<<"$body")" || hard=""
+      [ -n "$hard" ] || die "PR-body cap ladder exhausted at rung 4 and no safe byte boundary exists within the ${cap}-byte cap ($resid bytes); refusing to emit a truncated body"
+      body="$hard"
       break
     fi
     keep=$(( keep * 3 / 4 ))

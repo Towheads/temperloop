@@ -3377,6 +3377,52 @@ function reviewBoundReached(review) {
   return review.blocking.length > 0 && (review.round ?? 1) >= REVIEW_BLOCKING_MAX_ROUNDS;
 }
 
+// REVIEW_BLOCK_MARK — the EXPLICIT, machine-readable boundary of one reviewer's
+// block inside `## Review notes` (temperloop#2009 review round 2).
+//
+// The `### <reviewer>` heading below is for a HUMAN. It is not a parseable
+// boundary and never was: reviewBodySuffix splices `sec.text` VERBATIM, and a
+// reviewer's own findings text carries `### ` headings of its own (ADR 0007's
+// `### [HIGH] <name> in <file>`) plus free prose headings — a single-word
+// `### Notes` is indistinguishable from `### docs-reviewer` by shape alone, and
+// a fenced code block can contain literally anything. pr.sh's PR-body cap has to
+// know where one round's prose ends to drop the OLDEST rounds first, and two
+// successive passes at inferring that from Markdown were both spoofable by
+// ordinary reviewer prose (the second dropped the NEWEST round's residual HIGH
+// findings — precisely what temperloop#1970 routes into this section for the
+// human at the merge gate).
+//
+// So the PRODUCER marks its own blocks. An HTML comment renders as nothing on
+// GitHub, is anchored at line start, and carries the two facts the consumer
+// needs (which reviewer, which round) as attributes rather than as prose to be
+// re-derived. `sec.text` is neutralized before splicing, so a reviewer QUOTING
+// this very design — entirely likely, since one already did — cannot inject a
+// boundary. Consumer: review_notes() in workflows/scripts/build/pr.sh, which
+// matches this token exactly, at line start, and never guesses from a heading.
+// The two literals are kept in lockstep by a static guard in test_pr.sh.
+const REVIEW_BLOCK_MARK = '3e-review-block';
+// Matches an opening comment whose first token is the mark and that has not
+// already been neutralized, so re-neutralizing is idempotent rather than
+// accreting `-quoted` suffixes.
+const REVIEW_BLOCK_MARK_RE = new RegExp(`<!--(\\s*)${REVIEW_BLOCK_MARK}(?!-quoted)`, 'g');
+
+// One block's opening delimiter. The reviewer name is reduced to the block
+// grammar's own character set so it can never close the comment early or break
+// the attribute quoting; `round` is 0 for the original 3f pass and N for
+// ciPollLoop's Nth CI-fix re-review, matching the `(ci-fix round N)` label.
+function reviewBlockMarker(reviewer, round) {
+  const name = String(reviewer ?? '').replace(/[^A-Za-z0-9_.-]/g, '-') || 'unknown';
+  const n = Number.isFinite(Number(round)) ? Math.max(0, Math.trunc(Number(round))) : 0;
+  return `<!-- ${REVIEW_BLOCK_MARK} reviewer="${name}" round="${n}" -->`;
+}
+
+// Strip the block delimiter's power out of text that is about to be spliced
+// verbatim. The mark is kept legible (a human reading the PR still sees what the
+// reviewer wrote) but can no longer match the consumer's token.
+function neutralizeReviewBlockMark(text) {
+  return String(text ?? '').replace(REVIEW_BLOCK_MARK_RE, `<!--$1${REVIEW_BLOCK_MARK}-quoted`);
+}
+
 // reviewBodySuffix — the ONE renderer of §3e evidence into the PR body
 // (temperloop#1846), across EVERY round handed to it: rounds[0] is the
 // original 3f pass, rounds[1..] are ciPollLoop's CI-fix re-reviews. Before
@@ -3393,8 +3439,11 @@ function reviewBoundReached(review) {
 //     CI-fix round's block is relabeled `### <reviewer> (ci-fix round N)` so
 //     a reviewer that ran in two rounds keeps BOTH blocks, distinguishable;
 //   - skip notices are de-duped by their full note text only (byte-identical
-//     notices from re-running the same degraded route add no information).
-// For a single round this renders byte-identically to the pre-#1846 shape.
+//     notices from re-running the same degraded route add no information);
+//   - each block opens with a REVIEW_BLOCK_MARK delimiter line (above) that
+//     names its reviewer and round, so the PR-body cap can find block edges
+//     without parsing Markdown out of reviewer prose.
+// For a single round this renders the pre-#1846 shape plus those delimiters.
 function reviewBodySuffix(rounds) {
   const ranNames = [];
   const skippedNotes = [];
@@ -3408,7 +3457,9 @@ function reviewBodySuffix(rounds) {
     }
     for (const sec of r.sections ?? []) {
       const heading = i === 0 ? sec.reviewer : `${sec.reviewer} (ci-fix round ${i})`;
-      sectionParts.push(`### ${heading}\n${sec.text}`);
+      sectionParts.push(
+        `${reviewBlockMarker(sec.reviewer, i)}\n### ${heading}\n${neutralizeReviewBlockMark(sec.text)}`,
+      );
     }
   });
   const parts = [];
@@ -4748,7 +4799,12 @@ async function driveItem(item) {
     // (the one verdict field pr.sh always renders) — this is what lets a real
     // review pass (or a genuine, non-guaranteed skip) be OBSERVED on the PR
     // itself, rather than living only in this run's transcript.
-    summary: (verdict.summary ?? '') + reviewSummarySuffix,
+    // The worker's own prose is neutralized for the same reason reviewer prose
+    // is (see REVIEW_BLOCK_MARK): it is spliced verbatim ABOVE `## Review
+    // notes`, so an un-neutralized delimiter there would open a phantom first
+    // block whose span swallowed the `§3e review — ran:` line the cap must
+    // never cut.
+    summary: neutralizeReviewBlockMark(verdict.summary ?? '') + reviewSummarySuffix,
     acceptance_results: verdict.acceptance_results ?? [],
     // temperloop#939: a recovered verdict carries a synthesized inline surface.
     // pr.sh resolves the surface by precedence (file flag → path key → inline),
@@ -4954,7 +5010,7 @@ async function driveItem(item) {
   if (mergedReviewSuffix !== reviewSummarySuffix) {
     const mergedVerdictJson = JSON.stringify({
       status: 'done',
-      summary: (verdict.summary ?? '') + mergedReviewSuffix,
+      summary: neutralizeReviewBlockMark(verdict.summary ?? '') + mergedReviewSuffix,
       acceptance_results: verdict.acceptance_results ?? [],
       ...(verdict.verification_surface ? { verification_surface: verdict.verification_surface } : {}),
     });
