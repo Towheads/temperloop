@@ -45,6 +45,15 @@
 # body after a CI-fix re-review round adds §3e reviewer evidence the original
 # 3f body couldn't carry.
 #
+# The assembled body is BOUNDED before it reaches gh (temperloop#2009): a body
+# over $BUILD_PR_BODY_MAX_BYTES is truncated locally — reviewer prose first,
+# oldest review round first — rather than sent and rejected with `GraphQL: Body
+# is too long` after the worker, the reviewers, the gates and the push have all
+# already succeeded. The bound is applied at ONE site above every arm, so
+# `--body-only`, `gh pr create` and `gh pr edit` can never disagree about the
+# outbound body; a body inside the cap is passed through byte-for-byte. See
+# bound_body below for the full ladder and what it never cuts.
+#
 # `acceptance-extract` is the INVERSE of `open`'s `## Acceptance` recap: it
 # reads an assembled PR body back into the worker's `acceptance_results`
 # entries. The recap's evidence rides its own nested line (temperloop#1267), so
@@ -109,6 +118,29 @@ command -v jq >/dev/null 2>&1 || { echo '{"outcome":"ERROR","error":"jq not foun
 # The 3f step-0 closing-keyword pattern (the ec8d5fd class): any GitHub
 # closing keyword followed by an issue reference, case-insensitive.
 CLOSING_RE='\b(close[sd]?|fix(e[sd])?|resolve[sd]?)\b[[:space:]]*#[0-9]+'
+
+# Settings come from the sibling build.config.sh when this checkout vendors it
+# (the same shape issue-state.sh uses); the `:=` lines below are the layer-6
+# fallback for a consuming checkout that carries pr.sh without that config file.
+# They are byte-identical duplicates of build.config.sh's own literals, which
+# stays the single owning site for both — setting-registry.tsv records ONE row
+# per name, citing build.config.sh (see that registry's own header).
+PR_HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=workflows/scripts/build/build.config.sh
+[ -f "$PR_HERE/build.config.sh" ] && . "$PR_HERE/build.config.sh"
+: "${BUILD_PR_BODY_MAX_BYTES:=60000}"                  # non-vendoring-checkout fallback
+: "${SPEND_TRANSCRIPT_ROOT:=$HOME/.claude/projects}"   # non-vendoring-checkout fallback
+# A non-numeric or zero override would disable the bound entirely, which is not
+# an option this setting offers (the API rejection it prevents is unconditional).
+# The floor is structural rather than a second setting: the linkage lines, the
+# attribution footer and one truncation marker are the parts no rung of
+# bound_body may cut, so a cap below their combined size could not be honored by
+# any truncation at all. Clamping keeps "the outbound body is within the cap" an
+# invariant for every value an operator can set.
+case "$BUILD_PR_BODY_MAX_BYTES" in
+  ''|*[!0-9]*|0) BUILD_PR_BODY_MAX_BYTES=60000 ;;
+esac
+[ "$BUILD_PR_BODY_MAX_BYTES" -lt 2000 ] && BUILD_PR_BODY_MAX_BYTES=2000
 
 # fd 3 = the script's real stdout. Helpers run inside command substitutions,
 # where a die()'s ERROR line would be captured by the caller instead of
@@ -682,11 +714,17 @@ strip_surface_closes() {
 # acceptance recap; ## Verification (the resolved surface, see resolve_surface,
 # falling back to the recap ONLY if no surface was produced); backlinks;
 # Claude Code footer.
+#
+# $7 (optional) overrides the verdict's `.summary` — the seam bound_body uses
+# to re-assemble with reviewer prose truncated, so the bounding never has to
+# re-parse an already-assembled body to find its section edges.
 assemble_body() {
-  local verdict="$1" gh_issue="$2" also_closes="$3" plan_link="$4" source_ref="$5" surface="$6"
+  local verdict="$1" gh_issue="$2" also_closes="$3" plan_link="$4" source_ref="$5" surface="$6" \
+        summary_override="${7-}"
   local summary recap body n
   summary="$(jq -er '.summary' <<<"$verdict" 2>/dev/null)" \
     || die "verdict JSON missing .summary"
+  [ -n "$summary_override" ] && summary="$summary_override"
   # temperloop#1319: `.discrimination_evidence` (worker-reported proof that an
   # acceptance check can actually FAIL — which mechanism it removed, that the
   # suite went red without it, that restoring it went green) is a FOURTH field
@@ -748,6 +786,403 @@ assemble_body() {
     [ -n "$source_ref" ] && body="${body}Derived from: ${source_ref}"$'\n'
   fi
   body="$body"$'\n''🤖 Generated with [Claude Code](https://claude.com/claude-code)'
+  printf '%s\n' "$body"
+}
+
+# --- the PR-body cap (temperloop#2009) ----------------------------------------
+#
+# GitHub rejects a PR body over 65536 characters — `GraphQL: Body is too long`.
+# That rejection lands on `gh pr create`/`gh pr edit`, i.e. at the very LAST
+# step of 3f, after the worker, every routed reviewer, the acceptance gate, the
+# activation gate and the push have all already succeeded: the branch is safe
+# but the result cannot be published, and an unattended run simply parks. Two
+# live items failed exactly that way in one day (temperloop#1958, #1970), both
+# recovered by hand. So the body is bounded HERE, locally, before it is ever
+# handed to gh — an over-cap body is truncated, never sent and rejected.
+#
+# $BUILD_PR_BODY_MAX_BYTES is the bound, in BYTES. Bytes rather than characters
+# is deliberate and conservative in the safe direction: a UTF-8 byte count is
+# always >= the character count GitHub actually meters, so a body inside the
+# byte cap is inside the character limit too. The default sits below 65536 with
+# headroom for the linkage + attribution tail the ladder never touches.
+#
+# WHAT GETS CUT, IN ORDER. The ladder is deliberately prose-first, because the
+# body is where un-actioned review findings are MEANT to be read: temperloop#1970
+# carries residual blocking findings into `## Review notes` instead of looping
+# another review round, so gutting that section first would hollow out the very
+# feature that raised the body pressure. Rungs, each re-measured before the next:
+#   1. the EARLIEST review ROUNDS of verbatim reviewer prose, oldest round first
+#      (the reviewBodySuffix render orders rounds[0] first, ci-fix rounds after),
+#      one more round at a time — never the newest ROUND, which is where every
+#      residual HIGH from the final round lives. The unit is a round, not a
+#      reviewer block: a round that routed three reviewers renders three blocks,
+#      and dropping them one at a time would strip two of the final round's
+#      reviewers while the ladder still reported the round as protected;
+#   2. the newest round's own prose tail — every `### ` heading in that round
+#      (each reviewer's name AND each `### [HIGH] …` finding title) is kept;
+#   3. the MIDDLE of the `## Verification` surface, head AND tail kept;
+#   4. a structural floor — reached only if the linkage block, acceptance recap,
+#      backlinks and footer alone exceed the cap — which cuts the assembled body
+#      and re-appends the linkage lines and footer verbatim; if even that cannot
+#      converge it hard-cuts byte-exactly at a safe UTF-8 boundary (hard_bytes)
+#      and says so on stderr, and refuses with the script's own structured ERROR
+#      if no such boundary exists. So an over-cap, SIGPIPE-killed or invalid-UTF-8
+#      body is never emitted by ANY path.
+# NEVER cut, at any rung: the `Closes #N` linkage lines, the `## Acceptance`
+# recap (where a worker's activation-proof evidence rides), the `§3e review —
+# ran:` line, the `## Verification` heading, the backlinks, or the footer.
+#
+# Every cut is LEGIBLE. A silent truncation would be a worse failure than the
+# API rejection it replaces, so each rung leaves an inline marker naming what
+# it dropped, how many rounds/bytes, and where the full text can still be read
+# — the workflow journal for reviewer prose, the worktree's own
+# `.build-verification.md` for the surface.
+
+# Byte length of a string (no trailing newline — what gh is actually handed).
+body_bytes() { LC_ALL=C printf %s "$1" | wc -c | tr -d ' '; }
+
+# Marker sentinel — every rung's inline marker starts with this, so a reader
+# (and this script's tests) can find a truncation without parsing prose.
+PR_BODY_TRUNC_MARK='_[PR-body cap]'
+
+# Reviewer-prose surgery inside the summary's `## Review notes` section.
+# Modes: `count` (how many review ROUNDS), `bytes-last` (byte size of the last
+# round's cuttable prose, every structural line excluded), `drop` (remove the $2
+# earliest ROUNDS, never the last, leaving a marker), `trim-last` (keep the last
+# round's structural lines plus $3 bytes of its prose, leaving a marker).
+#
+# BLOCK EDGES COME FROM THE PRODUCER, NOT FROM MARKDOWN (temperloop#2009 review
+# round 2). Each block opens with the delimiter build-level.mjs's
+# reviewBlockMarker() emits — `<!-- 3e-review-block reviewer="…" round="N" -->`
+# — matched here as a FULL token anchored at line start. Nothing else is a
+# boundary, and no heading is consulted at all.
+#
+# That is the whole point, and it is the third shape this parse has taken. The
+# first ended the section at the next `## ` line and lost it to the reviewers'
+# own top-level `## Summary`. The second read a `### <token>` heading as a block
+# head — and a reviewer writing a bare `### Notes`, or quoting one inside a
+# fenced code block, minted a phantom round that let rung 1 drop the NEWEST
+# round's residual HIGH findings (the ones temperloop#1970 routes into this very
+# section for the human at the merge gate). build-level.mjs's own comment above
+# `sections` says the structured render exists precisely so a CI-fix round can be
+# relabeled "without regex surgery on reviewer text that may itself contain
+# `### ` lines" — so reviewer text is not parsed here either. An explicit
+# delimiter cannot be spoofed by prose: the producer neutralizes any occurrence
+# of the token inside the text it splices (neutralizeReviewBlockMark), so a
+# reviewer quoting this design writes `<!-- 3e-review-block-quoted …`, which is
+# legible to a human and matches nothing here.
+#
+# Consequence worth stating: a `## Review notes` section rendered by anything
+# OTHER than reviewBodySuffix carries no delimiters, so every prose rung sees
+# zero rounds and no-ops. That is deliberate — the alternative is guessing, which
+# is the defect. pr.sh and build-level.mjs ship together, and test_pr.sh holds a
+# static guard that the two literals agree byte-for-byte.
+#
+# ROUNDS, NOT BLOCKS. One round renders ONE block PER ROUTED REVIEWER, so a
+# three-reviewer round is three blocks. The unit of truncation is the round:
+# blocks are grouped by the `round="N"` attribute their delimiter carries, and a
+# rung drops or trims whole rounds. Counting blocks as rounds would let rung 1
+# strip two of the FINAL round's three reviewers while still reporting the newest
+# round as protected — and since temperloop#1970 carries residual blocking
+# findings into this very section, those are precisely the findings that must
+# survive.
+review_notes() {
+  LC_ALL=C awk -v mode="$1" -v drop="${2:-0}" -v keep="${3:-0}" \
+      -v cap="$BUILD_PR_BODY_MAX_BYTES" -v journal="$SPEND_TRANSCRIPT_ROOT" \
+      -v mark="$PR_BODY_TRUNC_MARK" '
+    # The producer-emitted delimiter, whole and at line start. Keep this literal
+    # in lockstep with reviewBlockMarker() in claude/workflows/build-level.mjs.
+    function is_block_head(s) {
+      return (s ~ /^<!-- 3e-review-block reviewer="[^"]*" round="[0-9]+" -->$/)
+    }
+    function round_key(s,   t) {
+      t = s
+      sub(/^.*round="/, "", t); sub(/".*$/, "", t)
+      return t + 0          # string->number here is DECIMAL; a leading 0 is not octal
+    }
+    function block_reviewer(s,   t) {
+      t = s
+      sub(/^.*reviewer="/, "", t); sub(/".*$/, "", t)
+      return t
+    }
+    # How the dropped round is NAMED in the inline marker — the same
+    # `<reviewer>` / `<reviewer> (ci-fix round N)` label the human-facing
+    # heading carries, rebuilt from the delimiter rather than read off prose.
+    function block_name(s,   r) {
+      r = round_key(s)
+      return (r == 0) ? block_reviewer(s) : block_reviewer(s) " (ci-fix round " r ")"
+    }
+    # Structural lines a prose rung never cuts: the delimiter itself, and every
+    # `### ` heading (each reviewer name AND each `### [HIGH] …` finding title).
+    function is_structural(s) {
+      return (is_block_head(s) || s ~ /^### /)
+    }
+    { lines[NR] = $0 }
+    END {
+      # No section anchor: a delimiter appears only where the producer put one,
+      # so scanning the whole input is both correct and immune to a `## Review
+      # notes` line appearing inside someone else s prose.
+      end = NR + 1
+      nb = 0
+      for (i = 1; i < end; i++) {
+        if (is_block_head(lines[i])) { nb++; bs[nb] = i; bkey[nb] = round_key(lines[i]) }
+      }
+      # Group consecutive blocks into rounds by their round key.
+      ng = 0
+      for (j = 1; j <= nb; j++) {
+        if (ng == 0 || bkey[j] != gkey[ng]) { ng++; gkey[ng] = bkey[j]; gfirst[ng] = j }
+        glast[ng] = j
+      }
+      for (g = 1; g <= ng; g++) {
+        gfrom[g] = bs[gfirst[g]]
+        gto[g] = (glast[g] < nb) ? bs[glast[g] + 1] - 1 : end - 1
+      }
+      if (mode == "count") { print ng; exit }
+      if (mode == "bytes-last") {
+        n = 0
+        if (ng) for (i = gfrom[ng]; i <= gto[ng]; i++) if (!is_structural(lines[i])) n += length(lines[i]) + 1
+        print n
+        exit
+      }
+      if (ng == 0) { for (i = 1; i <= NR; i++) print lines[i]; exit }
+      if (mode == "drop") {
+        if (drop > ng - 1) drop = ng - 1
+        if (drop < 1) { for (i = 1; i <= NR; i++) print lines[i]; exit }
+        from = gfrom[1]; to = gto[drop]
+        bytes = 0; names = ""
+        for (i = from; i <= to; i++) bytes += length(lines[i]) + 1
+        for (g = 1; g <= drop; g++) {
+          for (j = gfirst[g]; j <= glast[g]; j++) {
+            h = block_name(lines[bs[j]])
+            names = names (names == "" ? "" : ", ") h
+          }
+        }
+        for (i = 1; i < from; i++) print lines[i]
+        printf "%s dropped the %d earliest §3e review round(s) of verbatim reviewer prose — %s — %d bytes, to fit the %d-byte PR-body cap ($BUILD_PR_BODY_MAX_BYTES). The findings are not suppressed: read them in full in the workflow journal (agent-*.jsonl under %s)._\n", mark, drop, names, bytes, cap, journal
+        print ""
+        for (i = to + 1; i <= NR; i++) print lines[i]
+        exit
+      }
+      if (mode == "trim-last") {
+        from = gfrom[ng]; to = gto[ng]
+        for (i = 1; i < from; i++) print lines[i]
+        acc = 0; cut = 0; cutlines = 0
+        for (i = from; i <= to; i++) {
+          # Every structural line in the newest round is kept: the block
+          # delimiter, each reviewer name AND each `### [HIGH] …` finding
+          # title stays legible, only prose goes.
+          if (is_structural(lines[i])) { print lines[i]; continue }
+          if (!cut && acc + length(lines[i]) + 1 <= keep) { acc += length(lines[i]) + 1; print lines[i]; continue }
+          cut += length(lines[i]) + 1; cutlines++
+        }
+        if (cut > 0) {
+          printf "%s truncated the newest §3e review round of verbatim reviewer prose here — %d line(s), %d bytes — to fit the %d-byte PR-body cap ($BUILD_PR_BODY_MAX_BYTES). Every reviewer name and finding heading in that round is kept above; the findings are not suppressed: read them in full in the workflow journal (agent-*.jsonl under %s)._\n", mark, cutlines, cut, cap, journal
+        }
+        for (i = to + 1; i <= NR; i++) print lines[i]
+        exit
+      }
+      for (i = 1; i <= NR; i++) print lines[i]
+    }
+  '
+}
+
+# Elide the MIDDLE of a text block, keeping its head and its tail (a worker's
+# activation proof or closing verdict is as often at the end as at the start),
+# with a marker in the gap. $1 = total bytes to keep; $2 = what the text is;
+# $3 = where the full text can still be read.
+trim_middle() {
+  LC_ALL=C awk -v keep="$1" -v what="$2" -v where="$3" \
+      -v cap="$BUILD_PR_BODY_MAX_BYTES" -v mark="$PR_BODY_TRUNC_MARK" '
+    { lines[NR] = $0; len[NR] = length($0) + 1; total += len[NR] }
+    END {
+      if (total <= keep) { for (i = 1; i <= NR; i++) print lines[i]; exit }
+      headb = int(keep * 0.6); tailb = keep - headb
+      h = 0; acc = 0
+      for (i = 1; i <= NR; i++) { if (acc + len[i] > headb) break; acc += len[i]; h = i }
+      t = NR + 1; acc = 0
+      for (i = NR; i > h; i--) { if (acc + len[i] > tailb) break; acc += len[i]; t = i }
+      dropped = 0; droplines = 0
+      for (i = h + 1; i < t; i++) { dropped += len[i]; droplines++ }
+      for (i = 1; i <= h; i++) print lines[i]
+      print ""
+      printf "%s elided %d line(s), %d bytes, from the middle of the %s to fit the %d-byte PR-body cap ($BUILD_PR_BODY_MAX_BYTES) — its head and tail are kept. Full text: %s._\n", mark, droplines, dropped, what, cap, where
+      print ""
+      for (i = t; i <= NR; i++) print lines[i]
+    }
+  '
+}
+
+# Keep the first $1 bytes of stdin, cutting at a line boundary. `LC_ALL=C` is
+# load-bearing, exactly as in review_notes/trim_middle above: under gawk in a
+# UTF-8 locale `length()` counts CHARACTERS, which would silently turn this
+# byte budget into a character budget. macOS awk and Ubuntu mawk happen to count
+# bytes, so the bare form agrees here and on CI by luck, not by contract.
+head_bytes() {
+  LC_ALL=C awk -v keep="$1" '{ n += length($0) + 1; if (n > keep) exit; print }'
+}
+
+# hard_bytes — the last-resort, BYTE-EXACT cut. Keeps at most $1 bytes of stdin
+# and prints them; prints nothing and exits 1 if it cannot do so safely, so the
+# caller refuses structurally rather than emitting something broken.
+#
+# Two properties it exists for, both learned the hard way (temperloop#2009
+# review round 2):
+#
+#   1. It READS ALL OF STDIN. The previous form was
+#      `printf %s "$body" | head -c "$cap"` — `head -c` exits the moment it has
+#      its bytes, `printf` then takes SIGPIPE and exits 141, `pipefail`
+#      propagates that, and `set -e` aborts pr.sh at the assignment. That is a
+#      bare exit 141 with no `{"outcome":"ERROR",…}` line and no body at all, on
+#      the ONE rung whose entire contract is "cannot fail" and which is reached
+#      only on a pathological (i.e. large) body — strictly worse than the
+#      over-cap send it replaces, because 3f gets something unparseable instead
+#      of something diagnosable. Reproduced locally on a 300KB string.
+#   2. It NEVER SPLITS A MULTI-BYTE SEQUENCE. A raw cut at byte N can land
+#      inside a UTF-8 character and hand `gh` invalid UTF-8. So it backs off
+#      from the budget to the last ASCII whitespace byte, and failing that to
+#      the last ASCII printable byte: a truncation directly after an ASCII byte
+#      is always a valid UTF-8 boundary. In the C locale a byte >= 0x80 is
+#      neither `[[:print:]]` nor `[[:space:]]`, which is what makes the test
+#      "is this byte ASCII?" — and `LC_ALL=C` therefore load-bearing here for a
+#      second reason beyond `length()`.
+hard_bytes() {
+  LC_ALL=C awk -v keep="$1" '
+    { all = all $0 "\n" }
+    END {
+      if (length(all) <= keep) { printf "%s", all; exit 0 }
+      s = substr(all, 1, keep)
+      for (k = length(s); k > 0; k--)
+        if (substr(s, k, 1) ~ /^[[:space:]]$/) { printf "%s", substr(s, 1, k); exit 0 }
+      for (k = length(s); k > 0; k--)
+        if (substr(s, k, 1) ~ /^[[:print:]]$/) { printf "%s", substr(s, 1, k); exit 0 }
+      exit 1
+    }
+  '
+}
+
+# bound_body — the ladder above. $1 is the already-assembled body (so the
+# common under-cap path costs one measurement and returns it BYTE-IDENTICAL);
+# $2..$7 are assemble_body's own arguments, re-used to re-assemble from
+# truncated components rather than re-parsing the assembled text.
+bound_body() {
+  local body="$1" verdict="$2" gh_issue="$3" also_closes="$4" plan_link="$5" source_ref="$6" surface="$7"
+  local cap="$BUILD_PR_BODY_MAX_BYTES" allow=700
+  local size summary rounds drop cand last_bytes keep over n tail
+
+  size="$(body_bytes "$body")"
+  if [ "$size" -le "$cap" ]; then
+    printf '%s\n' "$body"
+    return 0
+  fi
+
+  summary="$(jq -r '.summary // ""' <<<"$verdict")"
+
+  # Rung 1 — drop the earliest whole review ROUNDS of reviewer prose, oldest first.
+  rounds="$(review_notes count <<<"$summary")"
+  case "$rounds" in ''|*[!0-9]*) rounds=0 ;; esac
+  drop=1
+  while [ "$drop" -le $((rounds - 1)) ]; do
+    cand="$(review_notes drop "$drop" <<<"$summary")"
+    body="$(assemble_body "$verdict" "$gh_issue" "$also_closes" "$plan_link" "$source_ref" "$surface" "$cand")"
+    size="$(body_bytes "$body")"
+    if [ "$size" -le "$cap" ]; then
+      printf '%s\n' "$body"
+      return 0
+    fi
+    drop=$((drop + 1))
+  done
+  [ "$rounds" -gt 1 ] && summary="$(review_notes drop $((rounds - 1)) <<<"$summary")"
+
+  # Rung 2 — trim the newest ROUND's prose tail, keeping every `### ` heading in
+  # it (each reviewer's name and each `### [HIGH] …` finding title).
+  if [ "$rounds" -gt 0 ]; then
+    last_bytes="$(review_notes bytes-last <<<"$summary")"
+    case "$last_bytes" in ''|*[!0-9]*) last_bytes=0 ;; esac
+    over=$((size - cap))
+    keep=$((last_bytes - over - allow))
+    [ "$keep" -lt 0 ] && keep=0
+    summary="$(review_notes trim-last 0 "$keep" <<<"$summary")"
+    body="$(assemble_body "$verdict" "$gh_issue" "$also_closes" "$plan_link" "$source_ref" "$surface" "$summary")"
+    size="$(body_bytes "$body")"
+    if [ "$size" -le "$cap" ]; then
+      printf '%s\n' "$body"
+      return 0
+    fi
+  fi
+
+  # Rung 3 — elide the middle of the verification surface. Never dropped: a
+  # floor keeps its head and tail, so `## Verification` always carries content.
+  if [ -n "$surface" ]; then
+    over=$((size - cap))
+    keep=$(( $(body_bytes "$surface") - over - allow ))
+    [ "$keep" -lt 1200 ] && keep=1200
+    surface="$(trim_middle "$keep" "verification surface" \
+      "the worker's .build-verification.md in the item's worktree" <<<"$surface")"
+    body="$(assemble_body "$verdict" "$gh_issue" "$also_closes" "$plan_link" "$source_ref" "$surface" "$summary")"
+    size="$(body_bytes "$body")"
+    if [ "$size" -le "$cap" ]; then
+      printf '%s\n' "$body"
+      return 0
+    fi
+  fi
+
+  # Rung 4 — the structural floor. Reached only when the parts no rung above
+  # touches (the linkage block, the acceptance recap, the backlinks, the
+  # footer) exceed the cap on their own. Cut the assembled body and re-append
+  # the linkage lines and footer verbatim, so auto-close and attribution
+  # survive a cut that had nowhere else left to go.
+  local footer='🤖 Generated with [Claude Code](https://claude.com/claude-code)'
+  local line full hard resid attempt=0
+  full="$body"
+  tail=""
+  for n in $gh_issue $also_closes; do
+    tail="${tail}$(closes_line "$n")"$'\n'
+  done
+  # Reserve room for the marker plus the WHOLE linkage block and footer, then
+  # re-append only what the cut actually removed — the body carries exactly one
+  # linkage block (this script's own invariant), never a duplicate of lines the
+  # head kept. The loop re-measures the REAL byte length and shrinks the cut
+  # until it fits: every budget above is computed from awk's byte lengths, and
+  # this is the one rung with nothing below it to catch a rounding error.
+  keep=$(( cap - $(body_bytes "$tail") - $(body_bytes "$footer") - allow ))
+  while :; do
+    [ "$keep" -lt 1 ] && keep=1
+    body="$(head_bytes "$keep" <<<"$full")"
+    body="${body}"$'\n\n'"$PR_BODY_TRUNC_MARK cut here to fit the ${cap}-byte PR-body cap (\$BUILD_PR_BODY_MAX_BYTES) — the issue linkage and the attribution footer are re-appended below, so auto-close and attribution survive a cut that had nowhere else left to go. Full text: the workflow journal (agent-*.jsonl under $SPEND_TRANSCRIPT_ROOT)._"
+    for n in $gh_issue $also_closes; do
+      line="$(closes_line "$n")"
+      grep -qxF -- "$line" <<<"$body" || body="${body}"$'\n'"$line"
+    done
+    grep -qxF -- "$footer" <<<"$body" || body="${body}"$'\n\n'"$footer"
+    [ "$(body_bytes "$body")" -le "$cap" ] && break
+    attempt=$((attempt + 1))
+    if [ "$attempt" -ge 12 ] || [ "$keep" -le 1 ]; then
+      # Exhaustion. The shrink loop above is a LINE-boundary cut, so a single
+      # line longer than the whole budget (or a linkage+footer tail that alone
+      # exceeds the cap) can leave it stuck over the bound. Breaking here and
+      # printing would hand `gh` an over-cap body — the exact API rejection this
+      # whole ladder exists to prevent, now wearing a truncation marker. So the
+      # last resort is a BYTE-EXACT cut that structurally cannot overshoot,
+      # announced on stderr so the orchestrator's log carries a diagnosable
+      # refusal rather than a silent mangling.
+      resid="$(body_bytes "$body")"
+      # shellcheck disable=SC2016  # $BUILD_PR_BODY_MAX_BYTES is the setting NAME, shown to a human, not expanded
+      printf 'ERROR: PR-body cap ladder exhausted at rung 4 — %s bytes still over the %s-byte cap ($BUILD_PR_BODY_MAX_BYTES) after %s shrink attempts; hard-cutting to %s bytes. Full text: the workflow journal (agent-*.jsonl under %s).\n' \
+        "$resid" "$cap" "$attempt" "$cap" "$SPEND_TRANSCRIPT_ROOT" >&2
+      # One consumer, always: hard_bytes reads all of stdin (no SIGPIPE can
+      # reach its producer under `set -o pipefail`) and cuts at the last ASCII
+      # boundary inside the budget, so the result can neither overshoot the cap
+      # nor split a multi-byte character. It refuses — empty, non-zero — only
+      # when the budget holds no ASCII byte to cut after at all; there is
+      # nothing safe left to emit then, so this dies with the script's own
+      # structured ERROR on real stdout rather than handing `gh` a mangled body.
+      hard="$(hard_bytes "$cap" <<<"$body")" || hard=""
+      [ -n "$hard" ] || die "PR-body cap ladder exhausted at rung 4 and no safe byte boundary exists within the ${cap}-byte cap ($resid bytes); refusing to emit a truncated body"
+      body="$hard"
+      break
+    fi
+    keep=$(( keep * 3 / 4 ))
+  done
   printf '%s\n' "$body"
 }
 
@@ -834,7 +1269,7 @@ cmd_acceptance_extract() {
 cmd_open() {
   local verdict_src="" repo="" branch="" title="" gh_issue="" also_closes="" \
         plan_link="" source_ref="" surface_file="" surface="" body_only="" update_pr="" verdict body out url pr_number n raw
-  local stripped=0
+  local stripped=0 raw_len=0 truncated=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --verdict)     [ $# -ge 2 ] || usage; verdict_src="$2"; shift ;;
@@ -883,6 +1318,16 @@ cmd_open() {
     fi
   fi
   body="$(assemble_body "$verdict" "$gh_issue" "$also_closes" "$plan_link" "$source_ref" "$surface")"
+  # temperloop#2009 — bound the body BEFORE it reaches gh. An over-cap body is
+  # truncated here, legibly; it is never sent and rejected by the API after the
+  # whole item has already succeeded. Applied at this ONE site, above every
+  # arm below, so `--body-only`'s preview, `gh pr create` and `gh pr edit`
+  # cannot disagree about what the outbound body is. Under the cap this is the
+  # identity: the assembled body is returned byte-for-byte.
+  raw_len="$(body_bytes "$body")"
+  body="$(bound_body "$body" "$verdict" "$gh_issue" "$also_closes" "$plan_link" "$source_ref" "$surface")"
+  truncated=$(( raw_len - $(body_bytes "$body") ))
+  [ "$truncated" -lt 0 ] && truncated=0
 
   if [ -n "$body_only" ]; then
     printf '%s\n' "$body"
@@ -905,8 +1350,9 @@ cmd_open() {
     if ! out="$(cd "$repo" && gh pr edit "$update_pr" --body "$body" 2>&1)"; then
       die "gh pr edit failed: $out"
     fi
-    jq -cn --arg n "$update_pr" --argjson stripped "$stripped" \
-      '{outcome:"BODY_UPDATED", pr_number:($n|tonumber), surface_closes_stripped:$stripped}'
+    jq -cn --arg n "$update_pr" --argjson stripped "$stripped" --argjson trunc "$truncated" \
+      '{outcome:"BODY_UPDATED", pr_number:($n|tonumber), surface_closes_stripped:$stripped,
+        body_truncated_bytes:$trunc}'
     return 0
   fi
 
@@ -927,8 +1373,9 @@ cmd_open() {
       raw="$(grep -oE '/pull/[0-9]+' <<<"$out" | tail -1 || true)"
       pr_number="${raw#/pull/}"
       [ -n "$pr_number" ] || die "could not parse PR number from existing-PR error: $out"
-      jq -cn --arg n "$pr_number" --arg url "$url" --argjson stripped "$stripped" \
-        '{outcome:"EXISTS", pr_number:($n|tonumber), url:$url, surface_closes_stripped:$stripped}'
+      jq -cn --arg n "$pr_number" --arg url "$url" --argjson stripped "$stripped" --argjson trunc "$truncated" \
+        '{outcome:"EXISTS", pr_number:($n|tonumber), url:$url, surface_closes_stripped:$stripped,
+          body_truncated_bytes:$trunc}'
       return 0
     fi
     die "gh pr create failed: $out"
@@ -938,8 +1385,9 @@ cmd_open() {
   pr_number="${raw#/pull/}"
   [ -n "$pr_number" ] || die "could not parse PR number from gh output: $out"
   url="$(grep -oE 'https?://[^[:space:]]+/pull/[0-9]+' <<<"$out" | tail -1 || true)"
-  jq -cn --arg n "$pr_number" --arg url "$url" --argjson stripped "$stripped" \
-    '{outcome:"PR_OPENED", pr_number:($n|tonumber), url:$url, surface_closes_stripped:$stripped}'
+  jq -cn --arg n "$pr_number" --arg url "$url" --argjson stripped "$stripped" --argjson trunc "$truncated" \
+    '{outcome:"PR_OPENED", pr_number:($n|tonumber), url:$url, surface_closes_stripped:$stripped,
+      body_truncated_bytes:$trunc}'
 }
 
 [ $# -ge 1 ] || usage
