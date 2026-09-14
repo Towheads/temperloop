@@ -1287,7 +1287,7 @@ fi
 # workflows/scripts/build/state-graph.sh derives one typed nodes+edges
 # snapshot per repo from the board, open PRs, and worktrees (later: plan
 # notes, the workflow journal, tmux markers), stored through the namespaced
-# board cache library (lib/cache.sh, kind=state-graph). Both settings are
+# board cache library (lib/cache.sh, kind=state-graph). All three settings are
 # named symbolically everywhere outside this file — never re-valued in prose
 # (§ Named-setting convention) — including in state-graph.sh's own comments,
 # the ontology registry, and ADR 0033.
@@ -1303,6 +1303,15 @@ fi
 # trigger for the eventual JSON-snapshot-to-SQLite migration ADR 0033 names
 # as a follow-on, never a design-time judgment call.
 : "${STATE_GRAPH_QUERY_SLOW_MS:=500}"
+# Number of distinct days `state-graph.sh soak --count` must have recorded
+# before ADR 0033's independence cross-check is treated as trustworthy.
+# Rationale for the default: chosen by judgment, not derived — the soak buys
+# exposure to varied board states (parks, merges, claims going stale,
+# worktrees appearing and vanishing), and a shorter window sees fewer
+# situations and so catches fewer disagreements. No sample-size or coverage
+# argument was ever made for this number; raising or lowering it is an
+# operator call, which is why it is a setting rather than a literal.
+: "${STATE_GRAPH_SOAK_DAYS:=14}"
 
 # ── Comparison-statistics library (temperloop#1249, epic #1225 "model
 #    comparison harness") ───────────────────────────────────────────────────
@@ -1755,7 +1764,7 @@ export BUILD_QUOTA_PAUSE_PCT BUILD_QUOTA_CACHE BUILD_QUOTA_WAIT_BUFFER \
        BUILD_HEADLESS_POLL_TIMEOUT \
        BUILD_MERGE_BACKEND BUILD_COMBINED_TREE_PRECHECK BUILD_MERGE_AS_YOU_GO \
        PIPELINE_DRIVE_CONCURRENCY EPIC_MIN_SUBUNITS DISPLAY_TZ \
-       STATE_GRAPH_MAX_AGE_S STATE_GRAPH_QUERY_SLOW_MS \
+       STATE_GRAPH_MAX_AGE_S STATE_GRAPH_QUERY_SLOW_MS STATE_GRAPH_SOAK_DAYS \
        ASSESS_POLL_FIRST_WAKE ASSESS_POLL_CADENCE ASSESS_POLL_BUDGET \
        TRIAGE_INTAKE_EXCLUDE_LABELS \
        NEXT_SEQ_STALE_AFTER TIDY_SYNC_WAIT TIDY_LOCK_STALE_AFTER CHECKIN_PRUNE_DAYS \
