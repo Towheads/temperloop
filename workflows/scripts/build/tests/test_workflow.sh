@@ -5099,6 +5099,62 @@ else {
 console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
 "
 
+run_node_case "K2003 isolation: one hung reviewer does not take the FANOUT down — every other routed reviewer still resolves and is tallied" "
+$PREAMBLE
+// The case above proves the reviewer AFTER the hung one still LAUNCHES. This
+// one proves the stronger, separate property the ceiling is built on: the other
+// routed reviewers still RESOLVE — their verdicts are collected, tallied and
+// spliced into the PR body — while one of their siblings is permanently stuck.
+// Asserted directly rather than inferred from the concurrent-spawn shape, since
+// a future restructure could reintroduce a per-reviewer await and still look
+// concurrent at the spawn site.
+//
+// Three ADVISORY routes, the hang deliberately in the MIDDLE of route order
+// (.sh -> shell-reviewer, .mjs -> typescript-reviewer, docs/** -> docs-reviewer):
+// a hang that only ever sat first or last would leave 'does a hang block the
+// ones BEFORE it from being collected' untested.
+const tsv = readFileSync('$REPO_ROOT/workflows/scripts/config/reviewer-routing.tsv', 'utf8');
+
+setMachinery('hang-mid',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/hang-mid' },
+  { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/x.sh', 'claude/workflows/build-level.mjs', 'docs/guide.md'], tsv, tsv_rows: tsvRows(tsv), tsv_checksum: tsvChecksum(tsv) },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-hm' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'sha-hm', branch: 'build/hang-mid' },
+  { outcome: 'PR_OPENED', pr_number: 2006 },
+  { outcome: 'CI_GREEN' },
+);
+happyWorker('hang-mid');
+setReview('hang-mid', 'SHELL-SIBLING-RESOLVED', { __hang: true }, 'DOCS-SIBLING-RESOLVED');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'hang-mid', branch: 'build/hang-mid', title: 'Hung reviewer mid-fanout', kind: 'impl', acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+const result = await mod.default();
+const parked = (result.parked ?? [])[0];
+const spawned = callLog.filter(c => isReviewCall(c.opts)).map(c => c.opts.agentType);
+const prBatch = callLog.find(c => (c.opts.label||'').startsWith('pr-batch:hang-mid'));
+let reason = null;
+if ((result.escalations ?? []).length !== 0) reason = 'three advisory routes: a hang must not escalate: ' + JSON.stringify(result.escalations);
+else if (!parked) reason = 'the level must still resolve: ' + JSON.stringify(result);
+else if (JSON.stringify(spawned) !== JSON.stringify(['shell-reviewer', 'typescript-reviewer', 'docs-reviewer'])) reason = 'all three routed reviewers must be spawned, in route order: ' + JSON.stringify(spawned);
+else {
+  const ran = (parked.review.ran || []).map(r => r.reviewer);
+  const notRun = parked.review.routed_not_run || [];
+  if (ran.indexOf('shell-reviewer') === -1) reason = 'the sibling spawned BEFORE the hung one must still resolve and be tallied as ran: ' + JSON.stringify(parked.review);
+  else if (ran.indexOf('docs-reviewer') === -1) reason = 'the sibling spawned AFTER the hung one must still resolve and be tallied as ran: ' + JSON.stringify(parked.review);
+  else if (ran.indexOf('typescript-reviewer') !== -1) reason = 'the HUNG reviewer must not be tallied as ran: ' + JSON.stringify(parked.review);
+  else if (JSON.stringify(notRun) !== JSON.stringify(['typescript-reviewer'])) reason = 'exactly the hung reviewer must be routed_not_run: ' + JSON.stringify(notRun);
+  else if (parked.review.mandatory_ok !== true) reason = 'no mandatory route here, so mandatory_ok must stay true: ' + JSON.stringify(parked.review);
+  else if (!prBatch) reason = 'the item must still reach 3f — no pr-batch call was made';
+  else if (prBatch.promptFull.indexOf('SHELL-SIBLING-RESOLVED') === -1) reason = 'the pre-hang sibling VERDICT TEXT must survive into the PR body, not just its name: ' + prBatch.promptFull.slice(0, 600);
+  else if (prBatch.promptFull.indexOf('DOCS-SIBLING-RESOLVED') === -1) reason = 'the post-hang sibling VERDICT TEXT must survive into the PR body: ' + prBatch.promptFull.slice(0, 600);
+}
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
 run_node_case "K2003 ceiling: a MANDATORY reviewer that never returns ESCALATES with mandatory_ok EVALUATED, never a silent pass" "
 $PREAMBLE
 const tsv = readFileSync('$REPO_ROOT/workflows/scripts/config/reviewer-routing.tsv', 'utf8');
