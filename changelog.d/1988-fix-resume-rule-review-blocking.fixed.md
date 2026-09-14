@@ -16,13 +16,14 @@
   so parking can no longer quietly destroy work.
   The same table now also gates the *other* half of the hazard: **starting** a
   drive force-clears the worktree just as deleting it would, so every path
-  that re-enters a drive — answering the parked question, answering a
-  `question-first` target, adopting an issue whose PR vanished, overriding a
-  dependency block — reads the table first and resumes against the preserved
-  build instead of rebuilding over it. Resuming also has to re-take the board
-  claim that parking released, and that can lose a race to another session
-  that picked the issue up in the meantime; if it does, `/fix` stops and
-  reports the owning session and the path to the preserved build rather than
-  driving on unclaimed or taking a claim that is not its own. And the comment
-  `/fix` leaves on a parked issue now says which of the two will happen, so it
-  can no longer point the operator at the action that throws the work away.
+  that re-enters a drive — answering the parked question, answering an issue
+  that arrived already carrying an open question, adopting an issue whose PR
+  vanished, overriding a dependency block — reads the table first and resumes
+  against the preserved build instead of rebuilding over it. Resuming also has
+  to re-take the board claim that parking released, and that can lose a race to
+  another session that picked the issue up in the meantime; if it does, `/fix`
+  stops and reports the owning session and the path to the preserved build
+  rather than driving on unclaimed or taking a claim that is not its own. And
+  the comment `/fix` leaves on a parked issue now says which of the two will
+  happen, so it can no longer point the operator at the action that throws the
+  work away.
