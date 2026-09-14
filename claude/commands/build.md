@@ -348,7 +348,7 @@ It is **free** and that is load-bearing: it re-reads the plan note this run alre
      # (`args` is a Workflow-tool parameter, never a shell string). Sync is an
      # AUTHORING-time obligation: temperloop#2024's registry + lint reads the SAME
      # declaration this probe does and REPLACES this literal. /sweep and /fix pass 18.
-     handoffKeys="repoRoot,planLink,board,items,verdicts,ownerRepo,claimCmd,machineryBinDir,machinerySoloModel,machineryBatchModel,gateSliceSecs,reviewBlockingMaxRounds,machineryStepCeilingSecs,machineryStepSlowSecs,workerSummaryMaxWords,workerEvidenceMaxWords,principlesSummaries,principlesDefaultRepo,reviewerRoutingTsv,requireDiscriminationEvidence,onlySlugs"
+     handoffKeys="repoRoot,planLink,board,items,verdicts,ownerRepo,claimCmd,machineryBinDir,machinerySoloModel,machineryBatchModel,gateSliceSecs,reviewAgentCeilingSecs,reviewAgentSlowSecs,reviewBlockingMaxRounds,machineryStepCeilingSecs,machineryStepSlowSecs,workerSummaryMaxWords,workerEvidenceMaxWords,principlesSummaries,principlesDefaultRepo,reviewerRoutingTsv,requireDiscriminationEvidence,onlySlugs"
     probe=workflows/scripts/build/handoff-capability.sh
     if [ -f "$probe" ]; then bash "$probe" check "$HOME/.claude/workflows/build-level.mjs" "$handoffKeys"
     else echo '{"outcome":"CAPABILITIES_INDETERMINATE","reason":"handoff-capability.sh absent from this checkout"}'; fi

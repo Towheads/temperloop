@@ -386,6 +386,8 @@ const inputCapabilities = [
   'principlesSummaries',
   'repoRoot',
   'requireDiscriminationEvidence',
+  'reviewAgentCeilingSecs',
+  'reviewAgentSlowSecs',
   'reviewBlockingMaxRounds',
   'reviewerRoutingTsv',
   'verdicts',
