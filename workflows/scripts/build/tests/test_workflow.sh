@@ -51,6 +51,12 @@
 #   - worktree-failed: worktree.sh non-CREATED → worktree-failed escalation
 #   - continuation: onlySlugs+verdicts → verdict injected into worker prompt,
 #     existing worktree reused (no create/claim), only continued slug driven
+#   - sideline notice (temperloop#2006): a CREATED outcome carrying
+#     `sidelined:true` produces a named SIDELINED BUILD log notice with the
+#     path, the branch and a concrete recovery command, stamps the same object
+#     onto the item's parked record AND onto an escalating item's payload, and
+#     rolls up onto the returned level summary; `sidelined:false` is silent and
+#     byte-identical to the pre-#2006 return
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && cd ../../../.. && pwd)"
@@ -9823,6 +9829,179 @@ case "$K2014_MJS" in
   *) fail "#2014: ci-poll.sh argument refusals are no longer split out of the ci-failed catch-all" ;;
 esac
 echo "PASS: #2014 static guard — both pushedSha pre-flights and the bad-argument split are wired in build-level.mjs"
+
+# ============================================================================
+# TEST (K2006-silent): a CLEAN create over an empty path stays SILENT.
+#
+#   worktree.sh `create` reports `sidelined:false` when nothing occupied the
+#   deterministic path. The driver must then emit NO notice, stamp NO field on
+#   the parked record, and return the byte-identical pre-#2006 object — i.e.
+#   this fix costs an ordinary level exactly nothing. This is the control that
+#   makes the reporting case below discriminating rather than vacuous.
+# ============================================================================
+run_node_case "K2006: clean create over an empty path — no sideline notice, no parked field, no level rollup" "
+$PREAMBLE
+
+const logLines = [];
+globalThis.log = (m) => { logLines.push(String(m)); };
+
+setMachinery('item-k2006-clean',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/item-k2006-clean', branch: 'build/item-k2006-clean', sidelined: false, sidelined_path: '', sidelined_branch: '' },
+  { outcome: 'REVIEW_DIFF' },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'shaclean' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'shaclean', branch: 'build/item-k2006-clean' },
+  { outcome: 'PR_OPENED', pr_number: 2006 },
+  { outcome: 'CI_GREEN' },
+);
+happyWorker('item-k2006-clean');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'item-k2006-clean', branch: 'build/item-k2006-clean', title: 'Clean create', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+
+const parked = result.parked ?? [];
+if (parked.length !== 1)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected 1 parked, got ' + JSON.stringify(result) })); process.exit(0); }
+if ('sidelined' in parked[0])
+  { console.log(JSON.stringify({ ok: false, reason: 'a clean create must stamp NO sidelined field on the parked record: ' + JSON.stringify(parked[0].sidelined) })); process.exit(0); }
+if ('sidelined' in result)
+  { console.log(JSON.stringify({ ok: false, reason: 'a clean create must omit the level rollup entirely: ' + JSON.stringify(result.sidelined) })); process.exit(0); }
+const noisy = logLines.filter(l => l.includes('SIDELINED BUILD'));
+if (noisy.length !== 0)
+  { console.log(JSON.stringify({ ok: false, reason: 'a clean create must emit NO sideline notice; got: ' + JSON.stringify(noisy) })); process.exit(0); }
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+# ============================================================================
+# TEST (K2006-reports): a create over a COMMIT-BEARING worktree sidelines AND
+# reports — the defect temperloop#2006 filed.
+#
+#   worktree.sh MOVES the un-preservable occupant to
+#   `<path>.unpreserved-<sha8>` on `<branch>.unpreserved-<sha8>` and still
+#   returns CREATED (its never-refuse contract, worktree.sh:783-787), carrying
+#   the verdict as FIELDS. build-level.mjs had zero occurrences of `sidelined`
+#   and dropped all three, so an intact committed build was shelved while a
+#   fresh worker rebuilt the same item and nothing said so.
+#
+#   Asserted on all three surfaces the fix must reach, because a transient log
+#   line alone does not survive to the merge gate:
+#     1. a NAMED log notice carrying the path, the branch AND the recovery;
+#     2. the parked record's own `sidelined` object (what flows back to the
+#        orchestrator and rides to Step 4's gate);
+#     3. the level-summary rollup on the returned object.
+#   The recovery assertion is the load-bearing one: 'a sideline happened' is
+#   exactly the notice that leaves an operator with nowhere to go.
+# ============================================================================
+run_node_case "K2006: create over a commit-bearing worktree — sidelines AND reports path, branch and recovery" "
+$PREAMBLE
+
+const logLines = [];
+globalThis.log = (m) => { logLines.push(String(m)); };
+
+const SP = '/tmp/repo.wt/item-k2006-side.unpreserved-deadbeef';
+const SB = 'build/item-k2006-side.unpreserved-deadbeef';
+
+setMachinery('item-k2006-side',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/item-k2006-side', branch: 'build/item-k2006-side', sidelined: true, sidelined_path: SP, sidelined_branch: SB },
+  { outcome: 'REVIEW_DIFF' },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'shaside' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'shaside', branch: 'build/item-k2006-side' },
+  { outcome: 'PR_OPENED', pr_number: 20061 },
+  { outcome: 'CI_GREEN' },
+);
+happyWorker('item-k2006-side');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'item-k2006-side', branch: 'build/item-k2006-side', title: 'Sidelining create', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+
+// 1. the NAMED log notice
+const notices = logLines.filter(l => l.includes('SIDELINED BUILD') && l.includes('item-k2006-side'));
+if (notices.length === 0)
+  { console.log(JSON.stringify({ ok: false, reason: 'no named SIDELINED BUILD notice was logged; log was ' + JSON.stringify(logLines) })); process.exit(0); }
+const n0 = notices[0];
+if (!n0.includes(SP))
+  { console.log(JSON.stringify({ ok: false, reason: 'the notice omits the sidelined PATH verbatim: ' + n0 })); process.exit(0); }
+if (!n0.includes(SB))
+  { console.log(JSON.stringify({ ok: false, reason: 'the notice omits the sidelined BRANCH verbatim: ' + n0 })); process.exit(0); }
+if (!/git -C /.test(n0) || !/push -u origin /.test(n0))
+  { console.log(JSON.stringify({ ok: false, reason: 'the notice names no concrete RECOVERY command: ' + n0 })); process.exit(0); }
+
+// 2. the parked record — what flows back to the orchestrator and survives to the merge gate
+const parked = result.parked ?? [];
+if (parked.length !== 1)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected 1 parked, got ' + JSON.stringify(result) })); process.exit(0); }
+const sl = parked[0].sidelined;
+if (!sl)
+  { console.log(JSON.stringify({ ok: false, reason: 'the parked record carries no sidelined field — the notice died as a log line: ' + JSON.stringify(parked[0]) })); process.exit(0); }
+if (sl.path !== SP || sl.branch !== SB)
+  { console.log(JSON.stringify({ ok: false, reason: 'parked.sidelined path/branch are not verbatim: ' + JSON.stringify(sl) })); process.exit(0); }
+if (!sl.recovery || !sl.recovery.includes(SP) || !sl.recovery.includes(SB))
+  { console.log(JSON.stringify({ ok: false, reason: 'parked.sidelined.recovery does not name where the build is and how to reclaim it: ' + JSON.stringify(sl) })); process.exit(0); }
+
+// 3. the level-summary rollup
+const roll = result.sidelined ?? [];
+if (roll.length !== 1 || roll[0].slug !== 'item-k2006-side' || roll[0].path !== SP || roll[0].branch !== SB)
+  { console.log(JSON.stringify({ ok: false, reason: 'level rollup missing or wrong: ' + JSON.stringify(roll) })); process.exit(0); }
+const summaryLines = logLines.filter(l => l.startsWith('level SIDELINED BUILD summary'));
+if (summaryLines.length !== 1 || !summaryLines[0].includes(SP))
+  { console.log(JSON.stringify({ ok: false, reason: 'no level-summary line naming the shelved build: ' + JSON.stringify(logLines) })); process.exit(0); }
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+# ============================================================================
+# TEST (K2006-escalation): the notice rides an ESCALATION too.
+#
+#   The shelving happens at 3b, before the worker runs, so the item that
+#   sidelined a build is at least as likely to escalate as to park. If the
+#   notice only ever reached the parked arm, the loudest case — a sideline
+#   followed by a blocked/failed worker — would still report nothing. The stamp
+#   is therefore applied at the ONE fan-out choke point, and this pins that.
+# ============================================================================
+run_node_case "K2006: an escalating item still carries the sideline notice on its payload" "
+$PREAMBLE
+
+const SP = '/tmp/repo.wt/item-k2006-esc.unpreserved-cafebabe';
+const SB = 'build/item-k2006-esc.unpreserved-cafebabe';
+
+setMachinery('item-k2006-esc',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/item-k2006-esc', branch: 'build/item-k2006-esc', sidelined: true, sidelined_path: SP, sidelined_branch: SB },
+);
+setWorker('item-k2006-esc',
+  { status: 'blocked', questions: ['what now?'] }
+);
+setPreserve('item-k2006-esc', { outcome: 'WORK_PRESERVE_SKIP', detail: 'no worktree' });
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'item-k2006-esc', branch: 'build/item-k2006-esc', title: 'Escalating after sideline', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+
+const esc = result.escalations ?? [];
+if (esc.length !== 1)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected 1 escalation, got ' + JSON.stringify(result) })); process.exit(0); }
+const sl = esc[0].payload && esc[0].payload.sidelined;
+if (!sl || sl.path !== SP || sl.branch !== SB || !sl.recovery)
+  { console.log(JSON.stringify({ ok: false, reason: 'the escalation payload lost the sideline notice: ' + JSON.stringify(esc[0]) })); process.exit(0); }
+if (!esc[0].payload.verdict || esc[0].payload.verdict.status !== 'blocked')
+  { console.log(JSON.stringify({ ok: false, reason: 'stamping the notice clobbered the escalation payload: ' + JSON.stringify(esc[0].payload) })); process.exit(0); }
+
+console.log(JSON.stringify({ ok: true }));
+"
 
 echo ""
 echo "All test_workflow.sh cases passed."
