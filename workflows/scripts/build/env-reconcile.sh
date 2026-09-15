@@ -61,6 +61,29 @@
 #                                                staleness" block below for the
 #                                                mtime-vs-cmp rationale and the
 #                                                fail-open contract.
+#                            Non-drift (informational):
+#                              DORMANT:<days>d-idle:<n>-behind
+#                                                the checkout is behind the
+#                                                already-fetched origin/<default>
+#                                                AND has had no local activity
+#                                                (commit / pull / branch switch)
+#                                                for more than
+#                                                $DORMANT_CHECKOUT_DAYS days —
+#                                                i.e. behind because ABANDONED,
+#                                                not because it is busy on other
+#                                                work. Printed on its own
+#                                                `DORMANT` line, NEVER counted as
+#                                                drift and never given a remedy:
+#                                                disposing of an abandoned
+#                                                checkout is the operator's call.
+#                                                Being behind alone stays
+#                                                deliberately un-flagged for this
+#                                                role (that is the whole point of
+#                                                the operator baseline); last
+#                                                activity is what separates the
+#                                                two. See
+#                                                classify_operator_dormancy
+#                                                (temperloop#2041).
 #                            Default checkouts: foundation, stageFind,
 #                            ssmobile, subsetwiki, temperloop (the interactive
 #                            operator checkout of the kernel repo — a DIFFERENT
@@ -260,6 +283,10 @@
 #   ENV_RECONCILE_STALE_UNTRACKED_DAYS      (default 7 — also the staleness
 #                                            horizon for a harness agent
 #                                            worktree, ACTIVE vs STALE)
+#   ENV_RECONCILE_DORMANT_DAYS              (default 14 — days with no local
+#                                            activity before a BEHIND operator
+#                                            checkout is called DORMANT;
+#                                            informational, never drift)
 #   ENV_RECONCILE_HARNESS_WT_SUBDIR         (default .claude/worktrees — the
 #                                            checkout-relative directory the
 #                                            harness creates its agent
@@ -454,6 +481,14 @@ case "$FORMAT" in report|entry) ;; *) echo "unknown --format: $FORMAT (report|en
 
 # ── Tunables (env-overridable) ────────────────────────────────────────────────
 STALE_UNTRACKED_DAYS="${ENV_RECONCILE_STALE_UNTRACKED_DAYS:-7}"
+# Dormancy horizon (DORMANT, temperloop#2041) — days of NO local activity after
+# which an operator checkout that is ALSO behind its already-fetched
+# origin/<default> is NAMED dormant instead of reading as a bare OK.
+# Deliberately longer than the untracked-file horizon above: a week of quiet is
+# an ordinary gap between sessions, while a fortnight of quiet on a checkout the
+# rest of the world has moved past is the thing an operator wants told. Never a
+# drift class either way — see classify_operator_dormancy.
+DORMANT_CHECKOUT_DAYS="${ENV_RECONCILE_DORMANT_DAYS:-14}"
 # Harness agent worktrees (temperloop#1405). Claude Code's own agent isolation
 # (`isolation: "worktree"`) creates worktrees under
 # <checkout>/.claude/worktrees/agent-<id>/ — INSIDE the checkout and untracked,
@@ -512,11 +547,21 @@ AGENT_INSTALL_DIR="${ENV_RECONCILE_AGENT_INSTALL_DIR:-$HOME/Library/LaunchAgents
 read -r -a AGENT_HOSTS <<<"${ENV_RECONCILE_AGENT_HOSTS:-}"
 
 DEFAULT_CRON_CHECKOUTS="$HOME/dev/foundation.cron $HOME/dev/batch/temperloop $HOME/dev/foundation-kernel"
-# Note: $HOME/dev/batch/temperloop (cron, above) and $HOME/dev/temperloop
-# (operator, here) are two DIFFERENT ROLES of the SAME repo — the cron/kernel
-# checkout is clean-on-main, the interactive operator checkout legitimately
-# sits on feature branches and owns the temperloop.wt/* worktrees. Both must be
-# registered so each is classified against its own baseline.
+# Note: the kernel repo is registered TWICE — once above ($HOME/dev/batch/
+# temperloop, cron) and once here ($HOME/dev/temperloop, operator) — because
+# what these lists name is a ROLE, not a repo. Two clones of one repo, each
+# classified against its OWN baseline: the cron/kernel clone is the one
+# automation drives, so it must be clean-on-main; the operator clone is the one
+# a human or session drives, so sitting on a feature branch there is ordinary
+# work rather than drift.
+#
+# This comment deliberately says NOTHING about which clone currently holds the
+# `<repo>.wt/*` worktrees, gets pulled more often, or is "the live one". That is
+# a fact about one host's habits at one moment — it already inverted once, when
+# the `batch/` layout arrived and the claim recorded here went silently stale
+# (temperloop#2041) — and the classifier never reads it: worktrees are
+# discovered by scanning `<checkout>.wt/` beside EVERY entry in BOTH lists, so
+# either role may own any number of them, including none.
 DEFAULT_OPERATOR_CHECKOUTS="$HOME/dev/foundation $HOME/dev/stageFind $HOME/dev/ssmobile $HOME/dev/subsetwiki $HOME/dev/temperloop"
 
 read -r -a CRON_CHECKOUTS <<<"${ENV_RECONCILE_CRON_CHECKOUTS:-$DEFAULT_CRON_CHECKOUTS}"
@@ -913,6 +958,111 @@ classify_operator_checkout() {
   classes="${classes}$(_stale_vendored_hooks "$repo")"
 
   printf '%s' "$classes"
+}
+
+# ── _checkout_last_activity_days <repo> ───────────────────────────────────────
+# Prints the whole-day age of the most recent LOCAL activity in <repo>. Exits 1
+# printing NOTHING when no activity signal can be read (fail-open — the caller
+# then says nothing rather than guessing "abandoned" from an absent reading).
+#
+# TWO signals, NEWEST wins, because either alone mis-dates a live checkout:
+#   * HEAD's committer date — when the commit this checkout sits on was made.
+#   * the newest HEAD REFLOG ENTRY's own recorded timestamp — every pull, merge,
+#     commit or branch switch IN THIS CHECKOUT moves HEAD and appends a
+#     timestamped line to the reflog, so it dates the last time a human or
+#     session actually drove this clone. It is what keeps a freshly-pulled clone
+#     of a quiet repo (old HEAD commit, recent pull) from reading as dormant.
+#
+# THE ENTRY'S RECORDED TIMESTAMP, NEVER THE REFLOG FILE'S MTIME. The file's
+# mtime looks like the same signal and is not: `git gc --auto` (which a routine
+# fetch triggers) expires old entries and REWRITES the file, so an abandoned
+# checkout's <git-dir>/logs/HEAD can be zero bytes and dated TODAY. That is not
+# hypothetical — it is exactly the state $HOME/dev/temperloop was in when this
+# class was written (temperloop#2041: empty reflog, mtime today, last real
+# activity a month earlier), so an mtime reading would have reported the very
+# checkout that motivated this class as active. An expired-away reflog instead
+# leaves the committer date as the only signal, which is the correct reading for
+# a checkout nothing has touched in months.
+#
+# DELIBERATELY NOT the index mtime either, the obvious third candidate: `git
+# status` refreshes it, and this very reconciler runs `git status --porcelain`
+# over every checkout it classifies — a probe that made its own subject look
+# active could never report anything, and would look correct while doing so.
+#
+# READ-ONLY, like everything else here: `log` / `rev-parse` / a file test, never
+# a fetch.
+_checkout_last_activity_days() {
+  local repo="$1" committed reflog gitdir newest now days
+  committed="$(git -C "$repo" log -1 --format=%ct 2>/dev/null)" || committed=""
+  case "$committed" in
+    '' | *[!0-9]*) committed=0 ;;
+  esac
+  # The reflog FILE is checked for existence-and-non-emptiness FIRST: asked for
+  # a reflog entry it does not have, `git log -g` helpfully SYNTHESISES one for
+  # the current HEAD stamped NOW — so on exactly the expired-reflog checkout
+  # this class is for, reading it unguarded reports today. `%gd` under
+  # --date=unix prints `HEAD@{<epoch>}`.
+  reflog=0
+  gitdir="$(git -C "$repo" rev-parse --absolute-git-dir 2>/dev/null)" || gitdir=""
+  if [ -n "$gitdir" ] && [ -s "$gitdir/logs/HEAD" ]; then
+    reflog="$(git -C "$repo" log -g -1 --date=unix --format='%gd' HEAD 2>/dev/null)" || reflog=""
+    reflog="${reflog##*@\{}"
+    reflog="${reflog%%\}*}"
+    case "$reflog" in
+      '' | *[!0-9]*) reflog=0 ;;
+    esac
+  fi
+  newest="$committed"
+  [ "$reflog" -gt "$newest" ] && newest="$reflog"
+  [ "$newest" -gt 0 ] || return 1
+  now="$(now_epoch)"
+  days=$(( (now - newest) / 86400 ))
+  [ "$days" -lt 0 ] && days=0
+  printf '%s\n' "$days"
+}
+
+# ── classify_operator_dormancy <repo> ─────────────────────────────────────────
+# Prints a single `DORMANT:<days>d-idle:<n>-behind` token when an operator
+# checkout looks ABANDONED rather than merely between sessions; prints nothing
+# otherwise. Always exits 0 — a print-only helper, like semver_ge.
+#
+# WHY A SEPARATE, NON-DRIFT CLASS (temperloop#2041). Being behind origin/<default>
+# is legitimately NOT drift for this role — an operator checkout may sit on
+# other work for as long as the operator likes, which is exactly why the
+# cron-role BEHIND_MAIN class has no counterpart in classify_operator_checkout.
+# The hole that leaves is silence: a checkout 544 commits behind, with zero
+# worktrees and no activity in a month, printed a bare `OK` — indistinguishable
+# from one pulled an hour ago (observed 2026-09-15 on $HOME/dev/temperloop).
+# Promoting BEHIND_MAIN to drift for this role would flag every legitimately-
+# working checkout; the discriminator between "behind because busy elsewhere"
+# and "behind because abandoned" is LAST ACTIVITY, so that is what is added.
+#
+# CONJUNCTION, deliberately: behind AND idle. Idle alone is an ordinary quiet
+# repo nobody has needed; behind alone is the ordinary working state above.
+# Together they say the world moved on and this clone did not follow.
+#
+# NEVER counted as drift and never carrying a remedy: the disposition of an
+# abandoned checkout (pull it, retire it, leave it) is an operator decision this
+# READ-ONLY reconciler exists to inform, not to make — it renders as its own
+# `DORMANT` line in the report, and adds no alarm to `--format entry`.
+classify_operator_dormancy() {
+  local repo="$1" days behind
+  [ -d "$repo" ] || return 0
+  is_git_repo "$repo" || return 0
+  # Reuses the cron role's own behind-ness mechanism (never a fetch); it prints
+  # 'false' for a detached HEAD or a non-default branch, so a checkout parked on
+  # a feature branch can never reach the dormancy test at all.
+  [ "$(_behind_origin_default "$repo")" = "true" ] || return 0
+  days="$(_checkout_last_activity_days "$repo")" || return 0
+  [ "$days" -gt "$DORMANT_CHECKOUT_DAYS" ] || return 0
+  # How far behind, for legibility only — the classification above does not
+  # depend on it, so an unreadable count degrades to `?` rather than suppressing
+  # the signal.
+  behind="$(git -C "$repo" rev-list --count HEAD..origin/"$(default_branch_of "$repo")" 2>/dev/null)" || behind=""
+  case "$behind" in
+    '' | *[!0-9]*) behind="?" ;;
+  esac
+  printf 'DORMANT:%sd-idle:%s-behind' "$days" "$behind"
 }
 
 # ── classify_composed_claude_md <target> <source_checkout> ───────────────────
@@ -1565,16 +1715,25 @@ while [ "$_i" -lt "${#OPERATOR_CHECKOUTS[@]}" ]; do
   c="${OPERATOR_CHECKOUTS[$_i]}"; _i=$((_i + 1))
   [ -n "$c" ] || continue
   cls="$(classify_operator_checkout "$c")"
+  # Dormancy is classified beside the drift classes, never folded into them
+  # (temperloop#2041): it is informational, so it must neither raise an alarm on
+  # its own nor be MASKED by a drift class that happens to sit on the same
+  # checkout — hence it is appended to whichever line that checkout prints.
+  dorm="$(classify_operator_dormancy "$c")"
   if [ -z "$cls" ]; then
-    OPERATOR_LINES="${OPERATOR_LINES}  OK           $c"$'\n'
+    if [ -n "$dorm" ]; then
+      OPERATOR_LINES="${OPERATOR_LINES}  DORMANT      $c  [${dorm}]"$'\n'
+    else
+      OPERATOR_LINES="${OPERATOR_LINES}  OK           $c"$'\n'
+    fi
   else
     case "$cls" in
       ABSENT | NOT_A_REPO)
         OPERATOR_LINES="${OPERATOR_LINES}  ${cls}$(printf '%*s' $((13 - ${#cls})) '')$c"$'\n'
         ;;
       *)
-        OPERATOR_LINES="${OPERATOR_LINES}  DRIFT        $c  [${cls% }]"$'\n'
-        add "- ⚠️ operator checkout drift: $c — ${cls% }" drift
+        OPERATOR_LINES="${OPERATOR_LINES}  DRIFT        $c  [${cls% }${dorm:+ $dorm}]"$'\n'
+        add "- ⚠️ operator checkout drift: $c — ${cls% }${dorm:+ $dorm}" drift
         # A stale vendored hook is only actionable with the command that re-syncs
         # it, so emit the remedy alongside the class in BOTH formats (the report
         # table below, and the FINDINGS block --format entry renders). Appended
