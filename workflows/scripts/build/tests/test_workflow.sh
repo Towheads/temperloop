@@ -63,6 +63,24 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && cd ../../../.. && pwd)"
 MJS="$REPO_ROOT/claude/workflows/build-level.mjs"
 [ -f "$MJS" ] || { echo "FAIL: build-level.mjs not found at $MJS" >&2; exit 1; }
 
+# temperloop#2046 — PRODUCTION-STATE SNAPSHOT (the behavioural half of the
+# no-bump guard at the end of this file). Running this suite must leave the
+# repo's §3e review-round marker exactly as it found it. Two cases here execute
+# the REAL generated review-diff pipeline against REPO_ROOT, and when the suite
+# runs inside a build worktree — which is exactly where a /build, /fix or
+# /sweep worker runs it — REPO_ROOT IS that worktree, so a bumping call
+# increments the worktree's own production round counter. That failure is
+# SILENT (nothing goes red, the counter just drifts), which is why it survived
+# until it had inflated the counter far enough to fire #1970's convergence
+# bound on the first real review round. Snapshot it here, compare at the end.
+REVIEW_ROUNDS_MARKER=""
+_rr_gitdir="$(git -C "$REPO_ROOT" rev-parse --absolute-git-dir 2>/dev/null || true)"
+[ -n "$_rr_gitdir" ] && REVIEW_ROUNDS_MARKER="$_rr_gitdir/build-review-rounds"
+REVIEW_ROUNDS_BEFORE="ABSENT"
+if [ -n "$REVIEW_ROUNDS_MARKER" ] && [ -f "$REVIEW_ROUNDS_MARKER" ]; then
+  REVIEW_ROUNDS_BEFORE="$(cat "$REVIEW_ROUNDS_MARKER" 2>/dev/null || echo UNREADABLE)"
+fi
+
 # temperloop#1014: the machinery executors run as the `machinery-executor` agent,
 # whose definition carries the standing contract the lean prompt no longer
 # restates. The suite asserts against that file, so its absence is a hard fail
@@ -7343,7 +7361,17 @@ if (internalsSrc === MJS_SRC) {
   const internalsFn = new AsyncFunction(internalsSrc);
   const { reviewDiffCmd, tsvChecksum: prodTsvChecksum } = await internalsFn();
   const wt = '$REPO_ROOT';
-  const script = reviewDiffCmd(wt);
+  // NON-BUMPING second argument (temperloop#2046) — NOT optional, do not drop
+  // it. wt here is the REAL repo root, which when this suite runs inside a
+  // build worktree IS that worktree, so the bumping default writes the
+  // production review-round marker (build-review-rounds, in the worktree's own
+  // git dir) as a side effect of merely running the tests, inflating #1970's
+  // convergence bound before the first real review round ever happens. The
+  // non-bumping arm is the same one production uses for the #1976 re-fetch and
+  // changes nothing this case measures: bump only adds the marker WRITE;
+  // tsv_checksum, tsv_rows, tsv_lines and the emitted review_rounds read are
+  // identical either way. A static guard at the end of this file pins it.
+  const script = reviewDiffCmd(wt, false);
   let out;
   try {
     out = execFileSync('bash', ['-c', script], { encoding: 'utf8', cwd: wt });
@@ -7403,7 +7431,11 @@ if (internalsSrc === MJS_SRC) {
   const wt = '$REPO_ROOT';
   let out;
   try {
-    out = execFileSync('bash', ['-c', I.reviewDiffCmd(wt)], { encoding: 'utf8', cwd: wt });
+    // NON-BUMPING second argument (temperloop#2046) — see the K1982 round 2
+    // parity case above for why: wt is the real repo root, so the bumping
+    // default writes the production review-round marker just by running the
+    // suite. It changes nothing this case measures.
+    out = execFileSync('bash', ['-c', I.reviewDiffCmd(wt, false)], { encoding: 'utf8', cwd: wt });
   } catch (e) {
     reason = 'the REAL bash pipeline threw: ' + ((e && e.message) || e);
   }
@@ -10002,6 +10034,46 @@ if (!esc[0].payload.verdict || esc[0].payload.verdict.status !== 'blocked')
 
 console.log(JSON.stringify({ ok: true }));
 "
+
+# --- K2046 no-production-state guard (structural + behavioural) -------------
+# THE SHAPE THIS PINS: a test case that executes the REAL generated
+# review-diff pipeline against the REAL repo root with reviewDiffCmd's BUMPING
+# default. That is not a stylistic preference — it writes production state
+# (`<git-dir>/build-review-rounds`, the §3e round counter #1970's convergence
+# bound reads) from a test run, and does so SILENTLY: no case fails, the
+# counter just drifts upward every time anyone runs the suite, until a real
+# review round opens at round 9 or 17 against a max of 3 and #1970 carries
+# unresolved HIGH findings into the PR body instead of converging. Both live
+# occurrences (temperloop#2003, temperloop#2006) were diagnosed only by hand.
+#
+# Prong 1 is STRUCTURAL: scan this suite's OWN source for the offending call
+# shape. Prose mentions (`reviewDiffCmd()`, `reviewDiffCmd's`) carry no
+# argument and are excluded by construction — `\([^)]` matches only a call with
+# a real first argument — so every hit is a genuine invocation and must carry
+# the explicit non-bumping arm.
+_k2046_self="${BASH_SOURCE[0]}"
+_k2046_calls="$(grep -nE 'reviewDiffCmd\([^)]' "$_k2046_self" || true)"
+[ -n "$_k2046_calls" ] \
+  || fail "#2046: the structural no-bump guard found NO reviewDiffCmd call at all — the scan pattern has drifted away from the shape it is supposed to catch, so it can no longer go red; fix the pattern rather than deleting the guard"
+_k2046_bumping="$(printf '%s\n' "$_k2046_calls" | grep -vE 'reviewDiffCmd\([^)]*,[[:space:]]*false[[:space:]]*\)' || true)"
+[ -z "$_k2046_bumping" ] \
+  || fail "#2046: a test case invokes the REAL reviewDiffCmd against the repo root with the BUMPING default — that writes the production §3e review-round marker as a side effect of running the tests and fires #1970's convergence bound on the first real review round. Fix: pass the explicit non-bumping second argument, false, which production already uses for the #1976 re-fetch and which changes nothing these parity cases measure. Offending call site(s):
+$_k2046_bumping"
+unset _k2046_self _k2046_calls _k2046_bumping
+echo "PASS: #2046 structural no-bump guard — every reviewDiffCmd invocation in this suite passes the explicit non-bumping arm, so no case can write the production review-round marker"
+
+# Prong 2 is BEHAVIOURAL and shape-independent: whatever a future case does,
+# by whatever name, the suite must leave the marker exactly as it found it.
+# This catches the general failure the structural prong only catches one
+# spelling of — a test writing production state.
+_k2046_after="ABSENT"
+if [ -n "$REVIEW_ROUNDS_MARKER" ] && [ -f "$REVIEW_ROUNDS_MARKER" ]; then
+  _k2046_after="$(cat "$REVIEW_ROUNDS_MARKER" 2>/dev/null || echo UNREADABLE)"
+fi
+[ "$_k2046_after" = "$REVIEW_ROUNDS_BEFORE" ] \
+  || fail "#2046: running this suite CHANGED the production §3e review-round marker at $REVIEW_ROUNDS_MARKER (before: $REVIEW_ROUNDS_BEFORE, after: $_k2046_after). A test run must never write production state; when the suite runs inside a build worktree this counter is that worktree's own, and inflating it fires #1970's convergence bound before the first real review round."
+unset _k2046_after
+echo "PASS: #2046 production-state guard — a full suite run leaves the §3e review-round marker byte-identical to how it found it (${REVIEW_ROUNDS_BEFORE})"
 
 echo ""
 echo "All test_workflow.sh cases passed."
