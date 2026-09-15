@@ -20,6 +20,10 @@
 #   - --format entry emits a `### … Status: open` block when drift is present
 #   - malformed input (a Label-less plist, an absent checkout path) → exit 0,
 #     never aborts
+#   - DORMANT (temperloop#2041): an operator checkout that is behind
+#     origin/<default> AND has had no local activity past the horizon is named
+#     on its own non-alarming line; behind-but-active and idle-but-current are
+#     both left OK
 #   - READ-ONLY: none of the above mutates any checkout/worktree on disk
 set -euo pipefail
 
@@ -1134,5 +1138,141 @@ echo "PASS: composed file absent -> UNVERIFIABLE:composed-missing, never a crash
   || fail "COMPOSED_STALE detection must be READ-ONLY — a source-checkout input went missing"
 [ -f "$COMPOSED" ] || fail "COMPOSED_STALE detection must be READ-ONLY — the composed fixture file went missing"
 echo "PASS: COMPOSED_STALE detection stays read-only"
+
+# --- DORMANT (temperloop#2041): an ABANDONED operator checkout is NAMED -------
+# The hole this closes: behind-origin/<default> is legitimately NOT drift for the
+# operator role (the checkout may be busy on other work), so an operator checkout
+# 544 commits behind with no activity in a month printed a bare `OK` —
+# indistinguishable from one pulled an hour ago (observed live 2026-09-15).
+# The discriminator is LAST ACTIVITY, and the signal must stay NON-ALARMING.
+#
+# Fixtures are hermetic: an "old" upstream whose only commit is dated 2020, so a
+# clone of it inherits an ancient HEAD committer date, plus `touch -t` on the
+# clone's own HEAD reflog to age the second activity signal.
+OLDDATE="2020-01-01T00:00:00"
+OLDDATE2="2020-06-01T00:00:00"
+git init -q --initial-branch=main "$TMP/upstream-old"
+GIT_AUTHOR_DATE="$OLDDATE" GIT_COMMITTER_DATE="$OLDDATE" \
+  git -C "$TMP/upstream-old" commit -q --allow-empty -m "old base"
+
+# Both BEHIND fixtures are cloned at the old base FIRST, so each inherits the
+# ancient HEAD committer date; the world then moves on and both fetch.
+# (a) DORMANT: behind AND idle.
+git clone -q "$TMP/upstream-old" "$TMP/op-dormant"
+DORM="$(cd "$TMP/op-dormant" && pwd -P)"
+# (b) NOT dormant: behind, but ACTIVE. Identical ancient HEAD commit date to
+# (a) — the ONLY difference is that its HEAD reflog is fresh (this clone was
+# just made and just fetched). This is the case that false-positives if last
+# activity is read from the commit date alone.
+git clone -q "$TMP/upstream-old" "$TMP/op-behind-active"
+ACTIVE="$(cd "$TMP/op-behind-active" && pwd -P)"
+# (d)'s clone, same ancient base — its reflog is aged by rewriting the ENTRY
+# below, after the fetch that would otherwise append a fresh one.
+git clone -q "$TMP/upstream-old" "$TMP/op-dormant-oldreflog"
+DORM2="$(cd "$TMP/op-dormant-oldreflog" && pwd -P)"
+
+# The world moves on. Dated in the past as well, so fixture (c) below is
+# GENUINELY idle on BOTH activity signals — a fresh commit date there would
+# mask the behind-AND-idle conjunction that case exists to pin.
+GIT_AUTHOR_DATE="$OLDDATE2" GIT_COMMITTER_DATE="$OLDDATE2" \
+  git -C "$TMP/upstream-old" commit -q --allow-empty -m "world moved on"
+git -C "$DORM" fetch -q origin
+git -C "$ACTIVE" fetch -q origin
+git -C "$DORM2" fetch -q origin
+# (a)'s reflog is EXPIRED AWAY, the live shape this class was written against
+# (temperloop#2041): `git gc --auto` rewrote $HOME/dev/temperloop's logs/HEAD to
+# zero bytes with a TODAY mtime while its last real activity was a month old.
+# With no entry to read, the ancient committer date is correctly the only signal.
+rm -f "$DORM/.git/logs/HEAD"
+
+# (d) DORMANT too, by the other route: behind, reflog entries INTACT but all
+# ancient — and the file deliberately re-stamped to NOW, so a classifier reading
+# the reflog FILE'S MTIME instead of the entry's own recorded timestamp reads
+# this checkout as active. That is the #2041 false-negative, pinned.
+sed -E 's/ [0-9]{10} ([+-][0-9]{4})/ 1577836800 \1/' "$DORM2/.git/logs/HEAD" > "$TMP/reflog.rewritten"
+cat "$TMP/reflog.rewritten" > "$DORM2/.git/logs/HEAD"
+touch "$DORM2/.git/logs/HEAD"                  # fresh mtime, ancient entries
+
+# (c) NOT dormant: idle, but CURRENT. Ancient on both activity signals, yet
+# level with origin/main — idleness alone is an ordinary quiet repo.
+git clone -q "$TMP/upstream-old" "$TMP/op-idle-current"
+IDLE="$(cd "$TMP/op-idle-current" && pwd -P)"
+sed -E 's/ [0-9]{10} ([+-][0-9]{4})/ 1577836800 \1/' "$IDLE/.git/logs/HEAD" > "$TMP/reflog.idle"
+cat "$TMP/reflog.idle" > "$IDLE/.git/logs/HEAD"
+
+rc=0
+dout="$(
+  PATH="$TMP/bin:$PATH" \
+  ENV_RECONCILE_CRON_CHECKOUTS="$TMP/no-such-cron-checkout" \
+  ENV_RECONCILE_OPERATOR_CHECKOUTS="$DORM $DORM2 $ACTIVE $IDLE" \
+  ENV_RECONCILE_LAUNCHD_DIRS="$TMP/no-such-launchd-dir" \
+  bash "$SCRIPT" --format report
+)" || rc=$?
+[ "$rc" -eq 0 ] || fail "DORMANT run: expected exit 0 (got $rc); output:
+$dout"
+
+grep -qE "^  DORMANT +$DORM  \[DORMANT:[0-9]+d-idle:1-behind\]$" <<<"$dout" \
+  || fail "an abandoned operator checkout (behind + no activity) must be NAMED on its own DORMANT line, not printed as a bare OK; output:
+$dout"
+echo "PASS: #2041 — behind + idle operator checkout -> DORMANT:<days>d-idle:<n>-behind"
+
+grep -qE "^  DORMANT +$DORM2  \[DORMANT:[0-9]+d-idle:1-behind\]$" <<<"$dout" \
+  || fail "a behind checkout whose reflog ENTRIES are ancient must be DORMANT even though the reflog FILE was just re-stamped — last activity is the entry's own timestamp, never the file's mtime (the #2041 false-negative); output:
+$dout"
+echo "PASS: #2041 — ancient reflog ENTRIES with a fresh file mtime still read as dormant"
+
+grep -qE "^  OK +$ACTIVE$" <<<"$dout" \
+  || fail "a BEHIND but recently-active checkout must stay OK (last activity, not the HEAD commit date, is the discriminator); output:
+$dout"
+echo "PASS: behind but recently active -> OK, never DORMANT"
+
+grep -qE "^  OK +$IDLE$" <<<"$dout" \
+  || fail "an idle checkout that is level with origin/<default> must stay OK — dormancy requires BOTH conditions; output:
+$dout"
+echo "PASS: idle but current -> OK (dormancy is the conjunction, not idleness alone)"
+
+grep -q "^OK$" <<<"$dout" \
+  || fail "DORMANT must be informational — it must never raise a drift alarm; output:
+$dout"
+echo "PASS: DORMANT raises no drift alarm (summary stays OK)"
+
+rc=0
+dentry="$(
+  PATH="$TMP/bin:$PATH" \
+  ENV_RECONCILE_CRON_CHECKOUTS="$TMP/no-such-cron-checkout" \
+  ENV_RECONCILE_OPERATOR_CHECKOUTS="$DORM" \
+  ENV_RECONCILE_LAUNCHD_DIRS="$TMP/no-such-launchd-dir" \
+  bash "$SCRIPT" --format entry
+)" || rc=$?
+[ "$rc" -eq 0 ] || fail "DORMANT --format entry: expected exit 0 (got $rc)"
+[ -z "$dentry" ] || fail "a dormant-only host must append NOTHING to the vault surface (informational, not a disposition); got:
+$dentry"
+echo "PASS: dormant-only run appends no --format entry block"
+
+# The horizon is a real knob, not a hardcoded constant: raise it past the
+# fixture's age and the same checkout goes quiet again.
+rc=0
+dhigh="$(
+  PATH="$TMP/bin:$PATH" \
+  ENV_RECONCILE_DORMANT_DAYS=99999 \
+  ENV_RECONCILE_CRON_CHECKOUTS="$TMP/no-such-cron-checkout" \
+  ENV_RECONCILE_OPERATOR_CHECKOUTS="$DORM" \
+  ENV_RECONCILE_LAUNCHD_DIRS="$TMP/no-such-launchd-dir" \
+  bash "$SCRIPT" --format report
+)" || rc=$?
+[ "$rc" -eq 0 ] || fail "DORMANT horizon run: expected exit 0 (got $rc); output:
+$dhigh"
+if grep -q "DORMANT:" <<<"$dhigh"; then
+  fail "ENV_RECONCILE_DORMANT_DAYS must gate the class; output:
+$dhigh"
+fi
+echo "PASS: ENV_RECONCILE_DORMANT_DAYS gates the dormancy horizon"
+
+# READ-ONLY: classifying dormancy mutated nothing (no fetch, no pull, no index
+# rewrite that would make the next run's subject look active).
+[ -z "$(git -C "$DORM" status --porcelain)" ] || fail "dormant checkout was mutated"
+[ "$(git -C "$DORM" rev-parse HEAD)" = "$(git -C "$DORM" rev-parse origin/main~1 2>/dev/null || git -C "$DORM" rev-parse HEAD)" ] \
+  || fail "dormant checkout's HEAD moved — env-reconcile.sh must never pull"
+echo "PASS: dormancy detection stays read-only"
 
 echo "ALL PASS: test_env_reconcile.sh"
