@@ -915,3 +915,89 @@ sline="$(jq -c --arg p "$sidepath" 'select(.path==$p)' <<<"$out")"
 git -C "$R16" show-ref --verify --quiet "refs/heads/$sidebranch" \
   && fail "#1730: the reaped sidelined branch survived"
 echo "PASS: prune reports sidelined worktrees like PARKED_REF — unevaluable is FALSE, an open issue is never reaped, --force does not override (#1730)"
+
+# =============================================================================
+# The landed-check's comparison point is REFRESHED before judging (#2030)
+# =============================================================================
+# The reproduction: a branch whose head IS an ancestor of the REMOTE default
+# branch — it merged — read as unlanded because the LOCAL origin/<default> had
+# not moved since before that merge. `remove` then minted a `refs/parked/*`
+# preservation recording landed work as lost. The fixture reproduces exactly
+# that: land the branch upstream WITHOUT fetching into the clone, so the local
+# ref is provably pre-merge, then assert the verdict comes out `merged`.
+#
+# A real content commit, not an empty one, on purpose: merged_detect's Method-2
+# patch-id fallback (the only merged-signal left once the offline gh stub fails)
+# is ALSO computed against the local origin/<default>, so against the stale ref
+# it correctly reports NOT merged. Only the refresh can flip this case — which
+# is what makes the assertion discriminating rather than incidentally green.
+R17="$(mkfix stalebase)"
+bash "$SCRIPT" create "$R17" stale-2030 >/dev/null
+printf 'work that lands\n' > "$R17.wt/stale-2030/landed.txt"
+git -C "$R17.wt/stale-2030" add landed.txt
+git -C "$R17.wt/stale-2030" commit -q -m "work that lands on main"
+git -C "$TMP/up_stalebase" fetch -q "$R17" "refs/heads/build/stale-2030:refs/heads/landing-2030"
+git -C "$TMP/up_stalebase" merge -q --no-edit landing-2030
+git -C "$R17" merge-base --is-ancestor "$(git -C "$R17.wt/stale-2030" rev-parse HEAD)" origin/main \
+  && fail "#2030 test setup bug: the local origin/main must still be STALE (pre-merge)"
+out="$(bash "$SCRIPT" remove "$R17" stale-2030)"
+[ "$(jq -r .outcome <<<"$out")" = "REMOVED" ] || fail "#2030: remove outcome (got: $out)"
+[ "$(jq -r .preserved <<<"$out")" = "false" ] \
+  || fail "#2030: just-merged work was recorded as an unlanded preservation (got: $out)"
+[ "$(jq -r .preserved_detail <<<"$out")" = "not-needed:merged" ] \
+  || fail "#2030: merged detail (got: $out)"
+[ -z "$(parked_refs "$R17")" ] \
+  || fail "#2030: a refs/parked ref was minted for work that had already LANDED"
+echo "PASS: a branch whose head IS an ancestor of the REMOTE default branch is not recorded as an unlanded preservation (#2030)"
+
+# A genuinely unlanded preservation still happens, and RECORDS the basis it
+# judged on — on the mint line and durably on the ref's own reflog, which is
+# what makes it distinguishable after the fact from a stale-basis one. prune
+# surfaces that record without re-deriving it.
+R18="$(mkfix basis)"
+bash "$SCRIPT" create "$R18" basis-2030 >/dev/null
+printf 'genuinely unlanded\n' > "$R18.wt/basis-2030/wip.txt"
+git -C "$R18.wt/basis-2030" add wip.txt
+git -C "$R18.wt/basis-2030" commit -q -m "work that never landed"
+out="$(bash "$SCRIPT" remove "$R18" basis-2030)"
+[ "$(jq -r .preserved <<<"$out")" = "true" ] \
+  || fail "#2030: genuinely unlanded work must STILL be preserved (got: $out)"
+case "$(jq -r .preserved_detail <<<"$out")" in
+  *"basis=refreshed"*) : ;;
+  *) fail "#2030: the preservation did not record the basis it judged on (got: $out)" ;;
+esac
+bref="$(parked_refs "$R18")"
+[ -n "$bref" ] || fail "#2030: basis fixture did not preserve"
+case "$(git -C "$R18" log -g --format='%gs' -1 "$bref")" in
+  *"basis=refreshed"*) : ;;
+  *) fail "#2030: the basis was not recorded DURABLY on the ref (reflog: $(git -C "$R18" log -g --format='%gs' -1 "$bref"))" ;;
+esac
+out="$(bash "$SCRIPT" prune "$R18")"
+line="$(jq -c --arg r "$bref" 'select(.ref==$r)' <<<"$out")"
+[ "$(jq -r .outcome <<<"$line")" = "PARKED_REF" ] || fail "#2030: unlanded ref outcome (got: $line)"
+[ "$(jq -r .basis <<<"$line")" = "refreshed" ] \
+  || fail "#2030: prune does not surface the recorded basis (got: $line)"
+[ "$(jq -r .landed <<<"$line")" = "false" ] || fail "#2030: unlanded ref reported landed (got: $line)"
+[ -n "$(parked_refs "$R18")" ] || fail "#2030: a genuinely unlanded ref was reaped"
+echo "PASS: a preservation records the basis it judged on — mint line, ref reflog, and prune's report (#2030)"
+
+# FAIL SAFE. With origin unreachable the refresh cannot establish anything, so
+# the safe branch is UNCHANGED: the work is preserved, the ref says the basis
+# was never refreshed, and `remove` still completes — it never depends on the
+# network being up, and a failed fetch is never fatal.
+R19="$(mkfix offline)"
+bash "$SCRIPT" create "$R19" offline-2030 >/dev/null
+printf 'offline work\n' > "$R19.wt/offline-2030/wip.txt"
+git -C "$R19.wt/offline-2030" add wip.txt
+git -C "$R19.wt/offline-2030" commit -q -m "unlanded, origin unreachable"
+git -C "$R19" remote set-url origin "$TMP/no-such-origin.git"
+out="$(bash "$SCRIPT" remove "$R19" offline-2030)"
+[ "$(jq -r .outcome <<<"$out")" = "REMOVED" ] \
+  || fail "#2030: a failed refresh must never be fatal (got: $out)"
+[ "$(jq -r .preserved <<<"$out")" = "true" ] \
+  || fail "#2030: could-not-establish must still PRESERVE (got: $out)"
+case "$(jq -r .preserved_detail <<<"$out")" in
+  *"basis=unrefreshed"*) : ;;
+  *) fail "#2030: a preservation over an unrefreshed basis must SAY so (got: $out)" ;;
+esac
+echo "PASS: an unreachable origin fails SAFE — preserve unchanged, basis=unrefreshed recorded, remove still completes (#2030)"
