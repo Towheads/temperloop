@@ -5514,7 +5514,7 @@ grep -q 'async function drainReviewSettlements(' "$MJS" \
   || fail "#2032: drainReviewSettlements() missing — the §3e disposition would read slot.done once again and discard a review that settled after the ceiling"
 grep -q 'function disposeReviewSlot(' "$MJS" \
   || fail "#2032: disposeReviewSlot() missing — the disposition must be a PURE per-slot descriptor so a straggler can be re-read before its skip is written"
-grep -q 'dispositions\[i\] ?? (slot.done ? disposeReviewSlot(slot) : null)' "$MJS" \
+grep -qF 'dispositions[i] ?? (slot.done ? disposeReviewSlot(slot) : null)' "$MJS" \
   || fail "#2032: the ceiling-breach branch must re-read slot.done at the instant the skip is written, not inherit a stale read"
 echo "PASS: #2032 late review results — settled-after-the-ceiling reviews are consumed, genuine hangs still skip"
 

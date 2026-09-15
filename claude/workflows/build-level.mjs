@@ -3981,6 +3981,17 @@ async function runReviewers(item, wt) {
       skipped.push({ reviewer: route.reviewer, note: disposition.note, mandatory: route.mandatory });
       continue;
     }
+    // EXHAUSTIVE on purpose. `disposeReviewSlot()` returns exactly two shapes
+    // today, and falling through on anything else would launder a future third
+    // kind into `ran` with an `undefined` .text — a reviewer reported as having
+    // run, carrying no findings, which is the same reads-like-a-clean-pass
+    // failure this whole item exists to end. Fail loudly instead.
+    if (disposition.kind !== 'ran') {
+      throw new Error(
+        `§3e disposition for ${route.reviewer} has unknown kind ${JSON.stringify(disposition.kind)} — ` +
+          'disposeReviewSlot() grew a shape this loop does not handle',
+      );
+    }
     const textStr = disposition.text;
     ran.push({ reviewer: route.reviewer, mandatory: route.mandatory });
     log(`[${item.slug}] §3e review — ${route.reviewer} ran (${route.reasons.join('; ')})`);
