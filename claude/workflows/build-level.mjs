@@ -6651,6 +6651,85 @@ function enterStage(stage) {
 }
 
 // =============================================================================
+// The ZERO-DISPOSITION guard (temperloop#2004).
+//
+// /build Step 3, /fix Step 4a and /sweep Phase 2 all branch on the returned
+// {parked, escalations}: each handles `parked` non-empty and `escalations`
+// non-empty, and NONE had an arm for both being empty. A {parked:[],
+// escalations:[]} return therefore matched no branch and fell through as "the
+// level completed with nothing to report" — so an item that was asked for and
+// disposed of nowhere vanished with no PR, no park, no escalation and no
+// signal. (Observed 2026-09-13, run wf_f3b9c160-6ca: a stopped-and-resumed run
+// returned an empty object in ~13 ms having re-run nothing, while the tracked
+// issue was still in-progress with a live claim stamp.)
+//
+// The guard lives HERE, below the three drivers, so all three inherit it once
+// rather than each restating it — the same hoist shape temperloop#2006 used
+// for the sideline notice. It returns a NAMED, branchable value (never a bare
+// throw): the drivers re-probe real state on it instead of concluding
+// anything.
+//
+// The two CONTROLS are what make it discriminating rather than noisy — a guard
+// that flags every legitimately empty level is worse than none:
+//   1. nothing was asked to drive (empty `items`, or an onlySlugs filter that
+//      matched no item) → disposing of nothing is a tautology, not a
+//      contradiction. Silent, and the returned object is byte-identical to
+//      before this item.
+//   2. something WAS disposed → any parked record or any escalation means the
+//      drive reported on the set. This is also what clears the kind:spike
+//      path: a spike opens no PR and pushes no SHA, but it still `park()`s a
+//      verdict marker (`park(slug, null, null, …)`), so a spike-only level
+//      lands in control 2 and is never flagged.
+// Returns null when either control holds; otherwise the named outcome.
+// =============================================================================
+function zeroDispositionContradiction(activeItems, parked, escalations) {
+  if (activeItems.length === 0) return null;                    // control 1
+  if (parked.length > 0 || escalations.length > 0) return null; // control 2
+
+  const ownerRepo = typeof input.ownerRepo === 'string' && input.ownerRepo.length > 0
+    ? input.ownerRepo
+    : null;
+  const items = activeItems.map((it) => {
+    const worktree = `${input.repoRoot}.wt/${it.slug}`;
+    const headRef = it.branch ?? `build/${it.slug}`;
+    const probes = [];
+    if (ownerRepo && it.ghIssue) {
+      probes.push(`gh issue view ${it.ghIssue} -R ${ownerRepo} --json state,labels,title`);
+    }
+    if (ownerRepo) {
+      probes.push(`gh pr list -R ${ownerRepo} --head ${headRef} --state all --json number,state,headRefOid`);
+    }
+    probes.push(`git -C ${worktree} status --short --branch`);
+    return {
+      slug: it.slug,
+      issue: it.ghIssue ?? null,
+      branch: it.branch ?? null,
+      worktree,
+      // The caller acts on THIS: exactly what to look at before concluding
+      // anything about this slug.
+      reprobe: probes.join(' ; '),
+    };
+  });
+
+  return {
+    // Which slugs were asked for and disposed of none — the whole point.
+    slugs: items.map((i) => i.slug),
+    items,
+    requested: activeItems.length,
+    parked: 0,
+    escalations: 0,
+    // True when this was a continuation run (onlySlugs scoped the set) — the
+    // shape the observed replay took; false on a fresh level.
+    continuation: Array.isArray(input.onlySlugs) && input.onlySlugs.length > 0,
+    reason:
+      `the level was asked to drive ${activeItems.length} item(s) and disposed of NONE — ` +
+      'zero parked and zero escalations. This is a contradiction, not a completed level: ' +
+      'nothing may be concluded from this return. Re-probe issue status, open PRs and the ' +
+      'worktree for each slug below before deciding anything.',
+  };
+}
+
+// =============================================================================
 // Entry point — drive the level, return {parked, escalations}.
 // =============================================================================
 async function buildLevel() {
@@ -6756,11 +6835,31 @@ async function buildLevel() {
     );
   }
 
+  // temperloop#2004 — the ZERO-DISPOSITION guard, evaluated on the SETTLED
+  // partition (after the loop above, so it sees what actually came back) and
+  // on `activeItems` (the post-onlySlugs set this run was actually asked to
+  // drive, which is the only set the contradiction is defined over).
+  const zeroDisposition = zeroDispositionContradiction(activeItems, parked, escalations);
+  if (zeroDisposition) {
+    log(
+      `level ZERO-DISPOSITION contradiction — ${zeroDisposition.requested} item(s) driven, ` +
+        `0 parked, 0 escalations: ${zeroDisposition.slugs.join(', ')}. ` +
+        'NOT a completed level — re-probe before concluding anything. ' +
+        zeroDisposition.items.map((i) => `${i.slug} → ${i.reprobe}`).join(' || '),
+    );
+  }
+
   log(
     `level done — parked=${parked.length} escalations=${escalations.length}` +
-      (sidelined.length > 0 ? ` sidelined=${sidelined.length}` : ''),
+      (sidelined.length > 0 ? ` sidelined=${sidelined.length}` : '') +
+      (zeroDisposition ? ' ZERO-DISPOSITION (contradiction — see notice above)' : ''),
   );
-  return sidelined.length > 0 ? { parked, escalations, sidelined } : { parked, escalations };
+  // Both extra keys are OMITTED when their condition does not hold, so an
+  // ordinary level's return stays byte-identical to before #2006/#2004.
+  const ret = { parked, escalations };
+  if (sidelined.length > 0) ret.sidelined = sidelined;
+  if (zeroDisposition) ret.zeroDisposition = zeroDisposition;
+  return ret;
 }
 
 // Top-level entry (#437): the Workflow runtime wraps this script body in an async
