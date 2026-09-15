@@ -172,7 +172,11 @@ make test-board	workflows/scripts/board/**
 # Also depends on the pinned shellcheck resolver (same one `make shellcheck`
 # uses, temperloop#567) so both lints stay on the identical binary.
 bash workflows/scripts/board-consumer-shellcheck.sh	workflows/scripts/board/** scripts/ensure-shellcheck.sh
-make test-build	workflows/scripts/build/** workflows/scripts/board/** workflows/scripts/lib/**
+# test_workflow_path.sh (temperloop#2027) rides this glob, and it also asserts
+# on the three driver specs' workflowPath wiring and on the doctor.sh drift
+# detector it reuses — so those four paths select this gate too, or a spec
+# that re-adds the uninvocable ~/.claude engine literal would pass a scoped run.
+make test-build	workflows/scripts/build/** workflows/scripts/board/** workflows/scripts/lib/** workflows/scripts/install/doctor.sh claude/commands/build.md claude/commands/sweep.md claude/commands/fix.md
 # State graph core build (temperloop#1910): explicit by-name gate line
 # (scripts/quality-gates.sh's own comment explains why it exists alongside
 # the make test-build glob coverage above) needs its own row too, since
