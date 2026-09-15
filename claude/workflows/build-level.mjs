@@ -547,14 +547,25 @@ const SPINE_OUTCOME_SCHEMA = {
         // because a later `worktree.sh remove` is then the last copy's last
         // chance).
         'WORK_PRESERVED', 'WORK_PRESERVE_SKIP', 'WORK_PRESERVE_FAILED',
-        // The §3e REVIEW-AGENT liveness bound's timer (temperloop#2003). Like
-        // STEP_TIMEOUT/STEP_SLOW above this comes from no machinery script: it
-        // is the closed outcome of the one-command `sleep` executor
-        // reviewWaitAgent() spawns to give this runtime the wall-clock tick it
-        // otherwise has none of (`Date.now()` THROWS here — DESIGN NOTE 1). It
-        // reports only "the interval elapsed" and says nothing whatsoever about
-        // the review it bounds.
-        'REVIEW_WAIT_ELAPSED',
+        // The §3e REVIEW-AGENT liveness bound's timer (temperloop#2003), whose
+        // executor runs workflows/scripts/build/review-wait.sh to give this
+        // runtime the wall-clock tick it otherwise has none of (`Date.now()`
+        // THROWS here — DESIGN NOTE 1). THREE closed outcomes, each a pure
+        // OBSERVATION the executor can make without inventing anything — the
+        // distinction temperloop#2049 turned on:
+        //   REVIEW_WAIT_ELAPSED       the script printed its line. It carries
+        //                             `realized_secs`, the script's OWN measure
+        //                             of the wait, which reviewWaitAgent()
+        //                             checks against the interval it asked for.
+        //   REVIEW_WAIT_TOOL_TIMEOUT  the Bash tool's own timeout killed the
+        //                             command. That budget is secs+60s, so this
+        //                             can only fire AFTER the interval — the
+        //                             same fact, reported honestly.
+        //   REVIEW_WAIT_UNAVAILABLE   the command never ran to completion (a
+        //                             permission control refused it; it errored).
+        //                             NO time passed, so the caller FAILS OPEN.
+        // None of them says anything whatsoever about the review being bounded.
+        'REVIEW_WAIT_ELAPSED', 'REVIEW_WAIT_TOOL_TIMEOUT', 'REVIEW_WAIT_UNAVAILABLE',
         'ERROR',
       ],
     },
@@ -579,6 +590,14 @@ const SPINE_OUTCOME_SCHEMA = {
     merge_base: { type: 'string' },
     tip: { type: 'string' },
     waited: { type: ['number', 'string'] },
+    // temperloop#2049 — the §3e timer's own MEASURED wait, emitted by
+    // review-wait.sh after the interval genuinely elapsed. Declared here (not
+    // left to `additionalProperties`) because reviewWaitAgent() BRANCHES on it:
+    // a REVIEW_WAIT_ELAPSED without a realized_secs that reaches the interval
+    // is not honoured as elapsed. `secs` rides alongside it as the echo of what
+    // was asked, so the two can be compared.
+    secs: { type: ['number', 'string'] },
+    realized_secs: { type: ['number', 'string'] },
     error: { type: 'string' },
     matches: { type: 'array', items: { type: 'string' } },
     failed_run_ids: { type: 'array', items: { type: ['number', 'string'] } },
@@ -985,7 +1004,18 @@ const REVIEW_BLOCKING_MAX_ROUNDS = Math.max(
 // `Date.now()` THROWS here and there is no timer primitive, so a deadline is not
 // directly expressible. But `Promise.race` IS — what #1071 lacked was something
 // that resolves ON A CLOCK to race against, and this file already owns one: a
-// machinery executor running a single `sleep`. reviewWaitAgent() is that tick.
+// machinery executor running a WAIT. reviewWaitAgent() is that tick.
+//
+// TEMPERLOOP#2049 — WHERE THAT TICK HAS TO LIVE. The wait was first written as
+// a bare inline `sleep N; printf '<json>'` Bash command. A harness permission
+// control REFUSES that command shape in the machinery executor's seat, and the
+// executor's prompt then told it to report the interval elapsed anyway: the
+// nominal 1200s ceiling realized in ~30s, abandoning reviewers that were
+// finishing normally at 177-257s. The wait now runs inside the named helper
+// workflows/scripts/build/review-wait.sh (the shape ci-poll.sh already uses,
+// observably honoured in the same seat for a 280s single call), and an elapse
+// is honoured only when it carries the script's OWN `realized_secs`. See
+// reviewWaitAgent() for the measurements and both halves of the fix.
 // A reviewer is an `agent({agentType})` call, NOT a shell command, so #1071's
 // emitted-shell watchdog cannot reach it; the race is the only seam that can.
 //
@@ -4312,29 +4342,69 @@ async function awaitReviewFanout(item, slots) {
 }
 
 // reviewWaitAgent — the wall-clock TICK this runtime does not otherwise have.
-// One machinery executor, one `sleep`, one closed outcome. Resolves to
-// 'REVIEW_WAIT_ELAPSED' when the interval genuinely elapsed (including via the
-// Bash tool's own timeout, which is the same fact about the budget), and to the
-// outcome it actually got otherwise — which the caller reads as "no usable
+// One machinery executor, one `review-wait.sh <secs>` call, one closed outcome.
+// Resolves to 'REVIEW_WAIT_ELAPSED' ONLY when the interval genuinely elapsed,
+// and to a `timer-*` string otherwise — which the caller reads as "no usable
 // timer" and fails open on.
 //
-// Deliberately NOT runMachinery(): that path frames its command as a named
-// project helper script (worktree.sh / pr.sh / ci-poll.sh — the temperloop#72
-// auto-mode-classifier framing) and wraps it in the #1071 watchdog. A bare
-// `sleep` is neither, and describing it as one would be a lie to the executor.
+// TEMPERLOOP#2049 — WHY THE COMMAND IS A SCRIPT AND WHY THE RETURN IS CHECKED.
+// This was an inline `sleep <secs>; printf '<json>'` Bash command, and the
+// prompt told the executor to report the interval elapsed if the command never
+// printed. In the machinery executor's seat that command shape is REFUSED by a
+// harness permission control ("Blocked: sleep 300 followed by: printf …") in a
+// millisecond — so the executor took that sanctioned escape and reported an
+// elapse that had not happened. Measured in run wf_ebd4b5e0-3a8's own agent
+// transcripts: three slices asking 300s/540s/360s returned in 8s/9s/9s, so the
+// nominal 1200s ceiling realized in ~30s of wall clock, while the two reviewers
+// it was bounding completed normally at 177s and 257s. Nothing was slow — the
+// CEILING was ~40x fast, which is why three consecutive items reported
+// `ran: []` with every routed reviewer "timed out".
+//
+// Two changes, and BOTH are load-bearing:
+//   1. THE WAIT IS REAL. The command is now the named project helper
+//      workflows/scripts/build/review-wait.sh, whose deadline loop runs inside
+//      a script — the same shape ci-poll.sh already uses and which the same
+//      machinery seat observably honours (that run's ci-batch executor held one
+//      Bash call open for 280 real seconds).
+//   2. THE RETURN IS NOT TAKEN ON TRUST. An elapse is honoured only when it
+//      carries `realized_secs` — the script's OWN measurement, printed only
+//      after the wait — and that value reaches the interval asked for. The
+//      prompt no longer sanctions reporting an elapse the command did not
+//      produce; a refused or errored command is REVIEW_WAIT_UNAVAILABLE, a
+//      pure observation, and the caller fails open on it loudly. Without (2),
+//      any future permission-control change silently re-breaks the ceiling in
+//      exactly this way and nothing reports it (kernel principle 5 — counter a
+//      known AI failure mode STRUCTURALLY, not with "be careful").
+// A tool timeout stays honoured as elapsed: its budget is secs+60s, so it can
+// only fire AFTER the interval. That is an observation too, and gets its own
+// outcome rather than being folded into a guess.
+//
+// Deliberately NOT runMachinery(): that path batches its steps and wraps them
+// in the #1071 watchdog, whose own ceiling would then race this one. A timer
+// needs neither.
 async function reviewWaitAgent(item, secs, mark) {
-  const cmd = `sleep ${secs}; printf '%s\\n' '{"outcome":"REVIEW_WAIT_ELAPSED","secs":${secs}}'`;
+  const waitBin = machineryBin(input.repoRoot, 'review-wait.sh');
+  const cmd = `${waitBin} ${sq(secs)}`;
   const promptFor = (lean) =>
     [
-      `Wait quietly for a fixed interval, then report that the interval elapsed. This is a TIMER,`,
-      'not a build step: it inspects nothing and changes nothing.',
+      'Run ONE project helper script that waits for a fixed interval, and report what it printed.',
+      'This is a TIMER, not a build step: it inspects nothing and changes nothing.',
       'Run this single command with the Bash tool, exactly as written — do not add flags, chain',
-      'extra commands, or shorten the interval.',
+      'extra commands, substitute a `sleep`, or shorten the interval.',
       `Set the Bash tool \`timeout\` parameter to ${Math.min(AGENT_BASH_CAP_MS, secs * 1000 + 60_000)}.`,
-      lean ? null : 'The command prints a SINGLE JSON line on stdout; return that object verbatim as your result.',
-      'If the Bash tool\'s own timeout kills the command BEFORE it prints any JSON line, do NOT'
-        + ' guess and do NOT re-run it: return exactly {"outcome":"REVIEW_WAIT_ELAPSED"}. The'
-        + ' interval elapsed either way — that is the only fact this call reports.',
+      lean ? null : 'The command prints a SINGLE JSON line on stdout once the interval has elapsed;'
+        + ' return that object verbatim as your result.',
+      '`realized_secs` is the script\'s OWN measurement of how long it waited. Report only the'
+        + ' number the command actually printed — NEVER a number you inferred, and never the'
+        + ' interval that was requested.',
+      'If the command does not print that line because a permission control REFUSED or BLOCKED it,'
+        + ' or because it errored, do NOT guess, do NOT re-run it, and do NOT report the interval as'
+        + ' elapsed: return exactly {"outcome":"REVIEW_WAIT_UNAVAILABLE"}. No time passed, and'
+        + ' saying otherwise makes a review ceiling fire early and throw away finished reviews'
+        + ' (temperloop#2049).',
+      'If instead the Bash tool\'s OWN timeout killed the command after it had been running, return'
+        + ' exactly {"outcome":"REVIEW_WAIT_TOOL_TIMEOUT"} — that budget is longer than the interval,'
+        + ' so the interval did elapse.',
       '',
       'Command:',
       cmd,
@@ -4351,7 +4421,17 @@ async function reviewWaitAgent(item, secs, mark) {
     return `timer-error: ${String((err && err.message) || err)}`;
   }
   if (machineryDenied(out)) return 'timer-denied';
-  return out.outcome === 'REVIEW_WAIT_ELAPSED' ? 'REVIEW_WAIT_ELAPSED' : `timer-outcome:${out.outcome}`;
+  // The tool-timeout arm: an observation, honoured as elapsed (budget > interval).
+  if (out.outcome === 'REVIEW_WAIT_TOOL_TIMEOUT') return 'REVIEW_WAIT_ELAPSED';
+  if (out.outcome !== 'REVIEW_WAIT_ELAPSED') return `timer-outcome:${out.outcome}`;
+  // THE #2049 CHECK. An elapse is a claim about wall clock, and this runtime has
+  // no clock to audit it with — so the audit is the script's own measurement,
+  // which only a completed run can produce. `Number('')`/`Number(undefined)` are
+  // 0/NaN and both fail the comparison, so an absent field fails CLOSED (to
+  // "no usable timer" → fail open on the fanout), never open into a false breach.
+  const realized = Number(out.realized_secs);
+  if (!(realized >= secs)) return `timer-unrealized:${out.realized_secs ?? 'absent'}`;
+  return 'REVIEW_WAIT_ELAPSED';
 }
 
 // reviewBoundReached(review) — the §3e convergence bound's ONE predicate
