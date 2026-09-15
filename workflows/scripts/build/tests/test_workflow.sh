@@ -358,9 +358,15 @@ globalThis.agent = async function agent(prompt, opts = {}) {
       // temperloop#2003: the §3e ceiling's timer executor, on its own queue
       // (see reviewWaitMap). Default REVIEW_WAIT_ELAPSED = "the interval
       // elapsed", which is the only fact this call ever reports.
+      // temperloop#2049: the default now also carries `realized_secs` — the
+      // MEASURED wait review-wait.sh prints — because reviewWaitAgent() honours
+      // an elapse only when that field reaches the interval it asked for. A
+      // deliberately huge value models "the timer genuinely waited" for every
+      // slice length; a case that wants the #2049 defect (an elapse CLAIMED
+      // without a realized wait) wires that shape explicitly via setReviewWait.
       if (/^review-wait:/.test(String(opts.label || ''))) {
         reviewWaitLog.push({ slug, label: String(opts.label) });
-        return nextFromMap(reviewWaitMap, slug, { outcome: 'REVIEW_WAIT_ELAPSED' });
+        return nextFromMap(reviewWaitMap, slug, { outcome: 'REVIEW_WAIT_ELAPSED', realized_secs: 1e9 });
       }
       // Solo executor (gate / recover-probe / push-retry) — routed by slug.
       return nextFromMap(machineryMap, slug, { outcome: 'ERROR', error: 'unexpected machinery call for ' + slug });
@@ -5548,6 +5554,182 @@ grep -q 'function disposeReviewSlot(' "$MJS" \
 grep -qF 'dispositions[i] ?? (slot.done ? disposeReviewSlot(slot) : null)' "$MJS" \
   || fail "#2032: the ceiling-breach branch must re-read slot.done at the instant the skip is written, not inherit a stale read"
 echo "PASS: #2032 late review results — settled-after-the-ceiling reviews are consumed, genuine hangs still skip"
+
+# ============================================================================
+# TEMPERLOOP#2049 — the §3e ceiling's TIMER was not waiting. #2003's bound and
+# #2032's late-result read are both correct and untouched; the defect was one
+# layer below BOTH of them. The tick was a bare inline 'sleep N; printf <json>'
+# Bash command, which a harness permission control REFUSES in the machinery
+# executor's seat ("Blocked: sleep 300 followed by: printf …") in about a
+# millisecond — and the executor's prompt then told it to report the interval
+# elapsed anyway. Measured in run wf_ebd4b5e0-3a8's own agent transcripts:
+# slices asking 300s/540s/360s returned in 8s/9s/9s, so a nominal 1200s ceiling
+# realized in ~30s while the reviewers it bounded completed normally at 177s and
+# 257s. Three consecutive items reported `ran: []` with every routed reviewer
+# "timed out" — not because anything was slow, but because the ceiling was ~40x
+# fast.
+#
+# The fix is two halves and BOTH are asserted here: the wait now runs inside
+# workflows/scripts/build/review-wait.sh (a named helper, the shape ci-poll.sh
+# already uses and which the same seat observably honours), and an elapse is
+# honoured only when it carries the script's OWN measured `realized_secs`
+# reaching the interval — so a tick that did not wait can no longer claim it did.
+# ============================================================================
+
+run_node_case "K2049 fabricated elapse: a timer that reports ELAPSED without a REALIZED wait is not honoured — no false ceiling breach" "
+$PREAMBLE
+const tsv = readFileSync('$REPO_ROOT/workflows/scripts/config/reviewer-routing.tsv', 'utf8');
+const logged = [];
+globalThis.log = (m) => logged.push(String(m));
+
+setMachinery('fake-elapse',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/fake-elapse' },
+  { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/x.sh'], tsv, tsv_rows: tsvRows(tsv), tsv_checksum: tsvChecksum(tsv) },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'fa1e' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'fa1e', branch: 'build/fake-elapse' },
+  { outcome: 'PR_OPENED', pr_number: 2049 },
+  { outcome: 'CI_GREEN' },
+);
+happyWorker('fake-elapse');
+// A reviewer that settles well after the whole ceiling has been walked — the
+// harness's stand-in for the healthy 177-257s reviewer that #2049's ~30s
+// realized ceiling was throwing away. The SAME hop count is used by the
+// discrimination control below, so the two runs differ in exactly one thing:
+// whether reviewWaitAgent() audits the elapse.
+let slow = Promise.resolve();
+for (let i = 0; i < 400; i++) slow = slow.then(() => undefined);
+setReview('fake-elapse', slow.then(() => 'no findings'));
+// THE #2049 PAYLOAD, verbatim: the shape the refused-command executor actually
+// returned — ELAPSED, echoing the interval it was ASKED for, with no measured
+// wait behind it.
+setReviewWait('fake-elapse', { outcome: 'REVIEW_WAIT_ELAPSED', secs: '300' });
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'fake-elapse', branch: 'build/fake-elapse', title: 'Timer claimed an elapse it never made', kind: 'impl', acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+const result = await mod.default();
+const parked = (result.parked ?? [])[0];
+let reason = null;
+if (!parked) reason = 'expected a parked item: ' + JSON.stringify(result);
+else if ((parked.review.skipped || []).some(s => s.timed_out)) reason = 'a timer that never waited must NEVER read as a ceiling breach — this is temperloop#2049 verbatim: ' + JSON.stringify(parked.review);
+else if (!parked.review.ran.some(r => r.reviewer === 'shell-reviewer')) reason = 'the reviewer completed — it must be tallied as ran: ' + JSON.stringify(parked.review);
+else if (!logged.some(m => /wall-clock timer is unavailable/.test(m))) reason = 'an unusable timer must DEGRADE LEGIBLY, never silently: ' + JSON.stringify(logged);
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+run_node_case "K2049 the bound SURVIVES: with a timer that really waited, a hung reviewer is still a bounded timed_out skip" "
+$PREAMBLE
+const tsv = readFileSync('$REPO_ROOT/workflows/scripts/config/reviewer-routing.tsv', 'utf8');
+
+setMachinery('real-elapse',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/real-elapse' },
+  { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/x.sh'], tsv, tsv_rows: tsvRows(tsv), tsv_checksum: tsvChecksum(tsv) },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'dea1' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'dea1', branch: 'build/real-elapse' },
+  { outcome: 'PR_OPENED', pr_number: 2050 },
+  { outcome: 'CI_GREEN' },
+);
+happyWorker('real-elapse');
+setReview('real-elapse', { __hang: true });
+// A TRUTHFUL tick: the script's own measurement reaches every slice the ceiling
+// asks for. Deleting the timer would 'fix' #2049's latency by reintroducing the
+// #2003 hang; this case is the assertion that it did not.
+setReviewWait('real-elapse',
+  { outcome: 'REVIEW_WAIT_ELAPSED', secs: 300, realized_secs: 301 },
+  { outcome: 'REVIEW_WAIT_ELAPSED', secs: 540, realized_secs: 541 },
+  { outcome: 'REVIEW_WAIT_ELAPSED', secs: 360, realized_secs: 361 },
+);
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'real-elapse', branch: 'build/real-elapse', title: 'Hung reviewer, honest timer', kind: 'impl', acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+const result = await mod.default();
+const parked = (result.parked ?? [])[0];
+let reason = null;
+if (!parked) reason = 'expected a parked item: ' + JSON.stringify(result);
+else {
+  const skip = (parked.review.skipped || []).find(s => s.reviewer === 'shell-reviewer');
+  if (!skip) reason = 'a reviewer that never settles must still be reported skipped: ' + JSON.stringify(parked.review);
+  else if (skip.timed_out !== true) reason = 'the #2003 bound must survive the #2049 fix — a genuine hang is still timed_out: ' + JSON.stringify(skip);
+}
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+run_node_case "K2049 discrimination control: with the realized-wait check neutered, the SAME fabricated elapse DOES breach the ceiling" "
+$PREAMBLE
+// Arms the first case. 'Not honoured' proves nothing unless the pre-#2049 shape
+// genuinely IS honoured — so this loads the SAME .mjs with reviewWaitAgent()'s
+// realized-wait check removed (the single seam the fix adds), feeds it the
+// identical fabricated elapse and the identical healthy reviewer, and REQUIRES
+// the outcome the issue reported: skipped, timed_out, ran empty.
+const tsv = readFileSync('$REPO_ROOT/workflows/scripts/config/reviewer-routing.tsv', 'utf8');
+const MARKER = 'const realized = Number(out.realized_secs);';
+if (MJS_SRC.indexOf(MARKER) === -1) {
+  console.log(JSON.stringify({ ok: false, reason: 'the realized-wait check was not found — this control is no longer testing what it claims' }));
+} else {
+  const neutered = MJS_SRC.replace(MARKER, MARKER + \" return 'REVIEW_WAIT_ELAPSED';\");
+  const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+  const fn = new AsyncFunction(neutered);
+
+  setMachinery('control-fake',
+    { outcome: 'CREATED', path: '/tmp/repo.wt/control-fake' },
+    { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/x.sh'], tsv, tsv_rows: tsvRows(tsv), tsv_checksum: tsvChecksum(tsv) },
+    { outcome: 'GATE_PASS' },
+    { outcome: 'REBASED', base: 'b', tip: 't', sha: 'c0fa' },
+    { outcome: 'SCAN_CLEAN' },
+    { outcome: 'PUSHED', sha: 'c0fa', branch: 'build/control-fake' },
+    { outcome: 'PR_OPENED', pr_number: 2051 },
+    { outcome: 'CI_GREEN' },
+  );
+  happyWorker('control-fake');
+  // IDENTICAL fixture to the case above — same hop count, same fabricated tick.
+  let slow = Promise.resolve();
+  for (let i = 0; i < 400; i++) slow = slow.then(() => undefined);
+  setReview('control-fake', slow.then(() => 'no findings'));
+  setReviewWait('control-fake', { outcome: 'REVIEW_WAIT_ELAPSED', secs: '300' });
+
+  globalThis.args = JSON.stringify({ ...baseArgs, items: [
+    { slug: 'control-fake', branch: 'build/control-fake', title: 'Fabricated elapse, check removed', kind: 'impl', acceptance: ['c'] },
+  ]});
+  const result = await fn();
+  const parked = (result.parked ?? [])[0];
+  let reason = null;
+  if (!parked) reason = 'expected a parked item: ' + JSON.stringify(result);
+  else if (!(parked.review.skipped || []).some(s => s.timed_out)) reason = 'the neutered build did NOT breach the ceiling — the fixture does not reproduce temperloop#2049, so the case above proves nothing: ' + JSON.stringify(parked.review);
+  else if (parked.review.ran.length !== 0) reason = 'the neutered build must discard the healthy review entirely, as the run journals show: ' + JSON.stringify(parked.review);
+  console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+  process.exit(0);
+}
+"
+
+# --- K2049 static lockstep guards ---------------------------------------------
+_wait_sh="$REPO_ROOT/workflows/scripts/build/review-wait.sh"
+[ -f "$_wait_sh" ] \
+  || fail "#2049: workflows/scripts/build/review-wait.sh missing — the ceiling's tick would have nothing to run"
+[ -x "$_wait_sh" ] \
+  || fail "#2049: review-wait.sh must be executable — the executor invokes it by path, not via 'bash'"
+grep -qF "machineryBin(input.repoRoot, 'review-wait.sh')" "$MJS" \
+  || fail "#2049: the §3e timer must invoke the review-wait.sh helper — an inline 'sleep' command is REFUSED in the machinery executor's seat and the ceiling then fires ~40x early"
+if grep -qF 'sleep ${secs};' "$MJS"; then
+  fail "#2049: the bare inline 'sleep N; printf' timer command is back — that is the refused shape that made a 1200s ceiling realize in ~30s"
+fi
+grep -q 'REVIEW_WAIT_UNAVAILABLE' "$MJS" \
+  || fail "#2049: the timer must be able to report that it could NOT run — without that outcome a refused command is indistinguishable from an elapsed interval"
+grep -qF 'const realized = Number(out.realized_secs);' "$MJS" \
+  || fail "#2049: reviewWaitAgent() must CHECK the script's own measured wait — an elapse taken on trust is exactly the defect"
+# The helper's own bound must stay the CALLER's (no second, independently
+# drifting ceiling) — it validates its argument and waits, nothing more.
+grep -q 'REVIEW_WAIT_ELAPSED' "$_wait_sh" \
+  || fail "#2049: review-wait.sh must print the REVIEW_WAIT_ELAPSED line the executor relays"
+grep -q 'realized_secs' "$_wait_sh" \
+  || fail "#2049: review-wait.sh must print its OWN measured realized_secs — that field is what the .mjs audits the elapse against"
+echo "PASS: #2049 review-ceiling timer — the wait is real, the elapse is measured, the #2003 bound survives"
 
 # ============================================================================
 # TEMPERLOOP#1067 — probe for a LOST pr-batch return before escalating it as a
