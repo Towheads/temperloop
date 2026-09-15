@@ -23,18 +23,51 @@
 # Exit codes:
 #   0   all entries are OK
 #   1   one or more entries are non-OK
+#   2   usage error (an unrecognised --only value)
 #
-# Usage: bash workflows/scripts/install/doctor.sh [<foundation-root>]
+# Usage: bash workflows/scripts/install/doctor.sh [--only=<check>] [<foundation-root>]
 #        (foundation-root defaults to the repo root detected from this script's path)
+#
+#   --only=installed-workflow-drift
+#        Run ONLY check_installed_workflow_drift() and exit with its status,
+#        skipping the managed-link table and every other check. This is the
+#        REUSE SEAM (temperloop#2027): the pre-flight gate
+#        workflows/scripts/build/workflow-path.sh needs that one detector's
+#        verdict before a driver invokes an orchestrator copy, and a second
+#        hand-rolled sha256 comparison living in the build machinery would be
+#        the duplicate-mechanism smell this flag exists to avoid. One
+#        detector, two entrypoints — the full report, and this focused one.
+#        Any other --only value is a usage error (exit 2), never a silent
+#        fall-through to the full run.
 #
 # shellcheck shell=bash
 set -uo pipefail
 
 # ---------------------------------------------------------------------------
-# Resolve FOUNDATION (repo root) from this script's location or an argument.
+# Resolve FOUNDATION (repo root) from this script's location or an argument,
+# plus the optional --only=<check> focus selector.
 # ---------------------------------------------------------------------------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-FOUNDATION="${1:-$(cd "${SCRIPT_DIR}/../../.." && pwd)}"
+
+DOCTOR_ONLY=""
+_doctor_positional=()
+for _arg in "$@"; do
+  case "$_arg" in
+    --only=*) DOCTOR_ONLY="${_arg#--only=}" ;;
+    *)        _doctor_positional+=("$_arg") ;;
+  esac
+done
+
+case "$DOCTOR_ONLY" in
+  ""|installed-workflow-drift) ;;
+  *)
+    echo "doctor.sh: unknown --only value: ${DOCTOR_ONLY}" >&2
+    echo "doctor.sh: supported: --only=installed-workflow-drift" >&2
+    exit 2
+    ;;
+esac
+
+FOUNDATION="${_doctor_positional[0]:-$(cd "${SCRIPT_DIR}/../../.." && pwd)}"
 export FOUNDATION
 
 # Source the shared enumeration helper.
@@ -1010,6 +1043,21 @@ check_installed_workflow_drift() {
 
   return "$rc"
 }
+
+# ---------------------------------------------------------------------------
+# Focused mode (--only=<check>) — run ONE check and exit with its status.
+#
+# The reuse seam temperloop#2027 needs: workflow-path.sh gates a driver's
+# orchestrator invocation on this same detector rather than growing a second
+# one, and the full run below is far too broad (and far too slow) to sit in
+# front of every /build, /sweep and /fix invocation. Dispatch happens AFTER
+# every check function is defined and BEFORE any of the full run's output, so
+# the focused caller gets exactly one section on stdout and nothing else.
+# ---------------------------------------------------------------------------
+if [[ "$DOCTOR_ONLY" == "installed-workflow-drift" ]]; then
+  check_installed_workflow_drift
+  exit $?
+fi
 
 # ---------------------------------------------------------------------------
 # Main — enumerate and classify every managed entry.
