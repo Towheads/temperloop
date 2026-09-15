@@ -49,6 +49,9 @@
 #                                                 reconcile.sh --status, append
 #                                                 one dated per-class diff record
 #   state-graph.sh soak --count --board <N>      print distinct days recorded
+#   state-graph.sh soak --status --board <N>     one JSON line: days recorded,
+#                                                 days required, and how long
+#                                                 since the most recent record
 #   state-graph.sh soak --audit --board <N> --items <file>
 #                                                 record a hand-audited item set
 #                                                 against today
@@ -183,6 +186,46 @@
 # values", see the `query` name enum above) leaves a trail a soak reviewer
 # scans for the first scale whose `query_ms` first exceeds
 # `STATE_GRAPH_QUERY_SLOW_MS`.
+#
+# STALENESS (temperloop#2016): `--count` answers how far along the soak is,
+# but not whether the clock is still RUNNING — a soak nothing schedules
+# reads exactly like a soak scheduled and never run, and both read like one
+# that stopped a week ago. `--status` is the read-only report that closes
+# that gap: ONE closed JSON line carrying `days_recorded`, `days_required`
+# (`STATE_GRAPH_SOAK_DAYS`) and `days_since_last` — the last of which is the
+# payload. HOW LONG the clock has been stopped is information that grows
+# every day it stays stopped; a bare "soak is stale" boolean says the same
+# thing forever and trains its reader to skip it. So the figure is reported
+# and the alarm is left to the reader's own judgment.
+#
+# `state` is TYPED and its values never collapse into one another:
+#   never-recorded  the log holds no qualifying record at all — nothing has
+#                   EVER run (`days_recorded` 0, `last_day`/`days_since_last`
+#                   null)
+#   stale           records exist, and the newest is more than
+#                   `STATE_GRAPH_SOAK_STALE_DAYS` days old
+#   current         the newest record is within that window
+#   unreadable      the log could not be read (a torn line, an unresolvable
+#                   cache path, a `day` value that is not a date) — its OWN
+#                   answer, never silently reported as never-recorded
+# "nothing has ever run" and "it ran and then stopped" are different facts
+# and the caller must be able to tell them apart without re-deriving either.
+#
+# `--status` is a REPORT, never a gate: it exits 0 for every state above,
+# including `unreadable` (whose reason rides a `note` field and a stderr
+# line). Nothing this file can observe about the soak clock is the kind of
+# condition that should fail someone else's build — the kernel cannot
+# schedule the soak itself (scheduling is host-side, out of this repo), so a
+# hard gate here would block legitimate work over a condition the kernel
+# cannot fix (claude/engineering-principles.md principle 7, advisory over
+# enforced discipline).
+# `--count` keeps its own non-zero exit on an unreadable log, unchanged.
+#
+# Days are counted DISTINCT, never CONSECUTIVE (the long-standing
+# `--count` behaviour, `sort -u`): a gap in the middle of the soak costs one
+# day of exposure, not the whole run. Both readers key off ONE shared filter
+# (`_sg_soak_qualifying_days`) so a day that counts toward `--count` and a
+# day that counts as recency can never drift apart.
 #
 # QUERY (temperloop#1910 L6, this item): five named, PURE functions of a
 # snapshot JSON blob — `_sg_query_*` — reused verbatim by `cmd_query` (reads
@@ -364,6 +407,10 @@ usage: state-graph.sh build --board <N>
                 {day, type:"run", schema:2, classes:{...}} record
        state-graph.sh soak --count --board <N>
                 print the number of distinct days recorded in the soak log
+       state-graph.sh soak --status --board <N>
+                print one JSON line: days recorded, days required, and how
+                long since the most recent record (state: never-recorded |
+                stale | current | unreadable). Reports, never gates.
        state-graph.sh soak --audit --board <N> --items <file>
                 record a hand-audited item set against today's day
 USAGE
@@ -1799,19 +1846,154 @@ _sg_soak_run() {
 # deliberately EXCLUDED rather than misread as a per-class one (acceptance
 # criterion 4; see this file's header comment's SCHEMA VERSIONING section).
 _sg_soak_count() {
-  local board="$1" logf
+  local board="$1" logf days
   logf="$(_sg_soak_log_file "$board")" || { echo "state-graph.sh: soak: could not resolve soak log path" >&2; return 1; }
-  if [ ! -s "$logf" ]; then
-    echo 0
-    return 0
-  fi
+  days="$(_sg_soak_qualifying_days "$logf")" ||
+    { echo "state-graph.sh: soak --count: unreadable soak log $logf" >&2; return 1; }
+  # `printf ''` (not an empty here-string, which `wc -l` counts as one line).
+  [ -n "$days" ] || { echo 0; return 0; }
+  printf '%s\n' "$days" | wc -l | tr -d ' '
+}
+
+# THE qualifying-day filter — the ONE place the soak log's comparable-record
+# rule lives, read by BOTH `--count` (how many) and `--status` (how recent).
+# Deliberately shared rather than restated: a second copy of this `select`
+# that drifted by one clause would have `--count` and `--status` disagreeing
+# about which days exist, which is precisely the typed-state-collapsed-at-an-
+# unguarded-join class this soak exists to detect. Prints every qualifying
+# `day`, sorted and de-duplicated (ISO-8601 dates sort lexically, so the last
+# line is also the most recent day), one per line; empty for a missing or
+# empty log; NON-ZERO with jq's own stderr intact for a torn/malformed line.
+_sg_soak_qualifying_days() {
+  local logf="$1"
+  [ -s "$logf" ] || return 0
   # No `2>/dev/null` on the `jq` here: under `pipefail` a torn/malformed line
-  # already makes this pipeline (and, as the function's last command, the
-  # whole script) exit non-zero — discarding jq's stderr left that exit code
+  # already makes this pipeline (and, as the function's last command, its
+  # caller) exit non-zero — discarding jq's stderr left that exit code
   # legible but its REASON silent. Surface it instead of a bare rc.
   jq -r 'select(.type == "audit" or .type == "bench" or (.type == "run" and .schema == 2)) | .day' "$logf" |
-    sort -u | wc -l | tr -d ' ' ||
-    { echo "state-graph.sh: soak --count: unreadable soak log $logf" >&2; return 1; }
+    sort -u
+}
+
+# --- soak --status: how long the soak clock has been stopped (temperloop#2016)
+# Days between two YYYY-MM-DD dates, computed WITHOUT `date -d` (GNU-only;
+# this runs on macOS, where BSD `date` wants `-j -f` instead). The days-from-
+# civil conversion is pure integer arithmetic in awk — no date flags at all,
+# so no dialect to get wrong — and exits non-zero on anything that is not a
+# well-formed calendar date, which is what makes an unparseable `day` field
+# its own typed answer rather than a silent 0. The character-class regex is
+# spelled out rather than using `{4}` intervals, which the awk macOS ships
+# has not always supported.
+_sg_days_from_civil() {
+  awk -v d="$1" 'BEGIN{
+    if (d !~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$/) exit 1
+    y = substr(d,1,4) + 0; m = substr(d,6,2) + 0; day = substr(d,9,2) + 0
+    if (m < 1 || m > 12 || day < 1 || day > 31) exit 1
+    # Days-in-month, leap-aware. A shape-valid but CALENDAR-INVALID date
+    # (2026-02-30, 2026-04-31, 2026-02-29 in a non-leap year) otherwise
+    # sails through the range check above and the formula below happily
+    # returns an integer for it — and not a harmless one: 2026-02-30 and
+    # 2026-03-02 both yield 20514, so a corrupted `day` would be read as a
+    # real date two days later and the staleness figure would be quietly
+    # wrong. Wrong-by-two with no signal is strictly worse than
+    # `unreadable`, which is the typed answer this case is owed.
+    split("31 28 31 30 31 30 31 31 30 31 30 31", dim, " ")
+    leap = (y % 4 == 0 && (y % 100 != 0 || y % 400 == 0))
+    maxd = (m == 2 && leap) ? 29 : dim[m] + 0
+    if (day > maxd) exit 1
+    if (m <= 2) y -= 1
+    era = int((y >= 0 ? y : y - 399) / 400)
+    yoe = y - era * 400
+    doy = int((153 * (m + (m > 2 ? -3 : 9)) + 2) / 5) + day - 1
+    doe = yoe * 365 + int(yoe/4) - int(yoe/100) + doy
+    print era * 146097 + doe - 719468
+  }'
+}
+
+# One closed JSON line, always. `days_recorded`/`last_day`/`days_since_last`
+# are null ONLY where the state genuinely has no such figure (never-recorded
+# has no last day; unreadable has no figures at all) — never 0 standing in
+# for "don't know", which is the collapse this whole report exists to avoid.
+_sg_soak_status_line() {
+  local board="$1" state="$2" recorded="$3" required="$4" last_day="$5" since="$6" note="$7"
+  jq -cn --arg board "$board" --arg state "$state" --arg rec "$recorded" \
+    --argjson req "$required" --arg last "$last_day" --arg since "$since" --arg note "$note" \
+    '{board: $board, state: $state,
+      days_recorded: (if $rec == "" then null else ($rec | tonumber) end),
+      days_required: $req,
+      last_day: (if $last == "" then null else $last end),
+      days_since_last: (if $since == "" then null else ($since | tonumber) end)}
+     + (if $note == "" then {} else {note: $note} end)'
+}
+
+# `soak --status --board N`: the staleness report. It never writes to the
+# soak LOG — the one caveat on calling it flatly "read-only" is that it
+# resolves the log path through `_sg_soak_log_file`, which `mkdir -p`s the
+# cache dir, so a --status against a board that has never soaked creates an
+# empty directory. Long-standing behaviour shared with `--count`, harmless
+# and idempotent, but stated rather than glossed. See this file's
+# header (§ STALENESS) for the typed states and why this never gates.
+_sg_soak_status() {
+  local board="$1" required stale_after logf days last_day today since state note
+  # Belt-and-suspenders forms (§ Named-setting convention): this file sources
+  # build.config.sh, but a consuming checkout that vendors state-graph.sh
+  # without it still reads the same defaults rather than an empty string.
+  required="${STATE_GRAPH_SOAK_DAYS:-14}"
+  stale_after="${STATE_GRAPH_SOAK_STALE_DAYS:-1}"
+  case "$required" in
+    '' | *[!0-9]*)
+      echo "state-graph.sh: soak --status: STATE_GRAPH_SOAK_DAYS='$required' is not a non-negative integer; using default 14" >&2
+      required=14
+      ;;
+  esac
+  case "$stale_after" in
+    '' | *[!0-9]*)
+      echo "state-graph.sh: soak --status: STATE_GRAPH_SOAK_STALE_DAYS='$stale_after' is not a non-negative integer; using default 1" >&2
+      stale_after=1
+      ;;
+  esac
+
+  if ! logf="$(_sg_soak_log_file "$board")"; then
+    note="could not resolve the soak log path"
+    echo "state-graph.sh: soak --status: $note" >&2
+    _sg_soak_status_line "$board" unreadable "" "$required" "" "" "$note"
+    return 0
+  fi
+  if ! days="$(_sg_soak_qualifying_days "$logf")"; then
+    note="unreadable soak log $logf"
+    echo "state-graph.sh: soak --status: $note" >&2
+    _sg_soak_status_line "$board" unreadable "" "$required" "" "" "$note"
+    return 0
+  fi
+  if [ -z "$days" ]; then
+    _sg_soak_status_line "$board" never-recorded 0 "$required" "" "" ""
+    return 0
+  fi
+
+  last_day="$(printf '%s\n' "$days" | tail -n 1)"
+  today="$(_sg_soak_day)"
+  if ! since="$(_sg_days_from_civil "$today")" || [ -z "$since" ]; then
+    note="today's day key '$today' is not a YYYY-MM-DD date"
+    echo "state-graph.sh: soak --status: $note" >&2
+    _sg_soak_status_line "$board" unreadable "" "$required" "" "" "$note"
+    return 0
+  fi
+  local last_num
+  if ! last_num="$(_sg_days_from_civil "$last_day")" || [ -z "$last_num" ]; then
+    note="soak log's most recent day '$last_day' is not a YYYY-MM-DD date"
+    echo "state-graph.sh: soak --status: $note" >&2
+    _sg_soak_status_line "$board" unreadable "" "$required" "" "" "$note"
+    return 0
+  fi
+  since=$(( since - last_num ))
+
+  # At EXACTLY the threshold the clock is still current — `stale_after` is
+  # the oldest age that is still acceptable, not the youngest that is not.
+  # A clock-skewed record dated in the future reads negative and is likewise
+  # current: an early record is not a stopped one.
+  if [ "$since" -le "$stale_after" ]; then state=current; else state=stale; fi
+  _sg_soak_status_line "$board" "$state" \
+    "$(printf '%s\n' "$days" | wc -l | tr -d ' ')" "$required" "$last_day" "$since" ""
 }
 
 # `soak --audit --board N --items <file>`: a hand-audited item set logged
@@ -1839,6 +2021,7 @@ cmd_soak() {
     case "$1" in
       --board) board="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
       --count) mode="count"; shift ;;
+      --status) mode="status"; shift ;;
       --audit) mode="audit"; shift ;;
       --items) items_file="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
       # `usage` writes to stderr everywhere else in this file (the error-path
@@ -1855,6 +2038,7 @@ cmd_soak() {
   case "$mode" in
     run) _sg_soak_run "$board" ;;
     count) _sg_soak_count "$board" ;;
+    status) _sg_soak_status "$board" ;;
     audit)
       [ -n "$items_file" ] || { echo "state-graph.sh: soak --audit requires --items <file>" >&2; usage; exit 2; }
       _sg_soak_audit "$board" "$items_file"
