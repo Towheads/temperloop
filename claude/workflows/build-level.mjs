@@ -3875,8 +3875,22 @@ async function runReviewers(item, wt) {
   }
   // temperloop#1970 — read the round counter from the BUMPING fetch only. A
   // relay that drops/garbles the field reads 0, i.e. "first round", which is
-  // exactly the pre-#1970 behaviour: the degraded case can only ever be MORE
-  // permissive, never a bound that fires early on a healthy item.
+  // exactly the pre-#1970 behaviour: a DROPPED or GARBLED field can only ever
+  // be MORE permissive, never a bound that fires early on a healthy item.
+  //
+  // That covers the relay, and ONLY the relay (temperloop#2046). The failure
+  // shape it does NOT cover is an INFLATED counter: the marker is corrupted
+  // UPSTREAM of the relay, by something other than this driver writing the
+  // worktree's `build-review-rounds` file, so the field arrives as a
+  // perfectly valid finite number and every check here accepts it. The bound
+  // then fires EARLY on a healthy item — the exact case this comment once
+  // claimed could not happen, observed live three times when two test cases
+  // in test_workflow.sh ran the real review-diff pipeline against the repo
+  // root with the bumping default and drove a fresh worktree's counter to 8
+  // and 16 against a max of 3. Nothing here can distinguish an inflated count
+  // from a genuine one, so the invariant is enforced at the WRITE side
+  // instead: that suite now carries a structural + behavioural guard
+  // (its "#2046" checks) that no test run may write this marker at all.
   const priorRounds = Number.isFinite(Number(diffOut.review_rounds))
     ? Math.max(0, Math.floor(Number(diffOut.review_rounds)))
     : 0;
