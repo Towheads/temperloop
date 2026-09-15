@@ -57,6 +57,13 @@
 #     onto the item's parked record AND onto an escalating item's payload, and
 #     rolls up onto the returned level summary; `sidelined:false` is silent and
 #     byte-identical to the pre-#2006 return
+#   - zero-disposition guard (temperloop#2004): a level that disposed of
+#     NOTHING for a non-empty driven set returns a named `zeroDisposition`
+#     outcome (which slugs, plus a concrete re-probe of issue status / open PRs
+#     / the worktree) alongside a named notice, and the three driver specs each
+#     carry an arm for it; the three CONTROLS — an empty level, an onlySlugs
+#     filter matching nothing, and a spike-only verdict-park level — stay
+#     silent and byte-identical to the pre-#2004 return
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && cd ../../../.. && pwd)"
@@ -10271,6 +10278,247 @@ fi
   || fail "#2046: running this suite CHANGED the production §3e review-round marker at $REVIEW_ROUNDS_MARKER (before: $REVIEW_ROUNDS_BEFORE, after: $_k2046_after). A test run must never write production state; when the suite runs inside a build worktree this counter is that worktree's own, and inflating it fires #1970's convergence bound before the first real review round."
 unset _k2046_after
 echo "PASS: #2046 production-state guard — a full suite run leaves the §3e review-round marker byte-identical to how it found it (${REVIEW_ROUNDS_BEFORE})"
+
+# ============================================================================
+# TEST (K2004-control-empty): a LEGITIMATELY empty level stays SILENT.
+#
+#   This is the DISCRIMINATION CONTROL, and it runs first on purpose: a guard
+#   that flags every empty level is worse than no guard at all. A level asked
+#   to drive nothing — an empty `items` array — disposes of nothing as a
+#   tautology, not a contradiction. It must produce NO zeroDisposition field,
+#   NO notice, and a return byte-identical to the pre-#2004 object (exactly the
+#   two keys `parked` and `escalations`).
+# ============================================================================
+run_node_case "K2004: a legitimately empty level (nothing asked to drive) is NOT flagged" "
+$PREAMBLE
+
+const logLines = [];
+globalThis.log = (m) => { logLines.push(String(m)); };
+
+globalThis.args = { ...baseArgs, items: [] };
+
+const mod = await loadLevel();
+const result = await mod.default();
+
+if ('zeroDisposition' in result)
+  { console.log(JSON.stringify({ ok: false, reason: 'an empty level must NOT be flagged: ' + JSON.stringify(result.zeroDisposition) })); process.exit(0); }
+const keys = Object.keys(result);
+if (keys.length !== 2 || keys[0] !== 'parked' || keys[1] !== 'escalations')
+  { console.log(JSON.stringify({ ok: false, reason: 'an empty level must return the byte-identical pre-#2004 object; got keys ' + JSON.stringify(keys) })); process.exit(0); }
+const noisy = logLines.filter(l => l.includes('ZERO-DISPOSITION'));
+if (noisy.length !== 0)
+  { console.log(JSON.stringify({ ok: false, reason: 'an empty level must emit NO zero-disposition notice; got: ' + JSON.stringify(noisy) })); process.exit(0); }
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+# ============================================================================
+# TEST (K2004-control-filtered): an onlySlugs filter that matches NOTHING is
+# the same control, reached by the other route.
+#
+#   The driven set is `activeItems` — the POST-onlySlugs set — not `items`. A
+#   continuation whose onlySlugs names no item in the level has a non-empty
+#   `items` array and an empty driven set, so a guard keyed on `items` would
+#   fire here falsely. This pins the guard to the set actually driven.
+# ============================================================================
+run_node_case "K2004: an onlySlugs filter matching no item is NOT flagged (driven set, not items)" "
+$PREAMBLE
+
+const logLines = [];
+globalThis.log = (m) => { logLines.push(String(m)); };
+
+globalThis.args = { ...baseArgs,
+  items: [
+    { slug: 'item-k2004-other', branch: 'build/item-k2004-other', title: 'Sibling', kind: 'impl', acceptance: ['c'] },
+  ],
+  onlySlugs: ['item-k2004-absent'],
+};
+
+const mod = await loadLevel();
+const result = await mod.default();
+
+if ('zeroDisposition' in result)
+  { console.log(JSON.stringify({ ok: false, reason: 'an empty DRIVEN set must NOT be flagged even when items is non-empty: ' + JSON.stringify(result.zeroDisposition) })); process.exit(0); }
+const noisy = logLines.filter(l => l.includes('ZERO-DISPOSITION'));
+if (noisy.length !== 0)
+  { console.log(JSON.stringify({ ok: false, reason: 'an empty driven set must emit NO notice; got: ' + JSON.stringify(noisy) })); process.exit(0); }
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+# ============================================================================
+# TEST (K2004-control-spike): a SPIKE-ONLY level is NOT flagged.
+#
+#   A kind:spike item opens no PR and pushes no SHA — it disposes of nothing
+#   through the push/PR/CI arms — which is exactly the shape a naive guard
+#   would misread as 'disposed of nothing'. It does, however, park a verdict
+#   marker (park(slug, null, null, …)), so it lands on control 2. This test is
+#   the explicit check that the by-design-nothing-merged level stays silent.
+# ============================================================================
+run_node_case "K2004: a spike-only level (verdict-park, no PR) is NOT flagged" "
+$PREAMBLE
+
+const logLines = [];
+globalThis.log = (m) => { logLines.push(String(m)); };
+
+setMachinery('item-k2004-spike' /* empty — a spike makes no machinery calls */);
+setWorker('item-k2004-spike',
+  { status: 'done', summary: 'verdict produced', acceptance_results: [{ criterion: 'verdict-written', passed: true, evidence: 'v.md' }], verification_surface_path: '/tmp/verdict.md' }
+);
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'item-k2004-spike', branch: 'build/item-k2004-spike', title: 'Spike only', kind: 'spike', acceptance: ['verdict-written'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+
+const parked = result.parked ?? [];
+if (parked.length !== 1 || parked[0].pr !== null || parked[0].pushed_sha !== null)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected 1 verdict-only park, got ' + JSON.stringify(result) })); process.exit(0); }
+if ('zeroDisposition' in result)
+  { console.log(JSON.stringify({ ok: false, reason: 'a spike-only level disposes of nothing BY DESIGN and must NOT be flagged: ' + JSON.stringify(result.zeroDisposition) })); process.exit(0); }
+const noisy = logLines.filter(l => l.includes('ZERO-DISPOSITION'));
+if (noisy.length !== 0)
+  { console.log(JSON.stringify({ ok: false, reason: 'a spike-only level must emit NO notice; got: ' + JSON.stringify(noisy) })); process.exit(0); }
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+# ============================================================================
+# TEST (K2004-flagged): zero disposition against a NON-EMPTY driven set is a
+# NAMED contradiction — the defect temperloop#2004 filed.
+#
+#   The observed case (run wf_f3b9c160-6ca) was a resumed run that re-ran
+#   nothing and returned {parked:[], escalations:[]} in ~13 ms while the
+#   tracked issue was still in-progress with a live claim. The in-process shape
+#   of the same partition is parallel() dropping every settled result to null —
+#   the exact null-drop buildLevel's own fan-out comment names — so the mock
+#   drops them here and the partition comes back empty for a level that WAS
+#   asked to drive an item.
+#
+#   Asserted on the two surfaces a caller can act on:
+#     1. the NAMED, branchable `zeroDisposition` field on the return (not a
+#        throw, not a bare failure) — carrying which slugs were asked for and
+#        a concrete re-probe for issue status, open PRs and the worktree;
+#     2. a named log notice, so a transcript reader sees it too.
+#   The re-probe assertion is the load-bearing one: 'nothing was disposed' with
+#   no slugs and nowhere to look leaves a driver exactly where it started.
+# ============================================================================
+run_node_case "K2004: zero disposition against a non-empty driven set is a NAMED contradiction" "
+$PREAMBLE
+
+const logLines = [];
+globalThis.log = (m) => { logLines.push(String(m)); };
+// Every settled result dropped — parallel()'s documented null-drop, the
+// in-process shape of a drive that disposed of nothing.
+globalThis.parallel = async (fns) => fns.map(() => null);
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'item-k2004-lost', branch: 'build/item-k2004-lost', title: 'Vanishing item', kind: 'impl', acceptance: ['c'], ghIssue: 2004 },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+
+// The partition really is empty — the precondition this guard exists for.
+if ((result.parked ?? []).length !== 0 || (result.escalations ?? []).length !== 0)
+  { console.log(JSON.stringify({ ok: false, reason: 'test precondition broken — the partition was not empty: ' + JSON.stringify(result) })); process.exit(0); }
+
+// 1. the NAMED, branchable outcome
+const zd = result.zeroDisposition;
+if (!zd)
+  { console.log(JSON.stringify({ ok: false, reason: 'a zero-disposition return for a non-empty driven set fell through as a clean level: ' + JSON.stringify(result) })); process.exit(0); }
+if (!Array.isArray(zd.slugs) || zd.slugs.length !== 1 || zd.slugs[0] !== 'item-k2004-lost')
+  { console.log(JSON.stringify({ ok: false, reason: 'the outcome does not name which slugs were asked for: ' + JSON.stringify(zd) })); process.exit(0); }
+if (zd.requested !== 1 || zd.parked !== 0 || zd.escalations !== 0)
+  { console.log(JSON.stringify({ ok: false, reason: 'the outcome does not state the asked-for vs disposed-of counts: ' + JSON.stringify(zd) })); process.exit(0); }
+const one = (zd.items ?? [])[0];
+if (!one || one.slug !== 'item-k2004-lost' || one.issue !== 2004 || one.branch !== 'build/item-k2004-lost')
+  { console.log(JSON.stringify({ ok: false, reason: 'the outcome does not carry the per-slug identity a caller re-probes with: ' + JSON.stringify(zd.items) })); process.exit(0); }
+if (!one.worktree || !one.worktree.includes('item-k2004-lost'))
+  { console.log(JSON.stringify({ ok: false, reason: 'the outcome names no worktree to re-probe: ' + JSON.stringify(one) })); process.exit(0); }
+// the load-bearing one: a concrete re-probe of issue status, open PRs AND the worktree
+if (!one.reprobe || !/gh issue view 2004/.test(one.reprobe) || !/gh pr list/.test(one.reprobe) || !/git -C /.test(one.reprobe))
+  { console.log(JSON.stringify({ ok: false, reason: 'the outcome names no concrete RE-PROBE of issue status, open PRs and the worktree: ' + JSON.stringify(one.reprobe) })); process.exit(0); }
+
+// 2. the named log notice
+const notices = logLines.filter(l => l.includes('ZERO-DISPOSITION') && l.includes('item-k2004-lost'));
+if (notices.length === 0)
+  { console.log(JSON.stringify({ ok: false, reason: 'no named ZERO-DISPOSITION notice was logged; log was ' + JSON.stringify(logLines) })); process.exit(0); }
+
+// and the 'level done' line must not read as a clean pass
+const doneLine = logLines.filter(l => l.startsWith('level done'))[0] || '';
+if (!doneLine.includes('ZERO-DISPOSITION'))
+  { console.log(JSON.stringify({ ok: false, reason: \"the 'level done' line still reads as a clean level: \" + doneLine })); process.exit(0); }
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+# ============================================================================
+# TEST (K2004-flagged-continuation): the same contradiction on a CONTINUATION
+# run names the onlySlugs set, not the level's full membership.
+#
+#   The observed case was a RESUME, so this is the shape most likely to recur:
+#   the driven set is the onlySlugs subset, and a sibling already parked in an
+#   earlier round must not be reported as lost.
+# ============================================================================
+run_node_case "K2004: a continuation's contradiction names the onlySlugs set, and flags continuation:true" "
+$PREAMBLE
+
+globalThis.log = () => {};
+globalThis.parallel = async (fns) => fns.map(() => null);
+
+globalThis.args = { ...baseArgs,
+  items: [
+    { slug: 'item-k2004-resumed', branch: 'build/item-k2004-resumed', title: 'Resumed', kind: 'impl', acceptance: ['c'], ghIssue: 20041 },
+    { slug: 'item-k2004-sibling', branch: 'build/item-k2004-sibling', title: 'Already parked sibling', kind: 'impl', acceptance: ['c'], ghIssue: 20042 },
+  ],
+  onlySlugs: ['item-k2004-resumed'],
+  verdicts: { 'item-k2004-resumed': 'go' },
+};
+
+const mod = await loadLevel();
+const result = await mod.default();
+
+const zd = result.zeroDisposition;
+if (!zd)
+  { console.log(JSON.stringify({ ok: false, reason: 'a continuation that disposed of nothing fell through as a clean level: ' + JSON.stringify(result) })); process.exit(0); }
+if (zd.slugs.length !== 1 || zd.slugs[0] !== 'item-k2004-resumed')
+  { console.log(JSON.stringify({ ok: false, reason: 'the outcome must name the onlySlugs set, not the full level: ' + JSON.stringify(zd.slugs) })); process.exit(0); }
+if (zd.continuation !== true)
+  { console.log(JSON.stringify({ ok: false, reason: 'a continuation contradiction must say so: ' + JSON.stringify(zd) })); process.exit(0); }
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+# --- temperloop#2004 zero-disposition driver-arm guards ---------------------
+# The runtime cases above pin the PRODUCER: build-level.mjs names the
+# contradiction. This pins the three CONSUMERS. The whole point of hoisting the
+# guard below the drivers is that /build, /fix and /sweep each inherit it — a
+# named outcome nobody branches on is the same silent fall-through the item
+# filed, just with a field attached. So every spec that branches on the
+# {parked, escalations} return must name `zeroDisposition`, and the .mjs must
+# actually emit the field those arms read.
+#
+# Deliberately file-scoped, like the #2020 disposition guards above: the three
+# arms live as mid-section bullets (build.md Step 3 / 3d-esc, fix.md Step 4a,
+# sweep.md Phase 2) with no stable heading to anchor on. A file-level assertion
+# catches a spec that never mentions the outcome at all and claims no more.
+for spec_rel in claude/commands/build.md claude/commands/sweep.md claude/commands/fix.md; do
+  spec_abs="$REPO_ROOT/$spec_rel"
+  [ -f "$spec_abs" ] \
+    || fail "#2004: $spec_rel is missing — the consumer half of this contract pair cannot be verified"
+  grep -q 'zeroDisposition' "$spec_abs" \
+    || fail "#2004: $spec_rel branches on the {parked, escalations} return but never names zeroDisposition — a zero-disposition return would fall through this driver as a completed level, which is the silent item-loss temperloop#2004 filed"
+  grep -qi 'reprobe\|re-probe' "$spec_abs" \
+    || fail "#2004: $spec_rel names zeroDisposition but never says to RE-PROBE real state on it — naming the outcome without acting on it leaves the item exactly as lost"
+done
+grep -q 'zeroDisposition' "$MJS" \
+  || fail "#2004: the driver arms above read a field build-level.mjs must actually emit — the zero-disposition producer half is missing"
+grep -qi 'zero-disposition' "$MJS" \
+  || fail "#2004: build-level.mjs emits no named zero-disposition notice — the field alone leaves a transcript reader with nothing"
+echo "PASS: #2004 driver-arm guards — build.md, sweep.md and fix.md each carry a zeroDisposition re-probe arm over the field build-level.mjs emits"
 
 echo ""
 echo "All test_workflow.sh cases passed."
