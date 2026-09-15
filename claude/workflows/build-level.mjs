@@ -3908,10 +3908,54 @@ async function runReviewers(item, wt) {
     return slot;
   });
   await awaitReviewFanout(item, slots);
+  // temperloop#2032 — THE LAST-CHANCE READ, and the reason the disposition
+  // below is three passes rather than one loop. `slot.done` is set by the
+  // settlement recorder attached at the spawn above, which runs as a MICROTASK
+  // on the reviewer's own promise — so the ceiling's race can return with a
+  // reviewer whose result has ALREADY arrived but whose recorder has not run
+  // yet. The pre-#2032 loop read `!slot.done` exactly once, immediately after
+  // that await, and never again: such a reviewer was reported
+  // `skipped — exceeded the §3e review ceiling` while its full review sat in
+  // hand, unread. That is not a hang — the result ARRIVES and is thrown away
+  // (run wf_c71d1576-e9d discarded two complete reviews that way, one of which
+  // had already found the defect a hand-routed reviewer re-found later and
+  // PR #2039 then fixed).
+  //
+  // The ceiling is NOT at fault and is untouched: it still bounds how long the
+  // pass WAITS, and this changes only what happens to a result that arrives
+  // anyway. Every read below is therefore as late as it can HONESTLY be —
+  // bounded settlement drains only (no wall clock, no timer spawn, and never a
+  // re-spawn of a reviewer whose result is already in hand), never a second
+  // wait: re-introducing one would be exactly the unbounded stall
+  // temperloop#2003 removed.
+  await drainReviewSettlements(slots);
 
-  for (const slot of slots) {
+  // Pass 1 — consume every reviewer that has settled. disposeReviewSlot() is
+  // PURE: it returns a descriptor and writes nothing, so a straggler can be
+  // re-read afterwards without the tally having been half-written out of route
+  // order in the meantime.
+  const dispositions = slots.map((slot) => (slot.done ? disposeReviewSlot(slot) : null));
+  // Pass 2 — the stragglers get the settlement turns pass 1 just spent.
+  if (dispositions.some((d) => d === null)) {
+    await drainReviewSettlements(slots);
+    for (let i = 0; i < slots.length; i++) {
+      if (dispositions[i] === null && slots[i].done) dispositions[i] = disposeReviewSlot(slots[i]);
+    }
+  }
+
+  // Pass 3 — apply the dispositions in ROUTE order, so `ran`/`skipped`/
+  // `sections` and the log lines keep the ordering the single loop produced. A
+  // straggler is read ONE final time here, at the instant its skip would be
+  // written: that read, not the one after the await, is what decides a timeout.
+  // Exactly one disposition is written per slot, which is what keeps `ran` and
+  // `skipped` disjoint by construction — a recovered reviewer can never also
+  // appear as `timed_out`, and `mandatory_ok` (derived from `skipped`) reports
+  // what actually happened rather than what the ceiling guessed.
+  for (let i = 0; i < slots.length; i++) {
+    const slot = slots[i];
     const route = slot.route;
-    if (!slot.done) {
+    const disposition = dispositions[i] ?? (slot.done ? disposeReviewSlot(slot) : null);
+    if (disposition === null) {
       // temperloop#2003 — the CEILING BREACH. This reviewer is abandoned, never
       // killed: the runtime offers no cancellation, so the promise is simply
       // never awaited again and the pass proceeds. The note keeps the documented
@@ -3932,44 +3976,12 @@ async function runReviewers(item, wt) {
       skipped.push({ reviewer: route.reviewer, note, mandatory: route.mandatory, timed_out: true });
       continue;
     }
-    let text;
-    if (slot.error) {
-      const err = slot.error;
-      const msg = String((err && err.message) || err);
-      // Reuse machineryAgent's own resolution-failure detection (temperloop#1014)
-      // as the precedent — the SAME two markers of "agent() could not resolve
-      // this agentType at all", never a broader catch. This is what makes the
-      // skip notice fire on GENUINE unavailability only, never as a guaranteed
-      // default: before this item there was no code path here at all, so the
-      // notice was unconditional; now it is conditioned on this real check.
-      if (MACHINERY_RESOLUTION_ERR.test(msg)) {
-        // Every reviewer this repo names (the tsv's own agent-catalog-path
-        // column; workflow-reviewer/docs-reviewer/architecture-reviewer/
-        // requirements-auditor) ships as source under claude/agents/ — so the
-        // remedy-bearing form (message-schema.md § Degradation notice's one
-        // sanctioned mode-2 variant) always applies here, never the bare form.
-        const note = `skipped — ${route.reviewer} available as source; run workflows/scripts/install/project-agents.sh to enable`;
-        log(`[${item.slug}] §3e review — ${note}`);
-        skipped.push({ reviewer: route.reviewer, note, mandatory: route.mandatory });
-        continue;
-      }
-      // A genuine (non-resolution) error is not evidence the capability is
-      // unavailable, but review is advisory (never a `checks` gate) — degrade
-      // rather than take the whole item down over an LLM-judgment pass.
-      const note = `skipped — ${route.reviewer} errored (${msg})`;
-      log(`[${item.slug}] §3e review — ${note}`);
-      skipped.push({ reviewer: route.reviewer, note, mandatory: route.mandatory });
-      continue;
-    } else {
-      text = slot.value;
-    }
-    if (text == null) {
-      const note = `skipped — ${route.reviewer} returned no verdict (skip/transient)`;
-      log(`[${item.slug}] §3e review — ${note}`);
-      skipped.push({ reviewer: route.reviewer, note, mandatory: route.mandatory });
+    if (disposition.kind === 'skip') {
+      log(`[${item.slug}] §3e review — ${disposition.note}`);
+      skipped.push({ reviewer: route.reviewer, note: disposition.note, mandatory: route.mandatory });
       continue;
     }
-    const textStr = String(text);
+    const textStr = disposition.text;
     ran.push({ reviewer: route.reviewer, mandatory: route.mandatory });
     log(`[${item.slug}] §3e review — ${route.reviewer} ran (${route.reasons.join('; ')})`);
     // temperloop#1450 — keep the FULL text, not just the name: a MEDIUM/LOW-only
@@ -4024,6 +4036,70 @@ async function runReviewers(item, wt) {
   return result;
 }
 
+// disposeReviewSlot — the verdict for ONE SETTLED reviewer slot, as a pure
+// descriptor: `{ kind: 'ran', text }` or `{ kind: 'skip', note }`. Purity is the
+// point (temperloop#2032): runReviewers reads its slots in more than one pass so
+// a reviewer that settles late is still consumed, and a disposition step that
+// pushed straight into `ran`/`skipped`/`sections` would emit those in
+// settlement order instead of route order. The caller writes exactly one
+// disposition per slot, in route order, which is what keeps `ran` and `skipped`
+// disjoint. Never call it on an unsettled slot — `slot.done` is the caller's
+// precondition, and the caller re-reads it as late as it possibly can.
+function disposeReviewSlot(slot) {
+  const route = slot.route;
+  if (slot.error) {
+    const err = slot.error;
+    const msg = String((err && err.message) || err);
+    // Reuse machineryAgent's own resolution-failure detection (temperloop#1014)
+    // as the precedent — the SAME two markers of "agent() could not resolve
+    // this agentType at all", never a broader catch. This is what makes the
+    // skip notice fire on GENUINE unavailability only, never as a guaranteed
+    // default.
+    if (MACHINERY_RESOLUTION_ERR.test(msg)) {
+      // Every reviewer this repo names (the tsv's own agent-catalog-path
+      // column; workflow-reviewer/docs-reviewer/architecture-reviewer/
+      // requirements-auditor) ships as source under claude/agents/ — so the
+      // remedy-bearing form (message-schema.md § Degradation notice's one
+      // sanctioned mode-2 variant) always applies here, never the bare form.
+      return {
+        kind: 'skip',
+        note: `skipped — ${route.reviewer} available as source; run workflows/scripts/install/project-agents.sh to enable`,
+      };
+    }
+    // A genuine (non-resolution) error is not evidence the capability is
+    // unavailable, but review is advisory (never a `checks` gate) — degrade
+    // rather than take the whole item down over an LLM-judgment pass.
+    return { kind: 'skip', note: `skipped — ${route.reviewer} errored (${msg})` };
+  }
+  if (slot.value == null) {
+    return { kind: 'skip', note: `skipped — ${route.reviewer} returned no verdict (skip/transient)` };
+  }
+  return { kind: 'ran', text: String(slot.value) };
+}
+
+// REVIEW_SETTLE_DRAIN_TICKS — how many settlement turns a drain yields before
+// giving up. A tick is one microtask (`await null`), never a wall-clock wait:
+// under-draining can only cost one extra timer spawn (before the ceiling) or
+// one reviewer left unrecovered (after it), never a wrong verdict, and
+// over-draining costs nothing but empty turns.
+const REVIEW_SETTLE_DRAIN_TICKS = 16;
+
+// drainReviewSettlements — give every reviewer whose promise has already
+// resolved the chance to RECORD that fact, then return. `slot.done` is set in a
+// `.then` recorder, so a reviewer can be resolved-but-unrecorded for a few
+// microtasks; this is the only honest way to read the fanout later than the
+// instant an await hands back, and it is bounded by construction (no clock, no
+// spawn, no wait). Used twice: before the ceiling's first timer spawn (a pure
+// cost optimisation — a reviewer that already returned need not be paid for),
+// and again by the disposition passes (temperloop#2032 — a reviewer that
+// settled after the ceiling must not be reported as a timeout).
+async function drainReviewSettlements(slots) {
+  for (let i = 0; i < REVIEW_SETTLE_DRAIN_TICKS; i++) {
+    if (slots.every((s) => s.done)) return;
+    await null;
+  }
+}
+
 // awaitReviewFanout — temperloop#2003's ceiling, applied to the whole §3e
 // fanout. Returns once every reviewer has settled OR the ceiling elapses,
 // whichever comes first; it never rejects and never throws, and the caller reads
@@ -4048,11 +4124,12 @@ async function awaitReviewFanout(item, slots) {
   const pending = () => slots.filter((s) => !s.done);
   // Drain already-resolved reviewer promises before paying for a timer spawn: a
   // reviewer that has ALREADY returned is only pending as a MICROTASK here
-  // (spawning is synchronous), and `await null` yields one microtask tick. Pure
-  // cost optimisation — under-draining can only cost one extra timer spawn,
-  // never a wrong verdict, because the race below resolves immediately on a
-  // settled fanout either way.
-  for (let i = 0; i < 8 && pending().length > 0; i++) await null;
+  // (spawning is synchronous). Pure cost optimisation — under-draining can only
+  // cost one extra timer spawn, never a wrong verdict, because the race below
+  // resolves immediately on a settled fanout either way. Shares the one drain
+  // helper with the post-ceiling disposition read (temperloop#2032), so the two
+  // reads of the same slot state cannot drift apart.
+  await drainReviewSettlements(slots);
 
   let waited = 0;
   let slowLogged = false;

@@ -5322,6 +5322,203 @@ done
 echo "PASS: #2003 review-agent liveness bound — named settings, bounded fanout, mandatory escalation, all three callers wired"
 
 # ============================================================================
+# TEMPERLOOP#2032 — a §3e review result that SETTLES AFTER THE CEILING was
+# DISCARDED. #2003's bound is correct and untouched: it bounds the WAIT. The
+# defect was one layer later — runReviewers() read `slot.done` exactly once,
+# immediately after awaitReviewFanout() returned, so a reviewer that settled a
+# moment later was already past the only check there was. Observed (run
+# wf_c71d1576-e9d): the ceiling elapsed, then BOTH reviewers returned full
+# reviews into the journal, and the tally still reported them
+# `skipped — exceeded the §3e review ceiling` with `timed_out: true`, `ran: []`
+# — one of the discarded reviews had already found the calendar-validator
+# defect a hand-routed reviewer re-found later and PR #2039 fixed.
+#
+# The three cases below are the three states a reviewer slot can be in at
+# disposition time: settled BEFORE the ceiling, settled AFTER it (the bug), and
+# never settled (a genuine skip, which must STILL be reported as one).
+# ============================================================================
+run_node_case "K2032 before the ceiling: a reviewer that returns promptly is consumed and never pays for a timer" "
+$PREAMBLE
+const tsv = readFileSync('$REPO_ROOT/workflows/scripts/config/reviewer-routing.tsv', 'utf8');
+
+setMachinery('early-settle',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/early-settle' },
+  { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/x.sh'], tsv, tsv_rows: tsvRows(tsv), tsv_checksum: tsvChecksum(tsv) },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'ea11' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'ea11', branch: 'build/early-settle' },
+  { outcome: 'PR_OPENED', pr_number: 2032 },
+  { outcome: 'CI_GREEN' },
+);
+happyWorker('early-settle');
+setReview('early-settle', '## Summary\\nclean\\n\\n## Findings\\n(none)\\n');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'early-settle', branch: 'build/early-settle', title: 'Prompt reviewer', kind: 'impl', acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+const result = await mod.default();
+const parked = (result.parked ?? [])[0];
+let reason = null;
+if (!parked) reason = 'expected a parked item: ' + JSON.stringify(result);
+else if (!parked.review.ran.some(r => r.reviewer === 'shell-reviewer')) reason = 'a reviewer that returned before the ceiling must be tallied ran: ' + JSON.stringify(parked.review);
+else if ((parked.review.skipped || []).length !== 0) reason = 'nothing was skipped in this state: ' + JSON.stringify(parked.review);
+else if (reviewWaitLog.length !== 0) reason = 'the ceiling timer must not be spawned at all when the fanout is already settled: ' + JSON.stringify(reviewWaitLog);
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+run_node_case "K2032 after the ceiling: a review that SETTLES post-ceiling is consumed, never reported as a timeout" "
+$PREAMBLE
+const tsv = readFileSync('$REPO_ROOT/workflows/scripts/config/reviewer-routing.tsv', 'utf8');
+const REVIEW_TEXT = '## Summary\\n1 finding.\\n\\n## Findings\\n### [LOW] Impossible calendar dates pass the date validator\\nreal late finding text.\\n';
+let release;
+const late = new Promise((r) => { release = r; });
+// The window, modelled without a clock (the Workflow runtime has none): the
+// release fires from awaitReviewFanout's OWN ceiling-breach log line — the
+// ceiling has already given up — and then waits six microtask hops, strictly
+// more than the await that hands control back to the disposition read. So the
+// result settles AFTER the pass stopped waiting and BEFORE the slot is read,
+// which is temperloop#2032 verbatim. (The discrimination control below runs
+// this same fixture with the last-chance read neutered and REQUIRES the
+// discard, so a fixture that drifted out of this window cannot pass silently.)
+globalThis.log = (m) => {
+  if (!/wall-clock ceiling of .* reached with/.test(String(m))) return;
+  let hop = Promise.resolve();
+  for (let i = 0; i < 6; i++) hop = hop.then(() => undefined);
+  hop.then(() => release(REVIEW_TEXT));
+};
+
+setMachinery('late-settle',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/late-settle' },
+  { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/x.sh'], tsv, tsv_rows: tsvRows(tsv), tsv_checksum: tsvChecksum(tsv) },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: '1a7e' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: '1a7e', branch: 'build/late-settle' },
+  { outcome: 'PR_OPENED', pr_number: 2033 },
+  { outcome: 'CI_GREEN' },
+);
+happyWorker('late-settle');
+setReview('late-settle', late);
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'late-settle', branch: 'build/late-settle', title: 'Late reviewer', kind: 'impl', acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+const result = await mod.default();
+const parked = (result.parked ?? [])[0];
+const prBatch = callLog.find(c => (c.opts.label||'').startsWith('pr-batch:late-settle'));
+let reason = null;
+if (!parked) reason = 'expected a parked item: ' + JSON.stringify(result);
+else if (reviewWaitLog.length === 0) reason = 'the fixture never reached the ceiling — this case is testing the WRONG state: ' + JSON.stringify(parked.review);
+else if ((parked.review.skipped || []).some(s => s.timed_out)) reason = 'the review ARRIVED and was still reported as a ceiling timeout — temperloop#2032 verbatim: ' + JSON.stringify(parked.review);
+else if (!parked.review.ran.some(r => r.reviewer === 'shell-reviewer')) reason = 'a settled review must be tallied ran: ' + JSON.stringify(parked.review);
+else if ((parked.review.routed_not_run || []).indexOf('shell-reviewer') !== -1) reason = 'routed_not_run must never name a reviewer whose findings were used: ' + JSON.stringify(parked.review);
+else if (parked.review.mandatory_ok !== true) reason = 'nothing was skipped, so mandatory_ok must be true: ' + JSON.stringify(parked.review);
+else if (!prBatch || !prBatch.promptFull.includes('real late finding text')) reason = 'the recovered FINDINGS text must reach the PR body, not just the tally: ' + String(prBatch && prBatch.promptFull).slice(0, 400);
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+run_node_case "K2032 never settles: a reviewer that genuinely never returns is STILL a timed_out skip" "
+$PREAMBLE
+const tsv = readFileSync('$REPO_ROOT/workflows/scripts/config/reviewer-routing.tsv', 'utf8');
+
+setMachinery('never-settle',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/never-settle' },
+  { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/x.sh'], tsv, tsv_rows: tsvRows(tsv), tsv_checksum: tsvChecksum(tsv) },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'beef' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'beef', branch: 'build/never-settle' },
+  { outcome: 'PR_OPENED', pr_number: 2034 },
+  { outcome: 'CI_GREEN' },
+);
+happyWorker('never-settle');
+setReview('never-settle', { __hang: true });
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'never-settle', branch: 'build/never-settle', title: 'Hung reviewer', kind: 'impl', acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+const result = await mod.default();
+const parked = (result.parked ?? [])[0];
+let reason = null;
+if (!parked) reason = 'expected a parked item: ' + JSON.stringify(result);
+else {
+  const skip = (parked.review.skipped || []).find(s => s.reviewer === 'shell-reviewer');
+  if (!skip) reason = 'a reviewer that never settles must still be reported skipped: ' + JSON.stringify(parked.review);
+  else if (skip.timed_out !== true) reason = 'the genuine skip must keep its timed_out reason: ' + JSON.stringify(skip);
+  else if (!/exceeded the §3e review ceiling/.test(skip.note)) reason = 'the skip note must name the ceiling: ' + skip.note;
+  else if (parked.review.ran.some(r => r.reviewer === 'shell-reviewer')) reason = 'ran and skipped must stay disjoint: ' + JSON.stringify(parked.review);
+  else if ((parked.review.routed_not_run || []).indexOf('shell-reviewer') === -1) reason = 'routed_not_run must name the reviewer that never ran: ' + JSON.stringify(parked.review);
+}
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+run_node_case "K2032 discrimination control: with the last-chance read neutered, the SAME late review is DISCARDED" "
+$PREAMBLE
+// Arms the case above. The post-ceiling fixture proves nothing unless the
+// pre-#2032 shape genuinely fails it — so this loads the SAME .mjs with
+// drainReviewSettlements() turned into a no-op (the single seam the fix adds),
+// feeds it the identical late-settling reviewer, and REQUIRES the discard the
+// issue reported: skipped, timed_out, ran empty.
+const tsv = readFileSync('$REPO_ROOT/workflows/scripts/config/reviewer-routing.tsv', 'utf8');
+const MARKER = 'async function drainReviewSettlements(slots) {';
+if (MJS_SRC.indexOf(MARKER) === -1) {
+  console.log(JSON.stringify({ ok: false, reason: 'drainReviewSettlements() not found — this control is no longer testing what it claims' }));
+} else {
+  const neutered = MJS_SRC.replace(MARKER, MARKER + '\\n  return;');
+  const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+  const fn = new AsyncFunction(neutered);
+
+  const REVIEW_TEXT = '## Summary\\n1 finding.\\n\\n## Findings\\n### [LOW] late\\nreal late finding text.\\n';
+  let release;
+  const late = new Promise((r) => { release = r; });
+  globalThis.log = (m) => {
+    if (!/wall-clock ceiling of .* reached with/.test(String(m))) return;
+    let hop = Promise.resolve();
+    for (let i = 0; i < 6; i++) hop = hop.then(() => undefined);
+    hop.then(() => release(REVIEW_TEXT));
+  };
+
+  setMachinery('control-late',
+    { outcome: 'CREATED', path: '/tmp/repo.wt/control-late' },
+    { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/x.sh'], tsv, tsv_rows: tsvRows(tsv), tsv_checksum: tsvChecksum(tsv) },
+    { outcome: 'GATE_PASS' },
+    { outcome: 'REBASED', base: 'b', tip: 't', sha: 'c07e' },
+    { outcome: 'SCAN_CLEAN' },
+    { outcome: 'PUSHED', sha: 'c07e', branch: 'build/control-late' },
+    { outcome: 'PR_OPENED', pr_number: 2035 },
+    { outcome: 'CI_GREEN' },
+  );
+  happyWorker('control-late');
+  setReview('control-late', late);
+
+  globalThis.args = JSON.stringify({ ...baseArgs, items: [
+    { slug: 'control-late', branch: 'build/control-late', title: 'Late reviewer, no last-chance read', kind: 'impl', acceptance: ['c'] },
+  ]});
+  const result = await fn();
+  const parked = (result.parked ?? [])[0];
+  let reason = null;
+  if (!parked) reason = 'expected a parked item: ' + JSON.stringify(result);
+  else if (!(parked.review.skipped || []).some(s => s.timed_out)) reason = 'the neutered build kept the late review anyway — the fixture does not settle inside the #2032 window, so the case above proves nothing: ' + JSON.stringify(parked.review);
+  else if (parked.review.ran.length !== 0) reason = 'the neutered build must discard the late review entirely: ' + JSON.stringify(parked.review);
+  console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+  process.exit(0);
+}
+"
+
+# --- K2032 static lockstep guards ---------------------------------------------
+grep -q 'async function drainReviewSettlements(' "$MJS" \
+  || fail "#2032: drainReviewSettlements() missing — the §3e disposition would read slot.done once again and discard a review that settled after the ceiling"
+grep -q 'function disposeReviewSlot(' "$MJS" \
+  || fail "#2032: disposeReviewSlot() missing — the disposition must be a PURE per-slot descriptor so a straggler can be re-read before its skip is written"
+grep -q 'dispositions\[i\] ?? (slot.done ? disposeReviewSlot(slot) : null)' "$MJS" \
+  || fail "#2032: the ceiling-breach branch must re-read slot.done at the instant the skip is written, not inherit a stale read"
+echo "PASS: #2032 late review results — settled-after-the-ceiling reviews are consumed, genuine hangs still skip"
+
+# ============================================================================
 # TEMPERLOOP#1067 — probe for a LOST pr-batch return before escalating it as a
 # failure. Distinct from #1071 (a liveness-KILL): here every step in the batch
 # through the one under test has ALREADY been confirmed successful, and the
