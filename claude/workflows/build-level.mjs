@@ -203,7 +203,33 @@
 //                  captured verdict is injected at 3c.
 //   Output (returned):
 //     { parked:      [{ slug, pr, pushed_sha, acceptance_results }],
-//       escalations: [{ slug, kind, payload }] }
+//       escalations: [{ slug, kind, payload }],
+//       sidelined?:  [{ slug, path, branch, recovery }] }
+//
+//   `sidelined` (temperloop#2006) is present ONLY when `worktree.sh create`
+//   shelved a resumable build for at least one item on this level. `create`
+//   must never refuse (worktree.sh:783-787), so when the deterministic path
+//   already holds committed work preservation could not capture, it MOVES that
+//   occupant to `<path>.unpreserved-<sha8>` on `<branch>.unpreserved-<sha8>`
+//   and creates over the freed path — reporting exactly that as the CREATED
+//   line's `sidelined` / `sidelined_path` / `sidelined_branch` fields. This
+//   driver reads them at 3b and surfaces the fact three ways: a named
+//   `SIDELINED BUILD` log line at the moment of discovery, the same
+//   `{ path, branch, recovery }` object stamped onto that item's OWN record
+//   (`parked.sidelined`, or `escalation.payload.sidelined` — whichever the item
+//   produced), and this level-wide rollup. `recovery` is the concrete reclaim
+//   command, not a description of the event.
+//
+//   The reading lives HERE rather than in a driver's prose deliberately. It is
+//   the same commit-ahead-of-base fact /fix's Step 4a worktree state table
+//   reasons about, and /build and /sweep reach `worktree.sh create` through
+//   this file's prelude with no table of their own — so all three inherit the
+//   check from one place instead of each restating it (the per-instance-fix
+//   smell: hoist the mechanism rather than patch the instance). A sideline is
+//   NOT a failure and never stalls the level: the item is being rebuilt from
+//   scratch and the shelved build stands until `worktree.sh prune`'s own
+//   two-gate disposal owner reaps it. It is a notice a human should act on
+//   before that happens.
 //
 //   A parked record MAY additionally carry `acceptance_unverified: true` +
 //   `recovered_from: <RECOVER_* stage>` (temperloop#939). That pair means the
@@ -2682,6 +2708,98 @@ function escalate(slug, kind, payload) {
 }
 
 // -----------------------------------------------------------------------------
+// The SIDELINE notice — the consumer half of worktree.sh's CREATED verdict
+// (temperloop#2006).
+// -----------------------------------------------------------------------------
+// `worktree.sh create` must NEVER refuse (its own contract at worktree.sh:783-787
+// — a refusing create turns /build's prelude batch from CREATED into escalated),
+// so when the deterministic path is already occupied by committed work that
+// preservation could not capture, it SIDELINES: the occupant is MOVED — never
+// copied, never removed — to `<path>.unpreserved-<sha8>` on branch
+// `<branch>.unpreserved-<sha8>`, which frees the path so create still CREATES.
+// It already REPORTS that, as fields on the CREATED line it was always going to
+// print: `sidelined` / `sidelined_path` / `sidelined_branch`.
+//
+// This driver used to DROP all three. That is the whole of the defect #2006
+// names: an intact, committed, reviewed build gets shelved while a fresh worker
+// rebuilds the same item from scratch, and nothing reports it — not because the
+// information is missing, but because nobody read it. The cost is a wasted
+// re-drive plus an orphaned worktree nobody knows to reclaim, and it silently
+// defeats the point of temperloop#1988's preserve-the-build fix.
+//
+// WHY THE CONSUMER LIVES HERE, below the drivers. The "is there a commit ahead
+// of base at the deterministic path?" reading is the same fact /fix's Step 4a
+// worktree state table reasons about in prose. /build and /sweep have no such
+// table: they invoke this file on its normal `fresh` route (no onlySlugs, no
+// verdicts) and reach `worktree.sh create` through the prelude batch below. A
+// guard that lives in one driver's prose holds only for that driver — the
+// per-instance-fix smell the kernel names ("hoist the mechanism rather than
+// patch the instance, or you re-patch every sibling in turn"). Putting the
+// consumer in the ONE file all three drivers route through is what lets /build
+// and /sweep inherit what /fix has without any of them restating the rule.
+//
+// NOTHING here touches worktree.sh. `create` still never refuses, still
+// sidelines rather than destroys, and still emits the identical CREATED line;
+// this is purely the reading half that was missing.
+//
+// Keyed by slug rather than threaded through driveItem's ~30 return points:
+// the notice is discovered at 3b and must ride whichever record the item
+// eventually produces (parked OR escalation), which is exactly the shape
+// preserveOnEscalation already solved with one choke point at the fan-out.
+const SIDELINE_NOTICES = new Map(); // slug → { path, branch, recovery }
+
+// sidelineRecoveryCmd — NAME THE RECOVERY, not merely the event. A sidelined
+// worktree is still a REGISTERED git worktree holding real commits (worktree.sh
+// moves it with `git worktree move`, falling back to `mv` + `worktree repair`),
+// so the concrete reclaim is: read what is in it, then get its branch somewhere
+// durable before `worktree.sh prune`'s two-gate disposal owner ever reaches it.
+// A sideline that could not carry the branch across reports an empty
+// `sidelined_branch`; say so rather than emitting a command with an empty ref.
+function sidelineRecoveryCmd(path, branch) {
+  const at = path || '(path not reported)';
+  const inspect = `git -C ${sq(at)} log --oneline --stat origin/HEAD..HEAD`;
+  return branch
+    ? `${inspect}   # then keep it: git -C ${sq(at)} push -u origin ${sq(branch)}`
+    : `${inspect}   # no branch survived the sideline — those commits are reachable only from this worktree's HEAD`;
+}
+
+// noteSideline — read the CREATED outcome's sideline verdict, and when it fired
+// emit the NAMED notice and record it for the choke-point stamp below. A clean
+// create over an empty path reports `sidelined: false` (or omits the field on an
+// older worktree.sh), and this is a total no-op on that arm.
+function noteSideline(slug, wtOut) {
+  if (!wtOut || wtOut.sidelined !== true) return;
+  const path = wtOut.sidelined_path ? String(wtOut.sidelined_path) : '';
+  const branch = wtOut.sidelined_branch ? String(wtOut.sidelined_branch) : '';
+  const recovery = sidelineRecoveryCmd(path, branch);
+  SIDELINE_NOTICES.set(slug, { path, branch, recovery });
+  log(
+    `[${slug}] SIDELINED BUILD — worktree.sh create found committed work it could not preserve at the ` +
+      `deterministic path and MOVED it aside instead of destroying it (temperloop#1730). ` +
+      `The shelved build is at ${path || '(path not reported)'}` +
+      (branch ? ` on branch ${branch}` : ' with no surviving branch') +
+      `. This run is REBUILDING the item from scratch; the shelved build is not lost, and ` +
+      `worktree.sh prune leaves it standing while its issue is open. Reclaim it with: ${recovery}`,
+  );
+}
+
+// stampSideline — the ONE choke point where the notice is attached to whatever
+// record this item produced, parked or escalation, so it survives the return to
+// the orchestrator and reaches the merge gate rather than living only in a
+// transient log line. Same placement (and same rationale) as
+// preserveOnEscalation: one seam beats N call sites.
+function stampSideline(item, r) {
+  const notice = SIDELINE_NOTICES.get(item.slug);
+  if (!notice || !r) return r;
+  if (r._kind === 'parked' && r.parked) {
+    r.parked.sidelined = notice;
+  } else if (r._kind === 'escalation' && r.escalation) {
+    r.escalation.payload = { ...(r.escalation.payload ?? {}), sidelined: notice };
+  }
+  return r;
+}
+
+// -----------------------------------------------------------------------------
 // preserveCommittedWorkCmd / preserveOnEscalation — temperloop#2020.
 // -----------------------------------------------------------------------------
 // THE DATA-LOSS SEAM. An escalation leaves the worktree intact, and every
@@ -5073,6 +5191,12 @@ async function driveItem(item) {
     // worktree.sh's CREATED.path is the authoritative deterministic path; it
     // equals worktreePath by construction, but trust the script's value.
     wt = wtOut.path ?? worktreePath;
+    // temperloop#2006 — READ the sideline verdict the CREATED line already
+    // carries. `create` never refuses, so an occupied path yields CREATED
+    // either way; the only thing that distinguishes "created over nothing"
+    // from "shelved a resumable build and created over the freed path" is
+    // this field, and dropping it is what made the shelf invisible.
+    noteSideline(item.slug, wtOut);
   }
 
   // --- 3c. Spawn the worker (NO isolation:'worktree' — DESIGN NOTE 3) ------
@@ -6496,7 +6620,7 @@ async function buildLevel() {
           });
         }
         return escalate(item.slug, 'worker-error', { error: String((err && err.stack) || err) });
-      }).then((r) => preserveOnEscalation(item, r)),
+      }).then((r) => preserveOnEscalation(item, r)).then((r) => stampSideline(item, r)),
     ),
   );
 
@@ -6511,8 +6635,30 @@ async function buildLevel() {
     else if (r._kind === 'escalation') escalations.push(r.escalation);
   }
 
-  log(`level done — parked=${parked.length} escalations=${escalations.length}`);
-  return { parked, escalations };
+  // temperloop#2006 — the LEVEL-SUMMARY half of the sideline notice. Each
+  // per-item record already carries its own `sidelined` object (stampSideline
+  // at the fan-out above); this rolls the level's set up onto the returned
+  // object so the orchestrator's Step 6 summary and the merge gate see it
+  // without re-walking two arrays. Omitted entirely when nothing sidelined, so
+  // an ordinary level's return is byte-identical to before this item.
+  const sidelined = activeItems
+    .map((it) => {
+      const n = SIDELINE_NOTICES.get(it.slug);
+      return n ? { slug: it.slug, ...n } : null;
+    })
+    .filter(Boolean);
+  if (sidelined.length > 0) {
+    log(
+      `level SIDELINED BUILD summary — ${sidelined.length} resumable build(s) shelved by worktree.sh create: ` +
+        sidelined.map((s) => `${s.slug} → ${s.path}${s.branch ? ` (${s.branch})` : ''}`).join('; '),
+    );
+  }
+
+  log(
+    `level done — parked=${parked.length} escalations=${escalations.length}` +
+      (sidelined.length > 0 ? ` sidelined=${sidelined.length}` : ''),
+  );
+  return sidelined.length > 0 ? { parked, escalations, sidelined } : { parked, escalations };
 }
 
 // Top-level entry (#437): the Workflow runtime wraps this script body in an async
