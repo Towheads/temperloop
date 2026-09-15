@@ -14,6 +14,177 @@ reads that marker; a stranger greps for it before pulling.
 
 ## [Unreleased]
 
+## [0.41.0] - 2026-09-15
+
+### Added
+
+- **`workflows/scripts/build/state-graph.sh soak` can now report how long its
+  soak clock has been stopped** (#2016). `soak --status --board <N>` prints one
+  JSON line carrying three figures — the days recorded so far, the days
+  required (`STATE_GRAPH_SOAK_DAYS`), and how many days have passed since the
+  most recent record — plus a `state` of `never-recorded`, `stale`, `current`
+  or `unreadable`. A soak nothing has ever run and a soak that ran and then
+  stopped six days ago now read differently; `soak --count` printed `0` for
+  both, and for a soak nothing schedules that `0` never changes, so a stopped
+  clock was invisible until someone thought to check. Reporting the elapsed
+  days rather than a stale/not-stale flag is deliberate: the number grows while
+  the clock is stopped, where a flag repeats itself forever. The new setting
+  `STATE_GRAPH_SOAK_STALE_DAYS` (default `1`) sets how old the newest record
+  may be before the clock reads stale. `--status` exits 0 in every state,
+  including `unreadable` — it reports, it does not gate.
+
+### Fixed
+
+- **A build, fix or sweep run that quietly did nothing is now reported instead
+  of counted as a success** (#2004). When the per-level driver was asked to
+  work on at least one item and came back having produced no pull request, no
+  parked item and no escalation for any of them, `/build`, `/fix` and `/sweep`
+  had no branch for that combination and read it as "finished, nothing to
+  report" — the item vanished with no signal at all, while its issue was still
+  open and marked in progress under a live claim. A run whose own driver
+  restarted mid-flight could land exactly there. `claude/workflows/build-level.mjs`
+  now recognises the combination and returns it as its own named outcome,
+  naming every item it was asked to work on and giving, for each, a ready-to-run
+  command that re-checks the issue, any open pull request for its branch, and
+  its worktree. The three commands each act on that outcome by running those
+  checks and deciding from what they report, rather than concluding anything
+  from the empty result. A run that was legitimately asked to do nothing, and a
+  read-only investigation item that produces a verdict rather than a pull
+  request, are both unaffected and report exactly as before.
+
+- **A build that `worktree.sh create` shelves is now reported instead of
+  silently dropped** (#2006). `create` never refuses: when the worktree path it
+  needs already holds committed work that preservation could not capture, it
+  moves that occupant aside to `<path>.unpreserved-<sha8>` and reports the fact
+  on its `CREATED` line as `sidelined` / `sidelined_path` / `sidelined_branch`.
+  Nothing downstream read those three fields, so an intact, committed build got
+  shelved while a fresh worker rebuilt the same item and nothing said so — a
+  wasted re-drive plus an orphaned worktree nobody knew to reclaim. The driver
+  now reads them when it creates an item's worktree and tells you three ways: a
+  named `SIDELINED BUILD` notice in the run log, carrying the shelved path, its
+  branch and a reclaim command you can paste; the same fact travelling with the
+  item all the way to the merge gate, whether it ends up parked or escalated;
+  and a count on the run's summary. Because the reading lives in the one file
+  `/build`, `/sweep` and `/fix` all route through, all three inherit it.
+  `worktree.sh` is unchanged — its never-refuse contract still stands.
+
+- **`agent_declared_state` now resolves the `reviewers/` catalog subdir at
+  every agent directory it probes, not just the checkout's source tree**
+  (#2026). A per-language reviewer installed at
+  `~/.claude/agents/reviewers/<name>.md` — the shape on a host whose
+  machine-global agent dir points at a kernel checkout's `claude/agents` —
+  missed the machine surface's flat-only check and was reported
+  `source-only`. Because `installed` is the documented spawn gate, a caller
+  obeying the contract silently skipped a review seat that was live and
+  spawnable. The project-scoped `.claude/agents/` surface gains the same arm,
+  so the same layout resolves identically wherever it appears. Surface
+  precedence is unchanged: a live install still outranks a shipped-only hit,
+  and nothing moves out of `absent`.
+
+- **`/build`, `/sweep` and `/fix` now run the orchestrator from your checkout
+  instead of a stale copy in `~/.claude`** (#2027). All three commands used to
+  name `~/.claude/workflows/build-level.mjs` as the script to run. That path
+  had two problems. The Workflow tool refuses any script outside the working
+  directory, so the path was never usable as written and each run quietly
+  depended on whoever launched it noticing and substituting the in-repo copy.
+  And when it was usable, nothing in this repo ever installed or refreshed
+  that file — it was a plain copy with no owner, so it fell further behind on
+  every merge (347 lines behind on the host that reported this, and six days
+  behind during an overnight run in which every invocation executed superseded
+  machinery and reported success). All three commands now resolve
+  `claude/workflows/build-level.mjs` from the checkout you are working in, via
+  the new `workflows/scripts/build/workflow-path.sh`, so there is only one
+  copy to be right about. If something still points at an installed copy — a
+  repo that vendors only the install, or an explicit path you pass — that same
+  script checks it against your checkout first (reusing the existing
+  `workflows/scripts/install/doctor.sh` drift check) and **refuses to hand
+  back a path that differs**, rather than letting superseded machinery run and
+  report success. A copy it cannot check is reported as unchecked, never as
+  clean. Nothing installs `claude/workflows/*.mjs` and nothing should: the
+  checkout copy is the only one these commands need.
+
+- **`worktree.sh` now freshens `origin/<default>` before judging work unlanded,
+  and records which basis it judged on** (#2030). Every landed-check in that
+  script compares against the LOCAL `origin/<default>` ref, which only moves
+  when something fetches; `preserve_unlanded` — the check whose verdict decides
+  whether work is recorded as lost — never freshened it, and on the `create`
+  path the hand-rolled fetch ran *after* the probe that needed it. Work merged
+  minutes earlier therefore read as not-an-ancestor, and `remove` minted a
+  `refs/parked/*` preservation for work already in the default branch. The
+  freshen is now one shared helper (`create`, `prune` and `deps-merged` use it
+  too), bounded by the new `WORKTREE_LANDED_FETCH_TIMEOUT_SECS` through the
+  portable-timeout shim. It fails safe: a failed, timed-out or offline fetch is
+  never fatal and leaves the local ref as the basis, which can only make work
+  read as less landed — so "could not establish" still preserves, unchanged, and
+  `remove` never depends on the network being up. Each preservation now carries
+  `basis=refreshed` / `basis=unrefreshed` on its mint line and durably on the
+  ref's own reflog, and `prune`'s `PARKED_REF` / `PARKED_REF_REAPED` lines
+  report it — so a verdict reached against a stale comparison point is
+  distinguishable after the fact from one reached against a fresh one.
+
+- **A code review that finishes just after the review time limit is now used
+  instead of discarded** (#2032). The pre-push review pass `/build`, `/fix` and
+  `/sweep` run waits for its reviewers under a wall-clock limit
+  (`BUILD_REVIEW_AGENT_CEILING_SECS`), and it checked exactly once — the instant
+  that wait ended — whether each reviewer had come back. A reviewer whose
+  finished review arrived a moment later was already past the only check there
+  was: its findings were thrown away, and both the PR body and the run's review
+  tally reported it as unavailable for exceeding the limit, with nothing
+  recorded as having run. This was not a hang; the reviews arrived and were
+  dropped, and one discarded review had already found a real defect that then
+  had to be found again by hand. The limit is unchanged and still bounds how
+  long the pass waits — what changed is what happens to a result that arrives
+  anyway: the pass now reads each reviewer's state as late as it can before
+  writing anything, so a review that landed late is reported as having run and
+  its findings reach the PR body. A reviewer that genuinely never comes back is
+  still reported as skipped, naming the limit as the reason, and a recovered
+  review can no longer be counted as both.
+
+- **`env-reconcile.sh` no longer describes a directory layout the host stopped
+  having, and an abandoned operator checkout stops reading as a bare `OK`**
+  (#2041). The comment beside the checkout registry asserted that the operator
+  clone of the kernel repo "owns the `temperloop.wt/*` worktrees" — true when
+  written, silently inverted once the `batch/` layout arrived: measured
+  2026-09-15, the operator clone was 544 commits behind with zero worktrees
+  while the cron clone held both live ones. It is rewritten to explain the ROLE
+  distinction (which baseline each clone is classified against) and to assert
+  nothing about which concrete directory currently holds worktrees or gets
+  pulled, so it cannot go stale against one host's habits again — the
+  classifier never read that claim anyway, since worktrees are discovered by
+  scanning `<checkout>.wt/` beside every registered entry in both lists.
+  Alongside it, the operator role gains one informational class,
+  `DORMANT:<days>d-idle:<n>-behind`: being behind `origin/<default>` stays
+  deliberately un-flagged for this role (a checkout may sit on other work), so
+  the discriminator between "behind because busy" and "behind because
+  abandoned" is LAST ACTIVITY — the newer of HEAD's committer date and the
+  newest HEAD reflog ENTRY's own recorded timestamp. Neither mtime is used: the
+  index's is refreshed by the reconciler's own `git status`, and the reflog
+  FILE's is rewritten by `git gc --auto` (the motivating checkout's reflog was
+  zero bytes and dated today while its last real activity was a month old, so
+  an mtime reading would have called it active). A checkout that is behind AND idle past
+  `ENV_RECONCILE_DORMANT_DAYS` (default 14) now prints its own `DORMANT` line
+  instead of `OK`. It raises no alarm, appends nothing to the `--format entry`
+  vault surface, and carries no remedy: disposing of an abandoned checkout is
+  an operator decision, and the reconciler stays READ-ONLY and fail-open —
+  unreadable activity signals emit nothing rather than guessing "abandoned".
+
+- **Running the build test suite no longer spends a checkout's code-review
+  budget** (#2046). `/build`, `/fix` and `/sweep` cap how many review rounds a
+  single item may take before they stop waiting for it to converge — the cap
+  is `BUILD_REVIEW_BLOCKING_MAX_ROUNDS` in
+  `workflows/scripts/build/build.config.sh`, and the count is kept per
+  checkout in a `build-review-rounds` file inside that checkout's git
+  directory. Two cases in `workflows/scripts/build/tests/test_workflow.sh` ran
+  the real code-review setup against whatever checkout the suite happened to
+  be running in, and that counted as two rounds every time anyone ran the
+  tests. Since the suite normally runs inside the same throwaway checkout the
+  fix is built in, a change whose tests were run even twice was already over
+  the cap before its first real review round. The cap then fired at once and
+  carried unresolved review findings into the pull request body instead of
+  letting the review finish — silently, because nothing failed; the count just
+  climbed. The two cases now use the read-only form of the same step, and the
+  suite fails if any test writes that count again.
+
 ## [0.40.0] - 2026-09-14 — BREAKING
 
 ### Added
