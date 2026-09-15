@@ -731,6 +731,37 @@ rc=0; badday_out="$(cmd_soak --status --board "$BOARD" 2>/dev/null)" || rc=$?
 [ "$(jq -r '.state' <<<"$badday_out")" = "unreadable" ] || fail "a non-date day value must read unreadable, never be silently treated as never-recorded or current (got: $badday_out)"
 echo "PASS: soak --status — a qualifying record whose day is not a YYYY-MM-DD date reads unreadable, not never-recorded"
 
+# --- a SHAPE-valid but CALENDAR-invalid day is unreadable too ----------------
+# The regex + range guard alone accepts 2026-02-30: month and day are both in
+# range, so the days-from-civil formula runs and returns an integer. Not a
+# harmless one — 2026-02-30 and 2026-03-02 both compute to 20514, so a
+# corrupted `day` would be read as a real date two days later and the
+# staleness figure would be quietly wrong by two. Wrong-with-no-signal is
+# strictly worse than `unreadable`, which is the typed answer this case is
+# owed. The leap-year arm matters in both directions: 2024-02-29 is a real
+# date and must NOT be rejected.
+for bad_day in 2026-02-30 2026-04-31 2026-02-29 1900-02-29; do
+  fresh_cache "status-calendar-$bad_day"
+  seed_soak_log "{\"day\":\"$bad_day\",\"type\":\"run\",\"schema\":2,\"classes\":{}}" >/dev/null
+  rc=0; cal_out="$(cmd_soak --status --board "$BOARD" 2>/dev/null)" || rc=$?
+  [ "$rc" -eq 0 ] || fail "soak --status over a calendar-invalid day should report, not gate (day=$bad_day, rc=$rc)"
+  [ "$(jq -r '.state' <<<"$cal_out")" = "unreadable" ] \
+    || fail "$bad_day is not a real calendar date — it must read unreadable, never a silently-wrong days_since_last (got: $cal_out)"
+  [ "$(jq -r '.days_since_last' <<<"$cal_out")" = "null" ] \
+    || fail "$bad_day must yield NO recency figure at all, never a computed one (got: $cal_out)"
+done
+echo "PASS: soak --status — a shape-valid but calendar-invalid day (Feb 30, Apr 31, Feb 29 in a non-leap year) reads unreadable, not a wrong number"
+
+# --- ...and a REAL leap day is still accepted -------------------------------
+fresh_cache status-leapday
+seed_soak_log '{"day":"2024-02-29","type":"run","schema":2,"classes":{}}' >/dev/null
+leap_out="$(cmd_soak --status --board "$BOARD" 2>/dev/null)"
+[ "$(jq -r '.state' <<<"$leap_out")" != "unreadable" ] \
+  || fail "2024-02-29 IS a real calendar date — the days-in-month guard must not reject a genuine leap day (got: $leap_out)"
+[ "$(jq -r '.last_day' <<<"$leap_out")" = "2024-02-29" ] \
+  || fail "a genuine leap day must survive as last_day (got: $leap_out)"
+echo "PASS: soak --status — a genuine leap day (2024-02-29) is accepted, so the guard rejects only real impossibilities"
+
 # --- --count and --status read the SAME qualifying-day filter ----------------
 # One filter, two readers (temperloop#2016): a pre-temperloop#1978 flat-schema
 # record is excluded from BOTH the count and the recency — if the two filters

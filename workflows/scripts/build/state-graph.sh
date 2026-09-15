@@ -217,7 +217,8 @@
 # condition that should fail someone else's build — the kernel cannot
 # schedule the soak itself (scheduling is host-side, out of this repo), so a
 # hard gate here would block legitimate work over a condition the kernel
-# cannot fix (claude/CLAUDE.kernel.md's advisory-over-enforced discipline).
+# cannot fix (claude/engineering-principles.md principle 7, advisory over
+# enforced discipline).
 # `--count` keeps its own non-zero exit on an unreadable log, unchanged.
 #
 # Days are counted DISTINCT, never CONSECUTIVE (the long-standing
@@ -1888,6 +1889,18 @@ _sg_days_from_civil() {
     if (d !~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$/) exit 1
     y = substr(d,1,4) + 0; m = substr(d,6,2) + 0; day = substr(d,9,2) + 0
     if (m < 1 || m > 12 || day < 1 || day > 31) exit 1
+    # Days-in-month, leap-aware. A shape-valid but CALENDAR-INVALID date
+    # (2026-02-30, 2026-04-31, 2026-02-29 in a non-leap year) otherwise
+    # sails through the range check above and the formula below happily
+    # returns an integer for it — and not a harmless one: 2026-02-30 and
+    # 2026-03-02 both yield 20514, so a corrupted `day` would be read as a
+    # real date two days later and the staleness figure would be quietly
+    # wrong. Wrong-by-two with no signal is strictly worse than
+    # `unreadable`, which is the typed answer this case is owed.
+    split("31 28 31 30 31 30 31 31 30 31 30 31", dim, " ")
+    leap = (y % 4 == 0 && (y % 100 != 0 || y % 400 == 0))
+    maxd = (m == 2 && leap) ? 29 : dim[m] + 0
+    if (day > maxd) exit 1
     if (m <= 2) y -= 1
     era = int((y >= 0 ? y : y - 399) / 400)
     yoe = y - era * 400
@@ -1913,7 +1926,12 @@ _sg_soak_status_line() {
      + (if $note == "" then {} else {note: $note} end)'
 }
 
-# `soak --status --board N`: the read-only staleness report. See this file's
+# `soak --status --board N`: the staleness report. It never writes to the
+# soak LOG — the one caveat on calling it flatly "read-only" is that it
+# resolves the log path through `_sg_soak_log_file`, which `mkdir -p`s the
+# cache dir, so a --status against a board that has never soaked creates an
+# empty directory. Long-standing behaviour shared with `--count`, harmless
+# and idempotent, but stated rather than glossed. See this file's
 # header (§ STALENESS) for the typed states and why this never gates.
 _sg_soak_status() {
   local board="$1" required stale_after logf days last_day today since state note
