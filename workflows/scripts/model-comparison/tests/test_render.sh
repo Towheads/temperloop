@@ -150,8 +150,8 @@ grep -q '^\*\*Winner: candidate\*\* (claude-sonnet-5)' "$R_OUT" || fail "A1: Dec
 ok "A1 winner: the Decision headline names 'Winner: candidate' with the candidate's model"
 
 count
-head -n 12 "$R_OUT" | grep -q '^## Decision' || fail "A2: Decision is not within the first 12 lines"
-awk '/^## Decision/{f=1;next} /^## /{f=0} f' "$R_OUT" | grep -q 'Winner: candidate' || fail "A2: the winner is not inside the Decision section"
+head -n 12 "$R_OUT" | grep '^## Decision' >/dev/null || fail "A2: Decision is not within the first 12 lines"
+awk '/^## Decision/{f=1;next} /^## /{f=0} f' "$R_OUT" | grep 'Winner: candidate' >/dev/null || fail "A2: the winner is not inside the Decision section"
 ok "A2 winner: the verdict is decision-first — inside ## Decision, near the top"
 
 count

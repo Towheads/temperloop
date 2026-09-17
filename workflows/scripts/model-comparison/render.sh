@@ -190,7 +190,7 @@ def bullet($s): "- " + $s;
 | [
   "# Model comparison — " + $bm + " (baseline) vs " + $cm + " (candidate)",
   "",
-  "_Rendered " + (.generated_at_local // .generated_at_utc // "?") + " " + (.display_timezone // "") + " from `" + (.records_dir // "?") + "` · every figure below is copied from the producer's JSON; nothing is recomputed here._",
+  "_Rendered " + (.generated_at_local // .generated_at_utc // "?") + " " + (.display_timezone // "") + " from `" + (.records_dir // "?") + "` · every figure below is copied from the producer JSON; nothing is recomputed here._",
   "",
   "## Decision",
   "",
@@ -244,7 +244,7 @@ def bullet($s): "- " + $s;
   (if ($qo | has("positions_present")) and ($qo.positions_present == false) then bullet("Record execution order: no judged pair carries a position, so the order effect cannot be estimated. Replay under a driver that stamps `execution_order` (batch.sh does).") else empty end),
   (if (($b.judge_quality.degraded_n // 0) + ($c.judge_quality.degraded_n // 0)) > 0 then bullet("Re-judge the " + ((($b.judge_quality.degraded_n // 0) + ($c.judge_quality.degraded_n // 0)) | tostring) + " outage-degraded rows (`judge.sh judge-batch` on the same arm files) — that adds paired N without re-running any replay.") else empty end),
   (if (($b.compatibility.integration_error_n // 0) + ($c.compatibility.integration_error_n // 0)) > 0 then bullet("Retry the " + ((($b.compatibility.integration_error_n // 0) + ($c.compatibility.integration_error_n // 0)) | tostring) + " integration-error legs (`batch.sh run … --retry-stage <stage>` against the same state dir); they are compatibility facts and contribute no quality or cost pair until they score.") else empty end),
-  (if $winner != null then bullet("Nothing here is a routing decision by itself: the winner is a quality verdict at this N on this repo's own corpus. Read the cost row beside it, and the pre-registered decision rule on the run's issue, before re-pointing a seat.") else empty end),
+  (if $winner != null then bullet("Nothing here is a routing decision by itself: the winner is a quality verdict at this N on this corpus alone. Read the cost row beside it, and the pre-registered decision rule on the issue for the run, before re-pointing a seat.") else empty end),
   "",
   "## Run provenance",
   "",
