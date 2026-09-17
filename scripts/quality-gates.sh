@@ -766,6 +766,24 @@ KERNEL_GATES=(
   # Synthetic fixtures in a tmpdir; a claude/gh/curl/wget canary on PATH is
   # asserted never invoked. Same direct-`bash` form as the sibling gates.
   "bash workflows/scripts/model-comparison/tests/test_comparison_report.sh"
+  # Comparison report RENDERER (temperloop#2058, epic #1225):
+  # workflows/scripts/model-comparison/render.sh — the decision-first Markdown
+  # page a human reads instead of the producer's JSON. The load-bearing checks
+  # are the ones that keep it an honest RENDERING and never a second report:
+  # (1) the `winner` is READ as the producer minted it, never re-derived —
+  # proved by mutation (deleting comparison.winner from a winning report must
+  # remove the winner from the page while the verdict string still says
+  # candidate_better; injecting winner_withheld_reason must switch the
+  # headline and print the reason verbatim); (2) a withheld figure renders
+  # `n/a` plus its reason, never 0 or blank; (3) the three headline shapes —
+  # winner / below-floor inconclusive / not-clean withheld — are each driven
+  # through the REAL producer and stats library over synthetic arms, so the
+  # page tracks the producer's own withholding conditions rather than a
+  # fixture's idea of them; (4) fail-closed inputs (a `skipped --` line,
+  # absent/empty/unreadable/non-JSON, unknown schema_version) are CANNOT
+  # EVALUATE rc 2 through the one shared emission path, with no Markdown
+  # written. claude/gh/curl/wget canary asserted never invoked.
+  "bash workflows/scripts/model-comparison/tests/test_render.sh"
   # Per-merged-item efficiency emit (temperloop#943):
   # workflows/scripts/emit-item-efficiency.sh — the overhead-per-shipped-change
   # record written at build.md's 4d merge seam (tokens by phase, wall-clock by

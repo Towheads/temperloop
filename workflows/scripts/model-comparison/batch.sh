@@ -2204,6 +2204,15 @@ cmd_run() {
     printf 'batch.sh: SPEND DRIFT — %s (see spend_reconciliation)\n' \
       "$(jq -r '.statement // "projected and observed spend diverge"' <<<"$spend_recon_json" 2>/dev/null)" >&2
   fi
+  # The render pointer (temperloop#2058) — stderr beside the summary, never a
+  # field of it: the two arm files this run just wrote are exactly what
+  # render.sh reads, so the operator gets the human-readable page in one
+  # copy-paste instead of a jq session. Printed on every terminal outcome,
+  # including a stopped-early or degraded run — the page says what is
+  # missing far better than its absence would (ADR 0027: still nothing runs
+  # it for you).
+  printf 'batch.sh: next — render the comparison for a human: %s --records-dir %s --out %s/report.md --summary-out %s/report.summary.json\n' \
+    "$HERE/render.sh" "$out_dir" "$out_dir" "$out_dir" >&2
   # BATCH_STOPPED_EARLY takes precedence over BATCH_DEGRADED and gets its OWN
   # code: a degraded batch ran the corpus out, this one did not, and a caller
   # that cannot tell them apart cannot tell "some records are incompatible"

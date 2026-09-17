@@ -558,6 +558,36 @@ it into `temperloop report`, add the same one-file locator + `exec` shim the
 reversible opt-in that touches one file and adds no new keys to any existing
 producer's output.
 
+**Rendering the report for a human.** The producer's JSON is the data,
+not the page. `workflows/scripts/model-comparison/render.sh` (temperloop#2058)
+lays the same object out decision-first — the verdict and the winner, or
+exactly why no winner is named (the sample floor, an order-confounded quality
+comparison, or no significant difference), in the first lines; one
+at-a-glance table across quality, cost, gates, rework, compatibility and
+duration; the honesty block (floor, intervals, minimum detectable effect,
+order effect, corpus window, gate versions, cost basis, emit coverage); and
+a short "what would change this verdict" list. It derives no statistic:
+every figure is copied from the JSON, a withheld figure renders `n/a` with
+its stated reason, and the `winner` key is read as the producer minted it,
+never inferred from a verdict string or an interval. `batch.sh run` prints
+the exact render command for the arms it just wrote:
+
+```sh
+workflows/scripts/model-comparison/render.sh \
+    --records-dir .temperloop/model-comparison --out .temperloop/model-comparison/report.md \
+    --summary-out .temperloop/model-comparison/report.summary.json
+```
+
+Unlike the producer, the renderer is **fail-closed** (the module's own
+convention): a `skipped --` producer line, an absent, empty, unreadable or
+non-JSON input, or a `schema_version` it does not understand is `CANNOT
+EVALUATE` at exit 2 with no Markdown written — a rendering of nothing would
+read as a report. The optional `--summary-out` sidecar
+(`model-comparison-summary-v1`: arms, verdict, winner or withheld reason,
+paired N against the floor) is the feed the `/telemetry` and `/check-in`
+surfacing item (temperloop#2061) reads, so a finished comparison can reach
+the daily brief without anyone re-parsing Markdown.
+
 No existing command's default behavior changes by this module existing.
 `/sweep`, `/build`, and `/fix` gain no new prompts, gates, or spend from a
 bare checkout that never runs a replay or points `$SWEEP_WORKER_MODEL` at a
