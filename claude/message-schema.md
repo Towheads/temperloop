@@ -365,7 +365,10 @@ same notice lands in a durable artifact).
 - **Why** — the capability-probe result (e.g. "unavailable"), per
   `CLAUDE.kernel.md` § Subagent usage's "Legible agent-gate degradation" rule
   — this template is the presentation instance of that existing rule, not a
-  restatement of it.
+  restatement of it. That rule reserves the word `unavailable` for the probe
+  verdict itself; a capability that *was* resolved and spawned and then
+  overran a wall-clock ceiling fills this slot with the **timeout** wording it
+  owns (`timed out after <actual>s`), never the probe word.
 - **Calibrated-trust statement** — what the degradation means for confidence
   in the surrounding result (locked, Lee & See); never silently imply full
   confidence when a gate didn't run (Amershi G10, locked).
@@ -373,10 +376,18 @@ same notice lands in a durable artifact).
   known. In mode 6 this is unconditional; in mode 2 it is permitted **only**
   for the shipped-but-not-installed subagent case defined below.
 
-The mode-2 minimal form has **two shapes, and only two.** Its **default** is <!-- cite: MS.6 incident:F#164 -->
+The mode-2 minimal form has **three shapes, and only three.** Its **default** is <!-- cite: MS.6 incident:F#164 -->
 the bare one-line `skipped — <agent> unavailable` convention verbatim — that
 exact wording is owned by `CLAUDE.kernel.md` itself and is not restated here.
-Its **one sanctioned exception** is the *shipped-but-not-installed* case: when
+Its **second shape is the ceiling-timeout case**, also kernel-owned: a
+capability that *was* available and *was* invoked, and then did not return
+inside a wall-clock bound, emits `skipped — <agent> timed out after
+<actual>s` — the duration being the wall clock actually waited, not the bound
+budgeted. It is a separate shape rather than a rewording because the two
+carry opposite facts about the same agent (absent vs. present-and-slow) and
+route an investigator to opposite places; temperloop#2064 (§3e timeout
+misread as agent-unavailable) is the recorded cost of collapsing them. Its
+**one sanctioned exception** is the *shipped-but-not-installed* case: when
 the skipped capability is a subagent that **ships as source under
 `claude/agents/<agent>.md`** but is not resolvable as a live agent (no
 `.claude/agents/<agent>.md` and no `CLAUDE.md § Subagents` declaration), the
@@ -387,8 +398,8 @@ remedy pointer permitted on a live mode-2 *skip* line; it exists because this
 specific degradation has a known, in-the-moment fix the operator needs
 *while the panel is running*, not merely in a later durable record.
 Conciseness stays structurally enforced — one clause, this case only; every
-other mode-2 skip (a genuinely not-shipped agent, or a non-agent capability
-with no `project-agents.sh` install path) stays bare. The two-shapes rule
+other mode-2 skip (a genuinely not-shipped agent, a timed-out one, or a
+non-agent capability with no `project-agents.sh` install path) stays bare. The three-shapes rule
 governs a **skip** — a step that did not run — and is untouched by the
 **denied-capability variant** below, which reports a *refusal* the operator
 can lift right now and is therefore not a one-line skip notice at all. **This clause fixes the

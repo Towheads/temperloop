@@ -550,9 +550,10 @@ const SPINE_OUTCOME_SCHEMA = {
         // The §3e REVIEW-AGENT liveness bound's timer (temperloop#2003), whose
         // executor runs workflows/scripts/build/review-wait.sh to give this
         // runtime the wall-clock tick it otherwise has none of (`Date.now()`
-        // THROWS here — DESIGN NOTE 1). THREE closed outcomes, each a pure
+        // THROWS here — DESIGN NOTE 1). FOUR closed outcomes, each a pure
         // OBSERVATION the executor can make without inventing anything — the
-        // distinction temperloop#2049 turned on:
+        // distinction temperloop#2049 turned on, plus the fourth
+        // temperloop#2064 had to split out of it:
         //   REVIEW_WAIT_ELAPSED       the script printed its line. It carries
         //                             `realized_secs`, the script's OWN measure
         //                             of the wait, which reviewWaitAgent()
@@ -561,11 +562,23 @@ const SPINE_OUTCOME_SCHEMA = {
         //                             command. That budget is secs+60s, so this
         //                             can only fire AFTER the interval — the
         //                             same fact, reported honestly.
-        //   REVIEW_WAIT_UNAVAILABLE   the command never ran to completion (a
-        //                             permission control refused it; it errored).
-        //                             NO time passed, so the caller FAILS OPEN.
+        //   REVIEW_WAIT_BLOCKED       a harness PERMISSION CONTROL refused the
+        //                             command outright ("<tool_use_error>Blocked:
+        //                             …"). NO time passed. This is SPLIT OUT of
+        //                             REVIEW_WAIT_UNAVAILABLE by temperloop#2064
+        //                             because a block and a TOOL_TIMEOUT are the
+        //                             same observation to the executor — "no JSON
+        //                             line" — while only ONE of them (the tool
+        //                             timeout) is the PERMISSIVE arm. Naming the
+        //                             block is what lets reviewWaitAgent() refuse
+        //                             to let a refusal land on that arm.
+        //   REVIEW_WAIT_UNAVAILABLE   the command never ran to completion for any
+        //                             OTHER reason (it errored; the helper was
+        //                             missing). NO time passed either, so the
+        //                             caller FAILS OPEN on both.
         // None of them says anything whatsoever about the review being bounded.
-        'REVIEW_WAIT_ELAPSED', 'REVIEW_WAIT_TOOL_TIMEOUT', 'REVIEW_WAIT_UNAVAILABLE',
+        'REVIEW_WAIT_ELAPSED', 'REVIEW_WAIT_TOOL_TIMEOUT', 'REVIEW_WAIT_BLOCKED',
+        'REVIEW_WAIT_UNAVAILABLE',
         'ERROR',
       ],
     },
@@ -598,6 +611,13 @@ const SPINE_OUTCOME_SCHEMA = {
     // was asked, so the two can be compared.
     secs: { type: ['number', 'string'] },
     realized_secs: { type: ['number', 'string'] },
+    // temperloop#2064 — the harness's OWN words when it REFUSED the timer
+    // command, relayed verbatim (first line). Declared rather than left to
+    // `additionalProperties` because reviewWaitAgent() CLASSIFIES on it: a
+    // refusal is recognised from this text before the executor's own outcome
+    // label is consulted, so a block mislabelled as a tool timeout can never
+    // reach the permissive arm.
+    refusal_text: { type: 'string' },
     error: { type: 'string' },
     matches: { type: 'array', items: { type: 'string' } },
     failed_run_ids: { type: 'array', items: { type: ['number', 'string'] } },
@@ -1074,6 +1094,43 @@ const REVIEW_AGENT_SLOW_SECS = Math.min(
 // the #1071 watchdog wrapped around every machinery command never kills a timer
 // that is doing exactly what it was asked to do.
 const REVIEW_WAIT_SLICE_MAX_SECS = Math.floor((AGENT_BASH_CAP_MS - 60_000) / 1000);
+// REVIEW_WAIT_REFUSAL_RE — the harness's OWN words for "I refused this command"
+// (temperloop#2064). Matched against whatever text the timer executor relays
+// (`refusal_text`, `error`, `detail`) BEFORE its own outcome label is read.
+//
+// WHY TEXT RATHER THAN THE EXECUTOR'S LABEL. A permission BLOCK and a Bash-tool
+// TIMEOUT kill are the SAME observation to the executor — no JSON line came
+// back — and exactly one of the two arms is PERMISSIVE: a tool timeout is
+// honoured as elapsed, because its budget is secs+60s and can only fire AFTER
+// the interval. So the executor is being asked to tell apart two states it
+// cannot see, with a coin flip that lands, half the time, on "the ceiling
+// expired". temperloop#2064 measured that: three slices asking 300s/540s/360s
+// returned in 11s/11s/17s, a 1200s ceiling realized in ~41s, and a
+// docs-reviewer that finished normally at 98s was discarded and reported as
+// "unavailable". A refusal, unlike an elapse, leaves EVIDENCE the executor can
+// only relay and never invent — the harness's own refusal text — so that is
+// what the classification reads (kernel principle 5: counter a known AI failure
+// mode STRUCTURALLY, not with a sharper instruction).
+//
+// FAIL-CLOSED DIRECTION. A match means "no usable timer", which makes the
+// caller fail OPEN on the fanout (wait unbounded, the pre-#2003 behaviour) and
+// say so. So a FALSE positive costs latency on a pathological hang; a false
+// NEGATIVE discards finished reviews and reports a gate that never ran. The
+// regex is therefore deliberately generous.
+const REVIEW_WAIT_REFUSAL_RE =
+  /<tool_use_error>|\bblocked\b|\bpermission (?:control|rule|denied)|\brefused\b|\bdenied\b|\bnot permitted\b/i;
+// reviewWaitRefusalText — the first line of the refusal a timer result carries,
+// or null when it carries none. Bounded in length because it lands in a log line
+// and in the `timer-*` string the caller reports.
+function reviewWaitRefusalText(out) {
+  for (const field of ['refusal_text', 'error', 'detail']) {
+    const v = out && out[field];
+    if (typeof v !== 'string' || v.trim() === '') continue;
+    if (!REVIEW_WAIT_REFUSAL_RE.test(v)) continue;
+    return v.split('\n')[0].trim().slice(0, 160);
+  }
+  return null;
+}
 // reviewWaitSlices() — the wait, expressed as the sequence of sleeps that reach
 // first the SLOW mark and then the CEILING. Deriving it from the two marks (not
 // from a fixed slice length) is what keeps the timer CHEAP: a healthy pass that
@@ -4069,7 +4126,7 @@ async function runReviewers(item, wt) {
     );
     return slot;
   });
-  await awaitReviewFanout(item, slots);
+  const waitedSecs = await awaitReviewFanout(item, slots);
   // temperloop#2032 — THE LAST-CHANCE READ, and the reason the disposition
   // below is three passes rather than one loop. `slot.done` is set by the
   // settlement recorder attached at the spawn above, which runs as a MICROTASK
@@ -4120,17 +4177,32 @@ async function runReviewers(item, wt) {
     if (disposition === null) {
       // temperloop#2003 — the CEILING BREACH. This reviewer is abandoned, never
       // killed: the runtime offers no cancellation, so the promise is simply
-      // never awaited again and the pass proceeds. The note keeps the documented
-      // `skipped — <agent> unavailable` shape (`~/.claude/CLAUDE.md` § Subagent
-      // usage, legible agent-gate degradation) and names the cause, so an
-      // operator reading the PR body sees a bounded outcome rather than the
+      // never awaited again and the pass proceeds. The note names the cause, so
+      // an operator reading the PR body sees a bounded outcome rather than the
       // silence the incident actually produced. Disposition splits
       // mandatory-vs-advisory below: this is the ADVISORY half (a degraded
       // notice + a `mandatory_ok`-preserving tally entry); a MANDATORY route
       // additionally ESCALATES after the loop.
+      //
+      // TEMPERLOOP#2064 — WHY THIS LINE NO LONGER SAYS "unavailable". It used to,
+      // to match the documented `skipped — <agent> unavailable` shape
+      // (CLAUDE.kernel.md § Subagent usage, legible agent-gate degradation) —
+      // but in that rule `unavailable` is the CAPABILITY-PROBE verdict: the
+      // agent is not declared in `CLAUDE.md § Subagents` or `.claude/agents/`,
+      // so it could not be spawned at all. A ceiling breach is the OPPOSITE
+      // fact: the agent IS installed and WAS spawned, and did not return in
+      // time. Conflating them sent the #2064 investigator at the agent roster
+      // while the defect sat one layer below, in the timer — and cost a live
+      // session ~1200s of apparent hang. disposeReviewSlot() still emits the
+      // true capability-probe form for the real thing (an agent-resolution
+      // failure), so the two senses now carry two distinct wordings, which is
+      // what makes either of them diagnostic. The duration reported is the tick
+      // this pass actually HONOURED, never the nominal ceiling: when those two
+      // numbers disagree, that gap IS the bug (#2064 measured 41s against 1200s).
       const note =
-        `skipped — ${route.reviewer} unavailable ` +
-        `(exceeded the §3e review ceiling of ${REVIEW_AGENT_CEILING_SECS}s — temperloop#2003)`;
+        `skipped — ${route.reviewer} timed out after ${waitedSecs}s ` +
+        `(the §3e review ceiling of ${REVIEW_AGENT_CEILING_SECS}s — temperloop#2003; the agent is ` +
+        `installed and was spawned, it did not return in time)`;
       log(`[${item.slug}] §3e review — ${note}`);
       // `timed_out` distinguishes this from the other three skip reasons for a
       // reader of the parked tally; `mandatory` is what drives mandatory_ok, so
@@ -4191,11 +4263,15 @@ async function runReviewers(item, wt) {
   if (mandatoryTimedOut.length > 0) {
     log(
       `[${item.slug}] §3e review — MANDATORY reviewer(s) ` +
-        `${mandatoryTimedOut.map((s) => s.reviewer).join(', ')} exceeded the ` +
-        `${REVIEW_AGENT_CEILING_SECS}s review ceiling — escalating (temperloop#2003)`,
+        `${mandatoryTimedOut.map((s) => s.reviewer).join(', ')} timed out after ${waitedSecs}s ` +
+        `(the ${REVIEW_AGENT_CEILING_SECS}s review ceiling) — escalating (temperloop#2003)`,
     );
     result.escalation = escalate(item.slug, 'review-agent-timeout', {
       ceiling_secs: REVIEW_AGENT_CEILING_SECS,
+      // temperloop#2064 — the tick actually honoured. A `waited_secs` far below
+      // `ceiling_secs` in an escalation payload IS the timer defect, reported
+      // without anyone having to correlate agent transcripts by hand.
+      waited_secs: waitedSecs,
       slow_secs: REVIEW_AGENT_SLOW_SECS,
       mandatory: mandatoryTimedOut.map((s) => s.reviewer),
       timed_out: timedOut.map((s) => s.reviewer),
@@ -4278,6 +4354,13 @@ async function drainReviewSettlements(slots) {
 // whichever comes first; it never rejects and never throws, and the caller reads
 // each slot's own `done` flag to decide the per-reviewer disposition.
 //
+// RETURNS the seconds of wall clock this pass ACTUALLY waited — the sum of the
+// slices whose ticks were honoured, never the nominal ceiling (temperloop#2064).
+// That number is the `<actual>` the ceiling-breach notice reports, so a reader
+// of the notice is told what was measured rather than what was budgeted: the
+// #2064 incident is precisely a run whose two numbers differed by ~30x while
+// only the budgeted one was ever printed.
+//
 // HOW IT MEASURES TIME WITHOUT A CLOCK. `Date.now()` throws in this runtime and
 // there is no timer primitive, so the wait is raced against something that
 // resolves ON a clock: reviewWaitAgent(), a machinery executor whose entire job
@@ -4307,22 +4390,31 @@ async function awaitReviewFanout(item, slots) {
   let waited = 0;
   let slowLogged = false;
   for (const slice of reviewWaitSlices()) {
-    if (pending().length === 0) return;
+    if (pending().length === 0) return waited;
     const tick = await Promise.race([
       allSettled.then(() => 'SETTLED'),
       reviewWaitAgent(item, slice, waited + slice),
     ]);
-    if (tick === 'SETTLED' || pending().length === 0) return;
+    if (tick === 'SETTLED' || pending().length === 0) return waited;
     if (tick !== 'REVIEW_WAIT_ELAPSED') {
+      // temperloop#2064 — name the REFUSAL case explicitly. "The timer is
+      // unavailable" is true of every unusable tick, but a permission control
+      // refusing the wait command is the one shape an operator can actually act
+      // on, and the one that silently collapsed the ceiling before this split.
+      const blocked = /^timer-blocked/.test(String(tick));
       log(
         `[${item.slug}] §3e review — the wall-clock timer is unavailable (${tick}); ` +
+          (blocked
+            ? 'a harness permission control REFUSED the wait command, so NO time was waited and ' +
+              'the ceiling is not applied (temperloop#2064); '
+            : '') +
           `waiting on the fanout unbounded, as before temperloop#2003`,
       );
       await allSettled;
-      return;
+      return waited;
     }
     waited += slice;
-    if (pending().length === 0) return;
+    if (pending().length === 0) return waited;
     if (!slowLogged && REVIEW_AGENT_SLOW_SECS > 0 && waited >= REVIEW_AGENT_SLOW_SECS) {
       slowLogged = true;
       // The OBSERVABILITY half (mirrors #1071's STEP_SLOW notice): a long review
@@ -4337,8 +4429,10 @@ async function awaitReviewFanout(item, slots) {
   }
   log(
     `[${item.slug}] §3e review — wall-clock ceiling of ${REVIEW_AGENT_CEILING_SECS}s reached with ` +
-      `${pending().map((s) => s.route.reviewer).join(', ')} still outstanding (temperloop#2003)`,
+      `${pending().map((s) => s.route.reviewer).join(', ')} still outstanding ` +
+      `(${waited}s of tick actually honoured — temperloop#2003, temperloop#2064)`,
   );
+  return waited;
 }
 
 // reviewWaitAgent — the wall-clock TICK this runtime does not otherwise have.
@@ -4379,6 +4473,20 @@ async function awaitReviewFanout(item, slots) {
 // only fire AFTER the interval. That is an observation too, and gets its own
 // outcome rather than being folded into a guess.
 //
+// TEMPERLOOP#2064 — THE THIRD CHANGE: A BLOCK IS NOT A TIMEOUT. (2) above still
+// left one coin flip standing. A permission BLOCK and a Bash-tool TIMEOUT kill
+// are the same observation to the executor — no JSON line — and the tool-timeout
+// arm is PERMISSIVE. Asked to label a state it cannot see, the executor picked
+// the permissive one: measured in run wf_1b4c373b-8c1, slices asking
+// 300s/540s/360s returned in 11s/11s/17s, a 1200s ceiling realized in ~41s, and
+// a docs-reviewer that returned a full clean review at 98s was discarded — the
+// item then reported `skipped — docs-reviewer unavailable`, sending the next
+// investigator at the AGENT ROSTER rather than at the timer. So: REVIEW_WAIT_
+// BLOCKED is its own outcome, the refusal is classified from the harness's OWN
+// text before any label is read (REVIEW_WAIT_REFUSAL_RE), and the ceiling-breach
+// notice says `timed out after <actual>s` — reserving `unavailable` for the
+// kernel's capability-probe sense (CLAUDE.kernel.md § Subagent usage).
+//
 // Deliberately NOT runMachinery(): that path batches its steps and wraps them
 // in the #1071 watchdog, whose own ceiling would then race this one. A timer
 // needs neither.
@@ -4397,14 +4505,21 @@ async function reviewWaitAgent(item, secs, mark) {
       '`realized_secs` is the script\'s OWN measurement of how long it waited. Report only the'
         + ' number the command actually printed — NEVER a number you inferred, and never the'
         + ' interval that was requested.',
-      'If the command does not print that line because a permission control REFUSED or BLOCKED it,'
-        + ' or because it errored, do NOT guess, do NOT re-run it, and do NOT report the interval as'
-        + ' elapsed: return exactly {"outcome":"REVIEW_WAIT_UNAVAILABLE"}. No time passed, and'
-        + ' saying otherwise makes a review ceiling fire early and throw away finished reviews'
-        + ' (temperloop#2049).',
-      'If instead the Bash tool\'s OWN timeout killed the command after it had been running, return'
+      'If a permission control REFUSED or BLOCKED the command — a `<tool_use_error>Blocked: …`'
+        + ' result, or any other refusal — do NOT guess, do NOT re-run it, do NOT substitute a'
+        + ' different wait, and do NOT report the interval as elapsed. Return'
+        + ' {"outcome":"REVIEW_WAIT_BLOCKED","refusal_text":"<the FIRST LINE of the refusal,'
+        + ' copied VERBATIM>"}. No time passed. A block is NOT a timeout: reporting one as the'
+        + ' other makes a review ceiling fire ~30x early and throw away finished reviews'
+        + ' (temperloop#2049, temperloop#2064).',
+      'If the command failed for any OTHER reason — it errored, the helper was missing — return'
+        + ' {"outcome":"REVIEW_WAIT_UNAVAILABLE","error":"<the FIRST LINE of the error, VERBATIM>"}.'
+        + ' No time passed here either.',
+      'If instead the Bash tool\'s OWN timeout killed the command WHILE IT WAS RUNNING, return'
         + ' exactly {"outcome":"REVIEW_WAIT_TOOL_TIMEOUT"} — that budget is longer than the interval,'
-        + ' so the interval did elapse.',
+        + ' so the interval did elapse. Use this ONLY for a command that actually ran and was then'
+        + ' killed: never for one that was refused before it started. If you cannot tell the two'
+        + ' apart, you were BLOCKED — say so and quote the text.',
       '',
       'Command:',
       cmd,
@@ -4421,7 +4536,20 @@ async function reviewWaitAgent(item, secs, mark) {
     return `timer-error: ${String((err && err.message) || err)}`;
   }
   if (machineryDenied(out)) return 'timer-denied';
+  // THE #2064 CHECK, and it runs FIRST — before any outcome label is read. A
+  // refusal is recognised from the harness's own words (REVIEW_WAIT_REFUSAL_RE),
+  // so a block the executor mislabelled REVIEW_WAIT_TOOL_TIMEOUT — the
+  // permissive arm, and the label #2064 actually observed it choosing — cannot
+  // reach that arm. Fails CLOSED: "no usable timer", never "the interval
+  // elapsed". Ordering is the whole mechanism; moving this below the label
+  // branches restores the defect exactly.
+  const refusal = reviewWaitRefusalText(out);
+  if (refusal) return `timer-blocked: ${refusal}`;
+  if (out.outcome === 'REVIEW_WAIT_BLOCKED') {
+    return 'timer-blocked: a harness permission control refused the wait command';
+  }
   // The tool-timeout arm: an observation, honoured as elapsed (budget > interval).
+  // Reachable ONLY past the refusal check above — that is what keeps it honest.
   if (out.outcome === 'REVIEW_WAIT_TOOL_TIMEOUT') return 'REVIEW_WAIT_ELAPSED';
   if (out.outcome !== 'REVIEW_WAIT_ELAPSED') return `timer-outcome:${out.outcome}`;
   // THE #2049 CHECK. An elapse is a claim about wall clock, and this runtime has
