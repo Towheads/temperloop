@@ -40,6 +40,23 @@
 #        Model-provenance: model=<model> provider=<provider> run=<run_id>
 #      Model and provider ONLY — never a key, never content.
 #
+# ── THE DUAL-BUILD ARMS TRAILER (`stamp-arms`/`parse-arms`) ────────────────
+# A SEPARATE, ADDITIVE second trailer for the dual-build harness (epic
+# #2065, ADR 0040) — never a reshape of the single-model `Model-provenance:`
+# line above. `stamp-arms` prints:
+#   Model-comparison-arms: baseline=<model> candidate=<model> pick=<arm> reason="<one line>"
+# where <arm> is exactly `baseline` or `candidate` (the same two literal arm
+# names `batch.sh`'s own BATCH_ARM_BASELINE/BATCH_ARM_CANDIDATE use — see
+# TAG_ARM_BASELINE/TAG_ARM_CANDIDATE below). ADR 0040's whole point is that
+# this rides ALONGSIDE an unchanged `Model-provenance:` line, never replacing
+# or widening it — every existing single-model consumer, including this
+# file's own `crosscheck`, keeps parsing exactly what it always has. Unlike
+# `tag`, `stamp-arms` writes no window record and emits no telemetry tag —
+# it is a pure line formatter; the dual-build ledger (a later item,
+# `dual-build-ledger-lib`) owns the durable record this trailer merely
+# discloses. `parse-arms` is the owned inverse, so nothing downstream has to
+# hand-roll a second regex against this file's own emitted grammar.
+#
 # ── THE CROSS-CHECK (`crosscheck`) ──────────────────────────────────────
 # A THREE-WAY check — PR stamp, window record, telemetry-lake record — not
 # a two-way one, for a structural reason discovered empirically while
@@ -100,6 +117,24 @@
 #       the PR provenance stamp line on stdout. Exit 2 on a usage error
 #       (missing/malformed argument, or an unknown flag such as --model).
 #
+#   tagging.sh stamp-arms --baseline <model> --candidate <model> \
+#       --pick <baseline|candidate> --reason <text>
+#       Validates all four values (no whitespace in --baseline/--candidate,
+#       --pick is exactly `baseline` or `candidate`, --reason is a single
+#       line with no embedded double-quote — the trailer wraps it in one
+#       quote pair) and prints the `Model-comparison-arms:` trailer line on
+#       stdout. No side effects (no window record, no telemetry tag — see
+#       above). Exit 2 on a usage error.
+#
+#   tagging.sh parse-arms --pr-body <file|->
+#       Scans the PR body for a `Model-comparison-arms:` line. Prints
+#       `{"present":false}` if none is found, `{"present":true,"baseline":…,
+#       "candidate":…,"pick":…,"reason":…}` if one matching `stamp-arms`'s
+#       exact grammar is found, and exits 2 with a message on stderr if a
+#       `Model-comparison-arms:` line is present but does NOT match that
+#       grammar — a malformed/tampered trailer is refused, never silently
+#       read as absent or guessed at. Exit 2 on an unreadable/missing file.
+#
 #   tagging.sh crosscheck --pr-body <file|-> --run-id <issue:N|pr:N> \
 #       [--window-file <file|->] [--usage-file <file|->]
 #       Prints one of `OK`, `FAIL`, or `CANNOT EVALUATE` (each on its own
@@ -156,6 +191,22 @@ fi
 : "${LIVE_TAG_WINDOW_LOG:=$REPO_ROOT/.temperloop/model-comparison/live-tag-windows.jsonl}"
 
 EMIT_SCRIPT="$REPO_ROOT/workflows/scripts/emit-model-usage.sh"
+
+# ── arm names — the SAME two literal strings batch.sh's BATCH_ARM_BASELINE /
+# BATCH_ARM_CANDIDATE already use (workflows/scripts/model-comparison/batch.sh).
+# Bare literals here rather than sourced: stamp-arms/parse-arms have no other
+# dependency on batch.sh, and sourcing it would pull in its whole driver for
+# two string constants. If batch.sh's own two literals ever change, these
+# must change with them.
+TAG_ARM_BASELINE="baseline"
+TAG_ARM_CANDIDATE="candidate"
+
+# The exact, anchored grammar `stamp-arms` emits and `parse-arms` parses
+# (ADR 0040). Reason is disallowed from containing a double-quote or a
+# newline (enforced in cmd_stamp_arms) precisely so this pattern's trailing
+# `"$` anchor is unambiguous — a `.*` between the first and last quote on
+# the line, with no possibility of an embedded quote splitting it.
+ARMS_LINE_RE="^Model-comparison-arms: baseline=[^[:space:]]+ candidate=[^[:space:]]+ pick=(${TAG_ARM_BASELINE}|${TAG_ARM_CANDIDATE}) reason=\".*\"\$"
 
 # need_operand <flag> <remaining-arg-count> [<next-arg>] — same contract as
 # replay.sh's own need_operand (temperloop#1254): a value-taking flag with
@@ -261,6 +312,125 @@ cmd_tag() {
   fi
 
   printf 'Model-provenance: model=%s provider=%s run=%s\n' "$model" "$provider" "$run_id"
+}
+
+# ── subcommand: stamp-arms ────────────────────────────────────────────────
+cmd_stamp_arms() {
+  local baseline="" candidate="" pick="" reason=""
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --baseline) need_operand --baseline "$#" "${2:-}" || return 2; baseline="$2"; shift 2 ;;
+      --candidate) need_operand --candidate "$#" "${2:-}" || return 2; candidate="$2"; shift 2 ;;
+      --pick) need_operand --pick "$#" "${2:-}" || return 2; pick="$2"; shift 2 ;;
+      --reason) need_operand --reason "$#" "${2:-}" || return 2; reason="$2"; shift 2 ;;
+      *)
+        printf 'tagging.sh stamp-arms: unknown argument %s\n' "$1" >&2
+        return 2
+        ;;
+    esac
+  done
+
+  [ -n "$baseline" ] || { echo "tagging.sh stamp-arms: --baseline is required" >&2; return 2; }
+  [ -n "$candidate" ] || { echo "tagging.sh stamp-arms: --candidate is required" >&2; return 2; }
+  [ -n "$pick" ] || { echo "tagging.sh stamp-arms: --pick is required" >&2; return 2; }
+  [ -n "$reason" ] || { echo "tagging.sh stamp-arms: --reason is required" >&2; return 2; }
+
+  case "$baseline" in
+    *[[:space:]]*)
+      printf "tagging.sh stamp-arms: --baseline '%s' must not contain whitespace\n" "$baseline" >&2
+      return 2
+      ;;
+  esac
+  case "$candidate" in
+    *[[:space:]]*)
+      printf "tagging.sh stamp-arms: --candidate '%s' must not contain whitespace\n" "$candidate" >&2
+      return 2
+      ;;
+  esac
+  case "$pick" in
+    "$TAG_ARM_BASELINE"|"$TAG_ARM_CANDIDATE") ;;
+    *)
+      printf "tagging.sh stamp-arms: --pick '%s' must be '%s' or '%s' (the same two arm names batch.sh's BATCH_ARM_BASELINE/BATCH_ARM_CANDIDATE use)\n" \
+        "$pick" "$TAG_ARM_BASELINE" "$TAG_ARM_CANDIDATE" >&2
+      return 2
+      ;;
+  esac
+  case "$reason" in
+    *$'\n'*)
+      echo "tagging.sh stamp-arms: --reason must be a single line (no newline)" >&2
+      return 2
+      ;;
+  esac
+  case "$reason" in
+    *'"'*)
+      echo 'tagging.sh stamp-arms: --reason must not contain a double-quote character (the trailer wraps it in one quote pair, and an embedded quote would make the printed line unparseable by parse-arms)' >&2
+      return 2
+      ;;
+  esac
+
+  printf 'Model-comparison-arms: baseline=%s candidate=%s pick=%s reason="%s"\n' "$baseline" "$candidate" "$pick" "$reason"
+}
+
+# ── subcommand: parse-arms — the owned inverse of stamp-arms ───────────────
+cmd_parse_arms() {
+  local pr_body=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --pr-body) need_operand --pr-body "$#" "${2:-}" || return 2; pr_body="$2"; shift 2 ;;
+      *)
+        printf 'tagging.sh parse-arms: unknown argument %s\n' "$1" >&2
+        return 2
+        ;;
+    esac
+  done
+  [ -n "$pr_body" ] || { echo "tagging.sh parse-arms: --pr-body is required" >&2; return 2; }
+  command -v jq >/dev/null 2>&1 || { echo "tagging.sh parse-arms: jq not found" >&2; return 2; }
+
+  local body_src body_content
+  if [ "$pr_body" = "-" ]; then
+    body_src="/dev/stdin"
+    [ -r "$body_src" ] || { echo "tagging.sh parse-arms: stdin (--pr-body -) is not readable (closed?)" >&2; return 2; }
+  else
+    [ -e "$pr_body" ] || { printf 'tagging.sh parse-arms: --pr-body %s does not exist\n' "$pr_body" >&2; return 2; }
+    [ -f "$pr_body" ] || { printf 'tagging.sh parse-arms: --pr-body %s is not a regular file\n' "$pr_body" >&2; return 2; }
+    [ -r "$pr_body" ] || { printf 'tagging.sh parse-arms: --pr-body %s exists but is not readable\n' "$pr_body" >&2; return 2; }
+    body_src="$pr_body"
+  fi
+  if ! body_content="$(cat "$body_src" 2>/dev/null)"; then
+    printf 'tagging.sh parse-arms: could not read %s\n' "$pr_body" >&2
+    return 2
+  fi
+
+  # Distinguish ABSENT (no line starts with the trailer's own key at all)
+  # from PRESENT-BUT-MALFORMED (a line starts with the key but does not
+  # match the full anchored grammar) — a hand-edited or truncated trailer is
+  # refused rather than silently read as "not disclosed".
+  local any_count arms_line
+  any_count="$(printf '%s\n' "$body_content" | grep -c '^Model-comparison-arms:' || true)"
+  arms_line="$(printf '%s\n' "$body_content" | grep -E "$ARMS_LINE_RE" | head -n 1 || true)"
+
+  if [ -z "$arms_line" ]; then
+    if [ "$any_count" -eq 0 ]; then
+      printf '{"present":false}\n'
+      return 0
+    fi
+    echo "tagging.sh parse-arms: a Model-comparison-arms: line is present but does not match stamp-arms's exact grammar — refusing to guess at a malformed/tampered trailer" >&2
+    return 2
+  fi
+
+  local rest baseline candidate pick reason
+  rest="${arms_line#Model-comparison-arms: baseline=}"
+  baseline="${rest%% *}"
+  rest="${rest#*candidate=}"
+  candidate="${rest%% *}"
+  rest="${rest#*pick=}"
+  pick="${rest%% *}"
+  reason="${rest#*reason=\"}"
+  reason="${reason%\"}"
+
+  jq -nc --arg baseline "$baseline" --arg candidate "$candidate" --arg pick "$pick" --arg reason "$reason" \
+    '{present: true, baseline: $baseline, candidate: $candidate, pick: $pick, reason: $reason}'
 }
 
 # ── subcommand: crosscheck ───────────────────────────────────────────────
@@ -533,6 +703,14 @@ case "$cmd" in
     ;;
   tag)
     cmd_tag "$@"
+    exit $?
+    ;;
+  stamp-arms)
+    cmd_stamp_arms "$@"
+    exit $?
+    ;;
+  parse-arms)
+    cmd_parse_arms "$@"
     exit $?
     ;;
   crosscheck)

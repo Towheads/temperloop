@@ -814,6 +814,20 @@ KERNEL_GATES=(
   # to compensated summation in CPython 3.12 (gh-100425), which moved the
   # reported bound and failed this suite on 3.9 until fsum replaced it.
   "make test-model-comparison-stats"
+  # `stats.sh exact-binom` (temperloop#2065): the two-sided exact
+  # (Clopper-Pearson) confidence interval for a win proportion k/n against
+  # the fixed null p=0.5, inverting the binomial CDF directly rather than a
+  # normal approximation or a bootstrap resample — known-answer fixture
+  # (7/10, 95% CI), excludes_null in both directions, the SAME shared
+  # inconclusive floor bootstrap-ci/verdict enforce (asserted at the
+  # threshold boundary), k=0/k=n edge cases, and error paths. A DIRECT
+  # `bash` gate, not folded into `make test-model-comparison-stats` above,
+  # so this item's activation proof (`scripts/quality-gates.sh --list |
+  # grep -q test_stats_exact_binom`, temperloop#1934) resolves to a real
+  # by-name gate line — `--list` prints only the literal command strings in
+  # this array, never a comment, same convention as test_state_graph.sh's
+  # own explicit registration above.
+  "bash workflows/scripts/model-comparison/tests/test_stats_exact_binom.sh"
   # Portable-timeout shared shim (temperloop#256): run_with_timeout's
   # backend selection (native `timeout` -> `gtimeout` -> the bash-3.2-safe
   # background+kill fallback), the 124->137 exit-code normalization across
@@ -1156,6 +1170,23 @@ KERNEL_GATES=(
   # no Makefile target, as the test_replay_preflight.sh gate immediately
   # above.
   "bash workflows/scripts/model-comparison/tests/test_live_tagging.sh"
+  # The dual-build `Model-comparison-arms:` PR trailer (temperloop#2065/
+  # #2078, ADR 0040): `tagging.sh stamp-arms` (writer) and its owned inverse
+  # `parse-arms`. Asserts the trailer rides ALONGSIDE an unchanged
+  # `Model-provenance:` line — the existing anchored single-model disclosure
+  # regex above still matches a two-line body untouched — and that
+  # parse-arms round-trips all four fields (baseline, candidate, pick,
+  # reason). Fail-closed: an absent trailer, a present-but-malformed one
+  # (missing/whitespace-corrupted field, an out-of-set pick), and a
+  # well-formed one are three mutually exclusive, mechanically distinct
+  # verdicts, and every stamp-arms usage error (including a --reason
+  # containing the quote/newline characters that would desync the emitted
+  # grammar) is a bounded exit 2. No side effects (no window record, no
+  # telemetry tag) — unlike `tag`, this is a pure formatter; the dual-build
+  # ledger is a separate item. Hermetic: no network, no jq/emit-model-
+  # usage.sh state touched. Same direct-`bash` form, no Makefile target, as
+  # the test_live_tagging.sh gate immediately above.
+  "bash workflows/scripts/model-comparison/tests/test_tagging_arms_trailer.sh"
   # Replay EXECUTION + SCORING (temperloop#1258, epic #1225): `replay.sh
   # execute` running a candidate headlessly inside a prepared replay
   # worktree, `score.sh` turning the result into a schema-complete
