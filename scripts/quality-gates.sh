@@ -1276,6 +1276,31 @@ KERNEL_GATES=(
   # passed, and the suite prepends a canary `claude` to PATH and asserts at
   # the end that nothing ever invoked it.
   "bash workflows/scripts/model-comparison/tests/test_judge_rotation.sh"
+  # PAIRWISE judge comparison mode (temperloop#2065, epic #2065
+  # "dual-build"): judge.sh's `pairwise` subcommand scores TWO candidate
+  # diffs for the SAME item against each other — a preference + margin,
+  # never a second absolute quality_score — with ONE prompt template sent in
+  # BOTH position orders, so a judge that merely favors a screen position is
+  # distinguishable from one with a real, content-driven preference. This
+  # gate pins, each with its own fixture: the judge≠candidate guard REFUSES
+  # when the judge matches EITHER arm (checked independently against A and
+  # against B, before any spend); orders that normalize to the SAME real
+  # candidate despite carrying DIFFERENT raw position answers resolve to a
+  # genuine preference with order_agreement:true and a margin averaged
+  # across both orders; a genuine, order-CONSISTENT tie (both orders
+  # independently answer "no preference") resolves honestly to
+  # preference:tie, order_agreement:true, distinct from a pure
+  # POSITION-bias disagreement (both orders answer "whichever position is
+  # first") which resolves to preference:tie, order_agreement:false,
+  # margin:0 — never a fabricated confidence figure; and one order's call
+  # failing UNAVAILABLEs the whole comparison (never a preference
+  # synthesized from the single order that DID succeed) while still
+  # preserving the other order's genuine per-row result. Fully HERMETIC,
+  # same shape as the test_judge.sh gate above: every judge call is driven
+  # through a RECORDED `--judge-runner` seam, `--live` is never passed, and
+  # the suite prepends a canary `claude` to PATH and asserts nothing ever
+  # invoked it.
+  "bash workflows/scripts/model-comparison/tests/test_judge_pairwise.sh"
   # The replay BATCH DRIVER (temperloop#1401, epic #1225 "model comparison
   # harness") — the operator-invoked thing that turns a corpus file into the
   # two arm files the comparison report reads, and the ONLY component in this
