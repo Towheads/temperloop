@@ -380,6 +380,17 @@ KERNEL_GATES=(
   # --apply, and the original survives every rewrite. Registered here because a
   # suite this file does not name NEVER RUNS IN CI.
   "bash workflows/scripts/model-comparison/tests/test_lake_sweep.sh"
+  # model-comparison: the dual-build ledger + patch-archive library
+  # (temperloop#2072, epic #2065 "new-work dual-build harness"). Registered
+  # here (activation gate: `--list | grep -q test_dual_build_ledger`) for
+  # the same reason as the lake-sweep gate above — a suite this file does
+  # not name NEVER RUNS IN CI. Covers: append's monotonic seq + full
+  # required-field/enum/nested-cost rejection surface, read's self-checking
+  # "records missing" verdict (a seq gap, a truncated trailing line, or a
+  # caller's own --expect mismatch), archive-check's git-am-backed
+  # applies/rejects verdict, purge/prune, and the two named survival
+  # fixtures (a machinery_version bump; a worktree add+remove).
+  "bash workflows/scripts/model-comparison/tests/test_dual_build_ledger.sh"
   "make validate-diagnose-queue-emit"
   # diagnose-queue lake-stream emit (temperloop#1192) — gate.sh's
   # cmd_diagnose_queue computes a merge-queue verdict /build and /fix branch
