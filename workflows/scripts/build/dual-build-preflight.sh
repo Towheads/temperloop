@@ -75,7 +75,11 @@
 # directly, the highest-precedence layer per build.config.sh's own ladder).
 #
 # ── OUTPUT — ONE JSON LINE, CLOSED OUTCOME SET ───────────────────────────────
-#   {"outcome":"CANNOT_EVALUATE","error":<msg>}            (RC_CANNOT_EVALUATE=2)
+#   {"outcome":"CANNOT_EVALUATE","error":<msg>}   exit 1 (this script's own
+#     documented CANNOT_EVALUATE code — matching every sibling model-
+#     comparison script's convention; RC_CANNOT_EVALUATE=2 is the shared
+#     LIBRARY FUNCTION's own return value, a distinct contract — see
+#     workflows/scripts/lib/cannot-evaluate.sh's header)
 #   {"outcome":"PREFLIGHT", tier, baseline, candidate, provider,
 #    in_scope_n, min_inscope_items, in_scope_slugs,
 #    arms_n:2, tokens_per_replay, estimated_total_tokens,
@@ -101,7 +105,7 @@
 # spend_account / spend_org are BEST-EFFORT, LOCAL-ONLY (no network call —
 # no `gh api`, mirroring the model-comparison module's own no-live-call
 # discipline for anything short of an actual candidate spawn): `git config
-# user.email` (or $USER) for the account, and the origin remote's
+# user.email` (or `whoami`) for the account, and the origin remote's
 # `<owner>/<repo>` (workflows/scripts/lib/land-on-protected-main.sh's own
 # `land__nwo`, already sourced by two sibling workflows/scripts/build/*.sh
 # scripts) for the org. Either can resolve to an "unknown" placeholder
@@ -153,7 +157,14 @@ fi
 
 command -v jq >/dev/null 2>&1 || { cannot_evaluate_emit "dual-build-preflight.sh" "jq not found"; exit 1; }
 
-_dbp_ce() { cannot_evaluate_emit "dual-build-preflight.sh" "$1"; exit "$?"; }
+# _dbp_ce <msg> — the ONE refusal path, delegating to the shared library
+# (matching batch.sh's `bd_cannot_evaluate` / replay.sh's `preflight_cannot_
+# evaluate`). Exit status stays this script's OWN documented CANNOT_EVALUATE
+# code (1), NOT RC_CANNOT_EVALUATE — that constant freezes the library
+# function's own return value, not a top-level script's process exit code
+# (see workflows/scripts/lib/cannot-evaluate.sh's own header, and
+# claude/presentation-plane.md's "cannot evaluate" idiom row).
+_dbp_ce() { cannot_evaluate_emit "dual-build-preflight.sh" "$1"; exit 1; }
 
 # ── arg parse ────────────────────────────────────────────────────────────────
 tier="" items_file="" baseline="" candidate="" provider="anthropic" execution="live"
