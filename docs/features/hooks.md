@@ -103,10 +103,15 @@ fact and can only observe and record, never block.
   enumerating git subcommands). It arms only when the worktree carries a
   `.dual-build-arm` marker naming the sibling, so a session that is not an arm
   of a dual build never sees it. A denial also appends one JSON line to
-  `.dual-build-cross-read-attempts.jsonl` beside that marker: the file's
-  existence is what the level driver folds into the arm's ledger row as
-  `cross_read_attempted`, because a blocked attempt that left no trace would be
-  indistinguishable from a clean run. Its gap is the same shape as the spawn
+  `.dual-build-cross-read-attempts.jsonl` beside that marker, because a blocked
+  attempt that left no trace would be indistinguishable from a clean run. That
+  file's existence is the signal the per-level `/build` driver
+  (`claude/workflows/build-level.mjs`) folds into the arm's **ledger row** — the
+  per-arm result record a dual-build level writes for each of its two arms — as
+  `cross_read_attempted`. Both the marker and that record are written by the
+  dual-build harness landing with epic #2065; see the amendment in [ADR
+  0027](../adr/0027-model-comparison-ships-as-an-inert-opt-in-module.md) for why
+  this module ships a hook at all. Its gap is the same shape as the spawn
   guard's — a sibling path assembled at run time out of shell variables, or a
   read performed inside an already-committed script invoked by path, is not
   visible in the command text.
