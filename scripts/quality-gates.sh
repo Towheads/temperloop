@@ -419,6 +419,25 @@ KERNEL_GATES=(
   # applies/rejects verdict, purge/prune, and the two named survival
   # fixtures (a machinery_version bump; a worktree add+remove).
   "bash workflows/scripts/model-comparison/tests/test_dual_build_ledger.sh"
+  # model-comparison: the blind judge-calibration mode (temperloop#2082,
+  # epic #2065 "new-work dual-build harness", ADR 0041) — dual-build-
+  # ledger.sh's `calibrate-sample` / `calibrate-record` / `calibrate-status`
+  # subcommands. Registered here (activation gate: `--list | grep -q
+  # test_judge_calibrate`) for the same reason as the sibling
+  # test_dual_build_ledger.sh gate above — a suite this file does not name
+  # NEVER RUNS IN CI. Covers, each with its own mutation proof: sampling
+  # withholds the judge's own preference/margin (the blind property) while
+  # genuinely carrying it upstream; an unjudged slug or one missing either
+  # arm's patch archive is never sampled; calibrate-record COMPUTES
+  # agreement from the real judge verdict rather than trusting the caller;
+  # an already-recorded slug is deduped out of a later sample; zero
+  # recorded pairs reads the pinned literal status "NEVER CALIBRATED"; a
+  # 20-pair/15-agreement fixture reads agreement_pct=75 and status=
+  # "calibrated" against the (70%,20) bar; and an override-source pair is
+  # recorded but excluded from both the numerator and denominator of that
+  # statistic (ADR 0041's exclusion) — the override-exclusion and zero-
+  # pairs mutation proofs are each independently red without their guard.
+  "bash workflows/scripts/model-comparison/tests/test_judge_calibrate.sh"
   "make validate-diagnose-queue-emit"
   # diagnose-queue lake-stream emit (temperloop#1192) — gate.sh's
   # cmd_diagnose_queue computes a merge-queue verdict /build and /fix branch
