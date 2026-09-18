@@ -138,8 +138,7 @@ echo "--- 4-6: min-inscope floor ---"
 count; v="$(run "$ITEMS_MIXED" DUAL_BUILD_MIN_INSCOPE_ITEMS=3)"
 [ "$(field "$v" .stop)" = "false" ] && ok "3 in-scope, floor=3 -> proceeds (at the floor, not below it)" || fail "at-floor: got stop=$(field "$v" .stop)"
 
-count; v="$(run "$ITEMS_MIXED" DUAL_BUILD_MIN_INSCOPE_ITEMS=4)"
-rc=0; run "$ITEMS_MIXED" DUAL_BUILD_MIN_INSCOPE_ITEMS=4 >/dev/null 2>&1 || rc=$?
+count; rc=0; v="$(run "$ITEMS_MIXED" DUAL_BUILD_MIN_INSCOPE_ITEMS=4)" || rc=$?
 [ "$(field "$v" .stop)" = "true" ] && [ "$(field "$v" .stop_reason)" = "below_min_inscope" ] && [ "$(field "$v" .dualBuild)" = "null" ] && [ "$rc" -eq 3 ] \
   && ok "3 in-scope, floor=4 -> declines (below_min_inscope, dualBuild:null, exit 3)" \
   || fail "below-floor: stop=$(field "$v" .stop) reason=$(field "$v" .stop_reason) dualBuild=$(field "$v" .dualBuild) rc=$rc"
@@ -164,8 +163,7 @@ count; v="$(run "$ITEMS_MIXED" REPLAY_PREFLIGHT_CEILING_TOKENS=50000000 REPLAY_P
   && ok "3 items x 2 arms x 470000 = 2820000, under ceiling -> proceeds" \
   || fail "under-ceiling: estimated=$(field "$v" .estimated_total_tokens) stop=$(field "$v" .stop)"
 
-count; v="$(run "$ITEMS_MIXED" REPLAY_PREFLIGHT_CEILING_TOKENS=2000000 REPLAY_PREFLIGHT_TOKENS_PER_REPLAY=470000)"
-rc=0; run "$ITEMS_MIXED" REPLAY_PREFLIGHT_CEILING_TOKENS=2000000 REPLAY_PREFLIGHT_TOKENS_PER_REPLAY=470000 >/dev/null 2>&1 || rc=$?
+count; rc=0; v="$(run "$ITEMS_MIXED" REPLAY_PREFLIGHT_CEILING_TOKENS=2000000 REPLAY_PREFLIGHT_TOKENS_PER_REPLAY=470000)" || rc=$?
 [ "$(field "$v" .stop)" = "true" ] && [ "$(field "$v" .stop_reason)" = "ceiling_exceeded" ] && [ "$(field "$v" .dualBuild)" = "null" ] && [ "$rc" -eq 3 ] \
   && ok "2820000 > ceiling 2000000 -> refuses (ceiling_exceeded, dualBuild:null, exit 3)" \
   || fail "over-ceiling: stop=$(field "$v" .stop) reason=$(field "$v" .stop_reason) rc=$rc"
@@ -196,7 +194,7 @@ v="$(env DUAL_BUILD_MIN_INSCOPE_ITEMS=2 OPENAI_API_KEY= bash "$DBP" --tier sonne
 count
 [ "$(field "$v" .credential_ok)" = "false" ] && [ "$(field "$v" .stop_reason)" = "no_credential" ] \
   && [ "$(field "$v" .dualBuild)" = "null" ] && [ "$rc" -eq 3 ] \
-  && printf '%s' "$(field "$v" .credential_error)" | grep -q "OPENAI_API_KEY" \
+  && printf '%s' "$(field "$v" .credential_error)" | grep "OPENAI_API_KEY" >/dev/null \
   && ok "provider openai, unset OPENAI_API_KEY -> refuses by name (no_credential, names OPENAI_API_KEY, exit 3)" \
   || fail "no-credential: credential_ok=$(field "$v" .credential_ok) reason=$(field "$v" .stop_reason) rc=$rc error=$(field "$v" .credential_error)"
 
@@ -232,21 +230,21 @@ f2="$WORK/items-blank.json"; write_items "$f2" "$ITEMS_MIXED"
 count; rc=0
 out="$(env DUAL_BUILD_MIN_INSCOPE_ITEMS=2 bash "$BLANK_REPO/workflows/scripts/build/dual-build-preflight.sh" \
         --tier sonnet --items-file "$f2" --baseline x --candidate y --execution recorded 2>/dev/null)" || rc=$?
-[ "$(field "$out" .outcome)" = "CANNOT_EVALUATE" ] && printf '%s' "$(field "$out" .error)" | grep -q "REPLAY_PREFLIGHT_CEILING_TOKENS" && [ "$rc" -ne 0 ] \
+[ "$(field "$out" .outcome)" = "CANNOT_EVALUATE" ] && printf '%s' "$(field "$out" .error)" | grep "REPLAY_PREFLIGHT_CEILING_TOKENS" >/dev/null && [ "$rc" -ne 0 ] \
   && ok "no build.config.sh sibling (unset ceiling) -> CANNOT_EVALUATE naming REPLAY_PREFLIGHT_CEILING_TOKENS" \
   || fail "unset-ceiling: outcome=$(field "$out" .outcome) error=$(field "$out" .error) rc=$rc"
 
 count; rc=0
 out="$(env DUAL_BUILD_MIN_INSCOPE_ITEMS=not-a-number bash "$DBP" --tier sonnet --items-file "$f" \
         --baseline x --candidate y --execution recorded 2>/dev/null)" || rc=$?
-[ "$(field "$out" .outcome)" = "CANNOT_EVALUATE" ] && printf '%s' "$(field "$out" .error)" | grep -q "DUAL_BUILD_MIN_INSCOPE_ITEMS" && [ "$rc" -ne 0 ] \
+[ "$(field "$out" .outcome)" = "CANNOT_EVALUATE" ] && printf '%s' "$(field "$out" .error)" | grep "DUAL_BUILD_MIN_INSCOPE_ITEMS" >/dev/null && [ "$rc" -ne 0 ] \
   && ok "non-numeric DUAL_BUILD_MIN_INSCOPE_ITEMS -> CANNOT_EVALUATE naming it" \
   || fail "malformed-min: outcome=$(field "$out" .outcome) error=$(field "$out" .error) rc=$rc"
 
 count; rc=0
 out="$(env DUAL_BUILD_MIN_INSCOPE_ITEMS=2 REPLAY_PREFLIGHT_TOKENS_PER_REPLAY=-5 bash "$DBP" --tier sonnet --items-file "$f" \
         --baseline x --candidate y --execution recorded 2>/dev/null)" || rc=$?
-[ "$(field "$out" .outcome)" = "CANNOT_EVALUATE" ] && printf '%s' "$(field "$out" .error)" | grep -q "REPLAY_PREFLIGHT_TOKENS_PER_REPLAY" \
+[ "$(field "$out" .outcome)" = "CANNOT_EVALUATE" ] && printf '%s' "$(field "$out" .error)" | grep "REPLAY_PREFLIGHT_TOKENS_PER_REPLAY" >/dev/null \
   && ok "negative REPLAY_PREFLIGHT_TOKENS_PER_REPLAY -> CANNOT_EVALUATE naming it" \
   || fail "negative-tpr: outcome=$(field "$out" .outcome) error=$(field "$out" .error)"
 
