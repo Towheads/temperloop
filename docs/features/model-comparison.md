@@ -653,7 +653,9 @@ fact, its own emitted-shell seam (`workflows/scripts/build/
 worker-usage.sh`) supplies the seat label and outcome ref directly,
 joining the attribution stream as a fourth emit-feasible seat,
 `build-worker`. It is emit-feasible but **never** token-bearing — a
-Workflow `agent()` call has no `claude -p` envelope to read tokens from,
+worker spawned through the harness's built-in subagent call, rather than
+through the `claude -p` command-line contract described above, has no usage
+envelope to read tokens from,
 so its own record is permanently attribution-only — so the "3 of 12 can
 emit a token-bearing record" sentence above still holds; only the emit-
 feasible *denominator* (`MODEL_COMPARISON_EMIT_FEASIBLE_SEATS`, 4) grew.
