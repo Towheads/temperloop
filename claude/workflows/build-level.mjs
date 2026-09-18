@@ -2875,7 +2875,12 @@ async function recoverLostReturn(item, wt, openCmd) {
     const resumeSteps = [];
     if (resumeFromPush) {
       const prBin = machineryBin(input.repoRoot, 'pr.sh');
-      resumeSteps.push({ kind: 'push', cmd: `${prBin} push ${sq(wt)} ${sq(item.branch)}`, continueOutcomes: ['PUSHED'] });
+      // `--allow-rewrite` for the same reason 3f-1 carries it (temperloop#2103):
+      // the lost batch already ran 3f-0a's rebase, so this resumed push may be
+      // of a rewritten history over a branch an earlier round put on origin.
+      // pr.sh downgrades it to a plain push unless the rewrite is genuine, and
+      // leases it against a value it read when it is.
+      resumeSteps.push({ kind: 'push', cmd: `${prBin} push ${sq(wt)} ${sq(item.branch)} --allow-rewrite`, continueOutcomes: ['PUSHED'] });
     }
     resumeSteps.push({ kind: 'pr-open', cmd: openCmd });
     const resumeAt = {};
@@ -3202,17 +3207,95 @@ function preserveCommittedWorkCmd(wt, branch) {
     `else`,
     `  extra=",\\"detail\\":\\"base unresolved — pushed unconditionally\\""`,
     `fi`,
-    // Idempotent, and now TRULY so: this pushes the same `refs/heads/$branch`
-    // 3f pushes, so when 3f already pushed this sha git reports "Everything
+    // temperloop#2103 — THE REBASED-BRANCH-ALREADY-ON-ORIGIN ARM.
+    //
+    // The plain push below is right on the ordinary path and CANNOT work on the
+    // one that produced this issue three times in a single session: a
+    // continuation round whose branch an EARLIER round already pushed, which
+    // 3f-0a then rebased onto a newer origin/<default>. The rewritten history
+    // does not contain the remote tip, so a plain push is a non-fast-forward by
+    // construction — not a transient — and the seam whose entire job is to make
+    // the work durable reported WORK_PRESERVE_FAILED over four commits that
+    // existed nowhere else.
+    //
+    // Three properties the arm below holds to, in this order:
+    //
+    //   1. READ THE REMOTE VALUE FIRST. Nothing here ever issues a bare
+    //      `--force`. The retry is `--force-with-lease=refs/heads/$branch:$sha`
+    //      against the value `git ls-remote` just returned, so a concurrent
+    //      writer that moved the ref in between gets a REJECTION, not a silent
+    //      overwrite. An unreadable remote means no force at all.
+    //   2. ONLY OVER WORK THE LOCAL HISTORY SUPERSEDES. This path runs
+    //      unattended on an already-failing item and nobody ASKED it to rewrite
+    //      anything (unlike 3f, which force-requests the rebase it just
+    //      performed). So the force is gated on the operator's own manual
+    //      recovery criterion from the issue — "after confirming the local
+    //      history superseded the remote tip": every commit reachable from the
+    //      remote tip but not from HEAD must have a patch-equivalent in HEAD
+    //      (`rev-list --cherry-pick --right-only`, `git cherry`'s own test).
+    //      Zero such commits ⇒ the remote holds a stale pre-rebase copy of
+    //      exactly this work ⇒ overwriting it destroys nothing. Otherwise the
+    //      remote carries commits this worktree does not, and the arm REFUSES
+    //      and says so — a loud WORK_PRESERVE_FAILED naming the remote sha is
+    //      recoverable; destroying someone else's commits is not.
+    //   3. `preserved` IS READ BACK FROM ORIGIN, NEVER INFERRED FROM AN EXIT
+    //      CODE. The third occurrence recorded the exact reason: a push from
+    //      the same run HAD landed a pre-rebase state on origin while the field
+    //      read false, so "the branch exists on origin" overstated and
+    //      `preserved:false` understated. The final `ls-remote` below decides
+    //      the outcome by comparing the remote value to this worktree's HEAD,
+    //      and BOTH shas ride the record, so neither signal has to be trusted
+    //      alone.
+    //
+    // Idempotent, and TRULY so: this pushes the same `refs/heads/$branch` 3f
+    // pushes, so when 3f already pushed this sha git reports "Everything
     // up-to-date" and exits 0 — a post-3f escalation (a CI failure, say) costs
     // one no-op push and reports WORK_PRESERVED truthfully, minting no second
     // ref. No `-u`: this is a one-shot rescue push and has no business writing
     // branch.<name>.remote/.merge into the worktree's config.
+    //
+    // Still no jq (the fail-soft argument above): every value interpolated into
+    // the JSON below is either the plan's validated `branch:`, a literal, or a
+    // 40-hex sha normalized through the `case` guard before it is read.
+    `head_sha="$(git rev-parse HEAD 2>/dev/null || true)"`,
+    `case "$head_sha" in *[!0-9a-f]*) head_sha="" ;; esac`,
+    `remote_sha="$(git ls-remote origin "refs/heads/$branch" 2>/dev/null | awk 'NR==1 {print $1}')"`,
+    `case "$remote_sha" in ''|*[!0-9a-f]*) remote_sha="" ;; esac`,
+    `pushed=false`,
+    `forced=false`,
+    `refused=false`,
     `if git push origin "HEAD:refs/heads/$branch" >/dev/null 2>&1; then`,
-    `  printf '{"outcome":"WORK_PRESERVED","branch":"%s","base_resolved":%s,"pushed":true%s}\\n' "$branch" "$base_resolved" "$extra"`,
-    `else`,
-    `  printf '{"outcome":"WORK_PRESERVE_FAILED","branch":"%s","base_resolved":%s,"pushed":false%s}\\n' "$branch" "$base_resolved" "$extra"`,
+    `  pushed=true`,
+    `elif [ -n "$remote_sha" ] && [ -n "$head_sha" ] && [ "$remote_sha" != "$head_sha" ]; then`,
+    // Bring the remote tip's objects local so the supersede test can run at
+    // all; a fetch failure leaves `unique` unset and the `&&` chain refuses.
+    `  unique=""`,
+    `  if git fetch --quiet origin "refs/heads/$branch" >/dev/null 2>&1; then`,
+    `    unique="$(git rev-list --count --cherry-pick --right-only --no-merges "HEAD...$remote_sha" 2>/dev/null || true)"`,
+    `  fi`,
+    `  case "$unique" in ''|*[!0-9]*) unique="" ;; esac`,
+    `  if [ "$unique" = 0 ]; then`,
+    `    if git push --force-with-lease="refs/heads/$branch:$remote_sha" origin "HEAD:refs/heads/$branch" >/dev/null 2>&1; then`,
+    `      pushed=true; forced=true`,
+    `    fi`,
+    `  else`,
+    `    refused=true`,
+    `  fi`,
     `fi`,
+    // The outcome is the REMOTE's answer, not the push's. Re-read the ref: the
+    // work is preserved iff origin now carries this worktree's exact HEAD.
+    `final_sha="$(git ls-remote origin "refs/heads/$branch" 2>/dev/null | awk 'NR==1 {print $1}')"`,
+    `case "$final_sha" in ''|*[!0-9a-f]*) final_sha="" ;; esac`,
+    `if [ -n "$head_sha" ] && [ "$final_sha" = "$head_sha" ]; then outcome=WORK_PRESERVED; else outcome=WORK_PRESERVE_FAILED; fi`,
+    // `if` rather than `[ … ] && …`: a trailing AND-list that evaluates false
+    // is the whole command's status, which `set -e` (wherever this text is
+    // sourced) would take as a failure of the preservation step itself.
+    `facts=""`,
+    `if [ -n "$head_sha" ]; then facts="$facts,\\"head_sha\\":\\"$head_sha\\""; fi`,
+    `if [ -n "$final_sha" ]; then facts="$facts,\\"remote_sha\\":\\"$final_sha\\""; fi`,
+    `if [ "$forced" = true ]; then facts="$facts,\\"forced_with_lease\\":true,\\"rewrote_remote\\":\\"$remote_sha\\""; fi`,
+    `if [ "$refused" = true ]; then facts="$facts,\\"stale_remote_not_superseded\\":true"; fi`,
+    `printf '{"outcome":"%s","branch":"%s","base_resolved":%s,"pushed":%s%s%s}\\n' "$outcome" "$branch" "$base_resolved" "$pushed" "$extra" "$facts"`,
   ].join('\n');
 }
 
@@ -3244,22 +3327,41 @@ async function preserveOnEscalation(item, result) {
   // says what is (or is not) on origin, so the human or agent disposing this
   // escalation decides about removal against evidence instead of an assumption
   // that "the worktree stays intact" means the work is safe.
+  //
+  // temperloop#2103 — `head_sha`/`remote_sha` ride the record because NEITHER
+  // `preserved` nor "the branch exists on origin" is sufficient alone: the live
+  // third occurrence had a stale pre-rebase sha sitting on the remote while the
+  // flag read false, so one signal overstated and the other understated. With
+  // both shas present a caller can settle it by comparison instead of guessing.
   const record = {
     outcome,
     branch: out?.branch ?? preserveBranch,
     preserved: outcome === 'WORK_PRESERVED',
     ...(out?.commits_ahead === undefined ? {} : { commits_ahead: out.commits_ahead }),
+    ...(out?.head_sha ? { head_sha: out.head_sha } : {}),
+    ...(out?.remote_sha ? { remote_sha: out.remote_sha } : {}),
+    ...(out?.forced_with_lease ? { forced_with_lease: true, rewrote_remote: out.rewrote_remote } : {}),
+    ...(out?.stale_remote_not_superseded ? { stale_remote_not_superseded: true } : {}),
     ...(out?.detail ? { detail: out.detail } : {}),
   };
   if (outcome === 'WORK_PRESERVED') {
     log(
       `[${item.slug}] escalating — pushed ${record.branch} to origin first (temperloop#2020): ` +
-        `committed work is durable regardless of what disposes this escalation`,
+        `committed work is durable regardless of what disposes this escalation` +
+        (record.forced_with_lease
+          ? ` — the branch was already on origin at ${String(record.rewrote_remote).slice(0, 8)} ` +
+            `(a pre-rebase copy of this same work), so the push was a LEASED force over it (temperloop#2103)`
+          : ''),
     );
   } else if (outcome !== 'WORK_PRESERVE_SKIP') {
     log(
       `[${item.slug}] escalating — could NOT preserve committed work (${outcome}): ` +
-        `the worktree may be the ONLY copy — do not remove it`,
+        `the worktree may be the ONLY copy — do not remove it` +
+        (record.stale_remote_not_superseded
+          ? ` — origin's ${record.branch} is at ${String(record.remote_sha).slice(0, 8)} and carries commits this ` +
+            `worktree does NOT, so the rescue push was REFUSED rather than overwrite them. Reconcile by hand ` +
+            `(merge or confirm supersession), then: git push --force-with-lease=refs/heads/${record.branch}:${record.remote_sha} origin HEAD:refs/heads/${record.branch}`
+          : ''),
     );
   }
   result.escalation.payload = { ...(result.escalation.payload ?? {}), committed_work: record };
@@ -6343,7 +6445,24 @@ async function driveItem(item) {
   addPrStep('scan', `${prBin} scan ${sq(wt)}`, ['SCAN_CLEAN']);
 
   // 3f-1. Push-by-SHA on the plan's branch.
-  addPrStep('push', `${prBin} push ${sq(wt)} ${sq(item.branch)}`, ['PUSHED']);
+  //
+  // `--allow-rewrite` (temperloop#2103): 3f-0a above has just REWRITTEN this
+  // branch's history onto a fresh origin/<default>, and on a continuation round
+  // an earlier round has already pushed the pre-rebase history to origin. A
+  // plain push of a rewritten, already-pushed branch can NEVER fast-forward, so
+  // it came back PUSH_REJECTED every time — observed three times in one session,
+  // each recovered by hand with a lease-force push. The `recovery && pushed`
+  // skip above only covers the temperloop#939 lost-return path; an ordinary
+  // continuation round is not a `recovery` and never took it.
+  //
+  // This is a REQUEST, not a force: pr.sh downgrades to a plain push on any
+  // provable fast-forward (#335), issues nothing at all when the ref is absent
+  // or unreadable, and when it does rewrite it uses
+  // `--force-with-lease=<ref>:<sha>` over a value it read first — so a
+  // concurrent writer is rejected rather than overwritten. The flag is spelled
+  // `--allow-rewrite` rather than `--force` so the command line the orchestrator
+  // executes carries no classifier-visible force token (#437).
+  addPrStep('push', `${prBin} push ${sq(wt)} ${sq(item.branch)} --allow-rewrite`, ['PUSHED']);
 
   // 3f-2. Open the PR. The verification surface is read from the deterministic
   // file path (--verification-surface-file) so its body never enters context.

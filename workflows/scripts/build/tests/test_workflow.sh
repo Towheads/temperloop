@@ -8921,7 +8921,7 @@ console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
 #   name — the round-3 MEDIUM: pushing HEAD under its local name mints a second,
 #   PR-less `build/<slug>` ref on every post-3f escalation.
 # ============================================================================
-run_node_case "K2020 preserve bash: the REAL generated shell (executed, not mocked) preserves an unpushed commit to origin under the PLAN's branch, skips a clean tree, reports a failed push, handles a missing worktree, resolves default without origin/HEAD, pushes rather than skipping when the base is unresolvable, and is idempotent" "
+run_node_case "K2020/K2103 preserve bash: the REAL generated shell (executed, not mocked) preserves an unpushed commit to origin under the PLAN's branch, skips a clean tree, reports a failed push, handles a missing worktree, resolves default without origin/HEAD, pushes rather than skipping when the base is unresolvable, is idempotent, LANDS a rebased branch already on origin under a lease over a value it read first, and REFUSES to overwrite a remote carrying work this worktree does not have" "
 $PREAMBLE
 const { execFileSync } = await import('node:child_process');
 const { mkdtempSync, rmSync } = await import('node:fs');
@@ -9056,6 +9056,72 @@ if (internalsSrc === MJS_SRC) {
         const landed = sh(G + ' --git-dir=' + root + '/origin2.git show-ref --verify --quiet refs/heads/fix/wtg && printf YES || printf NO');
         if (landed !== 'YES') reason = 'G: WORK_PRESERVED on the unresolved-base arm must mean the branch really reached origin';
       }
+    }
+
+    // --- H: THE REBASED-BRANCH-ALREADY-ON-ORIGIN SHAPE (temperloop#2103) --
+    // The shape that defeated this seam three times in one session. A
+    // CONTINUATION round: an earlier round already pushed \`fix/wth\`, then
+    // origin/main advanced and 3f-0a rebased the work onto the new tip. The
+    // rewritten history does not contain the remote tip, so the plain push is a
+    // non-fast-forward BY CONSTRUCTION and came back WORK_PRESERVE_FAILED over
+    // commits that existed nowhere but the worktree.
+    //
+    // This arm pins BOTH halves of the claim:
+    //   * the work actually reaches origin with no hand intervention, via a
+    //     LEASE over the value the step read first (\`forced_with_lease\`,
+    //     \`rewrote_remote\`) — never a bare force;
+    //   * \`preserved\` is read BACK from origin, not inferred from an exit
+    //     code: \`remote_sha\` must equal this worktree's own HEAD. The live
+    //     third occurrence is exactly why — a stale pre-rebase sha sat on the
+    //     remote while the flag read false, so the branch's existence
+    //     overstated and the flag understated, in the same run.
+    if (!reason) {
+      clone('wtH');
+      commitOn('wtH', 'build/wth', 'k.txt');
+      const h1 = run(root + '/wtH', 'fix/wth');
+      if (h1.outcome !== 'WORK_PRESERVED') reason = 'H: fixture setup — the round-1 preserve must land, got ' + JSON.stringify(h1);
+      else {
+        const pre = sh(G + ' --git-dir=' + root + '/origin.git rev-parse refs/heads/fix/wth').trim();
+        // A sibling item merges while this item builds; the continuation round
+        // then rebases onto the advanced tip — 3f-0a, exactly.
+        sh('cd seed && printf advance >> f.txt && ' + G + ' add -A && ' + G + ' commit -q -m advance && ' + G + ' push -q origin HEAD:main');
+        sh('cd wtH && ' + G + ' fetch -q origin && ' + G + ' rebase -q origin/main');
+        const head = sh('cd wtH && ' + G + ' rev-parse HEAD').trim();
+        const headsBefore = Number(sh(G + ' --git-dir=' + root + '/origin.git for-each-ref refs/heads/ | wc -l').trim());
+        if (head === pre) reason = 'H: fixture error — the rebase did not rewrite the branch, so this arm proves nothing';
+        else {
+          const h = run(root + '/wtH', 'fix/wth');
+          if (h.outcome !== 'WORK_PRESERVED') reason = 'H: a rebased branch already on origin must still be PRESERVED — a plain push can never fast-forward here, and reporting FAILED leaves the worktree as the only copy, got ' + JSON.stringify(h);
+          else if (h.pushed !== true) reason = 'H: the rebased arm must report pushed:true, got ' + JSON.stringify(h);
+          else if (h.forced_with_lease !== true) reason = 'H: the rewrite must be recorded as a LEASED force — an unrecorded force is indistinguishable from a bare one, got ' + JSON.stringify(h);
+          else if (h.rewrote_remote !== pre) reason = 'H: the lease must name the remote value it was taken against (the pre-rebase tip), got ' + JSON.stringify(h) + ' (expected ' + pre + ')';
+          else if (h.head_sha !== head || h.remote_sha !== head) reason = 'H: preserved must be READ BACK from origin — head_sha and remote_sha must both be this worktree HEAD, got ' + JSON.stringify(h) + ' (HEAD ' + head + ')';
+          else if (sh(G + ' --git-dir=' + root + '/origin.git rev-parse refs/heads/fix/wth').trim() !== head) reason = 'H: WORK_PRESERVED must mean origin REALLY carries the rebased tip, not the pre-rebase copy';
+          else if (Number(sh(G + ' --git-dir=' + root + '/origin.git for-each-ref refs/heads/ | wc -l').trim()) !== headsBefore) reason = 'H: the rescue must land on the ref 3f owns — no second head may be minted on origin';
+        }
+      }
+    }
+
+    // --- I: THE REFUSAL — origin carries work this worktree does not ------
+    // The other half of #2103's bar: lease-guarded, never unguarded, and never
+    // against a ref whose expected value was not read first. A lease stops a
+    // CONCURRENT writer; it does not make overwriting a remote that holds
+    // genuinely different work correct. This path runs unattended on an
+    // already-failing item and nobody asked it to rewrite anything, so it
+    // applies the operator's own manual-recovery criterion from the issue —
+    // local history must SUPERSEDE the remote tip — and refuses otherwise.
+    // A loud WORK_PRESERVE_FAILED naming the remote sha is recoverable;
+    // destroying another writer's commits is not.
+    if (!reason) {
+      clone('wtI');
+      commitOn('wtI', 'build/wti', 'm.txt');
+      sh('cd wtI && ' + G + ' checkout -q -b theirs origin/main && printf theirs > theirs.txt && ' + G + ' add -A && ' + G + ' commit -q -m theirs && ' + G + ' push -q origin HEAD:refs/heads/fix/wti && ' + G + ' checkout -q build/wti');
+      const theirs = sh(G + ' --git-dir=' + root + '/origin.git rev-parse refs/heads/fix/wti').trim();
+      const i = run(root + '/wtI', 'fix/wti');
+      if (i.outcome !== 'WORK_PRESERVE_FAILED') reason = 'I: the rescue must REFUSE when origin carries commits this worktree does not — a lease does not make that overwrite correct, got ' + JSON.stringify(i);
+      else if (i.stale_remote_not_superseded !== true) reason = 'I: the refusal must be NAMED, so the operator disposing this escalation knows it is a reconcile and not a dead remote, got ' + JSON.stringify(i);
+      else if (i.remote_sha !== theirs) reason = 'I: the refusal must report the remote value it read, so neither the flag nor the branch existence has to be trusted alone, got ' + JSON.stringify(i);
+      else if (sh(G + ' --git-dir=' + root + '/origin.git rev-parse refs/heads/fix/wti').trim() !== theirs) reason = 'I: THE REFUSAL DID NOT HOLD — origin fix/wti was overwritten, destroying commits this worktree never had';
     }
   } catch (err) {
     reason = 'the REAL generated shell (or its git fixture) threw: ' + ((err && err.message) || err);

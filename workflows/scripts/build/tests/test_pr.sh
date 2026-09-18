@@ -334,6 +334,101 @@ out="$(PATH="$NOGH:$PATH" bash "$SCRIPT" push "$REPO" feat/plainpush)"
   || fail "plain push did not land the branch"
 echo "PASS: plain push (no --force requested) reports forced=false"
 
+# --- push: THE REBASE-THEN-PUSH SEQUENCE, pinned end to end (temperloop#2103) ------
+# The live shape, observed three times in one session and hand-recovered every
+# time: a CONTINUATION round whose branch an earlier round already pushed, which
+# 3f-0a then rebases onto a newer origin/<default>. The rewritten history does
+# not contain the remote tip, so a plain push can NEVER fast-forward — this is a
+# structural consequence of rebase-then-plain-push, not a transient.
+#
+# Two halves, and the first is the one that matters: a plain push here MUST NOT
+# silently return success. If it ever did, the run would proceed to open a PR on
+# a ref still serving the PRE-rebase content while the rebased commits existed
+# only in the worktree — the loss path the whole issue is about. The second half
+# is the fix: `--allow-rewrite` lands it under a LEASE over the value pr.sh read
+# first, and the payload carries that value so the rewrite is auditable.
+git -C "$REPO" fetch -q origin
+git -C "$REPO" checkout -q -B cont origin/main
+printf 'round 1\n' > "$REPO/cont.txt"
+git -C "$REPO" add -A -- cont.txt
+git -C "$REPO" commit -q -m "continuation round 1 work"
+out="$(PATH="$NOGH:$PATH" bash "$SCRIPT" push "$REPO" fix/cont)"
+[ "$(jq -r .outcome <<<"$out")" = "PUSHED" ] || fail "fixture setup: round-1 push (got: $out)"
+round1="$(git -C "$REPO" rev-parse HEAD)"
+# origin/<default> advances underneath, exactly as it does when a sibling item
+# merges during a long build — this is what makes the rebase non-trivial.
+git -C "$REPO" checkout -q -B advancer origin/main
+printf 'a sibling item merged\n' > "$REPO/sibling.txt"
+git -C "$REPO" add -A -- sibling.txt
+git -C "$REPO" commit -q -m "sibling item"
+git -C "$REPO" push -q origin HEAD:main
+git -C "$REPO" checkout -q cont
+out="$(PATH="$NOGH:$PATH" bash "$SCRIPT" rebase "$REPO")"
+[ "$(jq -r .outcome <<<"$out")" = "REBASED" ] || fail "fixture setup: 3f-0a rebase (got: $out)"
+rebased="$(git -C "$REPO" rev-parse HEAD)"
+[ "$rebased" != "$round1" ] || fail "fixture error: the rebase did not rewrite the branch"
+# RED half — a plain push of the rewritten, already-pushed branch.
+rc=0; out="$(PATH="$NOGH:$PATH" bash "$SCRIPT" push "$REPO" fix/cont)" || rc=$?
+[ "$rc" -ne 0 ] \
+  || fail "a plain push of a REWRITTEN, already-pushed branch returned SUCCESS — the rebased commits are not on origin (got: $out)"
+[ "$(jq -r .outcome <<<"$out")" = "PUSH_REJECTED" ] \
+  || fail "rebase-then-plain-push must be PUSH_REJECTED (got: $out)"
+[ "$(jq -r .forced <<<"$out")" = "false" ] \
+  || fail "a rejection with no rewrite requested must say forced=false (got: $out)"
+[ "$(git -C "$BARE" rev-parse refs/heads/fix/cont)" = "$round1" ] \
+  || fail "a rejected push must leave origin exactly where it was"
+# GREEN half — the same sequence with the rewrite requested.
+out="$(PATH="$NOGH:$PATH" bash "$SCRIPT" push "$REPO" fix/cont --allow-rewrite)"
+[ "$(jq -r .outcome <<<"$out")" = "PUSHED" ] \
+  || fail "--allow-rewrite must land a rebased continuation branch without hand intervention (got: $out)"
+[ "$(jq -r .forced <<<"$out")" = "true" ] || fail "a genuine rewrite must report forced=true (got: $out)"
+[ "$(jq -r .lease <<<"$out")" = "$round1" ] \
+  || fail "the force must be LEASED against the remote value read first, and report it (got: $out)"
+[ "$(git -C "$BARE" rev-parse refs/heads/fix/cont)" = "$rebased" ] \
+  || fail "the leased rewrite did not land the rebased tip on origin"
+echo "PASS: rebase-then-push — a plain push of a rewritten, already-pushed branch is REJECTED (never a silent success); --allow-rewrite lands it under a lease (#2103)"
+
+# --- push: the lease is LOAD-BEARING — a moved remote is rejected, not clobbered ---
+# The discriminating test for temperloop#2103's "lease-guarded, never unguarded"
+# bar. A bare `--force` would land here and destroy whatever the remote gained
+# between the read and the push; the lease must turn that into a rejection.
+#
+# The concurrent writer is simulated deterministically by splitting the remote's
+# URLs: the FETCH url points at a stale snapshot (so the value pr.sh reads is
+# `round1`), while the PUSH url points at the real upstream (already advanced to
+# `$rebased` by the block above). That is precisely the state a real concurrent
+# writer creates — the value read is no longer the value on the ref.
+git init -q --bare --initial-branch=main "$TMP/stale.git"
+git -C "$REPO" push -q "$TMP/stale.git" "$round1:refs/heads/fix/cont"
+git -C "$REPO" push -q "$TMP/stale.git" "$rebased:refs/heads/main"
+git clone -q "$BARE" "$TMP/leaserepo" 2>/dev/null
+LEASEREPO="$(cd "$TMP/leaserepo" && pwd -P)"
+git -C "$LEASEREPO" remote set-url origin "$TMP/stale.git"
+git -C "$LEASEREPO" remote set-url --push origin "$BARE"
+git -C "$LEASEREPO" checkout -q -b leaser
+printf 'a third writer\n' > "$LEASEREPO/third.txt"
+git -C "$LEASEREPO" add -A -- third.txt
+git -C "$LEASEREPO" commit -q -m "a third writer's commit"
+rc=0; out="$(PATH="$NOGH:$PATH" bash "$SCRIPT" push "$LEASEREPO" fix/cont --allow-rewrite)" || rc=$?
+[ "$rc" -ne 0 ] || fail "a STALE lease must not push (got: $out)"
+[ "$(jq -r .outcome <<<"$out")" = "PUSH_REJECTED" ] || fail "a stale lease must be PUSH_REJECTED (got: $out)"
+[ "$(jq -r .lease <<<"$out")" = "$round1" ] || fail "the rejection must name the stale value it leased against (got: $out)"
+[ "$(git -C "$BARE" rev-parse refs/heads/fix/cont)" = "$rebased" ] \
+  || fail "THE LEASE FAILED TO PROTECT: origin's fix/cont was overwritten out from under a concurrent writer"
+echo "PASS: a force whose leased value has moved is REJECTED and origin is left untouched (#2103)"
+
+# --- push: pr.sh never issues an UNGUARDED force ----------------------------------
+# A static floor under both blocks above: every `git push` in pr.sh that forces
+# must do so through --force-with-lease. A future edit that reaches for a bare
+# --force reintroduces exactly the loss this issue is about, and would pass both
+# functional fixtures above.
+grep -q -- '--force-with-lease=refs/heads/' "$SCRIPT" \
+  || fail "#2103: pr.sh must force through --force-with-lease=<ref>:<sha>"
+if grep -vE '^[[:space:]]*#' "$SCRIPT" | grep -nE 'git .*push .*--force([^-]|$)'; then
+  fail "#2103: pr.sh issues a BARE git push --force — a force here must always be leased"
+fi
+echo "PASS: pr.sh forces only through --force-with-lease over a value it read first (#2103)"
+
 # --- push: the open-PR survey (temperloop#1688) -----------------------------------
 # The live 2026-08-21 shape: the worktree's local branch is `build/<slug>` while
 # the PR was opened on `fix/<slug>`, so a rebase-and-re-push aimed at the obvious
