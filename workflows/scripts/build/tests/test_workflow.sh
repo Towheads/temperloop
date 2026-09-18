@@ -1955,16 +1955,34 @@ if ((result.parked ?? []).length !== 1)
   { console.log(JSON.stringify({ ok: false, reason: 'expected 1 parked: ' + JSON.stringify(result) })); process.exit(0); }
 if (gatePrompts.length !== 2)
   { console.log(JSON.stringify({ ok: false, reason: 'expected exactly 2 gate slices, saw ' + gatePrompts.length })); process.exit(0); }
-// Slice 1 starts at 0 and TRUNCATES the log; slice 2 resumes at the reported
-// index and APPENDS, so /tmp/qg-<slug>.log carries the union of both slices.
+// Slice 1 starts at 0 and TRUNCATES the log UP FRONT; every slice then STREAMS
+// into it through tee, so /tmp/qg-<slug>.log carries the union of both slices
+// and keeps filling even when the executor kills the command (temperloop#2094
+// review round 1 — a truncate-and-copy scheduled AFTER the gate never runs on
+// the one path where the partial output is the only diagnostic there is).
 if (!gatePrompts[0].includes('QUALITY_GATES_START_AT=0'))
   { console.log(JSON.stringify({ ok: false, reason: 'slice 1 does not start at 0: ' + gatePrompts[0] })); process.exit(0); }
 if (!gatePrompts[1].includes('QUALITY_GATES_START_AT=47'))
   { console.log(JSON.stringify({ ok: false, reason: 'slice 2 does not resume at the reported index 47: ' + gatePrompts[1] })); process.exit(0); }
-if (!gatePrompts[0].includes('>/tmp/qg-item-gs1021.log') || gatePrompts[0].includes('>>/tmp/qg-item-gs1021.log'))
-  { console.log(JSON.stringify({ ok: false, reason: 'slice 1 must TRUNCATE the gate log: ' + gatePrompts[0] })); process.exit(0); }
-if (!gatePrompts[1].includes('>>/tmp/qg-item-gs1021.log'))
-  { console.log(JSON.stringify({ ok: false, reason: 'slice 2 must APPEND to the gate log: ' + gatePrompts[1] })); process.exit(0); }
+// sq() shell-quotes both log paths in the composed command, so the expected
+// text carries apostrophes. This case is itself a double-quoted shell string,
+// so the character is built rather than written, to keep the escaping obvious.
+const Q = String.fromCharCode(39);
+const QGLOG = Q + '/tmp/qg-item-gs1021.log' + Q;
+const QGSLICE = Q + '/tmp/qg-item-gs1021.log.slice' + Q;
+if (!gatePrompts[0].includes(': >' + QGLOG + ';'))
+  { console.log(JSON.stringify({ ok: false, reason: 'slice 1 must TRUNCATE the gate log UP FRONT, before the gate runs: ' + gatePrompts[0] })); process.exit(0); }
+if (gatePrompts[1].includes(': >' + QGLOG + ';'))
+  { console.log(JSON.stringify({ ok: false, reason: 'slice 2 must NOT truncate the gate log: ' + gatePrompts[1] })); process.exit(0); }
+// STREAMING, not a post-hoc copy: the gate's output must reach BOTH the
+// per-slice file (which the trailers are parsed from) and the cumulative
+// operator log WHILE the gate runs. A `cat` after the gate is the regression.
+for (const i of [0, 1]) {
+  if (!gatePrompts[i].includes('| tee ' + QGSLICE + ' >>' + QGLOG))
+    { console.log(JSON.stringify({ ok: false, reason: 'slice ' + (i + 1) + ' must STREAM into the cumulative log through tee, not copy into it after the gate: ' + gatePrompts[i] })); process.exit(0); }
+  if (/cat\s+\S*qg-item-gs1021\.log\.slice/.test(gatePrompts[i]))
+    { console.log(JSON.stringify({ ok: false, reason: 'slice ' + (i + 1) + ' copies the slice log after the gate; a kill on timeout skips that step: ' + gatePrompts[i] })); process.exit(0); }
+}
 // The budget must reach the script as an ENV VAR (an older vendored
 // quality-gates.sh ignores an unknown env var and runs the whole suite; an
 // unknown FLAG would exit 2 and read back as a gate failure).
@@ -2313,6 +2331,267 @@ if (!/known-RED/.test(String(p.reason))) bad('the reason drops the known-failure
 // The killed slice establishes nothing, so it contributes NO count of its own.
 if (p.sliceLedger[1].outcome !== 'GATE_TIMEOUT' || p.sliceLedger[1].failed !== 0)
   bad('a killed slice must contribute 0, not a guess: ' + JSON.stringify(p.sliceLedger));
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+# ============================================================================
+# TEST 11m (temperloop#2094): the 3e.5 gate's SHELL classifier, EXECUTED.
+#
+#   Every other gate case above stubs the executor's JSON line, so none of them
+#   can see the branch that PRODUCES it. This one runs the real composed
+#   command — the exact text driveItem hands the executor — against a stub
+#   quality-gates.sh whose exit code and trailers are scripted, and reads the
+#   JSON it prints.
+#
+#   The defect: the classifier keyed GATE_SLICE off `exit 75` AND a resume
+#   point. quality-gates.sh prints `QUALITY_GATES_RESUME_AT=` on exactly one
+#   path — budget spent, stopped cleanly between gates — and prints it BEFORE
+#   it exits, so one unexpected status turned a clean partial into GATE_FAIL,
+#   where gateSliceFailed()'s "RED by construction" floor manufactured the one
+#   failure the slice had just reported as zero. Observed live: three slices,
+#   QUALITY_GATES_FAILED=0 in all three, stopped at gate 152 of 200, reported
+#   RED with one failure and suiteFinished:true.
+#
+#   Reading 5 is the guard on the fix: the trailers are now read from THIS
+#   slice's own log, so a later slice that prints nothing cannot inherit an
+#   earlier slice's resume point and loop on it forever.
+# ============================================================================
+K2094_WT="$(mktemp -d "$WF_TEST_TMPDIR/k2094-XXXXXX")"
+mkdir -p "$K2094_WT/scripts"
+cat >"$K2094_WT/scripts/quality-gates.sh" <<'K2094_STUB'
+#!/usr/bin/env bash
+# Stub quality-gates.sh: exit status and trailers scripted by ../.qgstub.
+# FAIL LOUDLY if that script is missing (review round 1). Sourcing it blind left
+# RC unset, so the stub exited 0 with no trailers — byte-for-byte reading 4's
+# green run. A fixture-wiring mistake would then read as a PASSING assertion.
+# 99 is outside the gate protocol's codes (0 / 75 / red), so it cannot be
+# mistaken for a real outcome.
+__qgstub="$(dirname "$0")/../.qgstub"
+[ -f "$__qgstub" ] || { echo "stub quality-gates.sh: $__qgstub missing" >&2; exit 99; }
+. "$__qgstub"
+[ -n "${OUT:-}" ] && printf '%s\n' "$OUT"
+# SLEEP lets a case hold the gate open AFTER it has written output, so a test can
+# kill the composed command mid-slice the way the executor does on a timeout.
+[ -n "${SLEEP:-}" ] && sleep "$SLEEP"
+[ -n "${FAILED:-}" ] && printf 'QUALITY_GATES_FAILED=%s\n' "$FAILED"
+[ -n "${RESUME:-}" ] && printf 'QUALITY_GATES_RESUME_AT=%s\n' "$RESUME"
+exit "${RC:-0}"
+K2094_STUB
+chmod +x "$K2094_WT/scripts/quality-gates.sh"
+export K2094_WT
+
+run_node_case "2094 classifier: a printed resume point is a PARTIAL slice, whatever the exit code" "
+$PREAMBLE
+
+import { writeFileSync } from 'node:fs';
+import { execFileSync, spawn } from 'node:child_process';
+
+const WT = process.env.K2094_WT;
+
+// Two gate calls: the first slice reports a resume point, the second finishes.
+// That is what puts a startAt>0 command in callLog for reading 5.
+setMachinery('k2094cls',
+  { outcome: 'CREATED', path: WT },
+  { outcome: 'REVIEW_DIFF' },
+  { outcome: 'GATE_SLICE', resumeAt: 152, failed: 0, elapsedSecs: 300, selection: '200:abc' },
+  { outcome: 'GATE_PASS', failed: 0, elapsedSecs: 10 },
+);
+happyWorker('k2094cls');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'k2094cls', branch: 'build/k2094cls', title: 'Classifier', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+await mod.default();
+const bad = (why) => { console.log(JSON.stringify({ ok: false, reason: why })); process.exit(0); };
+
+const gateCalls = callLog.filter((c) => /^gate:k2094cls/.test(String(c.opts.label || '')));
+if (gateCalls.length !== 2) bad('expected 2 gate calls to harvest, got ' + gateCalls.length);
+const cmdOf = (c) => {
+  const parts = String(c.promptFull).split('\nCommand:\n');
+  if (parts.length < 2) bad('gate prompt carries no Command: section');
+  return parts[1];
+};
+const cmdSlice0 = cmdOf(gateCalls[0]);
+const cmdResume = cmdOf(gateCalls[1]);
+if (!/QUALITY_GATES_START_AT=0 /.test(cmdSlice0)) bad('first gate call is not startAt=0: ' + cmdSlice0.slice(0, 400));
+if (!/QUALITY_GATES_START_AT=152 /.test(cmdResume)) bad('second gate call is not startAt=152: ' + cmdResume.slice(0, 400));
+
+const script = (o) => {
+  writeFileSync(WT + '/.qgstub',
+    'RC=' + o.rc + '\n'
+    + 'FAILED=' + (o.failed === undefined ? '' : o.failed) + '\n'
+    + 'RESUME=' + (o.resume === undefined ? '' : o.resume) + '\n'
+    + 'SLEEP=' + (o.sleep === undefined ? '' : o.sleep) + '\n'
+    + 'OUT=' + JSON.stringify(o.out === undefined ? '' : o.out) + '\n');
+};
+const run = (cmd) => {
+  let out = '';
+  try {
+    out = execFileSync('bash', ['-c', cmd], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  } catch (err) {
+    out = String((err && err.stdout) || '');
+  }
+  const lines = out.split('\n').map((l) => l.trim()).filter((l) => l.startsWith('{') && l.endsWith('}'));
+  if (lines.length === 0) bad('the composed gate command printed no JSON line; stdout was: ' + JSON.stringify(out.slice(-400)));
+  try { return JSON.parse(lines[lines.length - 1]); }
+  catch (e) { return bad('unparseable JSON line: ' + lines[lines.length - 1]); }
+};
+
+// --- Reading 1: the PROTOCOL path. exit 75 + a resume point = GATE_SLICE. ---
+script({ rc: 75, failed: 0, resume: 152, out: 'PARTIAL — ran gates 0..151 of 200 in 300s (budget 300s); resuming at 152' });
+const r1 = run(cmdSlice0);
+if (r1.outcome !== 'GATE_SLICE') bad('reading 1 (rc 75 + resume point) is not GATE_SLICE: ' + JSON.stringify(r1));
+if (Number(r1.resumeAt) !== 152) bad('reading 1 lost the resume point: ' + JSON.stringify(r1));
+if (Number(r1.failed) !== 0) bad('reading 1 invented a failure: ' + JSON.stringify(r1));
+
+// --- Reading 2: THE DEFECT. An UNEXPECTED exit code over the SAME clean
+//     partial. It is still a partial slice: the suite said where to resume and
+//     said zero gates failed, and neither fact is the exit code's to overturn.
+script({ rc: 2, failed: 0, resume: 152, out: 'PARTIAL — ran gates 0..151 of 200 in 300s (budget 300s); resuming at 152' });
+const r2 = run(cmdSlice0);
+if (r2.outcome !== 'GATE_SLICE') bad('reading 2 (unexpected rc over a clean partial) must be GATE_SLICE, got: ' + JSON.stringify(r2));
+if (Number(r2.resumeAt) !== 152) bad('reading 2 lost the resume point: ' + JSON.stringify(r2));
+if (Number(r2.failed) !== 0) bad('reading 2 manufactured a failure count: ' + JSON.stringify(r2));
+if (Number(r2.rc) !== 2) bad('reading 2 did not carry the anomalous exit code for the record: ' + JSON.stringify(r2));
+
+// --- Reading 3: a genuinely RED slice — no resume point — is still GATE_FAIL,
+//     carrying the suite's OWN count. The fix must not soften a real failure.
+script({ rc: 1, failed: 3, out: 'FAILED 3/200 quality gate(s):' });
+const r3 = run(cmdSlice0);
+if (r3.outcome !== 'GATE_FAIL') bad('reading 3 (red, no resume point) is not GATE_FAIL: ' + JSON.stringify(r3));
+if (Number(r3.failed) !== 3) bad('reading 3 lost the suite own failure count: ' + JSON.stringify(r3));
+
+// --- Reading 4: green stays green. ---
+script({ rc: 0, out: 'OK — all 200 quality gate(s) passed in 120s' });
+const r4 = run(cmdSlice0);
+if (r4.outcome !== 'GATE_PASS') bad('reading 4 (exit 0) is not GATE_PASS: ' + JSON.stringify(r4));
+
+// --- Reading 5: THE STALENESS GUARD behind reading 2. Slice 1 leaves a resume
+//     point in the cumulative log; slice 2 then prints NOTHING and dies. The
+//     classifier must NOT inherit slice 1's trailer and resume at 152 forever —
+//     a slice that established nothing is a failure, not a partial.
+script({ rc: 75, failed: 0, resume: 152, out: 'PARTIAL — ran gates 0..151 of 200 in 300s (budget 300s); resuming at 152' });
+run(cmdSlice0);
+script({ rc: 2 });
+const r5 = run(cmdResume);
+if (r5.outcome !== 'GATE_FAIL') bad('reading 5: a silent, failed resume slice inherited the PREVIOUS slice trailer instead of failing: ' + JSON.stringify(r5));
+if (r5.resumeAt !== undefined) bad('reading 5 carried a stale resume point: ' + JSON.stringify(r5));
+
+// …and the cumulative operator log still holds BOTH slices, unchanged in meaning.
+const cum = readFileSync('/tmp/qg-k2094cls.log', 'utf8');
+if (!/QUALITY_GATES_RESUME_AT=152/.test(cum)) bad('the cumulative gate log lost slice 1 own output: ' + cum.slice(0, 300));
+
+// --- Reading 6: A NON-NUMERIC RESUME TRAILER (review round 1). The resume point
+//     became the load-bearing classifier input, is matched against the WHOLE
+//     slice log (gate output included), and is interpolated RAW into the JSON by
+//     %s — so a half-written or non-numeric trailer would emit a syntactically
+//     invalid line that lands outside the executor's closed outcome set instead
+//     of being classified at all. It must be read as ABSENT, exactly as a
+//     missing trailer already is, and the line must still parse.
+script({ rc: 75, failed: 0, resume: 'notanumber', out: 'PARTIAL — garbage trailer' });
+const r6 = run(cmdSlice0);          // run() already fails the case on unparseable JSON
+if (r6.outcome === 'GATE_SLICE') bad('reading 6: a non-numeric resume trailer was accepted as a partial slice: ' + JSON.stringify(r6));
+if (r6.resumeAt !== undefined) bad('reading 6 carried a non-numeric resume point into the payload: ' + JSON.stringify(r6));
+if (r6.outcome !== 'GATE_FAIL') bad('reading 6 (rc 75, unusable trailer) must fall through to GATE_FAIL, got: ' + JSON.stringify(r6));
+
+// --- Reading 7: a resume-LOOKING line in the gate's own OUTPUT is not a
+//     trailer. The sed anchors to start-of-line, and this tree really does nest
+//     quality-gates.sh inside itself as a fixture, so an echoed captured run
+//     must not be able to reclassify a genuinely RED slice as a clean partial.
+script({ rc: 1, failed: 2, out: '  QUALITY_GATES_RESUME_AT=152 (echoed from a nested fixture run)' });
+const r7 = run(cmdSlice0);
+if (r7.outcome !== 'GATE_FAIL') bad('reading 7: an indented resume-looking line in gate OUTPUT reclassified a red slice: ' + JSON.stringify(r7));
+if (Number(r7.failed) !== 2) bad('reading 7 lost the suite own failure count: ' + JSON.stringify(r7));
+
+// --- Reading 8: THE TIMEOUT PATH (review round 1). The executor KILLS this whole
+//     command at GATE_BASH_TIMEOUT_MS, so anything the command does AFTER the
+//     gate — a copy step, a deferred truncation — never runs. Two guarantees must
+//     therefore hold while the gate is still running, and this reading is the one
+//     that can tell: the killed slice's partial output is the ONLY diagnostic a
+//     timeout produces and must already be in the cumulative log the escalation
+//     payload hands the operator, and a previous run's log must already be GONE
+//     rather than presented as this run's.
+script({ rc: 0, failed: 0, out: 'STREAMED-BEFORE-THE-KILL', sleep: 6 });
+writeFileSync('/tmp/qg-k2094cls.log', 'STALE-FROM-A-PREVIOUS-RUN\n');
+await new Promise((resolve) => {
+  // detached + a NEGATIVE pid kills the whole process GROUP, so the composed
+  // command's own inline wall-clock watchdog (a backgrounded `sleep`) dies with
+  // it instead of being orphaned for its full ceiling. That is also the truer
+  // simulation: the executor's timeout takes down the command, not one pid.
+  const child = spawn('bash', ['-c', cmdSlice0], { stdio: ['ignore', 'ignore', 'ignore'], detached: true });
+  const t = setTimeout(() => { try { process.kill(-child.pid, 'SIGKILL'); } catch (e) { child.kill('SIGKILL'); } }, 2000);
+  child.on('exit', () => { clearTimeout(t); resolve(); });
+  child.on('error', () => { clearTimeout(t); resolve(); });
+});
+const killedLog = readFileSync('/tmp/qg-k2094cls.log', 'utf8');
+if (/STALE-FROM-A-PREVIOUS-RUN/.test(killedLog)) bad('reading 8: a killed first slice left the PREVIOUS run log in place, and the escalation would point an operator at stale content presented as current: ' + JSON.stringify(killedLog.slice(0, 200)));
+if (!/STREAMED-BEFORE-THE-KILL/.test(killedLog)) bad('reading 8: the killed slice output never reached the cumulative log the escalation hands the operator — the only diagnostic a timeout produces was lost: ' + JSON.stringify(killedLog.slice(0, 200)));
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+# ============================================================================
+# TEST 11n (temperloop#2094): suiteFinished is a claim about COVERAGE, and the
+#   only first-hand evidence for it is the suite's own resume trailer. Both
+#   readings, so the flag is neither hardwired nor inferred from a name:
+#     - a final slice that REPORTS a resume point → suiteFinished FALSE, even
+#       though its terminal outcome (GATE_FAIL) is in the "finished" set by
+#       name. This is the live escalation: three clean slices, stopped at gate
+#       152 of 200, shipped suiteFinished:true.
+#     - the same shape WITHOUT a resume point → suiteFinished TRUE, unchanged.
+# ============================================================================
+run_node_case "2094 coverage: suiteFinished follows the resume trailer, not the terminal outcome name" "
+$PREAMBLE
+
+// Reading A — the terminal slice carries a resume point.
+setMachinery('k2094unfin',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/k2094unfin' },
+  { outcome: 'REVIEW_DIFF' },
+  { outcome: 'GATE_SLICE', resumeAt: 96, failed: 0, elapsedSecs: 300 },
+  { outcome: 'GATE_FAIL', failed: 0, resumeAt: 152, elapsedSecs: 300, rc: 2 },
+);
+happyWorker('k2094unfin');
+
+// Reading B — the SAME terminal outcome with no resume point: finished.
+setMachinery('k2094fin',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/k2094fin' },
+  { outcome: 'REVIEW_DIFF' },
+  { outcome: 'GATE_SLICE', resumeAt: 96, failed: 0, elapsedSecs: 300 },
+  { outcome: 'GATE_FAIL', failed: 2, elapsedSecs: 300 },
+);
+happyWorker('k2094fin');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'k2094unfin', branch: 'build/k2094unfin', title: 'Unfinished', kind: 'impl', acceptance: ['c'] },
+  { slug: 'k2094fin', branch: 'build/k2094fin', title: 'Finished', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+const bad = (why) => { console.log(JSON.stringify({ ok: false, reason: why })); process.exit(0); };
+
+const by = {};
+for (const e of (result.escalations ?? [])) by[e.slug] = e;
+
+const a = by['k2094unfin'];
+if (!a) bad('the unfinished item did not escalate: ' + JSON.stringify(result));
+const pa = a.payload || {};
+if (pa.suiteFinished !== false) bad('a run whose final slice reported a resume point claims the suite finished: ' + JSON.stringify(pa));
+if (!/resume point/.test(String(pa.reason))) bad('the reason never names the resume point that contradicts the terminal outcome: ' + pa.reason);
+const la = (pa.sliceLedger || [])[(pa.sliceLedger || []).length - 1] || {};
+if (Number(la.resumeAt) !== 152) bad('the ledger did not carry the terminal slice resume point: ' + JSON.stringify(pa.sliceLedger));
+if (Number(la.rc) !== 2) bad('the ledger did not carry the terminal slice exit code: ' + JSON.stringify(pa.sliceLedger));
+
+const b = by['k2094fin'];
+if (!b) bad('the finished item did not escalate: ' + JSON.stringify(result));
+const pb = b.payload || {};
+if (pb.suiteFinished !== true) bad('the INVERTED reading failed: no resume point, yet suiteFinished is not true: ' + JSON.stringify(pb));
+if (pb.verdict !== 'RED') bad('a finished GATE_FAIL is not RED: ' + JSON.stringify(pb));
+if (pb.failedGates !== 2) bad('the finished reading lost its failure count: ' + JSON.stringify(pb));
+if (((pb.sliceLedger || [])[1] || {}).resumeAt !== undefined) bad('a slice with no resume point invented one: ' + JSON.stringify(pb.sliceLedger));
 
 console.log(JSON.stringify({ ok: true }));
 "

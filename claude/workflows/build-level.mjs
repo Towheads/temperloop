@@ -702,6 +702,13 @@ const SPINE_OUTCOME_SCHEMA = {
     failed: { type: ['number', 'string'] },
     elapsedSecs: { type: ['number', 'string'] },
     budgetSecs: { type: ['number', 'string'] },
+    // temperloop#2094: the gate slice's own exit status. It is a FACT the
+    // ledger carries, never the classifier's input — a slice that printed a
+    // resume-point trailer is a PARTIAL slice whatever code it exited with
+    // (see gateCmd's own comment), and this field is what makes an anomalous
+    // code visible in the escalation instead of silently re-labelling the
+    // slice.
+    rc: { type: ['number', 'string'] },
     // temperloop#1071 step-liveness fields, carried by STEP_TIMEOUT / STEP_SLOW.
     // `step` is the batch step's own `kind` (or 'solo'), so an escalation payload
     // names WHICH machinery call the ceiling bounded without any correlation work.
@@ -3294,6 +3301,25 @@ function gateSliceFailed(out) {
   return 0;
 }
 
+// gateSliceResumeAt(out) — the 0-based gate index ONE slice said the suite
+// still has to reach, or undefined when it reported none (temperloop#2094).
+//
+// Read off the outcome REGARDLESS of its kind, deliberately. `suiteFinished`
+// is a claim about whether every gate ran, and the only evidence anyone has
+// for that is the suite's own `QUALITY_GATES_RESUME_AT=` trailer; deriving it
+// from the terminal outcome's NAME instead is what let a run that stopped at
+// gate 152 of 200 ship `suiteFinished: true`. A resume point is that claim's
+// direct counter-evidence whether the slice carrying it was classified
+// GATE_SLICE or (as in the #2094 incident) something else.
+//
+// `0` is not a resume point: the trailer is only ever printed with gates
+// REMAINING, so a 0 here is an unparsed/absent field, not "resume at gate 0".
+function gateSliceResumeAt(out) {
+  if (!out) return undefined;
+  const n = Number(out.resumeAt);
+  return Number.isFinite(n) && n > 0 ? n : undefined;
+}
+
 // gateVerdict(terminalOutcome, ledger) — the ONE reconciliation point between
 // the slice loop's terminal outcome and its failure ledger. Every arm's kind,
 // counts and reason are computed HERE, from one input, so no arm can ship a
@@ -3317,14 +3343,32 @@ function gateSliceFailed(out) {
 function gateVerdict(terminalOutcome, ledger) {
   const failedGates = ledger.reduce((n, s) => n + (Number(s.failed) || 0), 0);
   const failedInSlices = ledger.filter((s) => (Number(s.failed) || 0) > 0).map((s) => s.slice);
-  const finished = terminalOutcome === 'GATE_PASS'
-    || terminalOutcome === 'GATE_FAIL'
-    || terminalOutcome === 'GATE_ABSENT';
+  // A resume point in the LAST ledger entry is direct evidence that gates
+  // remained when the run stopped, and it OVERRIDES the terminal outcome's own
+  // name (temperloop#2094). The incident: the final slice came back with an
+  // unexpected exit code and was classified GATE_FAIL, whose name put it in
+  // the `finished` set below — so an escalation for a run that stopped at gate
+  // 152 of 200 reported `suiteFinished: true`, and the next reader had no way
+  // to tell a whole-suite verdict from a 76%-of-the-way-through one. The
+  // trailer is the only first-hand evidence about coverage that exists; a
+  // classification derived downstream of it can never outrank it.
+  const lastSliceResumeAt = ledger.length > 0
+    ? gateSliceResumeAt(ledger[ledger.length - 1])
+    : undefined;
+  const finished = lastSliceResumeAt === undefined
+    && (terminalOutcome === 'GATE_PASS'
+      || terminalOutcome === 'GATE_FAIL'
+      || terminalOutcome === 'GATE_ABSENT');
   let unfinished;
   if (terminalOutcome === 'GATE_TIMEOUT') {
     unfinished = `the quality-gates slice was killed by the executor's ${GATE_BASH_TIMEOUT_MS}ms Bash-tool timeout before it could report — a BUDGET exhaustion, NOT a gate failure`;
   } else if (terminalOutcome === 'GATE_SLICE') {
     unfinished = `the suite did not finish within ${GATE_MAX_SLICES} slices of ${GATE_SLICE_SECS}s (~${Math.round(GATE_MAX_SLICES * GATE_SLICE_SECS / 60)} min of gate wall time) — a BUDGET exhaustion, NOT a gate failure`;
+  } else if (lastSliceResumeAt !== undefined) {
+    // temperloop#2094: a terminal outcome whose NAME says "done" over a final
+    // slice that printed a resume point. Say which one is being believed, and
+    // why, rather than letting the name win silently.
+    unfinished = `the final slice reported a resume point (gate ${lastSliceResumeAt}) — gates REMAINED when the run stopped, so the suite did NOT finish, whatever its terminal outcome '${terminalOutcome}' is named`;
   } else {
     // Neither a finished verdict nor a recognized budget outcome: the executor
     // returned something outside the gate's own closed set. Pre-#1587 this fell
@@ -5958,19 +6002,52 @@ async function driveItem(item) {
   // script, so an older copy can only ever produce GATE_PASS / GATE_FAIL.
   //
   // `set -o pipefail` is LOAD-BEARING (temperloop#68 — see build.md §3e.5).
-  // The gate verdict is derived from the subshell's own exit status; the
-  // subshell here is redirected (`>log 2>&1`), not piped, so today the exit
-  // reaches `$?` cleanly. pipefail is the durable guard: should a future
-  // edit ever route the gate through a downstream filter/`tee` to capture its
-  // output (e.g. `qgBin | tee log`), a bare pipe's status reflects the LAST
-  // stage (tee's 0), swallowing a RED gate and degrading 3e.5 to a silent
-  // no-op. With pipefail set, the gate's own non-zero exit propagates and
-  // GATE_FAIL is still emitted — the runtime match for the documented rule.
+  // The gate verdict is derived from the subshell's own exit status, and since
+  // temperloop#2094 that subshell IS piped — through `tee`, so one slice's
+  // output can be isolated for trailer parsing while still STREAMING into the
+  // cumulative operator log (see gateSliceLog below for why both are required).
+  // A bare pipe's status reflects the LAST stage (tee's 0), which would swallow
+  // a RED gate and degrade 3e.5 to a silent no-op; with pipefail set, the gate's
+  // own non-zero exit propagates to `$?` and GATE_FAIL is still emitted. This is
+  // the exact case build.md §3e.5 permits ("if the gate must be piped, `set -o
+  // pipefail` first"), and the exit is read as a bare `$?` — NOT through
+  // PIPESTATUS[0], a bash array that expands empty under the zsh this harness's
+  // Bash tool actually runs, which is temperloop#801's misread.
   //
   // The log is truncated on the first slice and APPENDED to thereafter, so
   // /tmp/qg-<slug>.log stays the single artifact an operator reads, carrying the
   // union of every slice exactly as an unsliced run's log did.
   const gateLog = `/tmp/qg-${item.slug}.log`;
+  // ONE SLICE'S OWN OUTPUT, kept separate from the cumulative log above
+  // (temperloop#2094). The trailers below (`QUALITY_GATES_FAILED=`,
+  // `QUALITY_GATES_RESUME_AT=`, `QUALITY_GATES_SELECTION=`) are read with
+  // `tail -1`, so reading them out of the APPENDED log silently answers a
+  // question about THIS slice with the previous slice's numbers whenever this
+  // slice printed none of its own — a slice killed before it could report, or
+  // one whose `cd`/`unset` prelude failed, inherits a resume point and a
+  // failure count it never established. The trailers are therefore parsed from
+  // HERE, never from the cumulative log: a trailer present in this file was
+  // printed by the slice just run, which is what makes the classifier below
+  // able to trust it.
+  //
+  // IT IS A TEE, NOT A REDIRECT-THEN-COPY (review round 1). Writing the slice
+  // to this file and `cat`-ing it into ${gateLog} afterwards bought the
+  // isolation above at the cost of the guarantee that matters most on the one
+  // path that has no other diagnostic: the executor KILLS this whole command at
+  // GATE_BASH_TIMEOUT_MS, and a copy step scheduled after the gate never runs.
+  // The killed slice's partial output — the only evidence a timeout produces —
+  // would never reach /tmp/qg-<slug>.log, the single artifact the escalation
+  // payload hands the operator; and with the first-slice truncation moved into
+  // that same copy, a timed-out first slice would leave the PREVIOUS run's log
+  // in place and the escalation would point at stale content presented as
+  // current. So ${gateLog} is truncated UP FRONT on slice 0 and the gate streams
+  // into both files through `tee` — per-slice isolation and live, kill-proof
+  // streaming at once. `set -o pipefail` is at the head of the command, so the
+  // pipeline's `$?` is still the gate's own status (`tee` exits 0); the bare
+  // `$?` read is deliberate and dialect-safe — PIPESTATUS[0] is a bash
+  // array that expands EMPTY under the zsh this harness's Bash tool runs
+  // (temperloop#801), which is the misread that swallows a red gate.
+  const gateSliceLog = `${gateLog}.slice`;
   // temperloop#1663: run the acceptance gate DIFF-SCOPED — only the gates this
   // item's own changed paths can reach, resolved through gate-paths.tsv.
   //
@@ -6032,21 +6109,51 @@ async function driveItem(item) {
   const gatePin = `/tmp/qg-${item.slug}.selection-pin`;
   const gateCmd = (startAt, expectSelection) =>
     `set -o pipefail; if [ ! -x ${sq(qgBin)} ]; then echo '{"outcome":"GATE_ABSENT"}'; ` +
-    `else ${startAt === 0 ? `rm -f ${sq(gatePin)}; ` : ''}` +
+    `else ${startAt === 0 ? `rm -f ${sq(gatePin)} ${sq(gateSliceLog)}; : >${sq(gateLog)}; ` : ''}` +
     `( cd ${sq(wt)} && unset $(bash ${sq(settingsBin)} 2>/dev/null) && ` +
     `${gateScopeEnv} QUALITY_GATES_SELECTION_PIN=${sq(gatePin)} ` +
     `${expectSelection ? `QUALITY_GATES_EXPECT_SELECTION=${sq(expectSelection)} ` : ''}` +
     `QUALITY_GATES_START_AT=${startAt} QUALITY_GATES_BUDGET_SECS=${GATE_SLICE_SECS} ${sq(qgBin)} ) ` +
-    `${startAt === 0 ? '>' : '>>'}${gateLog} 2>&1; __rc=$?; ` +
-    `__el=$(sed -n 's/.*passed in \\([0-9]*\\)s.*/\\1/p;s/.*of [0-9]* in \\([0-9]*\\)s.*/\\1/p' ${gateLog} | tail -1); ` +
-    `__f=$(sed -n 's/^QUALITY_GATES_FAILED=//p' ${gateLog} | tail -1); ` +
-    `__r=$(sed -n 's/^QUALITY_GATES_RESUME_AT=//p' ${gateLog} | tail -1); ` +
-    `__s=$(sed -n 's/^QUALITY_GATES_SELECTION=//p' ${gateLog} | tail -1); ` +
-    `if [ "$__rc" = 75 ] && [ -n "$__r" ]; then ` +
-    `printf '{"outcome":"GATE_SLICE","resumeAt":%s,"failed":%s,"elapsedSecs":%s,"selection":"%s","budgetSecs":${GATE_SLICE_SECS}}\\n' "$__r" "\${__f:-0}" "\${__el:-0}" "$__s"; ` +
+    `2>&1 | tee ${sq(gateSliceLog)} >>${sq(gateLog)}; __rc=$?; ` +
+    `__el=$(sed -n 's/.*passed in \\([0-9]*\\)s.*/\\1/p;s/.*of [0-9]* in \\([0-9]*\\)s.*/\\1/p' ${sq(gateSliceLog)} | tail -1); ` +
+    `__f=$(sed -n 's/^QUALITY_GATES_FAILED=//p' ${sq(gateSliceLog)} | tail -1); ` +
+    `__r=$(sed -n 's/^QUALITY_GATES_RESUME_AT=//p' ${sq(gateSliceLog)} | tail -1); ` +
+    // THE RESUME POINT IS LOAD-BEARING, SO ITS SHAPE IS CHECKED (review round 1).
+    // Dropping the old `[ "$__rc" = 75 ]` co-condition removed the only
+    // cross-check on a value that is matched against the whole slice log, gate
+    // output included, and then interpolated RAW into JSON by `%s` below. A
+    // non-numeric or half-written trailer would emit a syntactically invalid
+    // line, which lands in the executor's "outside the closed set" path instead
+    // of being classified. Anchoring to digits here is the whole defense: a
+    // reading that is not a plain integer is treated as ABSENT, exactly as a
+    // missing trailer already is. (`0` is not a resume point either — the
+    // trailer is only ever printed with gates REMAINING — and gateSliceResumeAt()
+    // already drops it downstream.)
+    `case "$__r" in ''|*[!0-9]*) __r='' ;; esac; ` +
+    `__s=$(sed -n 's/^QUALITY_GATES_SELECTION=//p' ${sq(gateSliceLog)} | tail -1); ` +
+    // A RESUME POINT THIS SLICE PRINTED IS THE VERDICT (temperloop#2094).
+    // quality-gates.sh emits `QUALITY_GATES_RESUME_AT=` on exactly one path:
+    // it spent its budget, stopped CLEANLY BETWEEN GATES, and is telling the
+    // caller where the remaining gates start. That is a PARTIAL slice by
+    // construction, and its own `QUALITY_GATES_FAILED=` line is the count it
+    // established. Keying the branch on the exit code INSTEAD made that fact
+    // conditional on a number the script prints the trailer before producing:
+    // one unexpected code — a SIGTERM after the trailer, a wrapper that
+    // remapped the status — and a clean partial was relabelled GATE_FAIL,
+    // where gateSliceFailed()'s "RED by construction" floor manufactured the
+    // one failure the slice had just reported as zero. Observed live: three
+    // slices, `QUALITY_GATES_FAILED=0` in every one, stopped at gate 152 of
+    // 200, reported `verdict: RED, failedGates: 1, suiteFinished: true`.
+    // So the resume point is checked FIRST and on its own; `$__rc` rides along
+    // as `rc` for the record (75 is the protocol code, anything else is an
+    // anomaly worth seeing in the ledger, neither changes the classification).
+    // Safe against a stale trailer because ${gateSliceLog} holds THIS slice's
+    // output alone — see its declaration above.
+    `if [ -n "$__r" ]; then ` +
+    `printf '{"outcome":"GATE_SLICE","resumeAt":%s,"failed":%s,"elapsedSecs":%s,"selection":"%s","rc":%s,"budgetSecs":${GATE_SLICE_SECS}}\\n' "$__r" "\${__f:-0}" "\${__el:-0}" "$__s" "$__rc"; ` +
     `elif [ "$__rc" = 0 ]; then ` +
     `printf '{"outcome":"GATE_PASS","failed":0,"elapsedSecs":%s,"budgetSecs":${GATE_SLICE_SECS}}\\n' "\${__el:-0}"; ` +
-    `else printf '{"outcome":"GATE_FAIL","failed":%s,"elapsedSecs":%s,"budgetSecs":${GATE_SLICE_SECS}}\\n' "\${__f:-1}" "\${__el:-0}"; fi; fi`;
+    `else printf '{"outcome":"GATE_FAIL","failed":%s,"elapsedSecs":%s,"rc":%s,"budgetSecs":${GATE_SLICE_SECS}}\\n' "\${__f:-1}" "\${__el:-0}" "$__rc"; fi; fi`;
 
   // Drive slices until the suite finishes. GATE_SLICE is the ONLY outcome that
   // continues the loop; everything else is terminal on the first pass, so a
@@ -6107,6 +6214,16 @@ async function driveItem(item) {
       outcome: gateOut.outcome,
       failed: gateSliceFailed(gateOut),
       elapsedSecs: sliceElapsed,
+      // The RESUME POINT this slice reported, carried into the ledger
+      // (temperloop#2094) so gateVerdict() can read "the suite stopped with
+      // gates left" off the ledger itself rather than inferring it from the
+      // terminal outcome alone. Absent (undefined) when the slice reported
+      // none — which is what "the suite ran to the end" looks like.
+      ...(gateSliceResumeAt(gateOut) === undefined ? {} : { resumeAt: gateSliceResumeAt(gateOut) }),
+      // The slice's own exit status, when the executor reported one. 75 is the
+      // budget-spent protocol code; anything else beside a resume point is an
+      // anomaly a reader should see rather than have silently normalized away.
+      ...(gateOut.rc === undefined ? {} : { rc: Number(gateOut.rc) }),
     });
     if (gateOut.outcome !== 'GATE_SLICE') break;
     gateStartAt = Number(gateOut.resumeAt) || 0;
