@@ -1190,6 +1190,35 @@ KERNEL_GATES=(
   # Hermetic: no network, no `gh`, no replay executed. Same direct-`bash`
   # form, no Makefile target, as the three gates above.
   "bash workflows/scripts/model-comparison/tests/test_replay_preflight_derive.sh"
+  # Dual-build harness pre-flight spend gate (temperloop#2079, epic #2065
+  # "new-work dual-build harness", design dimension 4 #6 / D10):
+  # dual-build-preflight.sh, the ORCHESTRATOR-SIDE gate `build.md`'s
+  # `--dual-build` flag consults before a level ever spawns a second arm.
+  # Resolves the level's items whose plan `model:` stamp matches the named
+  # tier, projects 2x-worker + judge spend by REUSING the four gates just
+  # above's own REPLAY_PREFLIGHT_CEILING_TOKENS / REPLAY_PREFLIGHT_TOKENS_
+  # PER_REPLAY (design dimension 6: "the same ceiling the replay harness's
+  # own pre-flight shares, not a dual-build-specific one" — never a second,
+  # competing spend gate), declines below DUAL_BUILD_MIN_INSCOPE_ITEMS, and
+  # refuses BY NAME when the candidate's provider has no usable credential
+  # per candidate-session.sh's own `preflight` (the one host-supply seam,
+  # temperloop#1252/#1743) — never a second, hand-rolled key check. Three
+  # MUTATION PROOFS (the floor check, the ceiling check, the credential
+  # check) each show the refusal path is load-bearing, not vacuous: RED with
+  # the mechanism disabled, GREEN restored. Also pins fail-closed
+  # CANNOT_EVALUATE on an unset/non-integer REPLAY_PREFLIGHT_CEILING_TOKENS,
+  # REPLAY_PREFLIGHT_TOKENS_PER_REPLAY or DUAL_BUILD_MIN_INSCOPE_ITEMS
+  # (temperloop#1365's own fail-closed floor, generalized to this item's own
+  # new setting), and that the emitted `dualBuild` workflow-input JSON
+  # (`{tier,baseline,candidate,inScope}`) is present only on the proceed
+  # path and `null` on every refusal. This item does NOT declare
+  # DUAL_BUILD_MIN_INSCOPE_ITEMS — `dual-build-settings` (temperloop#2071)
+  # is the epic's one L0 item touching build.config.sh, by design; this
+  # gate's own fixture exports the setting directly rather than sourcing a
+  # tracked default. Hermetic: no network, no `gh`, no live model call, no
+  # live git remote (a throwaway git repo per fixture). Same direct-`bash`
+  # form, no Makefile target, as the four replay-preflight gates above.
+  "bash workflows/scripts/build/tests/test_dual_build_preflight.sh"
   # Live candidate tagging provenance (temperloop#1257, epic #1225 "model
   # comparison harness"): tagging.sh's three artifacts — the bounded window
   # record, the telemetry tag (a real emit-model-usage.sh raw-lake record,
