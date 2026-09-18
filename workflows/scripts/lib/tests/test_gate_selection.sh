@@ -671,6 +671,28 @@ git -C "$REG_REPO2" config --unset diff.mnemonicprefix
 git -C "$REG_REPO2" config --unset diff.noprefix
 echo "PASS: 22j the registration probe pins its own diff prefixes, so a mnemonic/no-prefix git config cannot silently kill the exception"
 
+# 22n — the THIRD knob on the same seam: a configured `diff.external` replaces
+# git's rendering wholesale, so the probe would read whatever that tool prints
+# instead of a unified diff. Like 22j this fails CLOSED rather than wrong, but a
+# capability that silently never fires is indistinguishable from one that found
+# nothing — and unlike the prefix knobs, no prefix pin can defend against it.
+# `--no-ext-diff` at the call site is what does; this pins that it is there.
+cat >"$TMP/ext-diff.sh" <<'EXT'
+#!/bin/sh
+# A stand-in for any real external differ: valid output, but not a unified diff.
+echo "<<< external diff tool output — not a unified diff >>>"
+EXT
+chmod +x "$TMP/ext-diff.sh"
+git -C "$REG_REPO2" config diff.external "$TMP/ext-diff.sh"
+reg_env
+GATE_SELECTION_ROOT="$REG_REPO2"
+GATE_SELECTION_LOCAL_BASE=""
+GATE_SELECTION_CHANGED="$(cat "$PIN")"
+gate_selection_resolve
+[ "$GATE_SELECTION_MODE" = "diff" ] || fail "22n: a configured diff.external must not disable the exception — --no-ext-diff pins it (got $GATE_SELECTION_MODE / $GATE_SELECTION_REASON)"
+git -C "$REG_REPO2" config --unset diff.external
+echo "PASS: 22n a configured diff.external cannot silently kill the exception either"
+
 # 22k — SKIPPED_KERNEL_GATES is a skip-DISCLOSURE array, not a run set, and its
 # name also ends `_GATES`. Adding one of its human-sentence elements read as a
 # registration: the ALL row was declined and the sentence was counted as a gate.
