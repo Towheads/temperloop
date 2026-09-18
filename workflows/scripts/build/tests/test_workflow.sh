@@ -2517,8 +2517,12 @@ if (Number(r7.failed) !== 2) bad('reading 7 lost the suite own failure count: ' 
 script({ rc: 0, failed: 0, out: 'STREAMED-BEFORE-THE-KILL', sleep: 6 });
 writeFileSync('/tmp/qg-k2094cls.log', 'STALE-FROM-A-PREVIOUS-RUN\n');
 await new Promise((resolve) => {
-  const child = spawn('bash', ['-c', cmdSlice0], { stdio: ['ignore', 'ignore', 'ignore'] });
-  const t = setTimeout(() => child.kill('SIGKILL'), 2000);
+  // detached + a NEGATIVE pid kills the whole process GROUP, so the composed
+  // command's own inline wall-clock watchdog (a backgrounded `sleep`) dies with
+  // it instead of being orphaned for its full ceiling. That is also the truer
+  // simulation: the executor's timeout takes down the command, not one pid.
+  const child = spawn('bash', ['-c', cmdSlice0], { stdio: ['ignore', 'ignore', 'ignore'], detached: true });
+  const t = setTimeout(() => { try { process.kill(-child.pid, 'SIGKILL'); } catch (e) { child.kill('SIGKILL'); } }, 2000);
   child.on('exit', () => { clearTimeout(t); resolve(); });
   child.on('error', () => { clearTimeout(t); resolve(); });
 });
