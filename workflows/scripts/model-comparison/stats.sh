@@ -18,9 +18,20 @@
 #   stats.sh mde --n 40 --stddev 1.2 [--ci-width PCT] [--power P]
 #   stats.sh verdict --deltas '[...]' [--min-sample N] [--iterations N] [--seed N] [--ci-width PCT]
 #   stats.sh coverage --observed-seats N [--feasible-seats N]
+#   stats.sh exact-binom --n N --k K [--ci-width PCT] [--min-sample N]
 #
 # Every flag has a config-named default (below); passing the same flag again
 # on the command line overrides it (argparse last-value-wins).
+#
+# exact-binom output (JSON): {n, k, min_sample, below_min_sample, ci_width_pct,
+#   null_p (fixed 0.5 — a fair-coin sign test, not an operator setting), phat
+#   (=k/n), lower, upper, excludes_null}. Below --min-sample, `lower`/`upper`/
+#   `excludes_null` are null and `below_min_sample` is true — the SAME
+#   inconclusive-floor refusal `bootstrap-ci`/`verdict` already enforce, never
+#   a hard exit. At or above the floor, `lower`/`upper` are the exact
+#   (Clopper-Pearson) two-sided interval at --ci-width, and `excludes_null` is
+#   true iff 0.5 falls OUTSIDE [lower, upper]. Full field-by-field rationale:
+#   workflows/scripts/model-comparison/stats.py's module docstring, "exact-binom".
 #
 # ── Settings — RESOLVED, never re-valued here ───────────────────────────
 # The five tunables below are registered in
@@ -42,8 +53,9 @@
 # test failure rather than a silent divergence.
 #
 #   MODEL_COMPARISON_MIN_SAMPLE_N          sample-size threshold below which
-#                                          `verdict` and `bootstrap-ci` refuse
-#                                          to report a winner-shaped result.
+#                                          `verdict`, `bootstrap-ci` and
+#                                          `exact-binom` refuse to report a
+#                                          winner/significance-shaped result.
 #   MODEL_COMPARISON_BOOTSTRAP_ITERATIONS  resample count for the percentile
 #                                          bootstrap.
 #   MODEL_COMPARISON_BOOTSTRAP_SEED        seed for the deterministic
@@ -142,12 +154,18 @@ case "$SUBCMD" in
       --feasible-seats "$MODEL_COMPARISON_EMIT_FEASIBLE_SEATS" \
       "$@"
     ;;
+  exact-binom)
+    exec python3 "$CORE" exact-binom \
+      --ci-width "$MODEL_COMPARISON_CI_WIDTH_PCT" \
+      --min-sample "$MODEL_COMPARISON_MIN_SAMPLE_N" \
+      "$@"
+    ;;
   -h|--help)
     usage
     exit 0
     ;;
   *)
-    echo "$self: unrecognized subcommand: $SUBCMD (want bootstrap-ci|mde|verdict|coverage)" >&2
+    echo "$self: unrecognized subcommand: $SUBCMD (want bootstrap-ci|mde|verdict|coverage|exact-binom)" >&2
     exit 2
     ;;
 esac
