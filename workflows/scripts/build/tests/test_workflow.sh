@@ -265,6 +265,20 @@ const freshnessMap = new Map();
 // case predating this item models a worktree holding the worker's commits,
 // which is exactly the case the push preserves, so none of them need changing.
 const preserveMap = new Map();
+// workerClockMap / workerUsageMap: slug → [outcome, ...] — temperloop#2065's
+// worker-cost-capture seam (`worker-clock:<slug>#<tag>` / `worker-usage:
+// <slug>#<tag>`), each its OWN queue, mirroring freshnessMap/preserveMap/
+// reviewWaitMap exactly and for the identical reason: these solo calls now
+// fire on EVERY item's happy path (callWorker() brackets every worker spawn,
+// and the CI_FAILED retry brackets its own re-spawn), so routing them through
+// the shared per-slug machineryMap FIFO would consume whatever entry every
+// EXISTING test queued for something else. Default (map miss): a FIXED epoch
+// (1000) on every reading, so an unmocked item's wall_clock_ms comes out to a
+// deterministic 0 rather than an arbitrary value, and usage_source
+// "unavailable" (tokens null) — the SAME honest degrade the real
+// worker-usage.sh reports when no envelope exists (see that script's header).
+const workerClockMap = new Map();
+const workerUsageMap = new Map();
 
 function slugFromLabel(label) {
   // Labels from runMachineryBatch (temperloop#942): "prelude:slug",
@@ -335,6 +349,10 @@ globalThis.mergeCheckMap = mergeCheckMap;
 globalThis.reviewMap = reviewMap;
 globalThis.freshnessMap = freshnessMap;
 globalThis.preserveMap = preserveMap;
+globalThis.workerClockMap = workerClockMap;
+globalThis.workerUsageMap = workerUsageMap;
+globalThis.setWorkerClock = (slug, ...outcomes) => { workerClockMap.set(slug, outcomes); };
+globalThis.setWorkerUsage = (slug, ...outcomes) => { workerUsageMap.set(slug, outcomes); };
 
 globalThis.agent = async function agent(prompt, opts = {}) {
   callLog.push({ prompt: String(prompt).slice(0, 120), promptFull: String(prompt), opts: { label: opts.label, phase: opts.phase, model: opts.model, agentType: opts.agentType } });
@@ -354,6 +372,28 @@ globalThis.agent = async function agent(prompt, opts = {}) {
       // the machineryMap FIFO.
       if (/^preserve-push:/.test(String(opts.label || ''))) {
         return nextFromMap(preserveMap, slug, { outcome: 'WORK_PRESERVED', branch: 'build/' + slug, commits_ahead: 1, pushed: true });
+      }
+      // temperloop#2065: the worker-cost-capture seam's OWN queues — see
+      // workerClockMap/workerUsageMap's comment above for why they cannot
+      // share machineryMap's FIFO.
+      // temperloop#2065 review round 2 [HIGH]: a queued { __throw: msg } entry
+      // here models runMachinery()/machineryAgent()'s OWN re-throw (an
+      // unresolvable agentType, a StructuredOutput-absent/retry-capped
+      // executor) — the exact throw shape safeWorkerClockNow()/
+      // safeWorkerUsageEmit() exist to catch. Without that guard this
+      // propagates past callWorker()/ciPollLoop() uncaught, per the same
+      // #939 __throw precedent the worker-call branch below already uses.
+      if (/^worker-clock:/.test(String(opts.label || ''))) {
+        const v = nextFromMap(workerClockMap, slug, { outcome: 'WORKER_CLOCK', epoch_s: 1000 });
+        if (v && v.__throw) throw new Error(v.__throw);
+        return v;
+      }
+      if (/^worker-usage:/.test(String(opts.label || ''))) {
+        const v = nextFromMap(workerUsageMap, slug, {
+          outcome: 'WORKER_USAGE', epoch_s: 1000, usage_source: 'unavailable', input_tokens: null, output_tokens: null,
+        });
+        if (v && v.__throw) throw new Error(v.__throw);
+        return v;
       }
       // temperloop#2003: the §3e ceiling's timer executor, on its own queue
       // (see reviewWaitMap). Default REVIEW_WAIT_ELAPSED = "the interval
@@ -599,6 +639,31 @@ if (!p102 || p102.pr !== 102 || p102.pushed_sha !== 'a261')
 if (!p103 || p103.pr !== 103 || p103.pushed_sha !== 'a362')
   { console.log(JSON.stringify({ ok: false, reason: 'item103 mismatch: ' + JSON.stringify(p103) })); process.exit(0); }
 
+// temperloop#2065 'worker-cost-capture': a level with NO CI-fail retry is
+// unchanged except for the six added cost keys — every pre-existing field
+// (slug/pr/pushed_sha/acceptance_results, already asserted above) is
+// untouched, and every parked record now ALSO carries tokens_in, tokens_out,
+// wall_clock_ms, retry_tokens, retry_count and recovery, present even at
+// their honest-degrade baseline (never conditionally omitted like no_ci).
+// The mock's default WORKER_CLOCK/WORKER_USAGE reading is a FIXED epoch
+// (1000) on every call, so an unmocked item's wall_clock_ms comes out to a
+// deterministic 0 — proving the arithmetic runs, not merely that the keys
+// exist — and usage_source 'unavailable' degrades tokens_in/tokens_out to
+// null, the same honest degrade the real worker-usage.sh reports absent a
+// captured envelope.
+for (const p of [p101, p102, p103]) {
+  if (p.tokens_in !== null || p.tokens_out !== null)
+    { console.log(JSON.stringify({ ok: false, reason: p.slug + ': expected tokens_in/tokens_out null (no envelope), got ' + JSON.stringify({in: p.tokens_in, out: p.tokens_out}) })); process.exit(0); }
+  if (p.wall_clock_ms !== 0)
+    { console.log(JSON.stringify({ ok: false, reason: p.slug + ': expected wall_clock_ms 0 (fixed-epoch mock default), got ' + p.wall_clock_ms })); process.exit(0); }
+  if (p.retry_tokens !== null)
+    { console.log(JSON.stringify({ ok: false, reason: p.slug + ': expected retry_tokens null (no retry attempted), got ' + p.retry_tokens })); process.exit(0); }
+  if (p.retry_count !== 0)
+    { console.log(JSON.stringify({ ok: false, reason: p.slug + ': expected retry_count 0, got ' + p.retry_count })); process.exit(0); }
+  if (p.recovery !== false)
+    { console.log(JSON.stringify({ ok: false, reason: p.slug + ': expected recovery false, got ' + p.recovery })); process.exit(0); }
+}
+
 // No plan-note write from inside the workflow (workflow only RETURNS; orchestrator writes)
 const planWrites = callLog.filter(c =>
   !isMachineryCall(c.opts) && !isWorkerCall(c.opts) &&
@@ -606,6 +671,70 @@ const planWrites = callLog.filter(c =>
 );
 if (planWrites.length > 0)
   { console.log(JSON.stringify({ ok: false, reason: 'plan-note write detected: ' + JSON.stringify(planWrites) })); process.exit(0); }
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+# ============================================================================
+# TEST 1b: worker-cost-capture guard — a throwing worker-clock/worker-usage
+# call degrades the ITEM's cost fields to null, it never aborts the item
+# (temperloop#2065 review round 2 [HIGH])
+# ============================================================================
+run_node_case "worker-cost-capture guard: workerClockNow()/workerUsageEmit() THROWING never aborts the item — cost fields degrade to null instead" "
+$PREAMBLE
+
+happyMachinery('clockthrow', 201, 'c500');
+happyWorker('clockthrow');
+// The main worker's OWN clock start throws (models machineryAgent()'s
+// re-throw on an unresolvable/retry-capped executor) — the SAME shape
+// callWorker() wraps the real agent({schema}) call in try/catch for.
+setWorkerClock('clockthrow', { __throw: 'agent type not found' });
+
+happyMachinery('usagethrow', 202, 'c600');
+happyWorker('usagethrow');
+// The main worker's OWN post-return usage-emit throws.
+setWorkerUsage('usagethrow', { __throw: 'agent type not found' });
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'clockthrow', branch: 'build/clockthrow', title: 'Clock throws', kind: 'impl', acceptance: ['c'] },
+  { slug: 'usagethrow', branch: 'build/usagethrow', title: 'Usage throws', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+
+const parked = result.parked ?? [];
+const escalations = result.escalations ?? [];
+
+// Pre-fix (bare workerClockNow()/workerUsageEmit() calls): the throw
+// propagates past callWorker() uncaught and the item never parks at all —
+// it either escalates as a generic worker-error or the whole level rejects.
+// Post-fix: BOTH items park normally, with the real worker verdict intact and
+// only the cost fields degraded.
+if (escalations.length !== 0)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected 0 escalations (the throw must degrade, not escalate), got ' + JSON.stringify(escalations) })); process.exit(0); }
+if (parked.length !== 2)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected 2 parked (both items survive the throw), got ' + parked.length + '; ' + JSON.stringify(result) })); process.exit(0); }
+
+const pClock = parked.find(p => p.slug === 'clockthrow');
+const pUsage = parked.find(p => p.slug === 'usagethrow');
+if (!pClock || pClock.pr !== 201)
+  { console.log(JSON.stringify({ ok: false, reason: 'clockthrow did not park with its real verdict: ' + JSON.stringify(pClock) })); process.exit(0); }
+if (!pUsage || pUsage.pr !== 202)
+  { console.log(JSON.stringify({ ok: false, reason: 'usagethrow did not park with its real verdict: ' + JSON.stringify(pUsage) })); process.exit(0); }
+
+// A thrown clock read means startS is null, so elapsedMs() (both-null-safe)
+// degrades wall_clock_ms to null rather than a bogus arithmetic result.
+if (pClock.wall_clock_ms !== null)
+  { console.log(JSON.stringify({ ok: false, reason: 'clockthrow: expected wall_clock_ms null (clock threw), got ' + pClock.wall_clock_ms })); process.exit(0); }
+if (pClock.tokens_in !== null || pClock.tokens_out !== null)
+  { console.log(JSON.stringify({ ok: false, reason: 'clockthrow: expected tokens_in/out null, got ' + JSON.stringify({in: pClock.tokens_in, out: pClock.tokens_out}) })); process.exit(0); }
+// A thrown usage-emit means the WHOLE usage reading degrades (epochS/tokensIn/
+// tokensOut all null) — never a partial object that manufactures a false zero.
+if (pUsage.tokens_in !== null || pUsage.tokens_out !== null)
+  { console.log(JSON.stringify({ ok: false, reason: 'usagethrow: expected tokens_in/out null (usage-emit threw), got ' + JSON.stringify({in: pUsage.tokens_in, out: pUsage.tokens_out}) })); process.exit(0); }
+if (pUsage.wall_clock_ms !== null)
+  { console.log(JSON.stringify({ ok: false, reason: 'usagethrow: expected wall_clock_ms null (usage-emit threw, so the end edge is unavailable), got ' + pUsage.wall_clock_ms })); process.exit(0); }
 
 console.log(JSON.stringify({ ok: true }));
 "
@@ -728,6 +857,22 @@ setWorker('item-cifix',
 // worker-cifix label also routes to the same slug via slugFromLabel
 workerMap.set('item-cifix', workerMap.get('item-cifix'));  // already set above
 
+// temperloop#2065 'worker-cost-capture' — the CI_FAIL_RETRY_BUDGET loop's OWN
+// cost tally. This item makes exactly TWO worker calls (the main worker, then
+// ONE CI-fix retry): workerClockMap/workerUsageMap are per-slug FIFOs
+// consumed in call order, so entry 1 = the main worker's readings and entry 2
+// = the retry's. Distinct epochs on each so a wrong pairing (e.g. summing the
+// WRONG usage entry into tokens_in/tokens_out instead of retry_tokens) would
+// produce a wall_clock_ms/token total this test does not expect.
+setWorkerClock('item-cifix',
+  { outcome: 'WORKER_CLOCK', epoch_s: 1000 },  // main worker: start
+  { outcome: 'WORKER_CLOCK', epoch_s: 5000 },  // ci-fix retry: start
+);
+setWorkerUsage('item-cifix',
+  { outcome: 'WORKER_USAGE', epoch_s: 1100, usage_source: 'cli-envelope', input_tokens: 500, output_tokens: 200 },  // main: end
+  { outcome: 'WORKER_USAGE', epoch_s: 5050, usage_source: 'cli-envelope', input_tokens: 80, output_tokens: 20 },    // retry: end
+);
+
 globalThis.args = { ...baseArgs, items: [
   { slug: 'item-cifix', branch: 'build/item-cifix', title: 'CI Fix Item', kind: 'impl', model: 'haiku' },
 ]};
@@ -744,6 +889,24 @@ if (result.parked[0].pushed_sha !== 'a25f')
 // CI-fix worker must omit model (top tier = undefined)
 if (ciFixWorkerModel !== undefined)
   { console.log(JSON.stringify({ ok: false, reason: 'ci-fix worker had model: ' + ciFixWorkerModel })); process.exit(0); }
+
+// temperloop#2065 — the ONE CI-fix re-spawn this item made must persist as
+// retry_count=1 (never rolled into the main worker's own tokens_in/tokens_out),
+// and its own tokens (80+20=100) as retry_tokens — distinct from the main
+// worker's split tokens_in=500/tokens_out=200. wall_clock_ms is the TOTAL
+// across both calls: main (1100-1000=100)s + retry (5050-5000=50)s = 150s =
+// 150000ms — proving retry wall-clock rolls into the ONE combined figure
+// rather than being dropped or double-counted.
+if (result.parked[0].retry_count !== 1)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected retry_count 1, got ' + result.parked[0].retry_count })); process.exit(0); }
+if (result.parked[0].retry_tokens !== 100)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected retry_tokens 100 (80 in + 20 out), got ' + result.parked[0].retry_tokens })); process.exit(0); }
+if (result.parked[0].tokens_in !== 500 || result.parked[0].tokens_out !== 200)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected main worker tokens_in=500/tokens_out=200 (never mixed with the retry entry), got ' + JSON.stringify({in: result.parked[0].tokens_in, out: result.parked[0].tokens_out}) })); process.exit(0); }
+if (result.parked[0].wall_clock_ms !== 150000)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected wall_clock_ms 150000 (main 100000 + retry 50000), got ' + result.parked[0].wall_clock_ms })); process.exit(0); }
+if (result.parked[0].recovery !== false)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected recovery false (this item never hit the #939 lost-return path), got ' + result.parked[0].recovery })); process.exit(0); }
 
 console.log(JSON.stringify({ ok: true }));
 "
@@ -2615,6 +2778,62 @@ console.log(JSON.stringify({ ok: true }));
 "
 
 # ============================================================================
+# TEST 21b: THROWING cifix verdict — CI-fix agent() THROWING (a
+# StructuredOutput-absent / retry-cap-exceeded subagent, #939's __throw shape)
+# escalates as ci-failed with retryable:true, exactly like the sibling
+# bare-null case above — NOT an uncaught exception, and NOT a generic
+# top-level worker-error (temperloop#2065 review round 1 [HIGH]). Also proves
+# the worker-usage.sh emit call for the CI-fix retry actually ran despite the
+# throw, by checking callLog for its label — before the fix this call was
+# skipped entirely (never reached), silently dropping the retry's cost.
+# ============================================================================
+run_node_case "throw-cifix: ci-fix agent THROWS → ci-failed escalation (not worker-error), and its usage-emit call still ran (temperloop#2065 review round 1 HIGH)" "
+$PREAMBLE
+happyMachinery('cifixthrow', 21, 'acf1f');
+machineryMap.set('cifixthrow', [
+  { outcome: 'CREATED', path: '/tmp/repo.wt/cifixthrow' },
+  { outcome: 'REVIEW_DIFF' },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'acf1f' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'acf1f', branch: 'build/cifixthrow' },
+  { outcome: 'PR_OPENED', pr_number: 21 },
+  { outcome: 'CI_FAILED', failed_run_ids: [1] },
+]);
+// Worker: first call (main) succeeds; second call (ci-fix re-spawn) THROWS —
+// the #939 __throw shape, faithfully simulating a StructuredOutput-absent /
+// retry-cap-exceeded subagent (an EXCEPTION, not a null return).
+setWorker('cifixthrow',
+  { status: 'done', summary: 'main done', acceptance_results: [{ criterion: 'c', passed: true, evidence: 'e' }], commits: [] },
+  { __throw: 'ci-fix boom' }
+);
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'cifixthrow', branch: 'build/cifixthrow', title: 'CI fix throw', kind: 'impl', acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+const result = await mod.default();
+const parked = result.parked ?? [];
+const escalations = result.escalations ?? [];
+if (parked.length !== 0)
+  { console.log(JSON.stringify({ ok: false, reason: 'throw-cifix: expected 0 parked, got ' + JSON.stringify(parked) })); process.exit(0); }
+// Before the fix: this throw propagated uncaught past ciPollLoop/driveItem to
+// the top-level driveItem(item).catch(...), which converts ANY throw into a
+// generic 'worker-error' escalation — NOT 'ci-failed'. That mismatch is the
+// discriminating assertion.
+if (escalations.length !== 1 || escalations[0].kind !== 'ci-failed')
+  { console.log(JSON.stringify({ ok: false, reason: 'throw-cifix: expected 1 ci-failed escalation (got a generic worker-error before the fix), got ' + JSON.stringify(escalations) })); process.exit(0); }
+if (!escalations[0].payload.retryable)
+  { console.log(JSON.stringify({ ok: false, reason: 'throw-cifix: expected retryable:true in payload, got ' + JSON.stringify(escalations[0].payload) })); process.exit(0); }
+// The retry's own workerUsageEmit() call must have run despite the throw —
+// before the fix it was skipped entirely (unreachable code after the bare
+// agent() call that threw), so this label never appeared in callLog.
+const cifixUsageCalls = callLog.filter(c => c.opts.label === 'worker-usage:cifixthrow#worker-cifix:cifixthrow');
+if (cifixUsageCalls.length !== 1)
+  { console.log(JSON.stringify({ ok: false, reason: 'throw-cifix: expected the ci-fix retry usage-emit call to have run exactly once despite the throw, got ' + cifixUsageCalls.length + ' — callLog labels: ' + JSON.stringify(callLog.map(c => c.opts.label)) })); process.exit(0); }
+console.log(JSON.stringify({ ok: true }));
+"
+
+# ============================================================================
 # TEST 22: CONFLICTING merge state — escalates merge-conflict on first slice,
 # no full CI_POLL_TOTAL_SECS spin (#543). ci-poll.sh is never called.
 # ============================================================================
@@ -4106,19 +4325,23 @@ const soloCalls = machineryCalls.filter(c => !/^Steps: /m.test(c.promptFull)).le
 const unbatched = machineryStepLog.length + soloCalls;
 
 if (!reason && workerCalls.length !== 3) reason = 'expected 3 worker spawns, got ' + workerCalls.length;
-// 6 machinery executors per item: prelude, review-diff (temperloop#1430),
-// gate-freshness (temperloop#1937), gate, pr-batch, ci-batch.
-if (!reason && machineryCalls.length !== 18) reason = 'expected 18 machinery executors (6/item), got ' + machineryCalls.length + ': ' + JSON.stringify(machineryCalls.map(c => c.opts.label));
-if (!reason && callLog.length !== 21) reason = 'expected 21 total agent spawns for the level, got ' + callLog.length;
+// 8 machinery executors per item: prelude, worker-clock + worker-usage
+// (temperloop#2065 — bracketing the worker call excluded from this filtered
+// view), review-diff (temperloop#1430), gate-freshness (temperloop#1937),
+// gate, pr-batch, ci-batch.
+if (!reason && machineryCalls.length !== 24) reason = 'expected 24 machinery executors (8/item), got ' + machineryCalls.length + ': ' + JSON.stringify(machineryCalls.map(c => c.opts.label));
+if (!reason && callLog.length !== 27) reason = 'expected 27 total agent spawns for the level, got ' + callLog.length;
 // …and that is a real reduction against the un-batched equivalent of this run.
-if (!reason && unbatched !== 39) reason = 'expected the un-batched equivalent to be 39 spawns, got ' + unbatched;
+if (!reason && unbatched !== 45) reason = 'expected the un-batched equivalent to be 45 spawns, got ' + unbatched;
 if (!reason && !(machineryCalls.length < unbatched)) reason = 'batching did not reduce machinery spawns: ' + machineryCalls.length + ' vs ' + unbatched;
 
-// Per item, the executors are exactly these six, in this order — the
-// temperloop#1937 freshness check runs strictly between review and the gate.
+// Per item, the executors are exactly these eight, in this order — the
+// temperloop#2065 clock/usage seam brackets the (filtered-out) worker call,
+// strictly between prelude and review; the temperloop#1937 freshness check
+// runs strictly between review and the gate.
 for (const slug of ['a1', 'a2', 'a3']) {
   const labels = machineryCalls.filter(c => (c.opts.label||'').includes(slug)).map(c => c.opts.label);
-  const want = ['prelude:' + slug, 'review-diff:' + slug, 'gate-freshness:' + slug, 'gate:' + slug, 'pr-batch:' + slug, 'ci-batch:' + slug + '#0'];
+  const want = ['prelude:' + slug, 'worker-clock:' + slug + '#worker:' + slug, 'worker-usage:' + slug + '#worker:' + slug, 'review-diff:' + slug, 'gate-freshness:' + slug, 'gate:' + slug, 'pr-batch:' + slug, 'ci-batch:' + slug + '#0'];
   if (!reason && JSON.stringify(labels) !== JSON.stringify(want))
     reason = slug + ' machinery executors wrong: ' + JSON.stringify(labels);
   // Every mechanical step still RAN — batching removed spawns, not work.
@@ -6248,6 +6471,14 @@ else {
   const STAGE_OF_LABEL = [
     [/^prelude:/,      'claim'],
     [/^worker:/,       'build'],
+    // temperloop#2065 — the worker-cost-capture seam's own labels carry the
+    // SAME phase as whichever worker call they bracket (see
+    // workerClockNow()/workerUsageEmit()'s \`phaseName\` param): the CI-fix
+    // variant (tag names \`worker-cifix:\`) belongs to 'CI', so its more
+    // specific pattern is checked FIRST; anything else (the main worker's
+    // \`worker:<slug>\`/\`worker:<slug>#retry\` tag) belongs to 'build'.
+    [/^worker-(?:clock|usage):[^#]*#worker-cifix:/, 'CI'],
+    [/^worker-(?:clock|usage):/, 'build'],
     [/^review-diff:/,  'review'],
     [/^gate-freshness:/, 'gate'],
     [/^gate:/,         'gate'],

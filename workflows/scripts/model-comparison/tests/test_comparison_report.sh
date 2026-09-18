@@ -440,21 +440,25 @@ ok "C4 emit coverage is stats.sh's figure against the configured emit-feasible d
 count
 # A seat outside the emit-FEASIBLE roster must not inflate the numerator. The
 # module's own replay seats emit too, and counting them would push observed
-# past feasible and turn the percentage into nonsense.
-lake "$COVREPO" pipeline-drive-safe retro-judge replay-candidate replay-judge pipeline-drive-merge
+# past feasible and turn the percentage into nonsense. build-worker
+# (temperloop#2065) is the FOURTH feasible seat since it joined the roster —
+# emitted here too, so all four (not just three) are the observed set.
+lake "$COVREPO" pipeline-drive-safe retro-judge replay-candidate replay-judge pipeline-drive-merge build-worker
 run "$COVREPO"
-[ "$(jqf "$RUN_OUT" '.emit_coverage.observed_seats')" = "3" ] \
-  || fail "C5: five emitted seats, three of them emit-feasible, must count as 3 observed — got $(jqf "$RUN_OUT" '.emit_coverage.observed_seats')"
+[ "$(jqf "$RUN_OUT" '.emit_coverage.observed_seats')" = "4" ] \
+  || fail "C5: six emitted seats, four of them emit-feasible, must count as 4 observed — got $(jqf "$RUN_OUT" '.emit_coverage.observed_seats')"
 [ "$(jqf "$RUN_OUT" '.emit_coverage.coverage_pct')" = "100" ] \
-  || fail "C5: all three emit-feasible seats observed should read 100%"
+  || fail "C5: all four emit-feasible seats observed should read 100%"
 ok "C5 only emit-feasible seats count toward the coverage numerator"
 
 count
 # The exclusion list must be stated alongside the figure (the L0 spike's own
 # directive for this item), naming the un-emittable seats rather than dropping
 # them silently — otherwise a 100% reading implies a claim the system does not
-# make.
-for seat in A1 A2 B1 B2 C1; do
+# make. A1 moved OFF this list to FEASIBLE_SEAT_ROSTER as "build-worker"
+# (temperloop#2065) — A5 (still excluded; a DIFFERENT seat, build-level.mjs's
+# runMachinery) replaces it here.
+for seat in A5 A2 B1 B2 C1; do
   jq -e --arg s "$seat" '[.emit_coverage.excluded_seats[].seats[]] | index($s) != null' "$FLAT_OUT" >/dev/null 2>&1 \
     || fail "C6: the excluded-seat list must name $seat"
 done

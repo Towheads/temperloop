@@ -247,23 +247,43 @@ DISPLAY_TIMEZONE="${DISPLAY_TZ:-America/Los_Angeles}"
 export TZ="$DISPLAY_TIMEZONE"
 
 # ── vocabulary constants (record vocabulary, NOT operator settings) ─────────
-# The emit-FEASIBLE seat roster: the three seats temperloop#1255 actually
-# wired (A7/A8/A9 in the L0 spike's inventory), i.e. the only seats whose
-# spawn captures a `claude -p --output-format json` envelope the kernel can
-# read token counts out of. Coverage counts DISTINCT seats from this roster
-# observed in the attribution stream, and nothing else: the module's own
-# replay-candidate/replay-judge seats also emit, and counting them would push
-# the numerator past the feasible denominator and turn a coverage figure into
-# nonsense.
-FEASIBLE_SEAT_ROSTER='["pipeline-drive-safe","pipeline-drive-merge","retro-judge"]'
+# The emit-FEASIBLE seat roster: the seats whose spawn EMITS an attribution
+# record via the shared model_usage_emit_from_envelope helper — the three
+# temperloop#1255 originally wired (A7/A8/A9 in the L0 spike's inventory,
+# each with a REAL `claude -p --output-format json` envelope to read token
+# counts out of), PLUS "build-worker" (temperloop#2065 "worker-cost-capture",
+# epic #2062): the /build 3c per-item worker (A1 in that same inventory,
+# shared by /sweep's Phase-2 fix worker and /fix's Step-4 worker — A3/A4 —
+# since all three route through claude/workflows/build-level.mjs's SAME
+# callWorker()). The L0 spike's reason for excluding A1/A3/A4 was "the
+# harness drops the per-seat label before the journal, leaving no legal join
+# key" — that blocker is closed differently than A7/A8/A9's: build-worker
+# NEVER has a real envelope (a Workflow agent() call is not a captured
+# `claude -p` spawn), so it supplies the seat label and outcome ref DIRECTLY
+# at its own emitted-shell seam instead (workflows/scripts/build/
+# worker-usage.sh) rather than correlating a journal after the fact — see
+# workflows/scripts/lib/model-usage-envelope.sh's own header for the full
+# accounting. "Feasible" here means "the spawn site emits a record", not
+# "the record carries real tokens": build-worker's own records are, and will
+# remain, attribution-only (usage_source "unavailable") until a Workflow
+# agent() call can hand this kernel a real envelope, exactly like any of the
+# other three seats' OWN fail-open degrade when their envelope is unusable.
+# Coverage counts DISTINCT seats from this roster observed in the
+# attribution stream, and nothing else: the module's own replay-candidate/
+# replay-judge seats also emit, and counting them would push the numerator
+# past the feasible denominator and turn a coverage figure into nonsense.
+FEASIBLE_SEAT_ROSTER='["pipeline-drive-safe","pipeline-drive-merge","retro-judge","build-worker"]'
 
 # The structurally un-emittable seats, NAMED rather than silently dropped —
 # transcribed from the L0 usage-capture-feasibility spike (temperloop#1246)
 # § "The structurally un-emittable set". Without this list a 100% reading
-# would imply a coverage claim this system does not make.
+# would imply a coverage claim this system does not make. A1/A3/A4
+# (build-level.mjs's shared callWorker(), previously excluded here for "no
+# legal join key") moved to FEASIBLE_SEAT_ROSTER above as "build-worker" —
+# temperloop#2065 closed that specific blocker; see that constant's own
+# comment for the mechanism and the honesty caveat it still carries.
 SEAT_EXCLUSIONS='[
-  {"seats":["A1","A3","A4"],"reason":"build-level.mjs agent() returns no usage envelope; the harness drops the per-seat label before the journal, leaving no legal join key"},
-  {"seats":["A5","A6"],"reason":"same as A1/A3/A4, and the file additionally cannot source shell config"},
+  {"seats":["A5","A6"],"reason":"build-level.mjs runMachinery/runMachineryBatch return no usage envelope; the file additionally cannot source shell config"},
   {"seats":["A2"],"reason":"harness-native Task fan-out from command prose: no shell seam at spawn, no usage return"},
   {"seats":["B1"],"reason":"an operator command session is not spawned by this repo at all; SessionEnd gives session granularity only, with no seat name and no outcome ref"},
   {"seats":["B2"],"reason":"harness-native agent-frontmatter spawn; no kernel code in the spawn path (post-hoc attribution is routed as temperloop#1265)"},
