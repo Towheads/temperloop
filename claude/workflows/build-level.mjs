@@ -5773,7 +5773,12 @@ function dualBuildInput() {
 function dualBuildResidueGuard(repoRoot, slug, createCmd) {
   const armGlobPrefix = sq(`${repoRoot}.wt/${slug}@`);
   return [
-    `__dbres=$(ls -d ${armGlobPrefix}* 2>/dev/null | tr '\\n' ' ')`,
+    // The matched paths are interpolated into a JSON string field below, so the
+    // two characters that would make that object unparseable are deleted first
+    // (temperloop#2080 round-2 review [LOW], the same filter
+    // ACTIVATION_DETAIL_FILTER applies for the identical reason). The `-n` test
+    // is unaffected: a path is never made empty by dropping a quote.
+    `__dbres=$(ls -d ${armGlobPrefix}* 2>/dev/null | tr '\\n' ' ' | tr -d '\\\\"')`,
     'if [ -n "$__dbres" ]; then',
     `printf '{"outcome":"DUAL_BUILD_RESIDUE","arms":"%s"}\\n' "$__dbres"`,
     'else',
@@ -6073,10 +6078,28 @@ async function judgeArms(item, dual, arms) {
     'else',
     `printf %s ${sq(recordFor(a))} | jq -c --arg d "$(${diffCmd(a)})" '.score.diff.text_excerpt=$d' > "$__jd/a.json"`,
     `printf %s ${sq(recordFor(b))} | jq -c --arg d "$(${diffCmd(b)})" '.score.diff.text_excerpt=$d' > "$__jd/b.json"`,
-    `__jo=$(bash "$__mc/judge.sh" pairwise --record-a "$__jd/a.json" --record-b "$__jd/b.json" --live --repo ${sq(input.ownerRepo ?? '')} 2>/dev/null | tail -1); __jr=$?`,
+    // THE VERDICT IS READ UN-PIPED (temperloop#2080 round-2 review [HIGH]), the
+    // same shape activationProofCmd uses and for the same reason: `$?` after a
+    // pipeline is the LAST command's status, so `… | tail -1; __jr=$?` reads
+    // tail's status — effectively always 0 — and judge.sh's own exit never
+    // reaches the branch below. That mis-reads BOTH ways: a judge.sh that dies
+    // AFTER writing a line would have its garbage recorded as a real pairwise
+    // verdict, and the refusal's `rc` field — whose whole job is to report that
+    // status — would be structurally 0. So: capture whole, read `$?`, THEN trim
+    // to the last line in a separate step. Deliberately no PIPESTATUS (zsh
+    // spells it `$pipestatus` and 1-indexes it) and no `set -o pipefail` (see
+    // activationProofCmd's comment for why that is worse, not safer).
+    `__jo=$(bash "$__mc/judge.sh" pairwise --record-a "$__jd/a.json" --record-b "$__jd/b.json" --live --repo ${sq(input.ownerRepo ?? '')} 2>/dev/null); __jr=$?`,
+    `__jo=$(printf '%s\\n' "$__jo" | tail -1)`,
     'rm -rf "$__jd"',
-    'if [ "$__jr" -eq 0 ] && [ -n "$__jo" ]; then',
+    // A non-JSON last line is a NAMED refusal, never interpolated: this printf
+    // splices "$__jo" raw into a JSON object the driver parses as one line, so
+    // an unparseable line would turn a legible refusal into malformed
+    // machinery output the caller reports as a bare parse failure.
+    'if [ "$__jr" -eq 0 ] && [ -n "$__jo" ] && printf %s "$__jo" | jq -e . >/dev/null 2>&1; then',
     `printf '{"outcome":"JUDGED","judge":%s}\\n' "$__jo"`,
+    'elif [ "$__jr" -eq 0 ] && [ -n "$__jo" ]; then',
+    `printf '{"outcome":"JUDGE_UNAVAILABLE","reason":"judge-unparseable","rc":0}\\n'`,
     'else',
     `printf '{"outcome":"JUDGE_UNAVAILABLE","reason":"judge-refused","rc":%s}\\n' "$__jr"`,
     'fi',

@@ -12411,7 +12411,13 @@ chmod +x "$K2080_EXEC_ROOT/bin/worktree.sh"
 # Emit the driver's OWN create command for a flag-less item, exactly as the
 # executor would receive it.
 k2080_emit_create() {
+  # stderr goes to a FILE, not into "$out": the fail branch must be able to
+  # print node's own stack trace (a command substitution captures stdout only,
+  # so `echo "$out"` in that branch would print an empty line), while the
+  # SUCCESS path must stay pure stdout — the emitted command is executed
+  # verbatim below, and a node warning folded into it would be run as shell.
   local out
+  local err="$WF_TEST_TMPDIR/k2080-emit.err"
   out="$(MJS_PATH="$MJS" AGENT_DEF_PATH="$AGENT_DEF" K2080_ROOT="$K2080_EXEC_ROOT" node --input-type=module -e "
 $PREAMBLE
 const root = process.env.K2080_ROOT + '/repo';
@@ -12424,7 +12430,7 @@ const mod = await loadLevel();
 await mod.default();
 const c = callLog.find(x => x.opts.label === 'prelude:execslug');
 process.stdout.write(c.promptFull.split('\\nCommand:\\n')[1]);
-")" || { echo "$out" >&2; fail "#2080-exec: could not emit the create command"; }
+")" 2>"$err" || fail "#2080-exec: could not emit the create command: $(cat "$err" 2>/dev/null)"
   printf '%s' "$out"
 }
 K2080_CREATE_CMD="$(k2080_emit_create)"
@@ -12433,7 +12439,8 @@ K2080_CREATE_CMD="$(k2080_emit_create)"
 # (a) CLEAN tree — no arm worktrees. The guard must be invisible: the create
 #     runs and its CREATED line is the ONLY output.
 rm -rf "$K2080_EXEC_ROOT/repo.wt"
-k2080_clean_out="$(bash -c "$K2080_CREATE_CMD" 2>/dev/null)"
+k2080_clean_out="$(bash -c "$K2080_CREATE_CMD" 2>&1)" \
+  || fail "#2080-exec: the generated create command exited non-zero on a clean tree: $k2080_clean_out"
 printf '%s' "$k2080_clean_out" | grep -F '"outcome":"CREATED"' >/dev/null \
   || fail "#2080-exec: on a clean tree the residue guard swallowed the create (got: $k2080_clean_out)"
 printf '%s' "$k2080_clean_out" | grep -F 'DUAL_BUILD_RESIDUE' >/dev/null \
@@ -12444,7 +12451,8 @@ printf '%s' "$k2080_clean_out" | grep -F 'DUAL_BUILD_RESIDUE' >/dev/null \
 # (b) PARTIALLY DUAL-BUILT — an arm worktree for this slug stands. The guard
 #     must refuse and the create must never run.
 mkdir -p "$K2080_EXEC_ROOT/repo.wt/execslug@candidate"
-k2080_dirty_out="$(bash -c "$K2080_CREATE_CMD" 2>/dev/null)"
+k2080_dirty_out="$(bash -c "$K2080_CREATE_CMD" 2>&1)" \
+  || fail "#2080-exec: the generated create command exited non-zero with an arm worktree standing: $k2080_dirty_out"
 printf '%s' "$k2080_dirty_out" | grep -F '"outcome":"DUAL_BUILD_RESIDUE"' >/dev/null \
   || fail "#2080-exec: an arm worktree stands and the guard did not refuse (got: $k2080_dirty_out)"
 printf '%s' "$k2080_dirty_out" | grep -F '"outcome":"CREATED"' >/dev/null \
@@ -12456,13 +12464,159 @@ printf '%s' "$k2080_dirty_out" | grep -F 'execslug@candidate' >/dev/null \
 #     one. Without this the guard could be a bare "any @ dir anywhere" test.
 rm -rf "$K2080_EXEC_ROOT/repo.wt"
 mkdir -p "$K2080_EXEC_ROOT/repo.wt/otherslug@baseline"
-k2080_other_out="$(bash -c "$K2080_CREATE_CMD" 2>/dev/null)"
+k2080_other_out="$(bash -c "$K2080_CREATE_CMD" 2>&1)" \
+  || fail "#2080-exec: the generated create command exited non-zero with an unrelated arm worktree present: $k2080_other_out"
 printf '%s' "$k2080_other_out" | grep -F 'DUAL_BUILD_RESIDUE' >/dev/null \
   && fail "#2080-exec: another slug's arm worktree refused THIS slug's build — the guard is not slug-scoped"
 printf '%s' "$k2080_other_out" | grep -F '"outcome":"CREATED"' >/dev/null \
   || fail "#2080-exec: an unrelated arm worktree blocked the create (got: $k2080_other_out)"
 rm -rf "$K2080_EXEC_ROOT/repo.wt"
+
+# (d) JSON VALIDITY — the refusal interpolates the matched paths into a JSON
+#     string field, and the driver parses that line as JSON. A repoRoot holding
+#     a `"` (or a `\`) therefore has to come out ESCAPED-OR-DROPPED, or a
+#     refusal that exists to be legible becomes a bare parse error. Round-2
+#     review [LOW]; asserted by PARSING the line, not by reading the filter.
+if command -v jq >/dev/null 2>&1; then
+  K2080_Q_ROOT="$WF_TEST_TMPDIR/k2080-quote"
+  mkdir -p "$K2080_Q_ROOT/bin"
+  cp "$K2080_EXEC_ROOT/bin/worktree.sh" "$K2080_Q_ROOT/bin/worktree.sh"
+  k2080_q_repo='re"po'
+  mkdir -p "$K2080_Q_ROOT/$k2080_q_repo" "$K2080_Q_ROOT/$k2080_q_repo.wt/execslug@candidate"
+  k2080_q_err="$WF_TEST_TMPDIR/k2080-quote.err"
+  K2080_Q_CMD="$(MJS_PATH="$MJS" AGENT_DEF_PATH="$AGENT_DEF" K2080_QROOT="$K2080_Q_ROOT/$k2080_q_repo" K2080_QBIN="$K2080_Q_ROOT/bin" node --input-type=module -e "
+$PREAMBLE
+const root = process.env.K2080_QROOT;
+setMachinery('execslug', { outcome: 'CREATED', path: root + '.wt/execslug' }, { outcome: 'REVIEW_DIFF' }, { outcome: 'GATE_FAIL' });
+happyWorker('execslug');
+globalThis.args = { ...baseArgs, repoRoot: root, machineryBinDir: process.env.K2080_QBIN, items: [
+  { slug: 'execslug', branch: 'build/execslug', title: 'Exec', kind: 'impl', acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+await mod.default();
+const c = callLog.find(x => x.opts.label === 'prelude:execslug');
+process.stdout.write(c.promptFull.split('\\nCommand:\\n')[1]);
+" 2>"$k2080_q_err")" || fail "#2080-exec: could not emit the create command for a quote-bearing repoRoot: $(cat "$k2080_q_err" 2>/dev/null)"
+  k2080_q_out="$(bash -c "$K2080_Q_CMD" 2>&1)" \
+    || fail "#2080-exec: the generated create command exited non-zero for a quote-bearing repoRoot: $k2080_q_out"
+  printf '%s' "$k2080_q_out" | grep -F '"outcome":"DUAL_BUILD_RESIDUE"' >/dev/null \
+    || fail "#2080-exec: the guard did not refuse for a quote-bearing repoRoot (got: $k2080_q_out)"
+  printf '%s' "$k2080_q_out" | jq -e . >/dev/null 2>&1 \
+    || fail "#2080-exec: the refusal is not parseable JSON when repoRoot holds a quote — the line the driver reads is malformed (got: $k2080_q_out)"
+  rm -rf "$K2080_Q_ROOT"
+fi
+
 echo "PASS: #2080-exec — the residue guard's generated shell, executed for real: silent and byte-identical on a clean tree, refusing on this slug's arm worktrees, and not fooled by another slug's"
+
+# ---------------------------------------------------------------------------
+# K2080 JUDGE-EXEC test: the pairwise judge's own emitted shell, run for real.
+#
+# Round-2 review [HIGH]+[MEDIUM]: every other JUDGE_UNAVAILABLE assertion in
+# this file INJECTS the outcome as a mock, so the judge command's actual shell —
+# a mktemp -d, two jq writes, a judge.sh call and an rc branch — had no coverage
+# of any kind, and the `| tail -1); __jr=$?` exit-status loss it shipped with was
+# invisible to a green suite. These four cases RUN the emitted command against a
+# stub judge.sh, which is the only way to tell a working rc branch from one that
+# reads tail's status and therefore can never see a refusal at all.
+# ---------------------------------------------------------------------------
+if ! command -v jq >/dev/null 2>&1; then
+  echo "SKIP: #2080-judge-exec — jq is absent on this host, and the emitted judge command builds both records with it"
+else
+K2080_JUDGE_ROOT="$WF_TEST_TMPDIR/k2080-judge"
+K2080_MC_DIR="$K2080_JUDGE_ROOT/repo/workflows/scripts/model-comparison"
+mkdir -p "$K2080_MC_DIR"
+
+# k2080_stub_judge <exit-code> [stdout-line] — a judge.sh that prints at most
+# one line and exits as told. The two-line variant is the case that matters:
+# a judge that writes SOMETHING and then dies is exactly what a pipeline's `$?`
+# cannot distinguish from a judge that succeeded.
+k2080_stub_judge() {
+  local rc="$1" line="${2-}"
+  {
+    echo '#!/usr/bin/env bash'
+    if [ -n "$line" ]; then
+      printf "cat <<'JUDGE_OUT'\n%s\nJUDGE_OUT\n" "$line"
+    fi
+    printf 'exit %s\n' "$rc"
+  } > "$K2080_MC_DIR/judge.sh"
+  chmod +x "$K2080_MC_DIR/judge.sh"
+}
+
+# Emit the driver's OWN judge command for an in-scope dual-build item, exactly
+# as the executor would receive it.
+k2080_emit_judge() {
+  local out
+  local err="$WF_TEST_TMPDIR/k2080-judge-emit.err"
+  out="$(MJS_PATH="$MJS" AGENT_DEF_PATH="$AGENT_DEF" K2080_JROOT="$K2080_JUDGE_ROOT" node --input-type=module -e "
+$PREAMBLE
+$DUAL_FIXTURE
+greenArm('jx', 'baseline'); greenArm('jx', 'candidate');
+itemBarrier('jx');
+globalThis.args = { ...dualArgs(['jx']), repoRoot: process.env.K2080_JROOT + '/repo', items: [
+  { slug: 'jx', branch: 'build/jx', title: 'JX', kind: 'impl', acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+await mod.default();
+const c = callLog.find(x => x.opts.label === 'judge:jx');
+if (!c) { process.stderr.write('no judge:jx call was spawned'); process.exit(1); }
+process.stdout.write(c.promptFull.split('\\nCommand:\\n')[1]);
+")" 2>"$err" || fail "#2080-judge-exec: could not emit the judge command: $(cat "$err" 2>/dev/null)"
+  printf '%s' "$out"
+}
+K2080_JUDGE_CMD="$(k2080_emit_judge)"
+[ -n "$K2080_JUDGE_CMD" ] || fail "#2080-judge-exec: the emitted judge command is empty"
+
+# The static pin for the same defect, so a refactor that re-pipes the capture
+# fails even before the four runtime cases below get to prove it.
+printf '%s' "$K2080_JUDGE_CMD" | grep -E 'judge\.sh.*\| *tail[^)]*\); *__jr=' >/dev/null \
+  && fail "#2080-judge-exec: the judge's exit status is read after a pipe — \$? is tail's status, so judge.sh's own rc never reaches the branch"
+
+# (a) REFUSAL WITH NO STDOUT — the plain failure. rc must be reported as the
+#     judge's own, not a structural 0.
+k2080_stub_judge 3
+k2080_judge_a="$(bash -c "$K2080_JUDGE_CMD" 2>&1)" \
+  || fail "#2080-judge-exec: the emitted judge command exited non-zero on the silent-refusal case: $k2080_judge_a"
+printf '%s' "$k2080_judge_a" | grep -F '"outcome":"JUDGE_UNAVAILABLE"' >/dev/null \
+  || fail "#2080-judge-exec: a judge.sh exiting 3 with no output did not produce JUDGE_UNAVAILABLE (got: $k2080_judge_a)"
+printf '%s' "$k2080_judge_a" | grep -F '"rc":3' >/dev/null \
+  || fail "#2080-judge-exec: the refusal reports the wrong rc — the field exists to report judge.sh's own status (got: $k2080_judge_a)"
+
+# (b) REFUSAL AFTER WRITING A LINE — the [HIGH] itself. A judge that dies after
+#     printing must still be a refusal; under the piped capture it was recorded
+#     as a genuine pairwise verdict.
+k2080_stub_judge 3 '{"preference":"A","margin":30}'
+k2080_judge_b="$(bash -c "$K2080_JUDGE_CMD" 2>&1)" \
+  || fail "#2080-judge-exec: the emitted judge command exited non-zero on the noisy-refusal case: $k2080_judge_b"
+printf '%s' "$k2080_judge_b" | grep -F '"outcome":"JUDGED"' >/dev/null \
+  && fail "#2080-judge-exec: a judge.sh that exited 3 AFTER writing a line was recorded as a real verdict — \$? is being read from a pipe"
+printf '%s' "$k2080_judge_b" | grep -F '"rc":3' >/dev/null \
+  || fail "#2080-judge-exec: the noisy refusal did not report judge.sh's own rc (got: $k2080_judge_b)"
+
+# (c) A REAL VERDICT still passes through — without this the two cases above
+#     would be satisfied by a branch that refuses unconditionally.
+k2080_stub_judge 0 '{"preference":"B","margin":40,"order_agreement":true}'
+k2080_judge_c="$(bash -c "$K2080_JUDGE_CMD" 2>&1)" \
+  || fail "#2080-judge-exec: the emitted judge command exited non-zero on the happy case: $k2080_judge_c"
+printf '%s' "$k2080_judge_c" | grep -F '"outcome":"JUDGED"' >/dev/null \
+  || fail "#2080-judge-exec: a clean judge.sh verdict was not recorded as JUDGED (got: $k2080_judge_c)"
+printf '%s' "$k2080_judge_c" | grep -F '"preference":"B"' >/dev/null \
+  || fail "#2080-judge-exec: the verdict's own JSON did not reach the outcome line (got: $k2080_judge_c)"
+
+# (d) A NON-JSON LAST LINE is a NAMED refusal, never spliced into the outcome
+#     object — otherwise the driver's one-JSON-line-per-step contract breaks and
+#     a legible refusal becomes a parse error.
+k2080_stub_judge 0 'judge.sh: the provider returned no usable response'
+k2080_judge_d="$(bash -c "$K2080_JUDGE_CMD" 2>&1)" \
+  || fail "#2080-judge-exec: the emitted judge command exited non-zero on the non-JSON case: $k2080_judge_d"
+printf '%s' "$k2080_judge_d" | grep -F '"reason":"judge-unparseable"' >/dev/null \
+  || fail "#2080-judge-exec: a non-JSON last line was not named as unparseable (got: $k2080_judge_d)"
+printf '%s\n' "$k2080_judge_d" | while IFS= read -r l; do
+  [ -z "$l" ] || printf '%s' "$l" | jq -e . >/dev/null 2>&1 || exit 7
+done || fail "#2080-judge-exec: the unparseable path emitted a line that is not valid JSON (got: $k2080_judge_d)"
+
+rm -rf "$K2080_JUDGE_ROOT"
+echo "PASS: #2080-judge-exec — the judge's generated shell, executed for real: judge.sh's own exit status reaches the rc branch with and without stdout, a clean verdict still passes, and a non-JSON line becomes a named refusal"
+fi
 
 echo ""
 echo "All test_workflow.sh cases passed."
