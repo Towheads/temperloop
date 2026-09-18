@@ -11596,5 +11596,739 @@ grep -qi 'zero-disposition' "$MJS" \
   || fail "#2004: build-level.mjs emits no named zero-disposition notice — the field alone leaves a transcript reader with nothing"
 echo "PASS: #2004 driver-arm guards — build.md, sweep.md and fix.md each carry a zeroDisposition re-probe arm over the field build-level.mjs emits"
 
+# ============================================================================
+# temperloop#2080 — dual-build arms + the level barrier
+#
+# The phase split (driveItemBuild / driveItemPr) and the dual-build fan-out.
+# The first case is the load-bearing CONTROL: with no `dualBuild` input the
+# single-arm path must be unchanged in its TRANSCRIPT, not merely in its return
+# object — same machinery steps in the same order, same agent spawns in the same
+# order, no extra probe anywhere. Everything after it exercises the dual path.
+# ============================================================================
+
+# ---------------------------------------------------------------------------
+# K2080 CONTROL: the single-arm transcript is unchanged by the phase split
+# ---------------------------------------------------------------------------
+run_node_case "K2080 control: no dualBuild input — the single-arm machinery step order AND agent-spawn order are byte-identical to the pre-split path" "
+$PREAMBLE
+
+happyMachinery('k2080ctl', 2080, 'c2080');
+happyWorker('k2080ctl');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'k2080ctl', branch: 'build/k2080ctl', title: 'Control', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+
+// The machinery STEP order — the 3b worktree create, then 3f's four-step
+// pr-batch, then 3g's interleaved merge-state/ci-poll pair. A phase split that
+// reordered, duplicated or dropped any of these would show up here first.
+const steps = stepsRun('k2080ctl').join(',');
+const EXPECT_STEPS = 'worktree,rebase,scan,push,pr-open,merge-state,ci-poll';
+if (steps !== EXPECT_STEPS)
+  { console.log(JSON.stringify({ ok: false, reason: 'single-arm step ORDER changed: expected [' + EXPECT_STEPS + '] got [' + steps + ']' })); process.exit(0); }
+
+// The agent-SPAWN order — every executor, worker, review and cost-seam call in
+// the order the pre-split driver made them. This is the half a return-object
+// assertion cannot see: an extra level-wide probe (the obvious way to detect a
+// partially dual-built level) would land here and nowhere else.
+const labels = callLog.map(c => c.opts.label).join(',');
+const EXPECT_LABELS = [
+  'prelude:k2080ctl',
+  'worker-clock:k2080ctl#worker:k2080ctl',
+  'worker:k2080ctl',
+  'worker-usage:k2080ctl#worker:k2080ctl',
+  'review-diff:k2080ctl',
+  'gate-freshness:k2080ctl',
+  'gate:k2080ctl',
+  'pr-batch:k2080ctl',
+  'ci-batch:k2080ctl#0',
+].join(',');
+if (labels !== EXPECT_LABELS)
+  { console.log(JSON.stringify({ ok: false, reason: 'single-arm agent-spawn ORDER changed: expected [' + EXPECT_LABELS + '] got [' + labels + ']' })); process.exit(0); }
+
+// …and the return object keeps its pre-#2080 shape: no dualBuild key at all.
+if ('dualBuild' in result)
+  { console.log(JSON.stringify({ ok: false, reason: 'a flag-less level must not carry a dualBuild key: ' + JSON.stringify(result.dualBuild) })); process.exit(0); }
+if ((result.parked ?? []).length !== 1 || result.parked[0].pr !== 2080)
+  { console.log(JSON.stringify({ ok: false, reason: 'control item did not park through the PR phase: ' + JSON.stringify(result.parked) })); process.exit(0); }
+if ('dual_build' in result.parked[0] || 'awaiting_pick' in result.parked[0])
+  { console.log(JSON.stringify({ ok: false, reason: 'a single-arm parked record must carry no dual-build fields: ' + JSON.stringify(result.parked[0]) })); process.exit(0); }
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+# ---------------------------------------------------------------------------
+# The shared dual-build fixture helper, injected per case.
+#
+# The mock routes every agent call by the slug embedded in its label, and a
+# dual-build arm's label carries the ARM KEY (`<slug>@<arm>`) — so an arm's
+# machinery queue is registered under that key, and the ITEM-level calls that
+# happen at/after the barrier (judge:<slug>, dual-build-rows:<slug>) share the
+# plain-slug queue. The candidate arm's candidate-session gate is labelled
+# `candidate-session:<slug>@candidate`, so it is the FIRST entry of the
+# candidate arm's own queue.
+# ---------------------------------------------------------------------------
+read -r -d '' DUAL_FIXTURE << 'DUAL_FIXTURE_END' || true
+globalThis.dualArgs = (slugs, extra) => ({
+  ...baseArgs,
+  dualBuild: { tier: 'sonnet', baseline: 'model-base', candidate: 'model-cand', inScope: slugs, ...(extra?.dualBuild ?? {}) },
+  ...(extra ?? {}),
+});
+// A green arm: the candidate-session gate (candidate arm only), worktree
+// create, the §3e review diff, and a passing acceptance gate.
+globalThis.greenArm = (slug, arm, over) => {
+  const created = { outcome: 'CREATED', path: '/tmp/repo.wt/' + slug + '@' + arm, base: 'base-' + slug, guard: 'ARMED', ...(over?.created ?? {}) };
+  const gate = over?.gate ?? { outcome: 'GATE_PASS' };
+  const head = arm === 'candidate' ? [{ outcome: 'CANDIDATE_READY' }] : [];
+  setMachinery(slug + '@' + arm, ...head, created, { outcome: 'REVIEW_DIFF' }, gate);
+  happyWorker(slug + '@' + arm);
+};
+// The post-barrier item-level queue: the pairwise judge, then one ledger-row
+// append per arm.
+globalThis.itemBarrier = (slug, judgeOut, rows) => setMachinery(slug,
+  judgeOut ?? { outcome: 'JUDGED', judge: { preference: 'A', margin: 30, order_agreement: true } },
+  ...(rows ?? [{ outcome: 'ROW_APPENDED', arm: 'baseline' }, { outcome: 'ROW_APPENDED', arm: 'candidate' }]),
+);
+// dualRows(slug) — the ledger row LITERALS this driver handed the executor,
+// parsed back out of the emitted shell. The row is composed in .mjs and
+// sq()-quoted into the command text, so this reads exactly what
+// dual-build-ledger.sh would have received (modulo the three fields the shell
+// itself fills — see the row writer's own comment). A plain index scan rather
+// than a regex: the row is JSON with braces and quotes in it, which a lazy
+// regex gets wrong the moment a row grows a nested object.
+globalThis.dualRows = (slug) => {
+  const call = callLog.find(c => c.opts.label === 'dual-build-rows:' + slug);
+  if (!call) return [];
+  const text = call.promptFull;
+  const open = "printf %s '";
+  const close = "' | jq";
+  const out = [];
+  let i = 0;
+  for (;;) {
+    const a = text.indexOf(open, i);
+    if (a < 0) break;
+    const b = text.indexOf(close, a + open.length);
+    if (b < 0) break;
+    const raw = text.slice(a + open.length, b);
+    i = b + close.length;
+    if (raw.indexOf('{"tier') !== 0) continue;
+    try { out.push(JSON.parse(raw.split("'\\''").join("'"))); } catch (e) { /* not a row literal */ }
+  }
+  return out;
+};
+globalThis.rowFor = (slug, arm) => dualRows(slug).find(r => r.arm === arm && r.in_scope !== false) ?? null;
+globalThis.notInScopeRow = (slug) => dualRows(slug).find(r => r.in_scope === false) ?? null;
+DUAL_FIXTURE_END
+
+# ---------------------------------------------------------------------------
+# K2080: two arms, the barrier, and no PR
+# ---------------------------------------------------------------------------
+run_node_case "K2080 dual-build: an in-scope item builds two arms via 'worktree.sh create --arm', records start order, and the level barrier holds every gate before any judge and any PR" "
+$PREAMBLE
+$DUAL_FIXTURE
+
+for (const s of ['d1','d2']) {
+  greenArm(s, 'baseline'); greenArm(s, 'candidate');
+  itemBarrier(s);
+}
+
+globalThis.args = { ...dualArgs(['d1','d2']), items: [
+  { slug: 'd1', branch: 'build/d1', title: 'D1', kind: 'impl', acceptance: ['c'] },
+  { slug: 'd2', branch: 'build/d2', title: 'D2', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+
+// NO PR — for any item, at any point. This is the barrier's whole claim, and
+// it is asserted on the SPAWN, not only on the steps: a PR phase that runs and
+// fails on its first step records no push/pr-open step at all, so a step-only
+// assertion would sit green through exactly the regression that matters.
+const prPhase = callLog.filter(c => /^(pr-batch|ci-batch|pr-body-update):/.test(String(c.opts.label)));
+if (prPhase.length !== 0)
+  { console.log(JSON.stringify({ ok: false, reason: 'the barrier let the PR phase run: ' + JSON.stringify(prPhase.map(c => c.opts.label)) })); process.exit(0); }
+const prSteps = machineryStepLog.filter(s => s.kind === 'pr-open' || s.kind === 'push' || s.kind === 'ci-poll');
+if (prSteps.length !== 0)
+  { console.log(JSON.stringify({ ok: false, reason: 'the barrier let a push/PR/CI step run: ' + JSON.stringify(prSteps) })); process.exit(0); }
+
+// Two arms per item, each on its OWN arm-suffixed worktree and branch, created
+// with the --arm flag naming its sibling.
+for (const s of ['d1','d2']) {
+  for (const arm of ['baseline','candidate']) {
+    const pre = callLog.find(c => c.opts.label === 'prelude:' + s + '@' + arm);
+    if (!pre)
+      { console.log(JSON.stringify({ ok: false, reason: 'no prelude for arm ' + s + '@' + arm })); process.exit(0); }
+    const sib = arm === 'baseline' ? 'candidate' : 'baseline';
+    if (!pre.promptFull.includes(\"--arm '\" + arm + ':' + sib + \"'\"))
+      { console.log(JSON.stringify({ ok: false, reason: s + '@' + arm + \" create carries no --arm '\" + arm + ':' + sib + \"': \" + pre.promptFull.slice(0, 400) })); process.exit(0); }
+    if (!pre.promptFull.includes(\"create '/tmp/repo' '\" + s + \"' --arm\"))
+      { console.log(JSON.stringify({ ok: false, reason: s + '@' + arm + ' create must name the REAL slug, not the arm key: ' + pre.promptFull.slice(0, 400) })); process.exit(0); }
+  }
+}
+
+// THE BARRIER, read off the spawn order: every gate call in the level precedes
+// every judge call. A per-item barrier (judge d1 while d2 still builds) passes
+// every other assertion here and fails this one.
+const order = callLog.map(c => String(c.opts.label));
+const lastGate = order.reduce((n, l, i) => (/^gate:/.test(l) ? i : n), -1);
+const firstJudge = order.findIndex(l => /^judge:/.test(l));
+if (lastGate < 0 || firstJudge < 0)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected both gate and judge calls: ' + JSON.stringify(order) })); process.exit(0); }
+if (firstJudge < lastGate)
+  { console.log(JSON.stringify({ ok: false, reason: 'a judge ran BEFORE the level finished gating — that is a per-item barrier, not the level barrier: ' + JSON.stringify(order) })); process.exit(0); }
+
+// Start order recorded, per arm, baseline first.
+const d1 = result.parked.find(p => p.slug === 'd1');
+if (!d1 || !d1.dual_build)
+  { console.log(JSON.stringify({ ok: false, reason: 'd1 did not park with a dual_build record: ' + JSON.stringify(result) })); process.exit(0); }
+if (d1.pr !== null || d1.pushed_sha !== null || d1.awaiting_pick !== true)
+  { console.log(JSON.stringify({ ok: false, reason: 'a barriered item must park with no PR and awaiting_pick: ' + JSON.stringify(d1) })); process.exit(0); }
+const orders = d1.dual_build.arms.map(a => a.arm + ':' + a.start_order).join(',');
+if (orders !== 'baseline:1,candidate:2')
+  { console.log(JSON.stringify({ ok: false, reason: 'start order not recorded per arm: ' + orders })); process.exit(0); }
+if (d1.dual_build.barrier !== 'held' || d1.dual_build.awaiting !== 'level-pick')
+  { console.log(JSON.stringify({ ok: false, reason: 'barrier state missing: ' + JSON.stringify(d1.dual_build) })); process.exit(0); }
+if (!d1.dual_build.judge || d1.dual_build.judge.order_agreement !== true)
+  { console.log(JSON.stringify({ ok: false, reason: 'judge result missing from the item record: ' + JSON.stringify(d1.dual_build) })); process.exit(0); }
+if (result.dualBuild.in_scope.join(',') !== 'd1,d2' || result.dualBuild.barrier !== 'held')
+  { console.log(JSON.stringify({ ok: false, reason: 'level summary wrong: ' + JSON.stringify(result.dualBuild) })); process.exit(0); }
+
+// …and the barriered level is NOT a zero-disposition contradiction: it disposed
+// of both items, it just disposed of them as parked-awaiting-pick.
+if (result.zeroDisposition)
+  { console.log(JSON.stringify({ ok: false, reason: 'a barriered level was flagged zero-disposition: ' + JSON.stringify(result.zeroDisposition) })); process.exit(0); }
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+# ---------------------------------------------------------------------------
+# K2080: the ledger row's own content
+# ---------------------------------------------------------------------------
+run_node_case "K2080 rows: one row per item per arm carrying cost, loss_reason, guard_armed and start_order, with cross_read_attempted read from the guard's attempt marker" "
+$PREAMBLE
+$DUAL_FIXTURE
+
+greenArm('r1', 'baseline'); greenArm('r1', 'candidate');
+// The judge prefers arm A (baseline) — so the CANDIDATE arm's row carries the
+// per-item judge loss, and the baseline arm's carries none.
+itemBarrier('r1', { outcome: 'JUDGED', judge: { preference: 'A', margin: 40, order_agreement: true } });
+
+globalThis.args = { ...dualArgs(['r1']), items: [
+  { slug: 'r1', branch: 'build/r1', title: 'R1', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+
+const base = rowFor('r1', 'baseline');
+const cand = rowFor('r1', 'candidate');
+if (!base || !cand)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected one row per arm; got ' + JSON.stringify({ base, cand }) })); process.exit(0); }
+if (base.slug !== 'r1' || base.arm !== 'baseline' || base.tier !== 'sonnet' || base.model !== 'model-base')
+  { console.log(JSON.stringify({ ok: false, reason: 'baseline row identity wrong: ' + JSON.stringify(base) })); process.exit(0); }
+if (cand.model !== 'model-cand' || cand.start_order !== 2 || base.start_order !== 1)
+  { console.log(JSON.stringify({ ok: false, reason: 'row model/start_order wrong: ' + JSON.stringify({ base, cand }) })); process.exit(0); }
+if (base.gate !== 'pass' || cand.gate !== 'pass')
+  { console.log(JSON.stringify({ ok: false, reason: 'gate result missing from rows: ' + JSON.stringify({ base, cand }) })); process.exit(0); }
+if (base.guard_armed !== 'ARMED' || cand.guard_armed !== 'ARMED')
+  { console.log(JSON.stringify({ ok: false, reason: 'guard_armed not taken from the CREATED line: ' + JSON.stringify({ base, cand }) })); process.exit(0); }
+for (const k of ['tokens_in','tokens_out','wall_clock_ms','retry_tokens','retry_count','recovery']) {
+  if (!(k in base.cost))
+    { console.log(JSON.stringify({ ok: false, reason: 'row cost missing ' + k + ': ' + JSON.stringify(base.cost) })); process.exit(0); }
+}
+if (base.loss_reason !== null)
+  { console.log(JSON.stringify({ ok: false, reason: 'the JUDGE-PREFERRED arm must carry no loss: ' + JSON.stringify(base) })); process.exit(0); }
+if (cand.loss_reason !== 'judge')
+  { console.log(JSON.stringify({ ok: false, reason: 'the arm the judge did not prefer must lose on judge: ' + JSON.stringify(cand) })); process.exit(0); }
+if (!base.judge || base.judge.margin !== 40 || base.pick !== null || base.override.applied !== false)
+  { console.log(JSON.stringify({ ok: false, reason: 'row judge/pick/override wrong: ' + JSON.stringify(base) })); process.exit(0); }
+
+// cross_read_attempted is READ FROM THE ARM'S WORKTREE by the emitted shell —
+// the guard's own attempt marker — and overwrites the literal placeholder. The
+// row literal alone cannot carry it, so the assertion is on the emitted
+// command: the marker path, the -s test, and the jq that injects the reading.
+const cmd = callLog.find(c => c.opts.label === 'dual-build-rows:r1').promptFull;
+if (!cmd.includes('.dual-build-cross-read-attempts.jsonl'))
+  { console.log(JSON.stringify({ ok: false, reason: \"the row writer never reads the guard's attempt marker\" })); process.exit(0); }
+if (!cmd.includes('/tmp/repo.wt/r1@candidate/.dual-build-cross-read-attempts.jsonl'))
+  { console.log(JSON.stringify({ ok: false, reason: \"the attempt marker must be read from the ARM'S OWN worktree\" })); process.exit(0); }
+if (!/cross_read_attempted=\\\$ca/.test(cmd))
+  { console.log(JSON.stringify({ ok: false, reason: 'the reading is never injected into the row: ' + cmd.slice(0, 600) })); process.exit(0); }
+if (!/head_sha=\\\$hs/.test(cmd) || !/machinery_version=\\\$mv/.test(cmd))
+  { console.log(JSON.stringify({ ok: false, reason: 'head_sha/machinery_version are never resolved from the worktree' })); process.exit(0); }
+if (result.dualBuild.rows_appended !== 2 || result.dualBuild.rows_rejected !== 0)
+  { console.log(JSON.stringify({ ok: false, reason: 'row tally wrong: ' + JSON.stringify(result.dualBuild) })); process.exit(0); }
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+# ---------------------------------------------------------------------------
+# K2080: a not-in-scope item on a dual-build level
+# ---------------------------------------------------------------------------
+run_node_case "K2080 not-in-scope: an item outside the tier is built ONCE through the ordinary single-arm path (PR and all) and gets one not-in-scope row" "
+$PREAMBLE
+$DUAL_FIXTURE
+
+greenArm('n1', 'baseline'); greenArm('n1', 'candidate');
+itemBarrier('n1');
+
+// The out-of-scope item takes the UNCHANGED single-arm queue, and its own
+// post-barrier queue holds exactly one row append.
+happyMachinery('n2', 909, 'ab909');
+happyWorker('n2');
+
+globalThis.args = { ...dualArgs(['n1']), items: [
+  { slug: 'n1', branch: 'build/n1', title: 'N1', kind: 'impl', acceptance: ['c'] },
+  { slug: 'n2', branch: 'build/n2', title: 'N2', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+
+const n2 = (result.parked ?? []).find(p => p.slug === 'n2');
+if (!n2 || n2.pr !== 909 || n2.pushed_sha !== 'ab909')
+  { console.log(JSON.stringify({ ok: false, reason: 'the not-in-scope item did not take the ordinary PR path: ' + JSON.stringify(result.parked) })); process.exit(0); }
+if ('dual_build' in n2)
+  { console.log(JSON.stringify({ ok: false, reason: 'a not-in-scope item must carry no dual_build record: ' + JSON.stringify(n2) })); process.exit(0); }
+// Built ONCE: no arm worktrees for it anywhere.
+if (machineryStepLog.some(s => String(s.slug).startsWith('n2@')))
+  { console.log(JSON.stringify({ ok: false, reason: 'the not-in-scope item was built under an arm: ' + JSON.stringify(machineryStepLog) })); process.exit(0); }
+const row = notInScopeRow('n2');
+if (!row || row.in_scope !== false)
+  { console.log(JSON.stringify({ ok: false, reason: 'no not-in-scope row was written: ' + JSON.stringify(row) })); process.exit(0); }
+if (row.slug !== 'n2' || row.arm !== 'baseline' || row.gate !== 'pass')
+  { console.log(JSON.stringify({ ok: false, reason: 'not-in-scope row shape wrong: ' + JSON.stringify(row) })); process.exit(0); }
+if (result.dualBuild.not_in_scope.join(',') !== 'n2')
+  { console.log(JSON.stringify({ ok: false, reason: 'level summary must name the not-in-scope set: ' + JSON.stringify(result.dualBuild) })); process.exit(0); }
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+# ---------------------------------------------------------------------------
+# K2080: board writes are buffered until after the pick
+# ---------------------------------------------------------------------------
+run_node_case "K2080 board: an in-scope item's claim is BUFFERED (no claim step runs) while a not-in-scope item on the same level claims normally" "
+$PREAMBLE
+$DUAL_FIXTURE
+
+greenArm('b1', 'baseline'); greenArm('b1', 'candidate');
+itemBarrier('b1');
+setMachinery('b2',
+  { outcome: 'CLAIMED' },
+  { outcome: 'CREATED', path: '/tmp/repo.wt/b2' },
+  { outcome: 'REVIEW_DIFF' },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'b222' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'b222', branch: 'build/b2' },
+  { outcome: 'PR_OPENED', pr_number: 222 },
+  { outcome: 'CI_GREEN' },
+  { outcome: 'ROW_APPENDED', arm: 'baseline' },
+);
+happyWorker('b2');
+
+globalThis.args = { ...dualArgs(['b1']), board: 4, claimCmd: '/x/claim.sh', items: [
+  { slug: 'b1', branch: 'build/b1', title: 'B1', kind: 'impl', acceptance: ['c'], ghIssue: 101 },
+  { slug: 'b2', branch: 'build/b2', title: 'B2', kind: 'impl', acceptance: ['c'], ghIssue: 102 },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+
+const claims = machineryStepLog.filter(s => s.kind === 'claim');
+if (claims.length !== 1 || claims[0].slug !== 'b2')
+  { console.log(JSON.stringify({ ok: false, reason: 'exactly the not-in-scope item may claim; got ' + JSON.stringify(claims) })); process.exit(0); }
+const bw = result.dualBuild.board_writes ?? [];
+if (bw.length !== 1 || bw[0].slug !== 'b1' || bw[0].issue !== 101)
+  { console.log(JSON.stringify({ ok: false, reason: \"the in-scope item's board write was not buffered: \" + JSON.stringify(bw) })); process.exit(0); }
+if (!String(bw[0].cmd).includes('/x/claim.sh 101 --board 4'))
+  { console.log(JSON.stringify({ ok: false, reason: 'the buffered write must carry the exact command to run after the pick: ' + JSON.stringify(bw[0]) })); process.exit(0); }
+if (bw[0].buffered_until !== 'level-pick')
+  { console.log(JSON.stringify({ ok: false, reason: 'the buffer must say when it is flushed: ' + JSON.stringify(bw[0]) })); process.exit(0); }
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+# ---------------------------------------------------------------------------
+# K2080: the three per-arm loss reasons
+# ---------------------------------------------------------------------------
+run_node_case "K2080 losses: a gate-failed arm records loss_reason gate; an infra failure records infra; neither escalates across the driveItem boundary and the judge reports one-arm-only" "
+$PREAMBLE
+$DUAL_FIXTURE
+
+// g1: the CANDIDATE arm's acceptance gate goes RED.
+greenArm('g1', 'baseline');
+greenArm('g1', 'candidate', { gate: { outcome: 'GATE_FAIL', failed: 2 } });
+itemBarrier('g1', { outcome: 'JUDGE_UNAVAILABLE', reason: 'never-called' }, [
+  { outcome: 'ROW_APPENDED', arm: 'baseline' }, { outcome: 'ROW_APPENDED', arm: 'candidate' },
+]);
+
+// f1: the CANDIDATE arm's worktree create fails outright — machinery, not the
+// model. That must never read as a quality signal.
+greenArm('f1', 'baseline');
+setMachinery('f1@candidate',
+  { outcome: 'CANDIDATE_READY' },
+  { outcome: 'ERROR', error: 'worktree add refused' },
+);
+itemBarrier('f1', { outcome: 'JUDGE_UNAVAILABLE', reason: 'never-called' }, [
+  { outcome: 'ROW_APPENDED', arm: 'baseline' }, { outcome: 'ROW_APPENDED', arm: 'candidate' },
+]);
+
+globalThis.args = { ...dualArgs(['g1','f1']), items: [
+  { slug: 'g1', branch: 'build/g1', title: 'G1', kind: 'impl', acceptance: ['c'] },
+  { slug: 'f1', branch: 'build/f1', title: 'F1', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+
+// A per-arm failure is a ROW, never an escalation.
+if ((result.escalations ?? []).length !== 0)
+  { console.log(JSON.stringify({ ok: false, reason: 'a per-arm failure escalated across the driveItem boundary: ' + JSON.stringify(result.escalations) })); process.exit(0); }
+
+const g1 = result.parked.find(p => p.slug === 'g1');
+const gcand = g1.dual_build.arms.find(a => a.arm === 'candidate');
+if (gcand.gate !== 'fail' || gcand.loss_reason !== 'gate')
+  { console.log(JSON.stringify({ ok: false, reason: 'a gate-failed arm must be a gate loss: ' + JSON.stringify(gcand) })); process.exit(0); }
+if (rowFor('g1', 'candidate').loss_reason !== 'gate')
+  { console.log(JSON.stringify({ ok: false, reason: 'the gate loss never reached the row: ' + JSON.stringify(rowFor('g1','candidate')) })); process.exit(0); }
+if (g1.dual_build.judge !== null || g1.dual_build.judge_unavailable_reason !== 'one-arm-only')
+  { console.log(JSON.stringify({ ok: false, reason: 'with one arm down the judge must report one-arm-only, never a verdict: ' + JSON.stringify(g1.dual_build) })); process.exit(0); }
+if (callLog.some(c => String(c.opts.label) === 'judge:g1'))
+  { console.log(JSON.stringify({ ok: false, reason: 'the judge was spent on a pair that cannot be compared' })); process.exit(0); }
+
+const f1 = result.parked.find(p => p.slug === 'f1');
+const fcand = f1.dual_build.arms.find(a => a.arm === 'candidate');
+if (fcand.loss_reason !== 'infra')
+  { console.log(JSON.stringify({ ok: false, reason: 'a machinery failure must be an infra loss, never gate: ' + JSON.stringify(fcand) })); process.exit(0); }
+if (rowFor('f1', 'candidate').loss_reason !== 'infra')
+  { console.log(JSON.stringify({ ok: false, reason: 'the infra loss never reached the row: ' + JSON.stringify(rowFor('f1','candidate')) })); process.exit(0); }
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+# ---------------------------------------------------------------------------
+# K2080: both arms down
+# ---------------------------------------------------------------------------
+run_node_case "K2080 both arms down: an item with no gate-passing arm ESCALATES (there is nothing for a pick to choose between) rather than parking as if it were comparable" "
+$PREAMBLE
+$DUAL_FIXTURE
+
+greenArm('z1', 'baseline', { gate: { outcome: 'GATE_FAIL', failed: 1 } });
+greenArm('z1', 'candidate', { gate: { outcome: 'GATE_FAIL', failed: 3 } });
+itemBarrier('z1', { outcome: 'JUDGE_UNAVAILABLE', reason: 'never-called' });
+
+globalThis.args = { ...dualArgs(['z1']), items: [
+  { slug: 'z1', branch: 'build/z1', title: 'Z1', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+
+const esc = (result.escalations ?? []).find(e => e.slug === 'z1');
+if (!esc || esc.kind !== 'dual-build-arms-failed')
+  { console.log(JSON.stringify({ ok: false, reason: 'expected a dual-build-arms-failed escalation: ' + JSON.stringify(result) })); process.exit(0); }
+if (!esc.payload.dual_build || esc.payload.dual_build.arms.length !== 2)
+  { console.log(JSON.stringify({ ok: false, reason: 'the escalation must carry both arms: ' + JSON.stringify(esc.payload) })); process.exit(0); }
+if ((result.parked ?? []).length !== 0)
+  { console.log(JSON.stringify({ ok: false, reason: 'an item with no passing arm must not also park: ' + JSON.stringify(result.parked) })); process.exit(0); }
+if (result.zeroDisposition)
+  { console.log(JSON.stringify({ ok: false, reason: 'an escalating dual-build level is disposed of, not a contradiction: ' + JSON.stringify(result.zeroDisposition) })); process.exit(0); }
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+# ---------------------------------------------------------------------------
+# K2080: the two-arm sideline notice
+# ---------------------------------------------------------------------------
+run_node_case "K2080 sideline: when BOTH arms of one item sideline a resumable build, the level rollup keeps BOTH notices, named by arm" "
+$PREAMBLE
+$DUAL_FIXTURE
+
+greenArm('s2', 'baseline', { created: { outcome: 'CREATED', path: '/tmp/repo.wt/s2@baseline', base: 'base-s2', guard: 'ARMED', sidelined: true, sidelined_path: '/tmp/repo.wt/s2@baseline.unpreserved-aaa', sidelined_branch: 'build/s2@baseline.unpreserved-aaa' } });
+greenArm('s2', 'candidate', { created: { outcome: 'CREATED', path: '/tmp/repo.wt/s2@candidate', base: 'base-s2', guard: 'ARMED', sidelined: true, sidelined_path: '/tmp/repo.wt/s2@candidate.unpreserved-bbb', sidelined_branch: 'build/s2@candidate.unpreserved-bbb' } });
+itemBarrier('s2');
+
+globalThis.args = { ...dualArgs(['s2']), items: [
+  { slug: 's2', branch: 'build/s2', title: 'S2', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+
+const sl = result.sidelined ?? [];
+if (sl.length !== 2)
+  { console.log(JSON.stringify({ ok: false, reason: 'both arms sidelined but the rollup kept ' + sl.length + ': ' + JSON.stringify(sl) })); process.exit(0); }
+if (sl.map(s => s.arm).join(',') !== 'baseline,candidate')
+  { console.log(JSON.stringify({ ok: false, reason: 'each notice must name its arm: ' + JSON.stringify(sl) })); process.exit(0); }
+if (sl[0].path !== '/tmp/repo.wt/s2@baseline.unpreserved-aaa' || sl[1].path !== '/tmp/repo.wt/s2@candidate.unpreserved-bbb')
+  { console.log(JSON.stringify({ ok: false, reason: 'the two notices collapsed onto one path: ' + JSON.stringify(sl) })); process.exit(0); }
+if (!sl[0].recovery || !sl[1].recovery)
+  { console.log(JSON.stringify({ ok: false, reason: 'each notice must carry its own recovery command: ' + JSON.stringify(sl) })); process.exit(0); }
+const armNotices = result.parked[0].dual_build.arms.map(a => (a.sidelined ? a.arm : null)).filter(Boolean).join(',');
+if (armNotices !== 'baseline,candidate')
+  { console.log(JSON.stringify({ ok: false, reason: \"each arm's own summary must carry its notice: \" + JSON.stringify(result.parked[0].dual_build.arms) })); process.exit(0); }
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+# ---------------------------------------------------------------------------
+# K2080: the flag-less resume refusal
+# ---------------------------------------------------------------------------
+run_node_case "K2080 flag-less resume: a level left PARTIALLY DUAL-BUILT refuses legibly under its own kind — never a silent single-arm completion, never a worktree-failed" "
+$PREAMBLE
+
+setMachinery('res1', { outcome: 'DUAL_BUILD_RESIDUE', arms: '/tmp/repo.wt/res1@baseline /tmp/repo.wt/res1@candidate ' });
+happyWorker('res1');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'res1', branch: 'build/res1', title: 'Res1', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+
+const esc = (result.escalations ?? []).find(e => e.slug === 'res1');
+if (!esc || esc.kind !== 'dual-build-residue')
+  { console.log(JSON.stringify({ ok: false, reason: 'expected a dual-build-residue refusal: ' + JSON.stringify(result) })); process.exit(0); }
+if (!/PARTIALLY DUAL-BUILT/.test(String(esc.payload.reason)))
+  { console.log(JSON.stringify({ ok: false, reason: 'the refusal must SAY what it found: ' + JSON.stringify(esc.payload) })); process.exit(0); }
+if (!/--dual-build/.test(String(esc.payload.remedy)) || !/worktree.sh remove/.test(String(esc.payload.remedy)))
+  { console.log(JSON.stringify({ ok: false, reason: 'the refusal must name BOTH ways out: ' + JSON.stringify(esc.payload) })); process.exit(0); }
+if (esc.payload.arms !== '/tmp/repo.wt/res1@baseline /tmp/repo.wt/res1@candidate ')
+  { console.log(JSON.stringify({ ok: false, reason: 'the refusal must carry the arms it found: ' + JSON.stringify(esc.payload) })); process.exit(0); }
+// Nothing was built, pushed or PR'd past the refusal.
+if (callLog.some(c => /^worker:/.test(String(c.opts.label))))
+  { console.log(JSON.stringify({ ok: false, reason: 'a worker was spawned past the refusal' })); process.exit(0); }
+if (machineryStepLog.some(s => s.kind === 'pr-open' || s.kind === 'push'))
+  { console.log(JSON.stringify({ ok: false, reason: 'the refusal did not stop the pipeline: ' + JSON.stringify(machineryStepLog) })); process.exit(0); }
+
+// The DETECTION is emitted inside the create step itself — the property that
+// keeps the flag-less transcript unchanged. If it ever becomes a probe step of
+// its own, the control case above goes red and so does this.
+const pre = callLog.find(c => c.opts.label === 'prelude:res1').promptFull;
+if (!pre.includes('DUAL_BUILD_RESIDUE') || !pre.includes(\"ls -d '/tmp/repo.wt/res1@'*\"))
+  { console.log(JSON.stringify({ ok: false, reason: 'the residue check is not folded into the create step: ' + pre.slice(0, 600) })); process.exit(0); }
+if (!pre.includes('Steps: worktree'))
+  { console.log(JSON.stringify({ ok: false, reason: 'the residue check added a step to the prelude: ' + pre.slice(0, 200) })); process.exit(0); }
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+# ---------------------------------------------------------------------------
+# K2080: the arm's model, and the retry that must stay on it
+# ---------------------------------------------------------------------------
+run_node_case "K2080 arm model: each arm's worker spawns on its OWN model, and a no-verdict retry re-spawns on that SAME model — never escalating to the other arm's tier" "
+$PREAMBLE
+$DUAL_FIXTURE
+
+// The candidate arm's first worker returns nothing, then succeeds on the
+// #1219 foreground-cure retry.
+setMachinery('m1@baseline',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/m1@baseline', base: 'base-m1', guard: 'ARMED' },
+  { outcome: 'REVIEW_DIFF' },
+  { outcome: 'GATE_PASS' },
+);
+happyWorker('m1@baseline');
+setMachinery('m1@candidate',
+  { outcome: 'CANDIDATE_READY' },
+  { outcome: 'CREATED', path: '/tmp/repo.wt/m1@candidate', base: 'base-m1', guard: 'ARMED' },
+  { outcome: 'RECOVER_NONE', commits_ahead: 0, pushed: false, dirty: false, dirty_files: 0, verification_surface_present: false },
+  { outcome: 'REVIEW_DIFF' },
+  { outcome: 'GATE_PASS' },
+);
+setWorker('m1@candidate',
+  null,
+  { status: 'done', summary: 'retried', acceptance_results: [{ criterion: 'c', passed: true, evidence: 'e' }], commits: [] },
+);
+itemBarrier('m1');
+
+globalThis.args = { ...dualArgs(['m1']), items: [
+  { slug: 'm1', branch: 'build/m1', title: 'M1', kind: 'impl', acceptance: ['c'], model: 'plan-item-model' },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+
+const workerCalls = callLog.filter(c => isWorkerCall(c.opts));
+const byLabel = Object.fromEntries(workerCalls.map(c => [c.opts.label, c.opts.model]));
+if (byLabel['worker:m1@baseline'] !== 'model-base')
+  { console.log(JSON.stringify({ ok: false, reason: 'the baseline arm did not spawn on the baseline model: ' + JSON.stringify(byLabel) })); process.exit(0); }
+if (byLabel['worker:m1@candidate'] !== 'model-cand')
+  { console.log(JSON.stringify({ ok: false, reason: 'the candidate arm did not spawn on the candidate model: ' + JSON.stringify(byLabel) })); process.exit(0); }
+if (byLabel['worker:m1@candidate#retry'] !== 'model-cand')
+  { console.log(JSON.stringify({ ok: false, reason: \"the retry left the arm's own model: \" + JSON.stringify(byLabel) })); process.exit(0); }
+if (workerCalls.some(c => c.opts.model === 'plan-item-model'))
+  { console.log(JSON.stringify({ ok: false, reason: \"an arm inherited the plan item's model instead of its arm model\" })); process.exit(0); }
+if ((result.parked ?? []).length !== 1)
+  { console.log(JSON.stringify({ ok: false, reason: 'the retried arm did not complete: ' + JSON.stringify(result) })); process.exit(0); }
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+# ---------------------------------------------------------------------------
+# K2080: the candidate-session seam
+# ---------------------------------------------------------------------------
+run_node_case "K2080 candidate-session: every candidate arm passes the containment+preflight seam first, and a refusal is an infra loss — never an uncontained spawn" "
+$PREAMBLE
+$DUAL_FIXTURE
+
+greenArm('c1', 'baseline');
+setMachinery('c1@candidate', { outcome: 'CANDIDATE_REFUSED', reason: 'preflight-failed', detail: 'key unset' });
+itemBarrier('c1', { outcome: 'JUDGE_UNAVAILABLE', reason: 'never-called' });
+
+globalThis.args = { ...dualArgs(['c1']), items: [
+  { slug: 'c1', branch: 'build/c1', title: 'C1', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+
+const gateCall = callLog.find(c => c.opts.label === 'candidate-session:c1@candidate');
+if (!gateCall)
+  { console.log(JSON.stringify({ ok: false, reason: 'the candidate arm never consulted candidate-session.sh' })); process.exit(0); }
+if (!gateCall.promptFull.includes('candidate-session.sh') || !gateCall.promptFull.includes('resolve Read') || !gateCall.promptFull.includes('preflight'))
+  { console.log(JSON.stringify({ ok: false, reason: 'the seam must check BOTH containment and the credential: ' + gateCall.promptFull.slice(0, 500) })); process.exit(0); }
+// A refused candidate never builds.
+if (callLog.some(c => String(c.opts.label) === 'worker:c1@candidate'))
+  { console.log(JSON.stringify({ ok: false, reason: 'a refused candidate arm spawned a worker anyway' })); process.exit(0); }
+const cand = result.parked[0].dual_build.arms.find(a => a.arm === 'candidate');
+if (cand.loss_reason !== 'infra' || !/candidate-session/.test(String(cand.failure.kind)))
+  { console.log(JSON.stringify({ ok: false, reason: 'a seam refusal must be a named infra loss: ' + JSON.stringify(cand) })); process.exit(0); }
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+# ---------------------------------------------------------------------------
+# K2080: a malformed dualBuild input
+# ---------------------------------------------------------------------------
+run_node_case "K2080 input: a present-but-unusable dualBuild REFUSES the level rather than silently degrading to a single-arm build" "
+$PREAMBLE
+
+globalThis.args = { ...baseArgs, dualBuild: { tier: 'sonnet', baseline: 'b' }, items: [
+  { slug: 'bad1', branch: 'build/bad1', title: 'Bad', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+
+const esc = (result.escalations ?? []).find(e => e.slug === 'bad1');
+if (!esc || esc.kind !== 'dual-build-input-invalid')
+  { console.log(JSON.stringify({ ok: false, reason: 'expected a dual-build-input-invalid refusal: ' + JSON.stringify(result) })); process.exit(0); }
+if (!/candidate/.test(String(esc.payload.reason)) || !/inScope/.test(String(esc.payload.reason)))
+  { console.log(JSON.stringify({ ok: false, reason: 'the refusal must name WHAT is missing: ' + JSON.stringify(esc.payload) })); process.exit(0); }
+if (callLog.length !== 0)
+  { console.log(JSON.stringify({ ok: false, reason: 'a refused level must spawn nothing: ' + JSON.stringify(callLog.map(c => c.opts.label)) })); process.exit(0); }
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+# --- temperloop#2080 static guards ------------------------------------------
+# The runtime cases above prove the behaviour. These pin the two STRUCTURAL
+# facts a future edit could undo while every case above still passed: that the
+# PR phase really is a callable boundary driveItem composes (rather than a
+# second copy of the code), and that the barrier's ordering has not been
+# re-inlined back into the per-item drive.
+grep -q 'async function driveItemPr' "$MJS" \
+  || fail "#2080: build-level.mjs has no driveItemPr — the PR/CI/merge phase is not behind a callable boundary, so the level barrier has nothing to hold back"
+grep -q 'async function driveItemBuild' "$MJS" \
+  || fail "#2080: build-level.mjs has no driveItemBuild — the build phase is not separately callable"
+# driveItem must COMPOSE the two, in order, and nothing else.
+DRIVE_ITEM_BODY="$(awk '/^async function driveItem\(item\) \{$/,/^\}$/' "$MJS")"
+printf '%s' "$DRIVE_ITEM_BODY" | grep -F 'driveItemBuild(item, null)' >/dev/null \
+  || fail "#2080: driveItem no longer calls driveItemBuild — the single-arm path must run BOTH phases through the same boundary the dual path uses, or the two drift"
+printf '%s' "$DRIVE_ITEM_BODY" | grep -F 'driveItemPr(built.ctx)' >/dev/null \
+  || fail "#2080: driveItem no longer calls driveItemPr — a single-arm item would never reach push/PR/CI"
+# The dual path exists, is reachable from the level driver, and holds the
+# barrier BEFORE judging (the ordering the runtime case asserts, pinned here
+# against a refactor that moves the judge inside the per-item drive).
+grep -q "const dual = dualBuildInput();" "$MJS" \
+  || fail "#2080: buildLevel never reads the dualBuild input — the flag would be inert"
+grep -q 'async function driveLevelDualBuild' "$MJS" \
+  || fail "#2080: build-level.mjs has no driveLevelDualBuild — there is no level-scoped driver to hold a level barrier in"
+grep -q 'LEVEL BARRIER reached' "$MJS" \
+  || fail "#2080: the barrier leaves no named notice in the run log — a barrier nobody can see in a transcript is indistinguishable from none"
+grep -q 'dualBuild' "$MJS" \
+  || fail "#2080: build-level.mjs never names dualBuild"
+echo "PASS: #2080 static guards — the PR phase is a callable boundary driveItem composes, and the dual-build level driver + barrier notice are wired"
+
+# ---------------------------------------------------------------------------
+# K2080 EXECUTION test: the residue guard's own emitted shell, run for real.
+#
+# Every assertion above reads the guard's TEXT. This one RUNS it, twice, against
+# a real filesystem — once with an arm worktree present and once without —
+# because the whole claim ("byte-identical output on a clean tree, a refusal on
+# a dirty one") is a claim about what that shell DOES, and a text assertion
+# cannot tell a working `ls -d …@*` test from a broken one that always matches
+# (or never does).
+# ---------------------------------------------------------------------------
+K2080_EXEC_ROOT="$WF_TEST_TMPDIR/k2080-exec"
+mkdir -p "$K2080_EXEC_ROOT/bin" "$K2080_EXEC_ROOT/repo"
+# A stub worktree.sh that prints the CREATED line the real one would.
+cat > "$K2080_EXEC_ROOT/bin/worktree.sh" <<'STUB'
+#!/usr/bin/env bash
+printf '{"outcome":"CREATED","path":"%s.wt/%s","branch":"build/%s","guard":"ARMED"}\n' "$2" "$3" "$3"
+STUB
+chmod +x "$K2080_EXEC_ROOT/bin/worktree.sh"
+
+# Emit the driver's OWN create command for a flag-less item, exactly as the
+# executor would receive it.
+k2080_emit_create() {
+  local out
+  out="$(MJS_PATH="$MJS" AGENT_DEF_PATH="$AGENT_DEF" K2080_ROOT="$K2080_EXEC_ROOT" node --input-type=module -e "
+$PREAMBLE
+const root = process.env.K2080_ROOT + '/repo';
+setMachinery('execslug', { outcome: 'CREATED', path: root + '.wt/execslug' }, { outcome: 'REVIEW_DIFF' }, { outcome: 'GATE_FAIL' });
+happyWorker('execslug');
+globalThis.args = { ...baseArgs, repoRoot: root, machineryBinDir: process.env.K2080_ROOT + '/bin', items: [
+  { slug: 'execslug', branch: 'build/execslug', title: 'Exec', kind: 'impl', acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+await mod.default();
+const c = callLog.find(x => x.opts.label === 'prelude:execslug');
+process.stdout.write(c.promptFull.split('\\nCommand:\\n')[1]);
+")" || { echo "$out" >&2; fail "#2080-exec: could not emit the create command"; }
+  printf '%s' "$out"
+}
+K2080_CREATE_CMD="$(k2080_emit_create)"
+[ -n "$K2080_CREATE_CMD" ] || fail "#2080-exec: the emitted create command is empty"
+
+# (a) CLEAN tree — no arm worktrees. The guard must be invisible: the create
+#     runs and its CREATED line is the ONLY output.
+rm -rf "$K2080_EXEC_ROOT/repo.wt"
+k2080_clean_out="$(bash -c "$K2080_CREATE_CMD" 2>/dev/null)"
+printf '%s' "$k2080_clean_out" | grep -F '"outcome":"CREATED"' >/dev/null \
+  || fail "#2080-exec: on a clean tree the residue guard swallowed the create (got: $k2080_clean_out)"
+printf '%s' "$k2080_clean_out" | grep -F 'DUAL_BUILD_RESIDUE' >/dev/null \
+  && fail "#2080-exec: the residue guard fired on a tree with NO arm worktrees — every ordinary /build would refuse"
+[ "$(printf '%s\n' "$k2080_clean_out" | grep -c .)" = "1" ] \
+  || fail "#2080-exec: the clean path printed more than the create's own line, so a flag-less run's output is NOT byte-identical (got: $k2080_clean_out)"
+
+# (b) PARTIALLY DUAL-BUILT — an arm worktree for this slug stands. The guard
+#     must refuse and the create must never run.
+mkdir -p "$K2080_EXEC_ROOT/repo.wt/execslug@candidate"
+k2080_dirty_out="$(bash -c "$K2080_CREATE_CMD" 2>/dev/null)"
+printf '%s' "$k2080_dirty_out" | grep -F '"outcome":"DUAL_BUILD_RESIDUE"' >/dev/null \
+  || fail "#2080-exec: an arm worktree stands and the guard did not refuse (got: $k2080_dirty_out)"
+printf '%s' "$k2080_dirty_out" | grep -F '"outcome":"CREATED"' >/dev/null \
+  && fail "#2080-exec: the create ran anyway — a flag-less resume would rebuild over a half-finished dual build"
+printf '%s' "$k2080_dirty_out" | grep -F 'execslug@candidate' >/dev/null \
+  || fail "#2080-exec: the refusal does not name the arm worktree it found (got: $k2080_dirty_out)"
+
+# (c) DISCRIMINATION — an UNRELATED slug's arm worktree must not refuse this
+#     one. Without this the guard could be a bare "any @ dir anywhere" test.
+rm -rf "$K2080_EXEC_ROOT/repo.wt"
+mkdir -p "$K2080_EXEC_ROOT/repo.wt/otherslug@baseline"
+k2080_other_out="$(bash -c "$K2080_CREATE_CMD" 2>/dev/null)"
+printf '%s' "$k2080_other_out" | grep -F 'DUAL_BUILD_RESIDUE' >/dev/null \
+  && fail "#2080-exec: another slug's arm worktree refused THIS slug's build — the guard is not slug-scoped"
+printf '%s' "$k2080_other_out" | grep -F '"outcome":"CREATED"' >/dev/null \
+  || fail "#2080-exec: an unrelated arm worktree blocked the create (got: $k2080_other_out)"
+rm -rf "$K2080_EXEC_ROOT/repo.wt"
+echo "PASS: #2080-exec — the residue guard's generated shell, executed for real: silent and byte-identical on a clean tree, refusing on this slug's arm worktrees, and not fooled by another slug's"
+
 echo ""
 echo "All test_workflow.sh cases passed."
