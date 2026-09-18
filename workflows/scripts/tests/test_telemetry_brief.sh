@@ -492,6 +492,51 @@ out11="$(env -u CLAIMS_RAW_DIR -u ISSUE_TOUCHES_RAW_DIR -u TELEMETRY_RAW_DIR \
 assert_rc0 "$rc11" "sandbox-checkout brief exits 0 with no env overrides"
 assert_has "$out11" "0 captured · 1 claimed" "the sandbox checkout's own brief counts the claim its own claim.sh emitted, with no env vars set (temperloop#1822)"
 
+# Second writer of the SAME stream (temperloop#1902). emit-issue-touch.sh used
+# to re-derive the lake dir itself, with a fixed `../..` hop, while capture.sh
+# derived it from its own git toplevel — two derivations of one path. Both now
+# consume ONE owner, board/lib/raw_lake.sh's raw_lake_dir(), so this leg proves
+# the second writer behaviorally in the same sandbox checkout with no env set:
+# a `pr-open` touch must land in the sandbox's OWN lake (the dir the owner
+# resolves), not in the decoy HOME the old absolute fallback would pick.
+cp "$REPO/workflows/scripts/emit-issue-touch.sh" "$fake/workflows/scripts/emit-issue-touch.sh"
+(
+  cd "$fake" &&
+  env -u CLAIMS_RAW_DIR -u ISSUE_TOUCHES_RAW_DIR -u TELEMETRY_RAW_DIR \
+      HOME="$decoy_home" SUBSET_HOST_LABEL=testhost \
+      bash workflows/scripts/emit-issue-touch.sh \
+        --repo example/repo --issue 1902 --kind pr-open >/dev/null 2>&1
+) || fail_test "emit-issue-touch.sh writer leg runs" "the emit exited non-zero"
+if [ -f "$fake/meta/data/raw/issue-touches-${month}.jsonl" ]; then
+  ok "emit-issue-touch.sh's default sink is the SAME sandbox lake the shared owner resolves — both issue-touches writers consume one resolution (temperloop#1902)"
+else
+  fail_test "emit-issue-touch.sh's default sink is the SAME sandbox lake the shared owner resolves — both issue-touches writers consume one resolution (temperloop#1902)" "no $fake/meta/data/raw/issue-touches-${month}.jsonl"
+fi
+if [ -e "$decoy_home/dev/foundation" ]; then
+  fail_test "the stream's second writer grows no phantom \$HOME/dev/foundation tree either" "emit-issue-touch.sh re-grew \$HOME/dev/foundation"
+else
+  ok "the stream's second writer grows no phantom \$HOME/dev/foundation tree either"
+fi
+
+# SINGLE-OWNER convention check (temperloop#1902), the static half of the leg
+# above: the behavioral leg proves WHERE the record lands, but in the kernel's
+# own layout a re-inlined `../..` hop would land in the same place and slip
+# through. So assert the structural property directly — both writers of this
+# stream must NAME the shared resolver, and neither may carry its own lake-dir
+# derivation. Same convention as the byte-identity check below.
+for _w in workflows/scripts/board/capture.sh workflows/scripts/emit-issue-touch.sh; do
+  if grep -Fq 'raw_lake_dir' "$REPO/$_w"; then
+    ok "$_w consumes the shared raw-lake owner raw_lake_dir() (temperloop#1902)"
+  else
+    fail_test "$_w consumes the shared raw-lake owner raw_lake_dir() (temperloop#1902)" "no raw_lake_dir reference in $_w"
+  fi
+  if grep -Eq '^[^#]*(rev-parse --show-toplevel|cd -P "\$here/\.\./\.\.")' "$REPO/$_w"; then
+    fail_test "$_w no longer re-derives the raw-lake dir itself (temperloop#1902)" "an independent lake-dir derivation is back in $_w"
+  else
+    ok "$_w no longer re-derives the raw-lake dir itself (temperloop#1902)"
+  fi
+done
+
 # capture.sh has no source-guard (it runs gh top-to-bottom), so its default is
 # proven by LITERAL EQUALITY with the behaviorally-proven claim.sh resolution
 # above — the same convention test 9 uses for the pipeline-cron literal: the

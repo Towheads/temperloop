@@ -82,6 +82,9 @@ SCRIPT_DIR="$(cd -P "$(dirname "$src")" && pwd)"
 # shellcheck source=scripts/lib/board.sh
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/lib/board.sh"
+# shellcheck source=scripts/lib/raw_lake.sh
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/lib/raw_lake.sh"
 
 # Canonical default sink for the append-only issue-touches log (F#916/#919,
 # epic #916 issue-touch-stream) — computed ONCE as a module constant, same
@@ -91,7 +94,11 @@ source "$SCRIPT_DIR/lib/board.sh"
 # stream's OTHER writer (emit-issue-touch.sh's `$raw_root/meta/data/raw`) and
 # the reader (telemetry-brief.sh) already resolve — so the one stream no
 # longer tears in half by writer identity, and no phantom `~/dev/foundation/`
-# tree is grown on a host that never cloned foundation. See claim.sh's
+# tree is grown on a host that never cloned foundation. Resolution is
+# DELEGATED to lib/raw_lake.sh's raw_lake_dir() — the single owner of this
+# path (temperloop#1902), sourced above and consumed by BOTH writers of this
+# stream (this script and ../../emit-issue-touch.sh), which used to re-derive
+# it independently. See that library's header and claim.sh's
 # CLAIMS_RAW_DIR_DEFAULT comment for the full rationale (git-toplevel rather
 # than a fixed `../..` hop, because consuming checkouts vendor this script at
 # a different depth; the absolute literal survives only as the
@@ -100,7 +107,7 @@ source "$SCRIPT_DIR/lib/board.sh"
 # canonical sink spec: meta/data/raw/README.md (lake path + schema-version
 # convention; this stream's record shape is documented at
 # issue_touch_log_emit below).
-ISSUE_TOUCHES_RAW_DIR_DEFAULT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null || echo "$HOME/dev/foundation")/meta/data/raw"
+ISSUE_TOUCHES_RAW_DIR_DEFAULT="$(raw_lake_dir)"
 
 # Append one JSONL record of this capture to the append-only issue-touches
 # stream (F#916/#919) — the `kind:"capture"` half of the stream; `pr-open` and

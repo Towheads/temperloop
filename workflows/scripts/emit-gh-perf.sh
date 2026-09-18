@@ -103,7 +103,7 @@ month="$(date -u +%Y-%m)"
 session_id="${CLAUDE_CODE_SESSION_ID:-}"
 host="${SUBSET_HOST_LABEL:-$(hostname -s)}"
 
-# Resolve the raw sink dir exactly as emit-issue-touch.sh does: explicit
+# Resolve the raw sink dir exactly as emit-command-run.sh does: explicit
 # override first, else the repo this script lives in (<repo>/meta/data/raw), so
 # it works from any checkout that vendors this file.
 here="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

@@ -41,6 +41,9 @@ source "$SCRIPT_DIR/lib/claim_marker.sh"
 # shellcheck source=scripts/lib/board.sh
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/lib/board.sh"
+# shellcheck source=scripts/lib/raw_lake.sh
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/lib/raw_lake.sh"
 
 # Module-level state, set by the execute-guard (direct run) or by a sourcing test
 # before it calls claim_main. Defaults match the historical CLI (board 3).
@@ -55,21 +58,23 @@ issue=""
 # old `$HOME/dev/foundation` absolute pin made every non-foundation checkout's
 # reader see zero claims — and grew a phantom `~/dev/foundation/` tree on
 # hosts that never cloned foundation (the stranger-test tail of #1822).
-# Resolution is `git rev-parse --show-toplevel` on SCRIPT_DIR — not a fixed
-# `../..` hop like emit-issue-touch.sh's, because this script is vendored at a
-# DIFFERENT depth in consuming checkouts (workflows/scripts/board/ in the
-# kernel/foundation layout, scripts/ in stageFind's synced copy) and the
-# symlink resolution above already pinned SCRIPT_DIR to the real file, so an
-# installed-on-PATH symlink still resolves its SOURCE checkout's lake. The
-# old absolute literal survives only as the last-resort fallback for a copy
-# of this script living outside any git checkout — the same fallback literal
-# telemetry-brief.sh's own raw_root uses. CLAIMS_RAW_DIR overrides it (tests
-# only). Which checkout's lake a claim lands in therefore follows which
+# Resolution is DELEGATED to lib/raw_lake.sh's raw_lake_dir() — the single
+# owner of this path (temperloop#1902), sourced above. It resolves the git
+# toplevel of the library's own resolved dir rather than a fixed `../..` hop,
+# because the board scripts are vendored at DIFFERENT depths in consuming
+# checkouts (workflows/scripts/board/ in the kernel/foundation layout,
+# scripts/ in stageFind's synced copy) and the symlink resolution above
+# already pinned SCRIPT_DIR — and hence the sourced library — to the real
+# file, so an installed-on-PATH symlink still resolves its SOURCE checkout's
+# lake. The old absolute literal survives only inside raw_lake_dir(), as the
+# last-resort fallback for a copy living outside any git checkout — the same
+# fallback literal telemetry-brief.sh's own raw_root uses. CLAIMS_RAW_DIR
+# overrides it (tests only). Which checkout's lake a claim lands in therefore follows which
 # checkout's claim.sh ran — cross-checkout aggregation, where wanted, is a
 # reader-side union (meta/data/raw/README.md), no longer a writer-side pin.
 # canonical sink spec: meta/data/raw/README.md (lake path + schema-version
 # convention; this stream's record shape is documented at claim_log_emit below).
-CLAIMS_RAW_DIR_DEFAULT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null || echo "$HOME/dev/foundation")/meta/data/raw"
+CLAIMS_RAW_DIR_DEFAULT="$(raw_lake_dir)"
 
 # Append one JSONL record of this claim to the durable session↔issue join key the
 # cost model needs (F#728). The board's Host/Session field is OVERWRITTEN by every

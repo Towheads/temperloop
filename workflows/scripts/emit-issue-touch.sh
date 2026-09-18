@@ -3,7 +3,10 @@
 # emit-issue-touch.sh — append one record to the append-only issue-touches
 # raw-lake stream, recording a `pr-open` or `merge` work-touch on an issue
 # (foundation #916/#919, epic #916 "issue-touch-stream"). Sibling to
-# emit-command-run.sh: same structure, arg style, and lake-dir resolution.
+# emit-command-run.sh: same structure and arg style. Its lake dir, unlike that
+# sibling's, is NOT re-derived here — it comes from board/lib/raw_lake.sh, the
+# single owner this stream's other writer (board/capture.sh) consumes too
+# (temperloop#1902).
 #
 # WHY THIS EXISTS: build.md's Step 3f (PR opened) and Step 4d (PR confirmed
 # MERGED) are the only places those two touches happen for a plan item — but,
@@ -27,7 +30,10 @@
 #   emit-issue-touch.sh --repo <owner/repo> --issue <N> --kind pr-open|merge
 #
 # Appends ONE JSONL line to:
-#   ${ISSUE_TOUCHES_RAW_DIR:-<repo>/meta/data/raw}/issue-touches-YYYY-MM.jsonl
+#   ${ISSUE_TOUCHES_RAW_DIR:-$(raw_lake_dir)}/issue-touches-YYYY-MM.jsonl
+# where raw_lake_dir() is board/lib/raw_lake.sh's shared resolver — the single
+# owner of the lake dir, shared with this stream's other writer, capture.sh
+# (temperloop#1902) — resolving to <that checkout>/meta/data/raw
 # (monthly rotation, matching the claims-YYYY-MM.jsonl / command-runs-YYYY-MM
 # convention already used in meta/data/raw/).
 #
@@ -116,14 +122,33 @@ month="$(date -u +%Y-%m)"
 session_id="${CLAUDE_CODE_SESSION_ID:-}"
 host="${SUBSET_HOST_LABEL:-$(hostname -s)}"
 
-# Resolve the raw sink dir the same way emit-command-run.sh resolves
-# CMD_RUN_RAW_DIR: an explicit override env var first, else the repo this
-# script lives in (workflows/scripts/../../meta/data/raw), so it works from
-# any checkout that vendors this file, not just a hardcoded $HOME/dev/foundation
-# path.
-here="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-raw_root="$(cd -P "$here/../.." 2>/dev/null && pwd || echo "$HOME/dev/foundation")"
-raw_dir="${ISSUE_TOUCHES_RAW_DIR:-$raw_root/meta/data/raw}"
+# Resolve the raw sink dir: an explicit override env var first, else the
+# SINGLE OWNER of that path, board/lib/raw_lake.sh's raw_lake_dir()
+# (temperloop#1902). This script used to re-derive the directory itself with a
+# fixed `../..` hop while THIS SAME STREAM's other writer (board/capture.sh's
+# ISSUE_TOUCHES_RAW_DIR_DEFAULT) derived it from its own git toplevel — two
+# derivations of one path, which is one path that can tear. Both writers now
+# consume the one resolver, so the stream cannot split by writer identity and
+# a future fix lands in one place.
+#
+# Symlinks are resolved first (same portable loop board/claim.sh uses, no GNU
+# `readlink -f`) so an installed-on-PATH symlink still finds its SOURCE
+# checkout's library — and, through it, that checkout's own lake.
+here="${BASH_SOURCE[0]}"
+while [ -L "$here" ]; do
+  _d="$(cd -P "$(dirname "$here")" && pwd)"; here="$(readlink "$here")"
+  case "$here" in /*) ;; *) here="$_d/$here" ;; esac
+done
+here="$(cd -P "$(dirname "$here")" && pwd)"
+if [ ! -r "$here/board/lib/raw_lake.sh" ]; then
+  printf '%s: WARN raw-lake resolver not found at %s — no record emitted (repo=%s issue=%s kind=%s)\n' \
+    "$self" "$here/board/lib/raw_lake.sh" "$repo" "$issue" "$kind" >&2
+  exit 0
+fi
+# shellcheck source=board/lib/raw_lake.sh
+# shellcheck disable=SC1091
+source "$here/board/lib/raw_lake.sh"
+raw_dir="${ISSUE_TOUCHES_RAW_DIR:-$(raw_lake_dir)}"
 raw_file="$raw_dir/issue-touches-${month}.jsonl"
 
 mkdir -p "$raw_dir" 2>/dev/null || true
