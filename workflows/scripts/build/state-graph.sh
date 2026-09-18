@@ -802,7 +802,26 @@ _sg_read_pr_list() {
   # `[ -z "$count" ]` reports the honest `error`. Deliberate consequence: a
   # `null` payload now reports `error` rather than `absent` — `null` is not a
   # legitimately empty PR list.
-  count="$(printf '%s' "$raw" | jq -s 'if (length == 1 and (.[0]|type) == "array") then (.[0]|length) else empty end' 2>/dev/null)" || count=""
+  #
+  # The `all(...)` ELEMENT clause (temperloop#2001) closes the last `ok`-over-
+  # an-unprojectable-payload class the arity/type clauses above leave open. A
+  # genuine single top-level array is admitted by those clauses, and the node
+  # transform then indexes `.number` on each element — but `.number` does NOT
+  # error on `null` or on an object with no `number` key (only strings,
+  # numbers, booleans and arrays error), and `null | tostring` is the STRING
+  # "null". So `[null]` and `[{"a":1}]` projected cleanly into a FABRICATED
+  # `{"id":"PR:null","number":null}` node reported `ok`, and `_sg_query_
+  # unlinked_prs` then emitted that fabrication as a confident finding — the
+  # same wrong-answer family as the wrong-empty above, except it invents data
+  # rather than under-reporting it. Requiring every element to be an object
+  # with a NUMERIC `number` rejects all of it. Two properties this relies on:
+  # jq's `and` SHORT-CIRCUITS, so `.number` is never indexed on a string
+  # element (which would make jq exit 5 rather than yield `empty`); and `all`
+  # over `[]` is `true`, so a genuinely empty PR list still counts 0 and still
+  # reports `absent`. A MIXED array (`[{"number":1},{"number":"x"}]`) fails the
+  # clause as a whole — the source is reported `error`, never partially
+  # projected, because a page we could only half-read is not a page we read.
+  count="$(printf '%s' "$raw" | jq -s 'if (length == 1 and (.[0]|type) == "array" and (.[0]|all(type == "object" and (.number|type) == "number"))) then (.[0]|length) else empty end' 2>/dev/null)" || count=""
   if [ -z "$count" ]; then
     _sg_source_result error '[]' '[]' "unparseable gh pr list output"
     return 0
@@ -811,10 +830,19 @@ _sg_read_pr_list() {
     _sg_source_result absent '[]' '[]' ""
     return 0
   fi
-  # These arms are NOT unreachable-on-failure: they are the honest-error path
-  # for a payload that parses as a single top-level array (so the `count` guard
-  # above admits it, legitimately) but whose ELEMENTS are not PR objects —
-  # `["a","b"]` is the worked case. They therefore report `error`, NOT the
+  # The EDGE arm is NOT unreachable-on-failure: it is the honest-error path for
+  # a payload that parses as a single top-level array of `number`-bearing
+  # objects (so the `count` guard above admits it, legitimately) but whose
+  # other fields are not PR-shaped — `[{"number":1,"title":"t","body":5}]` is
+  # the worked case, where `5 | split("\n")` makes jq exit 5. (Before the
+  # element clause above, `["a","b"]` was that worked case; the tightened guard
+  # now rejects it upstream, so the fixture moved with the boundary.) The NODE
+  # arm is belt-and-suspenders only from temperloop#2001 on: no payload the
+  # element clause admits can fail that transform, since `.number` is known to
+  # be a number (so `tostring` is total) and `.title // ""` cannot error. It
+  # stays because the guard and the transform are separate edits, and an arm
+  # that is only currently unreachable is cheaper to keep than to re-derive.
+  # Both report `error`, NOT the
   # belt-and-suspenders `|| extra='[]'` default the closed-residue block uses
   # (~:583-593). That default is right THERE because `extra` is supplementary
   # data, where an empty fallback loses only a little context. Here `nodes` IS
