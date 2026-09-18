@@ -63,6 +63,24 @@
 # ── ALL — paths whose blast radius is the gate machinery itself ─────────────
 # A change to any of these can alter which gates exist, what they run, or how
 # the tree is classified, so no narrower selection can be trusted.
+#
+# ONE CONTENT-CHECKED EXCEPTION (temperloop#1933), implemented in
+# gate-selection.sh and NOT expressible in this file's path-only grammar:
+# `scripts/quality-gates.sh` stops escalating when its diff REMOVES nothing and
+# ADDS only gate-registration lines (`<NAME>_GATES+=("<literal>")`, with comments
+# and blanks allowed alongside). Registering a gate ADDS one; it cannot change
+# what an existing gate runs or how the tree is classified, which is the only
+# reason this path is on the ALL row at all. The selector then skips the ALL row
+# FOR THAT PATH ONLY, lets the rows below that name `scripts/quality-gates.sh`
+# select the validators a registration must satisfy (the check-surface
+# degenerate-coverage pair, the exec-bit pair, test_check_gate_paths.sh — plus
+# the ALWAYS floor, which already carries check-gate-paths.sh,
+# check-setting-registry.sh, validate-feature-docs.sh and the kernel manifest),
+# and additionally selects the newly registered gate BY NAME so it runs on the
+# very PR that adds it. Any other edit to that file — a removed line, a
+# non-registration addition, a diff the probe cannot read — escalates exactly as
+# before. Removing `scripts/quality-gates.sh` from those rows below would
+# silently re-narrow this exception, so do not: it is load-bearing here.
 ALL	scripts/quality-gates.sh scripts/quality-gates.d/** workflows/scripts/lib/gate-selection.sh workflows/scripts/lib/gate-retry.sh workflows/scripts/lib/gate-pool.sh workflows/scripts/lib/checkout-freshness.sh workflows/scripts/config/gate-paths.tsv workflows/scripts/config/check-gate-paths.sh Makefile .github/workflows/** workflows/scripts/kernel/kernel-manifest.txt workflows/scripts/kernel/list-kernel-set.sh .gitignore .gitattributes
 
 # ── none — recognised paths that no gate reads ──────────────────────────────
@@ -266,7 +284,7 @@ bash workflows/scripts/tests/test_validate_provider_disclosure.sh	workflows/scri
 # twin alongside the `**/` form per this file's header note above — never
 # remove them without re-reading temperloop#1931.
 bash workflows/scripts/validate-check-surface-degenerate-coverage.sh	workflows/scripts/validate-check-surface-degenerate-coverage.sh workflows/scripts/config/check-surface-registry.tsv workflows/scripts/config/check-surface-degenerate-allowlist.tsv workflows/scripts/config/check-surface-discovery.tsv workflows/scripts/lib/cannot-evaluate.sh workflows/scripts/validate-provider-disclosure.sh workflows/scripts/tests/test_validate_provider_disclosure.sh workflows/scripts/validate-model-usage-emit.sh workflows/scripts/tests/test_model_usage_emit.sh workflows/scripts/model-comparison/replay.sh workflows/scripts/model-comparison/tests/test_replay_isolation.sh scripts/quality-gates.sh workflows/scripts/**/check-*.sh workflows/scripts/check-*.sh workflows/scripts/**/validate-*.sh workflows/scripts/validate-*.sh workflows/scripts/**/tests/test_*.sh workflows/scripts/tests/test_*.sh scripts/tests/test_*.sh
-bash workflows/scripts/tests/test_check_surface_degenerate_coverage.sh	workflows/scripts/tests/test_check_surface_degenerate_coverage.sh workflows/scripts/validate-check-surface-degenerate-coverage.sh workflows/scripts/config/check-surface-registry.tsv workflows/scripts/config/check-surface-degenerate-allowlist.tsv workflows/scripts/config/check-surface-discovery.tsv workflows/scripts/**/check-*.sh workflows/scripts/check-*.sh workflows/scripts/**/validate-*.sh workflows/scripts/validate-*.sh workflows/scripts/**/tests/test_*.sh workflows/scripts/tests/test_*.sh scripts/tests/test_*.sh
+bash workflows/scripts/tests/test_check_surface_degenerate_coverage.sh	workflows/scripts/tests/test_check_surface_degenerate_coverage.sh workflows/scripts/validate-check-surface-degenerate-coverage.sh workflows/scripts/config/check-surface-registry.tsv workflows/scripts/config/check-surface-degenerate-allowlist.tsv workflows/scripts/config/check-surface-discovery.tsv workflows/scripts/**/check-*.sh workflows/scripts/check-*.sh workflows/scripts/**/validate-*.sh workflows/scripts/validate-*.sh workflows/scripts/**/tests/test_*.sh workflows/scripts/tests/test_*.sh scripts/tests/test_*.sh scripts/quality-gates.sh
 # The bulk degenerate-input fixture suite (temperloop#1491) drives 17 real
 # check surfaces, so it must re-run whenever any of them changes — hence the
 # broad globs rather than a per-surface list that would drift the moment a
@@ -288,8 +306,8 @@ bash workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	workflows
 # per this file's header note) are added here too
 # (temperloop#1931) — a brand-new check-*.sh/validate-*.sh/test_*.sh is
 # exactly as likely to need an exec-bit-registry row as a check-surface one.
-bash workflows/scripts/validate-exec-bit-registry.sh	workflows/scripts/validate-exec-bit-registry.sh workflows/scripts/config/exec-bit-registry.tsv workflows/scripts/config/exec-bit-grandfather-allowlist.tsv workflows/scripts/lib/cannot-evaluate.sh workflows/scripts/validate-*.sh workflows/scripts/**/check-*.sh workflows/scripts/check-*.sh workflows/scripts/**/validate-*.sh workflows/scripts/**/tests/test_*.sh workflows/scripts/tests/test_*.sh scripts/tests/test_*.sh
-bash workflows/scripts/tests/test_exec_bit_registry.sh	workflows/scripts/tests/test_exec_bit_registry.sh workflows/scripts/validate-exec-bit-registry.sh workflows/scripts/config/exec-bit-registry.tsv workflows/scripts/config/exec-bit-grandfather-allowlist.tsv workflows/scripts/lib/cannot-evaluate.sh workflows/scripts/**/check-*.sh workflows/scripts/check-*.sh workflows/scripts/**/validate-*.sh workflows/scripts/validate-*.sh workflows/scripts/**/tests/test_*.sh workflows/scripts/tests/test_*.sh scripts/tests/test_*.sh
+bash workflows/scripts/validate-exec-bit-registry.sh	workflows/scripts/validate-exec-bit-registry.sh workflows/scripts/config/exec-bit-registry.tsv workflows/scripts/config/exec-bit-grandfather-allowlist.tsv workflows/scripts/lib/cannot-evaluate.sh workflows/scripts/validate-*.sh workflows/scripts/**/check-*.sh workflows/scripts/check-*.sh workflows/scripts/**/validate-*.sh workflows/scripts/**/tests/test_*.sh workflows/scripts/tests/test_*.sh scripts/tests/test_*.sh scripts/quality-gates.sh
+bash workflows/scripts/tests/test_exec_bit_registry.sh	workflows/scripts/tests/test_exec_bit_registry.sh workflows/scripts/validate-exec-bit-registry.sh workflows/scripts/config/exec-bit-registry.tsv workflows/scripts/config/exec-bit-grandfather-allowlist.tsv workflows/scripts/lib/cannot-evaluate.sh workflows/scripts/**/check-*.sh workflows/scripts/check-*.sh workflows/scripts/**/validate-*.sh workflows/scripts/validate-*.sh workflows/scripts/**/tests/test_*.sh workflows/scripts/tests/test_*.sh scripts/tests/test_*.sh scripts/quality-gates.sh
 bash workflows/scripts/validate-mandatory-step-signal.sh	workflows/scripts/validate-mandatory-step-signal.sh workflows/scripts/config/mandatory-step-registry.tsv workflows/scripts/config/mandatory-step-discovery.tsv workflows/scripts/lib/cannot-evaluate.sh claude/commands/*.md scripts/quality-gates.sh
 bash workflows/scripts/tests/test_validate_mandatory_step_signal.sh	workflows/scripts/tests/test_validate_mandatory_step_signal.sh workflows/scripts/validate-mandatory-step-signal.sh workflows/scripts/config/mandatory-step-registry.tsv workflows/scripts/config/mandatory-step-discovery.tsv workflows/scripts/lib/cannot-evaluate.sh
 
@@ -342,7 +360,7 @@ bash workflows/scripts/tests/test_validate_design_brief.sh	workflows/scripts/val
 # anchor set is small and enumerable (the opposite of a whole-tree scanner).
 bash workflows/scripts/validate-onramp-anchors.sh	workflows/scripts/config/onramp-anchors.tsv workflows/scripts/validate-onramp-anchors.sh bin/temperloop README.md bin/README.md docs/features/install-cli.md
 bash workflows/scripts/tests/test_validate_onramp_anchors.sh	workflows/scripts/validate-onramp-anchors.sh workflows/scripts/tests/test_validate_onramp_anchors.sh workflows/scripts/config/onramp-anchors.tsv
-bash workflows/scripts/config/tests/test_check_gate_paths.sh	workflows/scripts/config/**
+bash workflows/scripts/config/tests/test_check_gate_paths.sh	workflows/scripts/config/** scripts/quality-gates.sh
 
 # ── Knowledge store / search ────────────────────────────────────────────────
 bash workflows/scripts/lib/tests/test_knowledge_search_zsh_path_tie.sh	workflows/scripts/lib/knowledge_* workflows/scripts/lib/tests/test_knowledge_search_zsh_path_tie.sh

@@ -361,6 +361,25 @@ coverage:
 - A gate the map does not mention runs unconditionally, so a stale map
   over-runs rather than under-runs.
 
+The third of those has exactly one exception, and it is decided by reading the
+diff rather than the path. Registering a new gate means adding a line to the
+gate script, and the gate script is on that escalation list — so adding a single
+line to register one gate ran all hundred-odd suites. But a registration *adds* a
+gate; it cannot change what an existing gate runs, nor how the tree is
+classified, which is the only reason the gate script is listed there. So when the
+diff to that file removes nothing and its additions are exclusively registration
+lines (comments and blank lines may ride along), the escalation is declined *for
+that one path* and the run instead takes the validators a registration has to
+satisfy — the map's own completeness check and its test, the check-surface and
+executable-bit registry pairs, the setting registry, the feature-docs check and
+the tree-classification manifest — plus the newly registered gate itself, by
+name, so a new gate runs on the pull request that adds it. Every other edit to
+that file escalates as before, and so does a diff the probe cannot read: an
+unreadable diff is not evidence that nothing was removed. The exception fails
+closed in every direction, and the run's reason line says when it was taken,
+because a scoped run that quietly declined an escalation would be
+indistinguishable from one whose diff never touched the gate machinery.
+
 The map ships with its own gate. It fails the build if any gate lacks a row, if
 a row names a gate that no longer exists, if a literal path in a row is not in
 the tree, or — the one that matters most — if a row's globs match *nothing*,
