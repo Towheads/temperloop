@@ -185,14 +185,23 @@
 #               (both orders independently see no preference) — a resolved
 #               tie is a real, honestly-computed verdict, not a degradation.
 #       Exit 1  CANNOT_EVALUATE — malformed/absent/unreadable input (either
-#               record file, the rubric file), or either record carries no
-#               `.candidate.model`.
+#               record file, the rubric file), either record carries no
+#               `.candidate.model`, or the two records are not for the SAME
+#               item (a mismatched `issue`/`pr` ref, or matching ref but
+#               drifted `title`/`scope`/`acceptance`) — pairwise refuses
+#               rather than comparing on inputs that would make the two
+#               position orders differ in more than candidate position.
 #       Exit 2  REFUSED — the judge equals EITHER arm's provider+model. No
 #               call was ever made.
 #       Exit 4  UNAVAILABLE — at least one of the two position-order calls
 #               could not be judged (spawn/parse/schema failure) — the SAME
 #               named-degradation vocabulary `judge`'s own UNAVAILABLE path
 #               uses, never a fabricated preference standing in.
+#       Exit 5  the comparison itself completed (COMPARED or UNAVAILABLE,
+#               printed to stdout) but `--out <file>` could not be written —
+#               distinct from 0/4 so a caller relying on the file (a
+#               dual-build driver's pick) never mistakes a printed-but-not-
+#               persisted verdict for a persisted one.
 #
 # ── OPTIONAL CROSS-FAMILY JUDGE ROTATION (temperloop#1260) ─────────────────
 # `judge-rotate` scores ONE record with SEVERAL judges (provider:model pairs
@@ -444,6 +453,7 @@ need_operand() {  # <flag> <remaining-arg-count> [<next-arg>]
   [ "$2" -ge 2 ] || { printf 'judge.sh: %s requires a value\n' "$1" >&2; return 2; }
   case "${3:-}" in
     --*) printf 'judge.sh: %s requires a value, got flag-like %s\n' "$1" "$3" >&2; return 2 ;;
+    "") printf 'judge.sh: %s requires a non-empty value, got an empty string\n' "$1" >&2; return 2 ;;
     *) return 0 ;;
   esac
 }
@@ -1416,6 +1426,39 @@ _je_pairwise_validate_record() {
   return 0
 }
 
+# _je_pairwise_same_item_ok <record-a-file> <record-b-file> -> 0 if the two
+# records are for the SAME item, 1 (CANNOT_EVALUATE, already emitted) if
+# not. A pre-spend, order-independent precondition (like the per-arm
+# .candidate.model checks it runs alongside): _je_build_pairwise_prompt
+# reads its item block (item/title/scope/acceptance) from record-1-for-that-
+# order ONLY, and the header's "the SAME prompt content is sent TWICE, in
+# both position orders" claim is true only when both records describe the
+# same item. Checks the outcome-ref (issue/pr) first — the identity of the
+# item — then the title/scope/acceptance triple, so drift in either still
+# refuses even when the two records happen to share a ref (a re-scoped item,
+# a stale replay leg): the two orders must differ ONLY in candidate
+# position, never in what was asked.
+_je_pairwise_same_item_ok() {
+  local a="$1" b="$2" a_ref b_ref a_title b_title a_scope b_scope a_accept b_accept
+  a_ref="$(_je_outcome_ref "$(jq -c . "$a")")"
+  b_ref="$(_je_outcome_ref "$(jq -c . "$b")")"
+  if [ "$a_ref" != "$b_ref" ]; then
+    _je_cannot_evaluate "pairwise item mismatch — --record-a is for $a_ref but --record-b is for $b_ref; pairwise compares two candidates for the SAME item only, never two different items"
+    return 1
+  fi
+  a_title="$(jq -r '.title // ""' "$a" 2>/dev/null)"
+  b_title="$(jq -r '.title // ""' "$b" 2>/dev/null)"
+  a_scope="$(jq -r '.scope // ""' "$a" 2>/dev/null)"
+  b_scope="$(jq -r '.scope // ""' "$b" 2>/dev/null)"
+  a_accept="$(jq -cS '(.acceptance // [])' "$a" 2>/dev/null)"
+  b_accept="$(jq -cS '(.acceptance // [])' "$b" 2>/dev/null)"
+  if [ "$a_title" != "$b_title" ] || [ "$a_scope" != "$b_scope" ] || [ "$a_accept" != "$b_accept" ]; then
+    _je_cannot_evaluate "pairwise item metadata mismatch for $a_ref — --record-a and --record-b disagree on title/scope/acceptance; the two position orders would no longer isolate position bias, so refusing rather than comparing on drifted inputs"
+    return 1
+  fi
+  return 0
+}
+
 # _je_build_pairwise_prompt <record-1st-file> <record-2nd-file> <rubric-file>
 #                            <prompt-file>
 # Builds ONE comparative prompt: the rubric checklist (reused verbatim, plain
@@ -1462,12 +1505,18 @@ _je_build_pairwise_prompt() {
 
 # _je_pairwise_response_schema_ok <json-object> -> 0 if it matches the
 # {preference in {"1","2","tie"}, margin: 0-100} pairwise output contract.
+# A "tie" preference requires margin==0 (the prompt itself instructs
+# "report 0 for a 'tie' preference") — an off-contract tie+nonzero-margin
+# reply fails HERE, closed, rather than being combined into a fabricated
+# confidence figure attached to a verdict that by definition has no
+# direction (see combine step in cmd_pairwise).
 _je_pairwise_response_schema_ok() {
   jq -e '
     type=="object"
     and has("preference") and ((.preference|type)=="string")
     and (.preference=="1" or .preference=="2" or .preference=="tie")
     and has("margin") and ((.margin|type)=="number") and (.margin>=0) and (.margin<=100)
+    and (if .preference=="tie" then .margin==0 else true end)
   ' >/dev/null 2>&1
 }
 
@@ -1659,6 +1708,10 @@ cmd_pairwise() {
     return 1
   fi
 
+  # ── same-item precondition — pre-spend, order-independent, resolved
+  #    before either order is ever built (see _je_pairwise_same_item_ok). ──
+  _je_pairwise_same_item_ok "$record_a" "$record_b" || return 1
+
   local item_ref
   item_ref="$(_je_outcome_ref "$(jq -c . "$record_a")")"
 
@@ -1782,7 +1835,14 @@ cmd_pairwise() {
       end
     ')"
   printf '%s\n' "$final_out"
-  if [ -n "$out" ]; then printf '%s\n' "$final_out" >"$out" 2>/dev/null || true; fi
+  # A dual-build driver's --out FILE is the artifact its pick reads, so a
+  # write failure here (unwritable path, missing parent dir, full disk) is
+  # surfaced rather than swallowed — the caller would otherwise believe a
+  # two-live-call comparison was persisted when it was not.
+  if [ -n "$out" ] && ! printf '%s\n' "$final_out" >"$out"; then
+    printf 'judge.sh: pairwise: failed to write --out file %s — the verdict above was printed to stdout but NOT persisted\n' "$out" >&2
+    return 5
+  fi
 
   [ "$(jq -r '.outcome' <<<"$final_out")" = "COMPARED" ] && return 0
   return 4

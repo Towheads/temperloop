@@ -106,6 +106,33 @@ mk_record() {
 RECORD_A="$WORK/record-a.json"; mk_record "$RECORD_A" "claude-sonnet-5"
 RECORD_B="$WORK/record-b.json"; mk_record "$RECORD_B" "claude-haiku-5"
 
+# mk_record_other_item <file> <candidate-model> — a record for a DIFFERENT
+# item (different issue ref) than RECORD_A/RECORD_B, for the same-item
+# precondition tests below (Section F9).
+mk_record_other_item() {
+  local file="$1" cmodel="$2"
+  jq -cn --arg cm "$cmodel" \
+    '{schema_version:"replay-record-v1", pr:998, issue:"#9999",
+      title:"Fix a DIFFERENT thing", scope:"a different scope",
+      acceptance:["A different named path is fixed."],
+      candidate:{provider:"anthropic", model:$cm, diff_ref:"beefdead"},
+      score:{verdict:"pass", diff:{n:{total:1,changed:1}}, gate_result:{passed:true}}}' >"$file"
+}
+
+# mk_record_drifted_metadata <file> <candidate-model> — the SAME item ref
+# ("#4242") as RECORD_A/RECORD_B but a drifted title (a re-scoped item or a
+# stale replay leg), for the same-item precondition's stronger check
+# (Section F10).
+mk_record_drifted_metadata() {
+  local file="$1" cmodel="$2"
+  jq -cn --arg cm "$cmodel" \
+    '{schema_version:"replay-record-v1", pr:999, issue:"#4242",
+      title:"Fix the thing (RESCOPED)", scope:"the scope",
+      acceptance:["A named path is fixed."],
+      candidate:{provider:"anthropic", model:$cm, diff_ref:"deadbeef"},
+      score:{verdict:"pass", diff:{n:{total:1,changed:1}}, gate_result:{passed:true}}}' >"$file"
+}
+
 # ── the RECORDED judge runner. Invoked as `<cmd> <prompt-file>`. Each call's
 #    PREFERENCE/MARGIN is picked by call ORDER (via a counter file), so a
 #    two-call pairwise comparison can be driven to a deterministic
@@ -169,6 +196,20 @@ ALLOW="$WORK/allow.txt"
 NOLOCAL="$WORK/no-such-local-override.txt"
 printf 'anthropic\nopenai\n' >"$ALLOW"
 mkdir -p "$LAKE"
+
+# Exported (not just passed via run_pairwise's own `env ...`) so Section F's
+# fail-closed cases — which invoke judge.sh directly via run_with_timeout,
+# not through run_pairwise — inherit the SAME lake/allowlist pins too. Every
+# F-case today returns before reaching the emit/disclosure paths that read
+# these, so this changes no observed behavior; it makes "no writes outside
+# $TMPDIR" (this file's own header claim) true by construction rather than
+# by accident of control flow, so a later change that moves a refusal past
+# the emit site fails a test here instead of writing into the real
+# attribution lake / reading the real committed allowlist.
+export MODEL_USAGE_RAW_DIR="$LAKE"
+export PROVIDER_ALLOWLIST_TEST_SEAM=1
+export PROVIDER_ALLOWLIST_COMMITTED_FILE="$ALLOW"
+export PROVIDER_ALLOWLIST_LOCAL_FILE="$NOLOCAL"
 
 # run_pairwise <positions> <margins> <fail-at-or-empty> <judge.sh args...>
 run_pairwise() {
@@ -264,6 +305,20 @@ rc=$?
 [ "$(jq -r .preference <<<"$out")" = "tie" ] || fail "C1: expected preference tie, got: $out"
 [ "$(jq -r .order_agreement <<<"$out")" = "true" ] || fail "C1: expected order_agreement true (BOTH orders independently said tie), got: $out"
 ok "C1 both orders independently answering 'tie' resolves to preference:tie, order_agreement:true — a genuine verdict, distinct from D's position-sensitive tie below"
+
+count
+out="$(run_pairwise "tie,tie" "70,0" "" \
+  pairwise --record-a "$RECORD_A" --record-b "$RECORD_B" \
+    --model claude-opus-4-8 --provider anthropic --judge-runner "bash $JSTUB")"
+rc=$?
+[ "$rc" -eq 4 ] || fail "C2: a 'tie' reply carrying a non-zero margin is OFF-CONTRACT and must UNAVAILABLE the order (exit 4), got $rc: $out"
+[ "$(jq -r .outcome <<<"$out")" = "UNAVAILABLE" ] || fail "C2: expected outcome UNAVAILABLE, got: $out"
+[ "$(jq -r .preference <<<"$out")" = "null" ] || fail "C2: expected preference null — never a fabricated 'tie' verdict carrying a non-zero averaged margin, got: $out"
+case "$(jq -r '.orders[0].degradation_notice' <<<"$out")" in
+  response-schema-invalid:*) ;;
+  *) fail "C2: expected the off-contract order's degradation_notice to be NAMED (response-schema-invalid:...), got: $out" ;;
+esac
+ok "C2 a 'tie' reply with a non-zero margin (violates the prompt's own 'report 0 for a tie' contract) is rejected by the response-schema check and UNAVAILABLEs that order — never combined into a tie verdict carrying a fabricated non-zero confidence figure"
 
 # ═══════════════════════════════════════════════════════════════════════════
 # SECTION D — orders DISAGREE: pure position bias
@@ -372,6 +427,44 @@ rc=$?
 [ "$rc" -eq 2 ] || fail "F8: a trailing --record-a with no value must fail fast (rc 2), got $rc: $out"
 [ "$rc" -ne 137 ] || fail "F8: a trailing --record-a with no value HUNG instead of failing fast"
 ok "F8 a trailing --record-a with no value fails fast under a bounded timeout"
+
+count
+DIFF_ITEM="$WORK/record-diff-item.json"; mk_record_other_item "$DIFF_ITEM" "claude-haiku-5"
+out="$(run_with_timeout 5 bash "$JUDGE" pairwise --record-a "$RECORD_A" --record-b "$DIFF_ITEM" \
+  --model claude-opus-4-8 --provider anthropic --judge-runner "bash $JSTUB" 2>&1)"
+rc=$?
+[ "$rc" -eq 1 ] || fail "F9: --record-a/--record-b for DIFFERENT items must CANNOT_EVALUATE, got $rc: $out"
+case "$out" in *"pairwise item mismatch"*) ;; *) fail "F9: expected the refusal to name the item mismatch, got: $out" ;; esac
+ok "F9 --record-a and --record-b referring to DIFFERENT items (mismatched issue refs) CANNOT_EVALUATEs rather than comparing across items"
+
+count
+COUNT_F9B="$WORK/count-f9b"
+env JSTUB_COUNT_FILE="$COUNT_F9B" bash "$JUDGE" pairwise --record-a "$RECORD_A" --record-b "$DIFF_ITEM" \
+  --model claude-opus-4-8 --provider anthropic --judge-runner "bash $JSTUB" >/dev/null 2>&1
+[ "$(cat "$COUNT_F9B" 2>/dev/null || echo 0)" = "0" ] || fail "F9b: the item-mismatch refusal must spend NO judge call"
+[ ! -e "$CANARY" ] || fail "F9b: the item-mismatch refusal reached a 'claude' binary: $(cat "$CANARY")"
+ok "F9b an item-mismatch refusal spends zero judge calls, checked BEFORE either position order is built"
+
+count
+DRIFT_ITEM="$WORK/record-drift.json"; mk_record_drifted_metadata "$DRIFT_ITEM" "claude-haiku-5"
+out="$(run_with_timeout 5 bash "$JUDGE" pairwise --record-a "$RECORD_A" --record-b "$DRIFT_ITEM" \
+  --model claude-opus-4-8 --provider anthropic --judge-runner "bash $JSTUB" 2>&1)"
+rc=$?
+[ "$rc" -eq 1 ] || fail "F10: records sharing the same item ref but drifted title/scope/acceptance must CANNOT_EVALUATE, got $rc: $out"
+case "$out" in *"pairwise item metadata mismatch"*) ;; *) fail "F10: expected the refusal to name the metadata mismatch, got: $out" ;; esac
+ok "F10 --record-a and --record-b sharing the same item ref but with drifted title/scope/acceptance CANNOT_EVALUATEs — the two position orders would otherwise differ in more than candidate position"
+
+count
+UNWRITABLE_OUT="$WORK/no-such-dir/out.json"
+out="$(run_pairwise "1,2" "60,80" "" \
+  pairwise --record-a "$RECORD_A" --record-b "$RECORD_B" --out "$UNWRITABLE_OUT" \
+    --model claude-opus-4-8 --provider anthropic --judge-runner "bash $JSTUB" 2>&1)"
+rc=$?
+[ "$rc" -eq 5 ] || fail "F11: an unwritable --out path must return exit 5, got $rc: $out"
+case "$out" in *"failed to write --out file"*) ;; *) fail "F11: expected the refusal to name the --out write failure, got: $out" ;; esac
+case "$out" in *'"outcome":"COMPARED"'*) ;; *) fail "F11: expected the verdict to still be printed to stdout despite the write failure, got: $out" ;; esac
+[ ! -e "$UNWRITABLE_OUT" ] || fail "F11: the unwritable path unexpectedly got created"
+ok "F11 an unwritable --out path surfaces a NAMED failure (exit 5) rather than silently swallowing it — the verdict is still printed to stdout"
 
 # ═══════════════════════════════════════════════════════════════════════════
 # SECTION G — the suite-wide no-live-call canary verdict
