@@ -37,11 +37,17 @@
 #      honored, and garbage degrades to 1 (serial) rather than to a guess
 #  10. WIRING: quality-gates.sh really sources this lib, drives it, keeps a
 #      serial fallback, and keeps CI on a single non-matrix job
-#  11. UNCHANGED EXECUTION ENVIRONMENT: a gate still sees the DEFAULT SIGINT
-#      disposition, so a suite that asserts on signal death gets the same
-#      answer it did under the serial loop — the CI regression that made
+#  11. UNCHANGED EXECUTION ENVIRONMENT: the pool does not change the SIGINT
+#      disposition a gate sees, measured DIFFERENTIALLY against a serial
+#      baseline this suite takes for itself — the CI regression that made
 #      test_gh_call_logger.sh's "Ctrl-C -> 130" case observe 0 — and the pool
-#      leaves the caller's own `set -m` state untouched
+#      leaves the caller's own `set -m` state untouched. When the invoker left
+#      the disposition alone the absolute "130, not 0" form still runs;
+#      otherwise it reports itself as a SKIP (temperloop#2094)
+#  11b. and the FIXTURE for 11's resolution: the same fixture run under BOTH a
+#      default invocation and an ancestor-hard-ignored one, pinning that this
+#      suite's verdict is a property of the POOL and never of how the suite
+#      itself was launched
 #
 # Usage: scripts/tests/test_quality_gates_parallel.sh
 
@@ -108,11 +114,16 @@ tw() {
       local sigcode=0
       "$WORK/selfint.sh" || sigcode=$?
       printf '%s\n' "$sigcode" >"$WORK/sigcode"
-      if [ "$sigcode" -eq 130 ]; then
+      # Compared against the SERIAL baseline this suite measured for ITSELF
+      # (SIG_BASELINE, § 11) rather than a literal 130 — see that section for
+      # why an absolute expectation here is an assertion about the INVOKER,
+      # not about the pool (temperloop#2094).
+      if [ "$sigcode" -eq "${SIG_BASELINE:-130}" ]; then
         printf 'pass\t1\t\n' >"$GATE_POOL_META"
         return 0
       fi
-      printf 'fail\t1\tSIGINT observed as %s\n' "$sigcode" >"$GATE_POOL_META"
+      printf 'fail\t1\tSIGINT observed as %s (serial baseline %s)\n' \
+        "$sigcode" "${SIG_BASELINE:-130}" >"$GATE_POOL_META"
       return 1
       ;;
   esac
@@ -395,21 +406,136 @@ fi
 #     `make test-conventions-probe` gate in CI deterministically.
 #
 #     This case is a SEMANTICS assertion, not a signal-handling curiosity: it
-#     pins that a gate runs with the default disposition, exactly as it did
-#     under the serial loop.
+#     pins that a gate runs with the same disposition it did under the serial
+#     loop.
+#
+#     DIFFERENTIAL, not absolute (temperloop#2094). The contract this defends
+#     is "the POOL does not change what a gate observes" — a statement about
+#     the delta between the serial shape and the pooled shape. The earlier
+#     absolute form (`expect exactly 130`) silently asserted something else as
+#     well: that the INVOKER handed this suite a DEFAULT SIGINT disposition.
+#     It cannot, because SIG_IGN arrives from ABOVE. Launch the suite itself as
+#     an asynchronous child of a job-control-off shell — `( … ) &`, `nohup`, an
+#     agent harness's background Bash, any `trap '' INT` ancestor — and bash
+#     hard-ignores SIGINT for this process and EVERY descendant, `set -m`
+#     inside the pool included (a hard-ignore cannot be reset from inside the
+#     process that inherited it). Both the serial and the pooled leg then
+#     observe 0, the pool has changed nothing, and the absolute form still went
+#     red — turning the whole 199-gate suite red for a property of its
+#     caller. That is the temperloop#2094 blocker: it made every §3e.5
+#     acceptance run on this host escalate `acceptance-gate-failed` for a
+#     reason unrelated to the diff under test.
+#
+#     So: measure the SERIAL baseline in this very process first, then require
+#     the POOLED leg to agree with it. When the baseline IS 130 (the invoker
+#     left the disposition alone) the old absolute check still runs, unchanged
+#     and just as strict — removing `set -m` from _gate_pool_spawn still turns
+#     this red. When it is not, the absolute half reports itself as a SKIP
+#     rather than vanishing, and the differential half keeps covering the
+#     regression 694ddaf5 fixed.
 # ---------------------------------------------------------------------------
+# The serial baseline: the pre-pool shape, run in THIS process. Whatever this
+# observes is what a gate run by the old `for` loop would have observed, so it
+# is the only honest expectation for the pooled leg.
+SIG_BASELINE=0
+"$WORK/selfint.sh" || SIG_BASELINE=$?
+
 rm -f "$WORK/sigcode"
 run_case 2 "" "pass:presig" "sig:selfkill"
 sig_observed="$(cat "$WORK/sigcode" 2>/dev/null)"
-if [ "$sig_observed" = "130" ]; then
-  pass "a gate still sees the DEFAULT SIGINT disposition (self-kill observed as 130, not 0)"
+if [ "$sig_observed" = "$SIG_BASELINE" ]; then
+  pass "the pool does not change the SIGINT disposition a gate sees (pooled [$sig_observed] = serial baseline [$SIG_BASELINE])"
 else
-  fail "SIGINT disposition changed by the pool: gate observed [$sig_observed], expected 130 — an asynchronous child is inheriting SIG_IGN (see _gate_pool_spawn's 'set -m')"
+  fail "SIGINT disposition changed by the pool: gate observed [$sig_observed], serial baseline is [$SIG_BASELINE] — an asynchronous child is inheriting SIG_IGN (see _gate_pool_spawn's 'set -m')"
+fi
+if [ "$SIG_BASELINE" = "130" ]; then
+  if [ "$sig_observed" = "130" ]; then
+    pass "a gate still sees the DEFAULT SIGINT disposition (self-kill observed as 130, not 0)"
+  else
+    fail "SIGINT disposition changed by the pool: gate observed [$sig_observed], expected 130 — an asynchronous child is inheriting SIG_IGN (see _gate_pool_spawn's 'set -m')"
+  fi
+else
+  skip "absolute SIGINT disposition — this suite was INVOKED with SIGINT already ignored (serial baseline [$SIG_BASELINE], not 130), so 130 is unobservable from here; the differential check above still covers the pool (temperloop#2094)"
 fi
 if [ "${GATE_POOL_STATUS[1]}" = "pass" ] && [ "$CASE_RC" -eq 0 ]; then
   pass "the signal-asserting gate reaches its own verdict through the pool"
 else
   fail "signal-asserting gate verdict=[${GATE_POOL_STATUS[1]}] rc=$CASE_RC note=[${GATE_POOL_NOTE[1]}]"
+fi
+
+# ---------------------------------------------------------------------------
+# 11b. THE FIXTURE that pins 11's resolution (temperloop#2094).
+#
+#      11 above is now invoker-independent by construction; this is the check
+#      that says so out loud, so the absolute form cannot silently return.
+#
+#      $WORK/sigprobe.sh is a self-contained miniature of 11: it sources the
+#      SAME lib, runs the SAME `kill -INT $$` fixture twice — once directly
+#      (the serial shape) and once through gate_pool_run — and prints
+#      "<serial> <pooled>". Run it under two INVOCATION environments:
+#
+#        default   the disposition this suite itself was handed
+#        ignored   SIGINT hard-ignored by an ancestor (`trap '' INT`), which
+#                  is what a `( … ) &` / nohup / agent-background launch does
+#
+#      Both must report serial == pooled: the pool is transparent under EITHER
+#      invocation. Under `default` the pooled leg must additionally be 130,
+#      which is the original regression check — so deleting `set -m` from
+#      _gate_pool_spawn still turns this red, while an inherited ignore cannot.
+# ---------------------------------------------------------------------------
+cat >"$WORK/sigprobe.sh" <<'PROBE'
+#!/usr/bin/env bash
+# <lib> <selfint> — print "<serial-rc> <pooled-rc>" for the self-kill fixture.
+set -uo pipefail
+lib="$1"; selfint="$2"
+# shellcheck source=/dev/null
+source "$lib"
+serial_rc=0
+"$selfint" || serial_rc=$?
+probe_worker() {
+  local rc=0
+  "$selfint" || rc=$?
+  printf '%s\n' "$rc" >"${GATE_POOL_META%.meta}.rc"
+  printf 'pass\t1\t\n' >"$GATE_POOL_META"
+  return 0
+}
+GATE_POOL_GATES=("sig")
+GATE_POOL_LANE=("pool")
+_gate_pool_tmpdir=""
+gate_pool_init || { printf 'init-failed init-failed\n'; exit 2; }
+gate_pool_run 1 probe_worker >/dev/null 2>&1
+pooled_rc="$(cat "$_gate_pool_tmpdir/0.rc" 2>/dev/null)"
+printf '%s %s\n' "$serial_rc" "${pooled_rc:-none}"
+PROBE
+chmod +x "$WORK/sigprobe.sh"
+
+probe_default="$(bash "$WORK/sigprobe.sh" "$LIB" "$WORK/selfint.sh" 2>/dev/null)"
+probe_ignored="$(bash -c 'trap "" INT; exec bash "$0" "$1" "$2"' \
+  "$WORK/sigprobe.sh" "$LIB" "$WORK/selfint.sh" 2>/dev/null)"
+
+if [ "${probe_default% *}" = "${probe_default#* }" ]; then
+  pass "pool transparency holds under the invoker's own disposition (serial/pooled: $probe_default)"
+else
+  fail "the pool changed the disposition under the default invocation (serial/pooled: $probe_default)"
+fi
+if [ "${probe_ignored% *}" = "${probe_ignored#* }" ]; then
+  pass "pool transparency holds when SIGINT is hard-ignored by an ANCESTOR (serial/pooled: $probe_ignored) — a backgrounded suite can no longer false-fail (temperloop#2094)"
+else
+  fail "the pool changed the disposition under an inherited SIG_IGN (serial/pooled: $probe_ignored)"
+fi
+if [ "$SIG_BASELINE" = "130" ]; then
+  if [ "$probe_default" = "130 130" ]; then
+    pass "under a DEFAULT invocation the pooled fixture still dies of SIGINT (130) — the 694ddaf5 regression check is intact"
+  else
+    fail "under a DEFAULT invocation the pooled fixture reported [$probe_default], expected [130 130] — 'set -m' is not reaching the fork"
+  fi
+  if [ "$probe_ignored" = "0 0" ]; then
+    pass "under an inherited SIG_IGN both legs observe 0 — the suite reports the INVOKER's disposition, it does not fail over it"
+  else
+    fail "under an inherited SIG_IGN the fixture reported [$probe_ignored], expected [0 0]"
+  fi
+else
+  skip "the absolute half of the 2094 fixture — this suite was itself invoked with SIGINT ignored (baseline [$SIG_BASELINE]); the two transparency checks above still ran"
 fi
 
 # The job control the fix relies on is scoped to the fork — a sourced lib must
