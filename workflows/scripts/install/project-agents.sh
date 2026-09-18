@@ -95,6 +95,27 @@
 # symlink back into the operator's kernel checkout on disk. Pass --copy
 # explicitly to force a copy in-tree too.
 #
+# PRUNE ON EVERY DEPLOY (temperloop#1943). Deleting a source file under
+# claude/{agents,commands}/ used to leave its deployed symlink behind, now
+# dangling — and invisible, because this script gitignores the very directory
+# it writes into, so `git status` never shows it. A dangling entry under
+# .claude/agents/ is not inert: it is exactly the surface Claude Code's
+# capability probe reads, so a deleted reviewer keeps reading as "available".
+# There is no --prune flag and nothing to remember: EVERY run (bulk and
+# --only alike) first removes the dangling links it recognises as its own,
+# so the stale entry cannot survive an ordinary install. A --dry-run prints
+# the prune plan and removes nothing.
+#
+# The prune is deliberately narrow, because it deletes files. What it
+# recognises as "its own" — an exact match against the link-target strings
+# this script itself writes, one directory level deep, `.md` only, dangling
+# only — is owned by the shared recognizer in project-agents-prune.sh (see
+# that file's header for the full set). A regular file, a directory, a link
+# to anything else, a link that still resolves, and anything outside
+# <project>/.claude/{agents,commands} are all left untouched. doctor.sh
+# sources the SAME recognizer for its advisory report, so what gets removed
+# here and what gets reported there cannot drift apart.
+#
 # Exit codes: 0 = ran to completion (a dry run is a legible no-op, not a
 # failure). 1 = a fatal usage/environment error, or one or more entries could
 # not be deployed. Skipping a pre-existing non-managed target is NOT a failure.
@@ -114,9 +135,27 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 KERNEL_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
+# ---------------------------------------------------------------------------
+# Shared prune recognizer/scanner (temperloop#1943). Sourced, never executed:
+# it defines PROJECT_AGENTS_CATEGORIES plus the three project_agents_*
+# helpers, and sets no shell options of its own. doctor.sh sources the SAME
+# lib for its advisory report, so the predicate that decides what gets
+# REMOVED here and the one that decides what gets REPORTED there cannot
+# drift apart.
+# ---------------------------------------------------------------------------
+PROJECT_AGENTS_PRUNE_SH="${SCRIPT_DIR}/project-agents-prune.sh"
+if [ ! -f "$PROJECT_AGENTS_PRUNE_SH" ]; then
+  echo "project-agents.sh: missing sibling script: $PROJECT_AGENTS_PRUNE_SH" >&2
+  exit 1
+fi
+# shellcheck source=project-agents-prune.sh
+source "$PROJECT_AGENTS_PRUNE_SH"
+
 # The two deployed categories. Source is claude/<cat>; target is
-# <project>/.claude/<cat>.
-CATEGORIES=(agents commands)
+# <project>/.claude/<cat>. Taken from the shared lib rather than re-declared,
+# so the set this script DEPLOYS and the set it PRUNES are the same set by
+# construction.
+CATEGORIES=("${PROJECT_AGENTS_CATEGORIES[@]}")
 
 # ---------------------------------------------------------------------------
 # Shared .gitignore-precondition helper (temperloop#560, reusing the
@@ -178,6 +217,74 @@ project_dir="$(cd "$project_dir" && pwd)"
 # same_file A B — true iff A and B are the same file (inode), tolerating
 # different path spellings. Used to decide relative-vs-absolute symlink target.
 same_file() { [ "$1" -ef "$2" ] 2>/dev/null; }
+
+# Prune tallies (temperloop#1943). Globals, because prune_dangling() runs
+# before the bulk path's own counters exist and its failure count is folded
+# into the bulk summary below.
+prune_pruned=0
+prune_failures=0
+
+# ---------------------------------------------------------------------------
+# prune_dangling — remove every dangling MANAGED link under
+# $project_dir/.claude/{agents,commands}. Runs on EVERY deploy (bulk and
+# --only alike), before any write, so a source file deleted since the last
+# deploy cannot leave its symlink behind (see the PRUNE ON EVERY DEPLOY note
+# in the header).
+#
+# The candidate set comes entirely from the shared, read-only scanner in
+# project-agents-prune.sh; the ONLY destructive step lives here, and it
+# re-asserts the full predicate (still a symlink, still dangling, still a
+# managed target string) immediately before the `rm` rather than trusting a
+# scan result that could have gone stale between the two. `rm` without -r and
+# without -f: a directory can never be removed by it, and a failure is
+# reported rather than swallowed.
+#
+# A prune failure is reported on stderr and tallied; the bulk path folds
+# $prune_failures into its own `failures` count (so it reaches the exit
+# code), while the --only path's exit status continues to speak only to the
+# single agent it was asked to deploy.
+# ---------------------------------------------------------------------------
+prune_dangling() {
+  local rows="" rel link_target target
+
+  rows="$(project_agents_scan_dangling "$project_dir" "$KERNEL_ROOT")"
+
+  echo "-- prune (dangling managed links) --"
+  if [ -z "$rows" ]; then
+    echo "  = none"
+    echo
+    return 0
+  fi
+
+  while IFS=$'\t' read -r rel link_target; do
+    [ -n "$rel" ] || continue
+    target="$project_dir/.claude/$rel"
+
+    if [ "$dry_run" -eq 1 ]; then
+      echo "  → $rel (would prune — source gone: $link_target)"
+      prune_pruned=$((prune_pruned + 1))
+      continue
+    fi
+
+    # Re-assert the whole predicate against the live filesystem before the
+    # one destructive call in this script.
+    if ! project_agents_dangling_managed_link "$target" "${rel%%/*}" "$KERNEL_ROOT"; then
+      echo "  ! $rel changed under us — not pruning" >&2
+      continue
+    fi
+
+    if rm "$target"; then
+      echo "  → pruned $rel (source gone: $link_target)"
+      prune_pruned=$((prune_pruned + 1))
+    else
+      echo "  ! failed to prune $rel" >&2
+      prune_failures=$((prune_failures + 1))
+    fi
+  done <<<"$rows"
+
+  echo
+  return 0
+}
 
 # deploy_only NAME CAT — selective single-agent mode. Reads from the
 # CATEGORY SUBDIR claude/agents/<CAT>/<NAME>.md but writes to the FLAT
@@ -316,6 +423,15 @@ if [ "$dry_run" -ne 1 ]; then
     || echo "project-agents.sh: ! could not ensure the .claude/ gitignore precondition in $project_dir — proceeding with the deploy anyway (see warning above)" >&2
 fi
 
+# ---------------------------------------------------------------------------
+# Prune BEFORE any deploy, on every run (temperloop#1943) — the one call site
+# both the --only path and the bulk path below dispatch through, exactly like
+# the gitignore precondition above. Ordering is deliberate: a link is a prune
+# candidate only when its source is gone, so the deploy that follows can never
+# re-create what this just removed.
+# ---------------------------------------------------------------------------
+prune_dangling
+
 if [ -n "$only_name" ] || [ -n "$only_category" ]; then
   if [ -z "$only_name" ] || [ -z "$only_category" ]; then
     echo "project-agents.sh: --only and --category must be used together" >&2
@@ -348,7 +464,10 @@ echo
 
 deployed=0
 skipped=0
-failures=0
+# Seeded from the prune pass above (temperloop#1943) so a dangling link this
+# script recognised as its own but could not remove reaches the exit code,
+# instead of being reported and then silently exiting 0.
+failures=$prune_failures
 
 deploy_one() {
   local cat="$1" src="$2" name target link_target effective_mode
@@ -456,7 +575,7 @@ for cat in "${CATEGORIES[@]}"; do
 done
 
 echo "-- Summary --"
-echo "  deployed: $deployed   skipped (pre-existing, untouched): $skipped   failures: $failures"
+echo "  deployed: $deployed   pruned (dangling, source gone): $prune_pruned   skipped (pre-existing, untouched): $skipped   failures: $failures"
 if [ "$dry_run" -eq 1 ]; then
   echo
   echo "project-agents.sh: done (dry run — nothing written)"

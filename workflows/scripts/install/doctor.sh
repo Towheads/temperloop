@@ -802,6 +802,74 @@ check_reviewer_coverage() {
 }
 
 # ---------------------------------------------------------------------------
+# check_project_agents_tree — advisory report on the PROJECT-SCOPED
+# .claude/{agents,commands} tree (temperloop#1943).
+#
+# THE BLIND SPOT THIS CLOSES. The managed-link table above enumerates the
+# MACHINE surface only (links.sh, rooted at $HOME/.claude), so the
+# project-scoped tree project-agents.sh deploys had no reporter at all. That
+# tree is gitignored by the installer itself, so a stale entry is invisible to
+# `git status` too — and a dangling entry under .claude/agents/ is the exact
+# surface Claude Code's capability probe reads, so a deleted reviewer keeps
+# reading as "available" with nothing anywhere saying so. project-agents.sh
+# now prunes on every deploy; this is the backstop for a link that somehow
+# survives (a failed rm, a tree nobody has re-deployed since).
+#
+# It REUSES project-agents-prune.sh's scanner rather than re-deriving the
+# recognizer — the same predicate that decides what the installer REMOVES is
+# what decides what this REPORTS, so the audit can never stop covering the
+# thing that deletes files. The scan is pure: doctor does no pruning of its
+# own and writes nothing here.
+#
+# STRICTLY ADVISORY, and deliberately so. Like check_cache_state() and
+# check_reviewer_coverage(), it is called with `|| true` and its findings are
+# folded into NO tally — not `non_ok`, not the exit code. An un-deployed or
+# partially-deployed project-scoped tree is a legitimate state (the whole
+# deploy is opt-in: a stranger's clone has no .claude/agents/ at all), so it
+# must never fail `make doctor` — which is also the post-checkout doctor run
+# of `temperloop update`, where a hard failure would block a release landing
+# over a stale gitignored symlink.
+#
+# Degrades to SKIPPED (never a failure) when the shared lib is absent — a
+# vendored or older tree that has not pulled this far.
+# ---------------------------------------------------------------------------
+check_project_agents_tree() {
+  local prune_lib="${FOUNDATION}/workflows/scripts/install/project-agents-prune.sh"
+
+  printf '\nProject-scoped agent/command tree (temperloop#1943):\n'
+
+  if [[ ! -f "$prune_lib" ]]; then
+    printf '  SKIPPED (project-agents-prune.sh not found under %s)\n' "$FOUNDATION"
+    return 0
+  fi
+
+  # shellcheck source=project-agents-prune.sh
+  if ! source "$prune_lib" 2>/dev/null; then
+    printf '  SKIPPED (could not source project-agents-prune.sh)\n'
+    return 0
+  fi
+
+  local rows=""
+  rows="$(project_agents_scan_dangling "$FOUNDATION" "$FOUNDATION" 2>/dev/null)" || rows=""
+
+  if [[ -z "$rows" ]]; then
+    printf '  OK        no dangling managed links under %s/.claude/{agents,commands}\n' "$FOUNDATION"
+    return 0
+  fi
+
+  local rel link_target dangling=0
+  while IFS=$'\t' read -r rel link_target; do
+    [[ -n "$rel" ]] || continue
+    printf '  DANGLING  .claude/%s -> %s (source gone)\n' "$rel" "$link_target"
+    dangling=$((dangling + 1))
+  done <<<"$rows"
+
+  printf '  %d dangling managed link(s) — advisory only, does not affect this run exit code.\n' "$dangling"
+  printf '  Re-run: bash workflows/scripts/install/project-agents.sh --project-dir %s\n' "$FOUNDATION"
+  return 0
+}
+
+# ---------------------------------------------------------------------------
 # check_legacy_host_config — HOST-STATE preflight for legacy host-config
 # paths a release has REMOVED (temperloop#908). Delegates entirely to the
 # registry-driven workflows/scripts/install/legacy-host-preflight.sh (see
@@ -1140,6 +1208,11 @@ check_cache_state || true
 check_bm_tool_install || true
 
 check_reviewer_coverage || true
+
+# Advisory only (temperloop#1943) — `|| true`, and deliberately absent from
+# the exit-code composition below, exactly like check_cache_state() and
+# check_reviewer_coverage() above.
+check_project_agents_tree || true
 
 legacy_host_status=0
 check_legacy_host_config || legacy_host_status=$?
