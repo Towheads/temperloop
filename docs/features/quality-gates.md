@@ -375,7 +375,11 @@ executable-bit registry pairs, the setting registry, the feature-docs check and
 the tree-classification manifest — plus the newly registered gate itself, by
 name, so a new gate runs on the pull request that adds it. Every other edit to
 that file escalates as before, and so does a diff the probe cannot read: an
-unreadable diff is not evidence that nothing was removed. The exception fails
+unreadable diff is not evidence that nothing was removed. A registration line is
+recognised by position as well as by shape — the gate script holds other arrays
+of bare quoted gate command lines, and an addition to one of those is a
+concurrency decision rather than a registration, so it escalates like any other
+edit. The exception fails
 closed in every direction, and the run's reason line says when it was taken,
 because a scoped run that quietly declined an escalation would be
 indistinguishable from one whose diff never touched the gate machinery.

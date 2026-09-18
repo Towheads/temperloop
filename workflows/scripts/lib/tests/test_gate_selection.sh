@@ -749,5 +749,105 @@ gate_selection_resolve
 [ "$GATE_SELECTION_MODE" = "full" ] || fail "22m: a bare literal that is not a gate in the caller list must keep the full escalation (got $GATE_SELECTION_MODE / $GATE_SELECTION_REASON)"
 echo "PASS: 22m a bare quoted literal that names no gate in the run list keeps the full escalation"
 
+# 22o — THE FAIL-OPEN THE BARE-ELEMENT SHAPE OPENED. `SERIAL_LANE_PINS=( … )` and
+# `SLOW_DISPATCH_HINTS=( … )` are two OTHER arrays in quality-gates.sh whose
+# elements are bare quoted gate command lines that ARE in the run set, so shape +
+# membership classified a pure addition to either as registration-only. A
+# serial-lane pin is not a registration: it is a correctness-bearing concurrency
+# decision (temperloop#1379 measured a real data race there), and the narrow run
+# it bought SKIPPED test_quality_gates_parallel.sh — the one gate that would prove
+# a lane change safe. Driven against a REAL repo, not the fixture seam, because
+# the defence is git's own hunk-header funcname context: a hand-written `@@` line
+# would prove the branch and assume the rendering.
+REG_REPO3="$TMP/regrepo3"
+mkdir -p "$REG_REPO3/scripts"
+git -C "$REG_REPO3" init -q
+git -C "$REG_REPO3" config user.email t@example.com
+git -C "$REG_REPO3" config user.name t
+cat >"$REG_REPO3/scripts/quality-gates.sh" <<'QG'
+KERNEL_GATES=(
+  "make test-kernel-manifest"
+)
+SERIAL_LANE_PINS=(
+  "make test-kernel-manifest"
+)
+QG
+git -C "$REG_REPO3" add -A && git -C "$REG_REPO3" commit -qm base
+REG_BASE3="$(git -C "$REG_REPO3" rev-parse HEAD)"
+# ...and the reviewer's reproduction: ONE bare element added under SERIAL_LANE_PINS,
+# naming a gate that really is in the run set.
+awk -v line="  \"$REG_NEW\"" '{print} /^SERIAL_LANE_PINS=\(/{print line}' \
+  "$REG_REPO3/scripts/quality-gates.sh" >"$TMP/qg3" && mv "$TMP/qg3" "$REG_REPO3/scripts/quality-gates.sh"
+reg_env
+GATE_SELECTION_ROOT="$REG_REPO3"
+GATE_SELECTION_BASE="$REG_BASE3"
+gate_selection_resolve
+[ "$GATE_SELECTION_MODE" = "full" ] || fail "22o: a SERIAL_LANE_PINS addition is NOT a registration and must keep the full escalation (got $GATE_SELECTION_MODE / $GATE_SELECTION_REASON)"
+echo "PASS: 22o a bare element added to the serial-lane pin list keeps the full escalation, so the parallel-scheduler gate still runs"
+
+# 22p — the DISCRIMINATING other half of 22o, in the SAME real repo: the bare
+# element goes into KERNEL_GATES=( … ) instead, and must still narrow. Without
+# this, 22o passes just as well for a positional test that denies every bare
+# element — i.e. for a silently dead capability.
+git -C "$REG_REPO3" checkout -- scripts/quality-gates.sh
+awk -v line="  \"$REG_NEW\"" '{print} /^KERNEL_GATES=\(/{print line}' \
+  "$REG_REPO3/scripts/quality-gates.sh" >"$TMP/qg3" && mv "$TMP/qg3" "$REG_REPO3/scripts/quality-gates.sh"
+reg_env
+GATE_SELECTION_ROOT="$REG_REPO3"
+GATE_SELECTION_BASE="$REG_BASE3"
+gate_selection_resolve
+[ "$GATE_SELECTION_MODE" = "diff" ] || fail "22p: the SAME bare element inside KERNEL_GATES=( … ) must still narrow (got $GATE_SELECTION_MODE / $GATE_SELECTION_REASON)"
+case "$GATE_SELECTION_SELECTED" in *"$REG_NEW"*) : ;; *) fail "22p: the newly registered gate must run on the PR that adds it, got:
+$GATE_SELECTION_SELECTED" ;; esac
+echo "PASS: 22p the same bare element inside the KERNEL_GATES array literal still narrows — the positional test discriminates, it does not just deny"
+
+# 22q — the FOURTH knob on the pinned-diff seam (22j pins two, 22n the third): a
+# `.gitattributes` diff driver whose `textconv` rewrites every line's CONTENT
+# before git diffs it. `--no-ext-diff` does NOT disable textconv; `--no-textconv`
+# does. Like 22j/22n it fails CLOSED — the mangled literal fails membership — but
+# a capability that silently never fires is indistinguishable from one that found
+# nothing, which is the whole reason this seam is pinned rather than trusted.
+git -C "$REG_REPO3" checkout -- scripts/quality-gates.sh
+cat >"$TMP/textconv.sh" <<'TC'
+#!/bin/sh
+sed 's/test_ready_pr_sweep/MANGLED/' "$1"
+TC
+chmod +x "$TMP/textconv.sh"
+printf 'scripts/quality-gates.sh diff=mangle\n' >"$REG_REPO3/.gitattributes"
+git -C "$REG_REPO3" config diff.mangle.textconv "$TMP/textconv.sh"
+awk -v line="  \"$REG_NEW\"" '{print} /^KERNEL_GATES=\(/{print line}' \
+  "$REG_REPO3/scripts/quality-gates.sh" >"$TMP/qg3" && mv "$TMP/qg3" "$REG_REPO3/scripts/quality-gates.sh"
+reg_env
+GATE_SELECTION_ROOT="$REG_REPO3"
+GATE_SELECTION_BASE="$REG_BASE3"
+gate_selection_resolve
+[ "$GATE_SELECTION_MODE" = "diff" ] || fail "22q: a configured textconv diff driver must not disable the exception — --no-textconv pins it (got $GATE_SELECTION_MODE / $GATE_SELECTION_REASON)"
+rm -f "$REG_REPO3/.gitattributes"
+git -C "$REG_REPO3" config --unset diff.mangle.textconv
+git -C "$REG_REPO3" checkout -- scripts/quality-gates.sh
+echo "PASS: 22q a .gitattributes textconv driver cannot silently kill the exception either"
+
+# 22r — a REMOVED line must veto even when its own content looks like a diff
+# header. With -U0, a removed `-- a/x` renders as `--- a/x` and a removed
+# `++ b/x` as `+++ b/x`; the header skip matched on prefix alone and ran BEFORE
+# the removal check, so the removal was swallowed and never vetoed. Header
+# recognition is now confined to the region before a file's first `@@`, which is
+# structural rather than a bet on what quality-gates.sh happens to contain.
+reg_env
+GATE_SELECTION_DIFF_TEXT="$(cat <<'DIFF'
+diff --git a/scripts/quality-gates.sh b/scripts/quality-gates.sh
+index 1111111..2222222 100755
+--- a/scripts/quality-gates.sh
++++ b/scripts/quality-gates.sh
+@@ -1919,0 +1920 @@ KERNEL_GATES+=("bash a.sh")
++KERNEL_GATES+=("bash workflows/scripts/tests/test_ready_pr_sweep.sh")
+@@ -2000 +2000,0 @@ KERNEL_GATES=(
+--- a/legacy-shim
+DIFF
+)"
+gate_selection_resolve
+[ "$GATE_SELECTION_MODE" = "full" ] || fail "22r: a removed line whose content reads like a diff header must still veto (got $GATE_SELECTION_MODE / $GATE_SELECTION_REASON)"
+echo "PASS: 22r a removed line disguised as a --- header is not swallowed by the header skip"
+
 
 echo "OK — gate-selection.sh: all cases passed"
