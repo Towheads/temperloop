@@ -1185,7 +1185,38 @@ fi
 # the one Step 6 bullet); no subtraction pass ran, three lines already being
 # the minimum this wiring can cost. Reseeded to build.md's measured size,
 # zero headroom, same convention as every raise since temperloop#956.
-: "${PROSE_BUDGET_TIER2_FILE_CAP:=1201}"
+#
+# RAISED 1201 -> 1261 (2026-09-17, temperloop#2071, AHEAD of temperloop#2081
+# "--dual-build flag + orchestrator-side pre-flight" (size M) and
+# temperloop#2083 "level-pick + the two operator levers" (size L), both in
+# epic #2065 "new-work dual-build harness"): build.md sits at exactly the
+# 1201-line cap with zero headroom (the standing convention since
+# temperloop#956), so BOTH later items would immediately need their own
+# mid-build ratchet step the moment either lands — the same
+# "ships as its own PR ahead of the level, never a mid-build config change"
+# contingency temperloop#1998 already used for the /workshop rewrite. #2081
+# adds the `--dual-build <tier>=<candidate>` flag description plus a new
+# Step 0/1 pre-flight-and-consent block (ceiling projection, epic-scoped
+# grant honoring, the flag-less-resume refusal text) — projected ~35 lines.
+# #2083 adds a level-pick escalation handler section (the pre-registered
+# tally, the calibration-gated confirm-vs-optional-override split, the
+# per-item-override disposition) — projected ~25 lines; its
+# `claude/presentation-plane.md` row is a DIFFERENT tracked file, currently
+# far under this same uniform cap, so it costs nothing against build.md's
+# own headroom. Projected total 60 lines; NO subtraction pass ran ahead of
+# it (nothing to subtract — build.md is already at zero headroom, per every
+# raise since temperloop#956), so the raise is the projected total with no
+# further contingency layered on top, matching this ratchet's zero-headroom
+# convention rather than the mid-epic percentage-contingency framing
+# temperloop#925/#947/#954 used before that convention was adopted. This
+# item deliberately raises the cap WITHOUT itself adding any build.md prose
+# (it is the epic's only L0 item touching this file, by design — see
+# `[[Patterns/temperloop - a new setting defined on two parallel branches
+# conflicts dangerously]]`), so build.md's own measured size is unchanged by
+# this commit; the two cited later items reseed the cap to build.md's new
+# measured size when they land, per the usual convention, and may raise or
+# lower it again if their measured cost differs from this projection.
+: "${PROSE_BUDGET_TIER2_FILE_CAP:=1261}"
 
 # ── Pipeline spend profiler (temperloop#958) ───────────────────────────────
 # Settings for `workflows/scripts/pipeline-spend-report.sh` and its
@@ -1768,6 +1799,89 @@ fi
 # actually produced. Set 0 to disable the alert.
 : "${MODEL_COMPARISON_SPEND_DRIFT_ALERT_PCT:=25}"
 
+# ── Dual-build harness (epic Towheads/temperloop#2065, item #2071) ─────────
+# `/build --dual-build <tier>=<candidate>` builds every in-scope item under
+# TWO models per level and judges/picks per item, per Design/2065 and
+# `[[Decisions/temperloop - Declared tier settings over a shared tier
+# resolver]]`: a plan-less/per-invocation seat gets a DECLARED config
+# setting, never a new shared tier-resolution component. This is the ONLY
+# item in the epic's L0 that touches this file, by design — see
+# `[[Patterns/temperloop - a new setting defined on two parallel branches
+# conflicts dangerously]]` — every later item stacks on this one's commit
+# rather than adding its own competing definition of the same name.
+#
+# Baseline and candidate models. LITERAL defaults, never a `$HOME`-inherited
+# / inherit-session sentinel — this is the one deliberate divergence from
+# SWEEP_WORKER_MODEL / FIX_WORKER_MODEL's empty-default convention (D2 in
+# `[[Decisions/temperloop - Declared tier settings over a shared tier
+# resolver]]`), because ADR 0028's repo-scoped-bleed rule (docs/adr/0028)
+# governs this differently: a dual-build run holds BOTH arms' models fixed
+# and disclosed for the whole level (the `Model-comparison-arms:` PR
+# trailer, dimension 4 #9), so "whatever this session happens to be running
+# today" is exactly the operator-scoped bleed the ADR calls out — an
+# inherited value could silently differ arm-to-arm across a resumed run, or
+# across repos for a consultant's engagement (dimension 13). Baseline
+# mirrors PIPELINE_DRIVE_MERGE_MODEL's existing high-judgment code/merge
+# driving default — "what /build already ships today" is the correct
+# baseline arm; candidate is the tier this harness exists to evaluate
+# against it. Per-invocation `--dual-build <tier>=<candidate>` always wins
+# over these (layer 1 beats layer 5); these are the un-overridden defaults
+# only.
+: "${DUAL_BUILD_BASELINE_MODEL:=claude-opus-4-8}"
+: "${DUAL_BUILD_CANDIDATE_MODEL:=claude-sonnet-5}"
+
+# Pre-flight (dimension 4 #6) declines to dual-build a level with fewer
+# in-scope items than this floor — 2× worker spend + judge spend per item is
+# a real cost that directly competes with shipping work (the design's own
+# "break-even, not a quota-share aside" framing), and a level-scoped tally
+# (D4: "the arm with more item wins") has no aggregation value at n=1 — a
+# single-item level reduces to a bare per-item judge call the harness's own
+# per-item machinery already provides, without earning the level barrier's
+# extra worker/spend/attention cost. 2 is the smallest count at which "more
+# item wins" is a meaningful tally rather than a single coin flip dressed up
+# as one.
+: "${DUAL_BUILD_MIN_INSCOPE_ITEMS:=2}"
+
+# How many days a `dual-build` ledger row + its `git format-patch` archive
+# may live under `.temperloop/model-comparison/dual-build/` before
+# `dual-build purge` (dimension 4 #12) may reclaim it — mirrors
+# CHECKIN_PRUNE_DAYS's existing 30-day convention for gitignored, local,
+# prunable-by-age runtime state. The archive is what a future analysis or
+# re-judge reads (D7), so this is a floor on how long that re-judge window
+# stays open, never an automatic sweep — purge is operator-invoked.
+: "${DUAL_BUILD_ARCHIVE_RETENTION_DAYS:=30}"
+
+# Above this unresolved rate (tied/unjudged/infra rows ÷ total dual-built
+# items, dimension 4 #8), the cumulative report withholds a verdict the same
+# way an uncalibrated judge does — an unresolved rate this high means the
+# win-rate numerator/denominator the report would otherwise print no longer
+# honestly represents the tier's outcomes. 20%: tight enough that one
+# genuine tie or infra blip in a small early sample does not itself trip the
+# withhold (a 1-in-6 level stays under it), loose enough to catch a batch
+# where the judge or infra is systemically failing to resolve picks,
+# mirroring MODEL_COMPARISON_SPEND_DRIFT_ALERT_PCT's existing "wide enough
+# not to cry wolf, tight enough to catch the real miss" sizing rationale.
+: "${DUAL_BUILD_UNRESOLVED_THRESHOLD_PCT:=20}"
+
+# How many archived ledger pairs the blind `calibrate` mode (dimension 4 #7)
+# samples per level for a human preference. Deliberately light-touch — 1 per
+# level keeps calibration a steady background accumulation toward the
+# DUAL_BUILD_CALIBRATION_BAR_N floor below rather than a per-level chore that
+# competes with the level-pick confirmation (dimension 4 #4) for operator
+# attention; an operator who wants to calibrate faster reruns `calibrate`
+# directly against more of the archive at any time.
+: "${DUAL_BUILD_CALIBRATE_PAIRS_PER_LEVEL:=1}"
+
+# The judge–human pairwise agreement bar (D13, dimension 4 #8): a winner is
+# named only once agreement over blind `calibrate`-mode pairs (dimension 4
+# #7 — override-derived pairs are excluded from this statistic by
+# construction) reaches BOTH of these floors; below either, the report reads
+# "judge uncalibrated — verdict withheld". Values are the design brief's own
+# ratified numbers (D13), not invented here — 70% agreement over at least 20
+# human-labelled pairs.
+: "${DUAL_BUILD_CALIBRATION_BAR_PCT:=70}"
+: "${DUAL_BUILD_CALIBRATION_BAR_N:=20}"
+
 export BUILD_QUOTA_PAUSE_PCT BUILD_QUOTA_CACHE BUILD_QUOTA_WAIT_BUFFER \
        BUILD_QUOTA_MAX_AGE BUILD_MERGE_GATE_WINDOW BUILD_QUEUE_TIMEOUT BUILD_QUEUE_STALL_AFTER \
        BUILD_HEADLESS_POLL_TIMEOUT \
@@ -1810,4 +1924,8 @@ export BUILD_QUOTA_PAUSE_PCT BUILD_QUOTA_CACHE BUILD_QUOTA_WAIT_BUFFER \
        MODEL_COMPARISON_JUDGE_MAX_ATTEMPTS MODEL_COMPARISON_JUDGE_ROTATION_ENABLED MODEL_COMPARISON_JUDGE_ROTATION_MIN_JUDGES \
        MODEL_COMPARISON_REPORT_RECORDS_DIR \
        MODEL_COMPARISON_BATCH_MAX_CONSECUTIVE_STAGE_ERRORS \
-       MODEL_COMPARISON_SPEND_DRIFT_ALERT_PCT
+       MODEL_COMPARISON_SPEND_DRIFT_ALERT_PCT \
+       DUAL_BUILD_BASELINE_MODEL DUAL_BUILD_CANDIDATE_MODEL DUAL_BUILD_MIN_INSCOPE_ITEMS \
+       DUAL_BUILD_ARCHIVE_RETENTION_DAYS DUAL_BUILD_UNRESOLVED_THRESHOLD_PCT \
+       DUAL_BUILD_CALIBRATE_PAIRS_PER_LEVEL \
+       DUAL_BUILD_CALIBRATION_BAR_PCT DUAL_BUILD_CALIBRATION_BAR_N
