@@ -13,23 +13,23 @@
   and no longer reports on how it was launched. The absolute `130` check still
   runs whenever the invoker's disposition makes it observable, and reports
   itself as a `SKIP` when it does not.
-- **A quality-gate slice that ran out of budget with a clean result is no longer
-  reported as a gate failure** (#2094). `/build`'s §3e.5 acceptance gate
-  classified a slice as `GATE_SLICE` only on exit code 75. `quality-gates.sh`
-  prints its `QUALITY_GATES_RESUME_AT=` trailer *before* it exits, so any other
-  status over the same clean partial was relabelled `GATE_FAIL` — where the
-  failure floor manufactured one failure out of a slice that had just reported
-  zero. A printed resume point now decides the classification on its own, the
-  exit code rides along as a recorded fact, and `suiteFinished` is false
-  whenever the last slice reports a resume point, so a run that stopped part-way
-  through the gate list can no longer claim to have covered all of it. Slice
-  trailers are also read from that slice's own output rather than the
-  accumulated log, so a slice that reports nothing cannot inherit the previous
-  one's resume point — and a non-numeric trailer is read as absent rather than
-  interpolated raw into the outcome line. That per-slice file is written by
-  `tee`, not copied in after the gate finishes: `/tmp/qg-<slug>.log` is
-  truncated before the first slice starts and streams for the whole run, so a
-  slice the executor kills on a timeout still leaves its partial output — the
-  only diagnostic a timeout produces — in the log the escalation points the
-  operator at, and a timed-out first slice can no longer leave the previous
-  run's log in place to be read as this run's.
+- **A quality-gate slice that ran out of budget with a clean result is no
+  longer reported as a gate failure** (#2094). `/build`'s acceptance gate — the
+  scoped quality-gate run before a push — classified a slice as `GATE_SLICE`
+  only on exit code 75. `quality-gates.sh` prints its
+  `QUALITY_GATES_RESUME_AT=` trailer *before* it exits, so any other status
+  over the same clean partial was relabelled `GATE_FAIL` — where the failure
+  floor manufactured one failure out of a slice that had just reported zero. A
+  printed resume point now decides the classification on its own, the exit code
+  rides along as a recorded fact, and a run that stopped part-way through the
+  gate list is no longer recorded as having covered all of it. Slice trailers
+  are also read from that slice's own output rather than the accumulated log,
+  so a slice that reports nothing cannot inherit the previous one's resume
+  point — and a non-numeric trailer is read as absent rather than interpolated
+  raw into the outcome line. That per-slice file is written by `tee`, not
+  copied in after the gate finishes: `/tmp/qg-<slug>.log` is truncated before
+  the first slice starts and streams for the whole run, so a slice the executor
+  kills on a timeout still leaves its partial output — the only diagnostic a
+  timeout produces — in the log the escalation points the operator at, and a
+  timed-out first slice can no longer leave the previous run's log in place to
+  be read as this run's.
