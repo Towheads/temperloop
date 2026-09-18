@@ -594,7 +594,7 @@ _cal_judge_for_slug() {
 _cal_labelled_slugs() {
   local pairs_file="$1"
   [ -f "$pairs_file" ] || return 0
-  jq -r '.slug' "$pairs_file" 2>/dev/null
+  jq -r '.slug' "$pairs_file"
 }
 
 # _cal_write_status <dir>
@@ -686,7 +686,8 @@ cmd_calibrate_sample() {
   fi
 
   local labelled
-  labelled="$(_cal_labelled_slugs "$pairs_file")"
+  labelled="$(_cal_labelled_slugs "$pairs_file")" \
+    || die "calibrate-sample: could not read $pairs_file"
 
   # Unique slugs in first-seen (ascending seq) order — a plain `unique`
   # would re-sort alphabetically and break the "oldest judged pair first"
@@ -699,7 +700,7 @@ cmd_calibrate_sample() {
   while IFS= read -r slug; do
     [ -n "$slug" ] || continue
     [ "$n" -lt "$count" ] || break
-    printf '%s\n' "$labelled" | grep -Fxq "$slug" && continue
+    printf '%s\n' "$labelled" | grep -Fx "$slug" >/dev/null && continue
     bpatch="$archdir/${slug}@baseline.patch"
     cpatch="$archdir/${slug}@candidate.patch"
     [ -f "$bpatch" ] && [ -f "$cpatch" ] || continue
@@ -784,10 +785,15 @@ cmd_calibrate_record() {
     }')" || { _lock_release "$dir"; die "calibrate-record: could not build row"; }
 
   printf '%s\n' "$row" >>"$pairs_file" || { _lock_release "$dir"; die "calibrate-record: write failed to $pairs_file"; }
+  # The derived-state rewrite is inside the same critical section as the
+  # append (both guarded by the same lock) so two concurrent
+  # calibrate-record calls can never interleave read-compute-write on
+  # calibration.json — see § CALIBRATE MODE's "one lock guards mutations to
+  # either file".
+  _cal_write_status "$dir" >/dev/null || { _lock_release "$dir"; die "calibrate-record: recorded the pair but failed rewriting calibration.json"; }
   _lock_release "$dir"
   trap - INT TERM
 
-  _cal_write_status "$dir" >/dev/null || die "calibrate-record: recorded the pair but failed rewriting calibration.json"
   printf '%s\n' "$row"
 }
 
