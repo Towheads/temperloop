@@ -5126,7 +5126,7 @@ else if ((parked.review || {}).mandatory_ok !== true) reason = 'no MANDATORY rou
 else {
   const skip = (parked.review.skipped || []).find(s => s.reviewer === 'shell-reviewer');
   if (!skip) reason = 'the hung reviewer must appear in the tally as skipped: ' + JSON.stringify(parked.review);
-  else if (!/^skipped — shell-reviewer unavailable /.test(skip.note)) reason = 'the advisory timeout must degrade to the documented \`skipped — <agent> unavailable\` notice, got: ' + skip.note;
+  else if (!/^skipped — shell-reviewer timed out after [0-9]+s /.test(skip.note)) reason = 'the advisory timeout must degrade to the documented timed-out notice (temperloop#2064 split it from the capability-probe \`unavailable\` sense), got: ' + skip.note;
   else if (!/ceiling of 1200s/.test(skip.note)) reason = 'the notice must name the ceiling it breached, got: ' + skip.note;
   else if (skip.timed_out !== true) reason = 'the tally entry must distinguish a timeout from the other skip reasons: ' + JSON.stringify(skip);
   else if ((parked.review.routed_not_run || []).indexOf('shell-reviewer') === -1) reason = 'routed_not_run must name the timed-out reviewer: ' + JSON.stringify(parked.review);
@@ -5486,7 +5486,7 @@ else {
   const skip = (parked.review.skipped || []).find(s => s.reviewer === 'shell-reviewer');
   if (!skip) reason = 'a reviewer that never settles must still be reported skipped: ' + JSON.stringify(parked.review);
   else if (skip.timed_out !== true) reason = 'the genuine skip must keep its timed_out reason: ' + JSON.stringify(skip);
-  else if (!/exceeded the §3e review ceiling/.test(skip.note)) reason = 'the skip note must name the ceiling: ' + skip.note;
+  else if (!/§3e review ceiling/.test(skip.note)) reason = 'the skip note must name the ceiling: ' + skip.note;
   else if (parked.review.ran.some(r => r.reviewer === 'shell-reviewer')) reason = 'ran and skipped must stay disjoint: ' + JSON.stringify(parked.review);
   else if ((parked.review.routed_not_run || []).indexOf('shell-reviewer') === -1) reason = 'routed_not_run must name the reviewer that never ran: ' + JSON.stringify(parked.review);
 }
@@ -5730,6 +5730,260 @@ grep -q 'REVIEW_WAIT_ELAPSED' "$_wait_sh" \
 grep -q 'realized_secs' "$_wait_sh" \
   || fail "#2049: review-wait.sh must print its OWN measured realized_secs — that field is what the .mjs audits the elapse against"
 echo "PASS: #2049 review-ceiling timer — the wait is real, the elapse is measured, the #2003 bound survives"
+
+# ============================================================================
+# TEMPERLOOP#2064 — A BLOCK IS NOT A TIMEOUT. #2049 made the wait REAL and made
+# an elapse carry the script's own measurement. One coin flip survived it: when
+# the timer command produces NO JSON line, the executor must say WHY, and the
+# two reasons it cannot tell apart are "a permission control refused it" and
+# "the Bash tool's own timeout killed it mid-run" — of which exactly one, the
+# tool timeout, is the PERMISSIVE arm (its budget is secs+60s, so it can only
+# fire after the interval). Measured in run wf_1b4c373b-8c1: slices asking
+# 300s/540s/360s returned in 11s/11s/17s, so a 1200s ceiling realized in ~41s,
+# a docs-reviewer that returned a full clean review at 98s was DISCARDED, and
+# the item reported `skipped — docs-reviewer unavailable` — the kernel's
+# CAPABILITY-PROBE word (CLAUDE.kernel.md § Subagent usage) for an agent that is
+# installed, was spawned, and ran fine. That wording cost a live session ~1200s
+# of apparent hang aimed at the agent roster instead of the timer.
+#
+# Three seams, all asserted below:
+#   1. the refusal is classified from the HARNESS'S OWN TEXT before any outcome
+#      label is read, so a block the executor mislabelled TOOL_TIMEOUT still
+#      fails closed;
+#   2. a GENUINE tool timeout is untouched and still reads as elapsed — the fix
+#      is a distinction, not a blanket distrust of the permissive arm;
+#   3. the ceiling-breach notice says `timed out after <actual>s` and reserves
+#      `unavailable` for the capability-probe sense.
+# ============================================================================
+
+run_node_case "K2064 blocked-vs-timeout: a refusal MISLABELLED as a tool timeout must NOT read as an elapse" "
+$PREAMBLE
+const tsv = readFileSync('$REPO_ROOT/workflows/scripts/config/reviewer-routing.tsv', 'utf8');
+const logged = [];
+globalThis.log = (m) => logged.push(String(m));
+
+setMachinery('blocked-tick',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/blocked-tick' },
+  { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/x.sh'], tsv, tsv_rows: tsvRows(tsv), tsv_checksum: tsvChecksum(tsv) },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'b10c' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'b10c', branch: 'build/blocked-tick' },
+  { outcome: 'PR_OPENED', pr_number: 2064 },
+  { outcome: 'CI_GREEN' },
+);
+happyWorker('blocked-tick');
+// The healthy reviewer #2064 measured: it returns well after the whole ceiling
+// would have been walked (98s against a ~41s realized ceiling), and its full
+// review was thrown away. Same hop count as the discrimination control below,
+// so the two runs differ in exactly one thing: whether the refusal is detected.
+let slow = Promise.resolve();
+for (let i = 0; i < 400; i++) slow = slow.then(() => undefined);
+setReview('blocked-tick', slow.then(() => 'no findings'));
+// THE #2064 PAYLOAD, verbatim: the harness's refusal, wearing the label the
+// executor actually chose for it. Both facts are load-bearing — the label is
+// the PERMISSIVE arm, and the text is the only evidence a refusal leaves.
+setReviewWait('blocked-tick', {
+  outcome: 'REVIEW_WAIT_TOOL_TIMEOUT',
+  refusal_text: '<tool_use_error>Blocked: sleep 300 followed by: printf ... To wait for a condition, use Monitor with an until-loop.',
+});
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'blocked-tick', branch: 'build/blocked-tick', title: 'A refused wait wearing a timeout label', kind: 'impl', acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+const result = await mod.default();
+const parked = (result.parked ?? [])[0];
+let reason = null;
+if (!parked) reason = 'expected a parked item: ' + JSON.stringify(result);
+else if ((parked.review.skipped || []).some(s => s.timed_out)) reason = 'a REFUSED wait must never read as a ceiling breach — this is temperloop#2064 verbatim: ' + JSON.stringify(parked.review);
+else if (!parked.review.ran.some(r => r.reviewer === 'shell-reviewer')) reason = 'the review ARRIVED and must be tallied as ran, never discarded: ' + JSON.stringify(parked.review);
+else if (!logged.some(m => /permission control REFUSED the wait command/.test(m))) reason = 'the refusal must degrade LEGIBLY and name itself, not hide behind a generic notice: ' + JSON.stringify(logged);
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+run_node_case "K2064 the explicit REVIEW_WAIT_BLOCKED outcome fails closed even with no refusal text to read" "
+$PREAMBLE
+const tsv = readFileSync('$REPO_ROOT/workflows/scripts/config/reviewer-routing.tsv', 'utf8');
+
+setMachinery('blocked-label',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/blocked-label' },
+  { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/x.sh'], tsv, tsv_rows: tsvRows(tsv), tsv_checksum: tsvChecksum(tsv) },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'b1ab' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'b1ab', branch: 'build/blocked-label' },
+  { outcome: 'PR_OPENED', pr_number: 2065 },
+  { outcome: 'CI_GREEN' },
+);
+happyWorker('blocked-label');
+let slow = Promise.resolve();
+for (let i = 0; i < 400; i++) slow = slow.then(() => undefined);
+setReview('blocked-label', slow.then(() => 'no findings'));
+// The executor labelled it correctly but relayed no text. The label alone must
+// still fail closed — the text classifier is the belt, this is the braces.
+setReviewWait('blocked-label', { outcome: 'REVIEW_WAIT_BLOCKED' });
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'blocked-label', branch: 'build/blocked-label', title: 'Blocked, labelled, untexted', kind: 'impl', acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+const result = await mod.default();
+const parked = (result.parked ?? [])[0];
+let reason = null;
+if (!parked) reason = 'expected a parked item: ' + JSON.stringify(result);
+else if ((parked.review.skipped || []).some(s => s.timed_out)) reason = 'REVIEW_WAIT_BLOCKED must never read as a ceiling breach: ' + JSON.stringify(parked.review);
+else if (!parked.review.ran.some(r => r.reviewer === 'shell-reviewer')) reason = 'the review must be kept: ' + JSON.stringify(parked.review);
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+run_node_case "K2064 the OTHER half of the distinction: a GENUINE tool timeout still reads as elapsed" "
+$PREAMBLE
+const tsv = readFileSync('$REPO_ROOT/workflows/scripts/config/reviewer-routing.tsv', 'utf8');
+
+setMachinery('real-tool-timeout',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/real-tool-timeout' },
+  { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/x.sh'], tsv, tsv_rows: tsvRows(tsv), tsv_checksum: tsvChecksum(tsv) },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: '7007' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: '7007', branch: 'build/real-tool-timeout' },
+  { outcome: 'PR_OPENED', pr_number: 2066 },
+  { outcome: 'CI_GREEN' },
+);
+happyWorker('real-tool-timeout');
+setReview('real-tool-timeout', { __hang: true });
+// No refusal text: the command RAN and the Bash tool's own budget (secs+60s)
+// killed it, so the interval did elapse. The #2064 fix must not launder this
+// into 'unusable timer' — that would reintroduce the #2003 unbounded hang under
+// a new name.
+setReviewWait('real-tool-timeout',
+  { outcome: 'REVIEW_WAIT_TOOL_TIMEOUT' },
+  { outcome: 'REVIEW_WAIT_TOOL_TIMEOUT' },
+  { outcome: 'REVIEW_WAIT_TOOL_TIMEOUT' },
+);
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'real-tool-timeout', branch: 'build/real-tool-timeout', title: 'Honest tool timeout, hung reviewer', kind: 'impl', acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+const result = await mod.default();
+const parked = (result.parked ?? [])[0];
+let reason = null;
+if (!parked) reason = 'expected a parked item: ' + JSON.stringify(result);
+else {
+  const skip = (parked.review.skipped || []).find(s => s.reviewer === 'shell-reviewer');
+  if (!skip) reason = 'a reviewer that never settles must still be reported skipped: ' + JSON.stringify(parked.review);
+  else if (skip.timed_out !== true) reason = 'a genuine tool timeout still bounds the fanout — the #2003 bound must survive #2064: ' + JSON.stringify(skip);
+}
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+run_node_case "K2064 the ceiling-breach notice names a TIMEOUT, never the capability-probe word" "
+$PREAMBLE
+const tsv = readFileSync('$REPO_ROOT/workflows/scripts/config/reviewer-routing.tsv', 'utf8');
+
+setMachinery('timeout-wording',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/timeout-wording' },
+  { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/x.sh'], tsv, tsv_rows: tsvRows(tsv), tsv_checksum: tsvChecksum(tsv) },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'd00d' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'd00d', branch: 'build/timeout-wording' },
+  { outcome: 'PR_OPENED', pr_number: 2067 },
+  { outcome: 'CI_GREEN' },
+);
+happyWorker('timeout-wording');
+setReview('timeout-wording', { __hang: true });
+// Honest ticks (the mock default carries a huge realized_secs), so the ceiling
+// is genuinely walked and the breach notice is genuinely written.
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'timeout-wording', branch: 'build/timeout-wording', title: 'Ceiling breach wording', kind: 'impl', acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+const result = await mod.default();
+const parked = (result.parked ?? [])[0];
+let reason = null;
+if (!parked) reason = 'expected a parked item: ' + JSON.stringify(result);
+else {
+  const skip = (parked.review.skipped || []).find(s => s.reviewer === 'shell-reviewer');
+  if (!skip) reason = 'expected a ceiling-breach skip: ' + JSON.stringify(parked.review);
+  else if (/unavailable/.test(skip.note)) reason = 'a ceiling breach must NOT claim the capability-probe sense — the agent is installed and was spawned (temperloop#2064): ' + skip.note;
+  else if (!/timed out after [0-9]+s/.test(skip.note)) reason = 'the notice must report the wall clock actually waited: ' + skip.note;
+}
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+run_node_case "K2064 discrimination control: with the refusal classifier neutered, the SAME refusal DOES breach the ceiling" "
+$PREAMBLE
+// Arms the first case. 'Not honoured' proves nothing unless the pre-#2064 shape
+// genuinely IS honoured — so this loads the SAME .mjs with the refusal
+// classification removed (the single seam the fix adds), feeds it the identical
+// mislabelled refusal and the identical healthy reviewer, and REQUIRES the
+// outcome run wf_1b4c373b-8c1 reported: skipped, timed_out, ran empty.
+const tsv = readFileSync('$REPO_ROOT/workflows/scripts/config/reviewer-routing.tsv', 'utf8');
+const MARKER = 'const refusal = reviewWaitRefusalText(out);';
+if (MJS_SRC.indexOf(MARKER) === -1) {
+  console.log(JSON.stringify({ ok: false, reason: 'the refusal classifier was not found — this control is no longer testing what it claims' }));
+} else {
+  const neutered = MJS_SRC.replace(MARKER, 'const refusal = null;');
+  const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+  const fn = new AsyncFunction(neutered);
+
+  setMachinery('control-blocked',
+    { outcome: 'CREATED', path: '/tmp/repo.wt/control-blocked' },
+    { outcome: 'REVIEW_DIFF', files: ['workflows/scripts/x.sh'], tsv, tsv_rows: tsvRows(tsv), tsv_checksum: tsvChecksum(tsv) },
+    { outcome: 'GATE_PASS' },
+    { outcome: 'REBASED', base: 'b', tip: 't', sha: 'c0b1' },
+    { outcome: 'SCAN_CLEAN' },
+    { outcome: 'PUSHED', sha: 'c0b1', branch: 'build/control-blocked' },
+    { outcome: 'PR_OPENED', pr_number: 2068 },
+    { outcome: 'CI_GREEN' },
+  );
+  happyWorker('control-blocked');
+  // IDENTICAL fixture to the first case — same hop count, same mislabelled refusal.
+  let slow = Promise.resolve();
+  for (let i = 0; i < 400; i++) slow = slow.then(() => undefined);
+  setReview('control-blocked', slow.then(() => 'no findings'));
+  setReviewWait('control-blocked', {
+    outcome: 'REVIEW_WAIT_TOOL_TIMEOUT',
+    refusal_text: '<tool_use_error>Blocked: sleep 300 followed by: printf ... To wait for a condition, use Monitor with an until-loop.',
+  });
+
+  globalThis.args = JSON.stringify({ ...baseArgs, items: [
+    { slug: 'control-blocked', branch: 'build/control-blocked', title: 'Refusal, classifier removed', kind: 'impl', acceptance: ['c'] },
+  ]});
+  const result = await fn();
+  const parked = (result.parked ?? [])[0];
+  let reason = null;
+  if (!parked) reason = 'expected a parked item: ' + JSON.stringify(result);
+  else if (!(parked.review.skipped || []).some(s => s.timed_out)) reason = 'the neutered build did NOT breach the ceiling — the fixture does not reproduce temperloop#2064, so the case above proves nothing: ' + JSON.stringify(parked.review);
+  else if (parked.review.ran.length !== 0) reason = 'the neutered build must discard the healthy review entirely, as the run journals show: ' + JSON.stringify(parked.review);
+  console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+  process.exit(0);
+}
+"
+
+# --- K2064 static lockstep guards ---------------------------------------------
+grep -q 'REVIEW_WAIT_BLOCKED' "$MJS" \
+  || fail "#2064: the timer must be able to report that it was REFUSED — without its own outcome a block is indistinguishable from the permissive tool-timeout arm"
+grep -q 'REVIEW_WAIT_REFUSAL_RE' "$MJS" \
+  || fail "#2064: the refusal classifier is gone — the executor's own label is then the only evidence, which is the coin flip the issue measured"
+grep -qF 'const refusal = reviewWaitRefusalText(out);' "$MJS" \
+  || fail "#2064: reviewWaitAgent() must classify the harness's own refusal text, not trust the outcome label it was given"
+# ORDERING is the mechanism, not a detail: the refusal check must run BEFORE the
+# permissive tool-timeout arm, or a mislabelled block reaches it unchanged.
+_k2064_refusal_ln="$(grep -n 'const refusal = reviewWaitRefusalText(out);' "$MJS" | head -1 | cut -d: -f1)"
+_k2064_toolto_ln="$(grep -n "out.outcome === 'REVIEW_WAIT_TOOL_TIMEOUT'" "$MJS" | head -1 | cut -d: -f1)"
+if [ -z "$_k2064_refusal_ln" ] || [ -z "$_k2064_toolto_ln" ] || [ "$_k2064_refusal_ln" -ge "$_k2064_toolto_ln" ]; then
+  fail "#2064: the refusal check must precede the permissive REVIEW_WAIT_TOOL_TIMEOUT arm in reviewWaitAgent()"
+fi
+grep -qF 'skipped — ${route.reviewer} timed out after ${waitedSecs}s' "$MJS" \
+  || fail "#2064: the ceiling-breach notice must report the wall clock actually waited, and must not reuse the capability-probe word 'unavailable'"
+grep -qF 'waited_secs: waitedSecs' "$MJS" \
+  || fail "#2064: the mandatory-timeout escalation must carry the tick actually honoured — a waited_secs far below ceiling_secs IS the timer defect"
+echo "PASS: #2064 blocked-vs-elapsed — a refused wait fails closed, a real tool timeout still elapses, the notice names a timeout"
 
 # ============================================================================
 # TEMPERLOOP#1067 — probe for a LOST pr-batch return before escalating it as a
