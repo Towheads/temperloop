@@ -16,6 +16,24 @@
 # could silently drift apart (and so a fixture test can exercise the
 # extraction once instead of three times).
 #
+# A FOURTH caller, DIFFERENT IN KIND (temperloop#2065 "worker-cost-capture",
+# epic #2062): workflows/scripts/build/worker-usage.sh calls this function on
+# behalf of claude/workflows/build-level.mjs's per-item worker, seat
+# "build-worker" — the /build 3c (and /sweep, /fix — they share the same
+# callWorker() code path) implementation worker the L0 spike's own exclusion
+# list (A1/A3/A4) had marked structurally un-emittable ("agent() returns no
+# usage envelope; the harness drops the per-seat label before the journal,
+# leaving no legal join key"). That reasoning no longer blocks emission: the
+# seat label and outcome ref are supplied DIRECTLY by worker-usage.sh's
+# caller (no journal correlation needed), so build-worker joins A7/A8/A9 on
+# this SAME shared function — but, unlike them, it NEVER has a real
+# `claude -p --output-format json` envelope to hand this function (a Workflow
+# `agent()` spawn is not that kind of call at all), so every build-worker
+# emission is, and will remain, an ATTRIBUTION-ONLY record via this
+# function's own empty-blob fail-open path below — seat/model/outcome-ref
+# known, `usage_source:"unavailable"`, never a fabricated token count. See
+# worker-usage.sh's own header for the full honesty disclosure.
+#
 # SOURCED LIBRARY, not a standalone script — like allowlist.sh /
 # setting-registry-lib.sh, this file defines a function only and never sets
 # shell options (`set -e`/`pipefail`) at source time, so sourcing it never

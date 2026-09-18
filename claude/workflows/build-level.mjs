@@ -579,6 +579,16 @@ const SPINE_OUTCOME_SCHEMA = {
         // None of them says anything whatsoever about the review being bounded.
         'REVIEW_WAIT_ELAPSED', 'REVIEW_WAIT_TOOL_TIMEOUT', 'REVIEW_WAIT_BLOCKED',
         'REVIEW_WAIT_UNAVAILABLE',
+        // temperloop#2065 "worker-cost-capture" — the per-item WORKER COST
+        // seam. Neither comes from a machinery script proper; both are
+        // workflows/scripts/build/worker-usage.sh, the SAME emitted-shell
+        // pattern review-wait.sh established for giving this runtime a
+        // wall-clock tick it otherwise has none of. WORKER_CLOCK is a bare
+        // `date` read (no side effect); WORKER_USAGE is that same reading
+        // PLUS the durable per-seat attribution write (model-usage-
+        // envelope.sh's model_usage_emit_from_envelope, seat "build-worker" —
+        // see that file's own header). See workerClockNow()/workerUsageEmit().
+        'WORKER_CLOCK', 'WORKER_USAGE',
         'ERROR',
       ],
     },
@@ -618,6 +628,15 @@ const SPINE_OUTCOME_SCHEMA = {
     // label is consulted, so a block mislabelled as a tool timeout can never
     // reach the permissive arm.
     refusal_text: { type: 'string' },
+    // temperloop#2065 — worker-usage.sh's WORKER_CLOCK/WORKER_USAGE fields.
+    // Declared (not left to `additionalProperties`) because
+    // workerClockNow()/workerUsageEmit() BRANCH on them: a non-numeric
+    // epoch_s or a non-numeric token count degrades to null rather than
+    // being coerced, exactly like every other machinery passthrough here.
+    epoch_s: { type: ['number', 'string'] },
+    usage_source: { type: 'string' },
+    input_tokens: { type: ['number', 'null'] },
+    output_tokens: { type: ['number', 'null'] },
     error: { type: 'string' },
     matches: { type: 'array', items: { type: 'string' } },
     failed_run_ids: { type: 'array', items: { type: ['number', 'string'] } },
@@ -2458,6 +2477,115 @@ const RECOVERY_UNVERIFIED =
 // The recover-probe outcomes that mean "work landed" (anything but RECOVER_NONE).
 const RECOVER_STAGES = ['RECOVER_COMMITTED', 'RECOVER_PUSHED', 'RECOVER_PR_OPEN'];
 
+// -----------------------------------------------------------------------------
+// Worker cost capture (temperloop#2065, epic #2062's dual-build ledger).
+// -----------------------------------------------------------------------------
+// The worker `agent()` spawn is the Workflow runtime's own subagent primitive:
+// it returns no usage envelope, and the runtime has no timer (`Date.now()`
+// throws — see the STEP CEILING block, DESIGN NOTE 1's sibling). Both gaps
+// are closed the SAME way every other shell-only fact this file needs is:
+// an emitted-shell machinery call (DESIGN NOTE 1's runMachinery bridge).
+// workflows/scripts/build/worker-usage.sh is that bridge — the SAME pattern
+// review-wait.sh established for giving this runtime a wall-clock tick it
+// otherwise has none of (temperloop#2049).
+//
+//   workerClockNow()  — a bare `date` read, no side effect. Returns epoch
+//                       SECONDS (a plain number — safe to subtract, since
+//                       only Date.now()/Math.random() throw here, never
+//                       arithmetic on a value already in hand) or null on
+//                       anything but a clean numeric reading.
+//   workerUsageEmit() — the SAME reading PLUS the durable per-seat
+//                       attribution write: model-usage-envelope.sh's shared
+//                       model_usage_emit_from_envelope, seat "build-worker" —
+//                       the SAME helper pipeline-drive.sh's A7/A8 and
+//                       pipeline-retro-judge-spawn.sh's A9 already call, so
+//                       the build worker joins their attribution stream as a
+//                       FOURTH emitting seat (ADR 0026) — the coverage
+//                       denominator in report-producers/model-comparison
+//                       names it. No `claude -p --output-format json`
+//                       envelope exists for a Workflow agent() call, so this
+//                       degrades to usage_source:"unavailable" (no tokens) on
+//                       every REAL call today — worker-usage.sh's own header
+//                       carries that honesty disclosure; the fields still
+//                       flow through byte-for-byte the day a real envelope
+//                       becomes available, and the offline test harness
+//                       exercises exactly that path.
+//
+// Both are FAIL-OPEN and never escalate: a cost-ledger entry must never be
+// the thing that stalls a build. A malformed/absent reading degrades to
+// null, never a thrown error or a denial.
+function workerUsageBin() {
+  return machineryBin(input.repoRoot, 'worker-usage.sh');
+}
+
+// numOrNull — coerce to a finite number, or null. Guards the JS `Number(null)
+// === 0` / `Number(undefined) === NaN` quirks explicitly rather than relying
+// on Number.isFinite() to catch the first one (it would not: 0 IS finite) —
+// a machinery field that is genuinely absent (usage_source:"unavailable"'s
+// null input_tokens/output_tokens) must degrade to null, never a false zero.
+function numOrNull(v) {
+  if (v === null || v === undefined) return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+async function workerClockNow(item, tag, phaseName) {
+  const out = await runMachinery(`${workerUsageBin()} clock`, {
+    label: `worker-clock:${item.slug}#${tag}`,
+    slug: item.slug,
+    phase: phaseName ?? 'worker',
+  });
+  return out && out.outcome === 'WORKER_CLOCK' ? numOrNull(out.epoch_s) : null;
+}
+
+// workerOutcomeRef — ADR 0026's outcome-ref vocabulary, "(issue|pr):<ref>".
+// The item's own tracking issue is the one stable ref known at worker-spawn
+// time (a PR may not exist yet); an issue-less item (boardless work) falls
+// back to its slug rather than emitting an empty ref.
+function workerOutcomeRef(item) {
+  return item.ghIssue ? `issue:${item.ghIssue}` : `issue:${item.slug}`;
+}
+
+async function workerUsageEmit(item, tag, seat, phaseName) {
+  const model = item.model || 'inherit';
+  const repo = input.ownerRepo || '';
+  const out = await runMachinery(
+    `${workerUsageBin()} emit ${sq(seat)} ${sq(model)} ${sq(workerOutcomeRef(item))} ${sq(repo)}`,
+    { label: `worker-usage:${item.slug}#${tag}`, slug: item.slug, phase: phaseName ?? 'worker' },
+  );
+  const ok = out && out.outcome === 'WORKER_USAGE';
+  return {
+    epochS: ok ? numOrNull(out.epoch_s) : null,
+    tokensIn: ok ? numOrNull(out.input_tokens) : null,
+    tokensOut: ok ? numOrNull(out.output_tokens) : null,
+  };
+}
+
+// elapsedMs — plain integer arithmetic on two already-resolved epoch-SECONDS
+// readings (never Date.now() — see above). null when either edge is
+// unavailable, so a partial reading never manufactures a false zero.
+function elapsedMs(startS, endS) {
+  return typeof startS === 'number' && typeof endS === 'number'
+    ? Math.max(0, Math.round((endS - startS) * 1000))
+    : null;
+}
+
+// mergeWorkerCost — accumulate a SECOND callWorker() reading onto the first
+// (the temperloop#993/#1219 no-verdict foreground-cure retry re-spawns the
+// SAME worker for the SAME item, so its cost is additive, not a replacement).
+// A field stays null only when BOTH readings are null — one real reading
+// plus one degraded (null) reading reports the real one, never manufacturing
+// a false total by treating a missing edge as zero.
+function mergeWorkerCost(acc, add) {
+  if (!add) return acc;
+  const sum = (a, b) => (a == null && b == null ? null : (a ?? 0) + (b ?? 0));
+  return {
+    wallClockMs: sum(acc.wallClockMs, add.wallClockMs),
+    tokensIn: sum(acc.tokensIn, add.tokensIn),
+    tokensOut: sum(acc.tokensOut, add.tokensOut),
+  };
+}
+
 // callWorker — spawn the implementation worker so a lost return channel can
 // never escape as a throw. agent({schema}) THROWS on a StructuredOutput-absent
 // / retry-cap-exceeded subagent and returns null on a skip / terminal API error;
@@ -2466,7 +2594,14 @@ const RECOVER_STAGES = ['RECOVER_COMMITTED', 'RECOVER_PUSHED', 'RECOVER_PR_OPEN'
 // what they MEAN only after the side-effect probe has run.
 // `phaseName` (temperloop#1294) — the STAGE group this worker belongs to,
 // passed explicitly (the global phase() cursor races under parallel()).
+//
+// temperloop#2065 — every call also brackets the worker in the clock/usage
+// seam above and returns its reading as { wallClockMs, tokensIn, tokensOut },
+// on BOTH the return and the throw arm: a re-spawned worker that itself
+// blows its return channel still spent real tokens, and the ledger records
+// that spend rather than silently dropping it.
 async function callWorker(item, wt, extraSection, label, phaseName) {
+  const startS = await workerClockNow(item, label, phaseName);
   try {
     const v = await agent(workerPrompt(item, wt, extraSection), {
       label,
@@ -2483,12 +2618,28 @@ async function callWorker(item, wt, extraSection, label, phaseName) {
       model: item.model || undefined, // "" or undefined → inherit session model
       schema: WORKER_VERDICT_SCHEMA,
     });
+    const usage = await workerUsageEmit(item, label, 'build-worker', phaseName);
     // `nullReturn` (temperloop#1819): true only for the bare-null shape, where
     // NO error text exists — the caller's quota classification then falls back
     // to the agent-liveness canary instead of text matching.
-    return { verdict: v ?? null, error: v == null ? 'agent returned null' : null, nullReturn: v == null };
+    return {
+      verdict: v ?? null,
+      error: v == null ? 'agent returned null' : null,
+      nullReturn: v == null,
+      wallClockMs: elapsedMs(startS, usage.epochS),
+      tokensIn: usage.tokensIn,
+      tokensOut: usage.tokensOut,
+    };
   } catch (err) {
-    return { verdict: null, error: String((err && err.message) || err), nullReturn: false };
+    const usage = await workerUsageEmit(item, label, 'build-worker', phaseName);
+    return {
+      verdict: null,
+      error: String((err && err.message) || err),
+      nullReturn: false,
+      wallClockMs: elapsedMs(startS, usage.epochS),
+      tokensIn: usage.tokensIn,
+      tokensOut: usage.tokensOut,
+    };
   }
 }
 
@@ -3231,12 +3382,12 @@ function hostConfigDeferrals(acceptanceResults) {
   }));
 }
 
-// park()'s trailing two arguments are two INDEPENDENT degraded-case tallies
-// (temperloop#1319's discriminationGapList, temperloop#1450's review) that
-// happened to land on the same function in the same window — neither
-// supersedes the other; both are optional and independently omitted when
+// park()'s trailing three arguments (discriminationGapList, review, cost) are
+// INDEPENDENT tallies (temperloop#1319, temperloop#1450, temperloop#2065)
+// that happened to land on the same function in the same window — none
+// supersedes another; each is optional and independently omitted when
 // empty/absent, exactly like `no_ci` above.
-function park(slug, pr, pushedSha, acceptanceResults, noCi, recovery, discriminationGapList, review) {
+function park(slug, pr, pushedSha, acceptanceResults, noCi, recovery, discriminationGapList, review, cost) {
   const parked = { slug, pr, pushed_sha: pushedSha, acceptance_results: acceptanceResults ?? [] };
   // temperloop#939: a record reconstructed from observable side-effects after a
   // lost worker return carries its provenance EXPLICITLY. `acceptance_unverified`
@@ -3273,6 +3424,34 @@ function park(slug, pr, pushedSha, acceptanceResults, noCi, recovery, discrimina
   // resolved that did not run, mandatory or not, so the tally cannot read
   // fully clean while a tsv-routed reviewer was skipped. See reviewTally().
   if (review) parked.review = review;
+  // temperloop#2065 "worker-cost-capture" (epic #2062's dual-build ledger) —
+  // per-item worker cost: tokens, wall-clock, retry cost and a `recovery`
+  // flag, captured at callWorker()/ciPollLoop()'s emitted-shell seam (see
+  // workerClockNow()/workerUsageEmit() above) and reconciled against the
+  // model-usage envelope (workflows/scripts/build/worker-usage.sh →
+  // model-usage-envelope.sh's model_usage_emit_from_envelope, seat
+  // "build-worker"). `cost.recovery` is this record's OWN plain-boolean
+  // projection of the `recovery` PARAMETER above (a probe object, or null) —
+  // a DIFFERENT thing from `recovered_from`/`acceptance_unverified`, which
+  // name WHICH stage the temperloop#939 probe landed at; `recovery` here only
+  // says whether the cost figures above are trustworthy (a recovered record
+  // never observed the worker's own return, so its tokens/wall-clock are
+  // whatever the LOST call still managed to report through the fail-open
+  // seam, never fabricated). Present iff the caller passed `cost` — the
+  // spike call site (4 args) omits it, so a spike's parked record stays
+  // byte-identical to before this item; the 3h main path always passes it,
+  // so EVERY non-spike parked record carries all six keys, present even at
+  // their null/zero baseline (never conditionally omitted like `no_ci`
+  // above — a cost ledger with silently-missing rows is worse than one with
+  // honest nulls).
+  if (cost) {
+    parked.tokens_in = cost.tokens_in ?? null;
+    parked.tokens_out = cost.tokens_out ?? null;
+    parked.wall_clock_ms = cost.wall_clock_ms ?? null;
+    parked.retry_tokens = cost.retry_tokens ?? null;
+    parked.retry_count = cost.retry_count ?? 0;
+    parked.recovery = !!cost.recovery;
+  }
   // temperloop#1182: derived from `acceptanceResults` rather than threaded in
   // as a 9th positional argument, so BOTH park() call sites (the 3h main path
   // and the spike path at 3b, which passes only four arguments) surface the
@@ -5515,7 +5694,14 @@ async function driveItem(item) {
   // instead of re-forking forever (MAJOR fix). On a fresh drive verdictSection
   // is undefined → workerPrompt emits no extra section, unchanged behavior.
   let recovery = null; // temperloop#939 — set only on a lost-return recovery
+  // temperloop#2065 — the main worker's cost, accumulated across BOTH this
+  // call and the #993/#1219 foreground-cure retry below (see
+  // mergeWorkerCost()). Distinct from the CI-fix retry's own retryTokens/
+  // retryCount (ciPollLoop) — this accumulator is "worker tokens", the
+  // ledger's OTHER figure.
+  let mainCost = { wallClockMs: null, tokensIn: null, tokensOut: null };
   let w = await callWorker(item, wt, verdictSection, `worker:${item.slug}`, enterStage(STAGE_BUILD));
+  mainCost = mergeWorkerCost(mainCost, w);
   let verdict = w.verdict;
   if (verdict == null) {
     // temperloop#1819 — classify a session-quota death FIRST, before the probe
@@ -5558,6 +5744,7 @@ async function driveItem(item) {
         log(`[${item.slug}] worker returned no verdict, no side-effects — retrying once (foreground cure #1219)`);
       }
       w = await callWorker(item, wt, withCure(verdictSection, probe.dirtyFiles), `worker:${item.slug}#retry`, enterStage(STAGE_BUILD));
+      mainCost = mergeWorkerCost(mainCost, w);
       verdict = w.verdict;
       if (verdict == null) {
         // temperloop#1819 — the RETRY can be the spawn that crosses the quota
@@ -6311,7 +6498,24 @@ async function driveItem(item) {
   // degraded-case tallies ride this one park() call now (discGaps from
   // #1319, reviewSummary from #1450) — see park()'s own signature comment.
   const reviewSummary = reviewTally(review, ...(ciResult.fixReviewRounds ?? []));
-  return park(item.slug, pr, ciResult.finalSha ?? pushedSha, verdict.acceptance_results, ciResult.noCi === true, recovery, discGaps, reviewSummary);
+  // temperloop#2065 — assemble the per-item cost ledger park() carries. Wall
+  // clock is ONE total across the main worker AND every CI-fix retry
+  // (mergeWorkerCost's same null-only-if-both-null rule, applied by hand here
+  // since ciResult's retryWallClockMs is a bare number|null, not a cost
+  // object); tokens stay split (worker) vs combined (retry) per the epic's
+  // own ledger vocabulary (item 5/11) — see park()'s own comment.
+  const cost = {
+    tokens_in: mainCost.tokensIn,
+    tokens_out: mainCost.tokensOut,
+    wall_clock_ms:
+      mainCost.wallClockMs == null && ciResult.retryWallClockMs == null
+        ? null
+        : (mainCost.wallClockMs ?? 0) + (ciResult.retryWallClockMs ?? 0),
+    retry_tokens: ciResult.retryTokens ?? null,
+    retry_count: ciResult.retryCount ?? 0,
+    recovery: !!recovery,
+  };
+  return park(item.slug, pr, ciResult.finalSha ?? pushedSha, verdict.acceptance_results, ciResult.noCi === true, recovery, discGaps, reviewSummary, cost);
 }
 
 // -----------------------------------------------------------------------------
@@ -6453,6 +6657,15 @@ async function ciPollLoop(item, ownerRepo, pr, initialSha, wt) {
   // this it would ship unreviewed under a PR body that only describes the
   // FIRST push.
   const fixReviewRounds = [];
+  // temperloop#2065 — the CI_FAIL_RETRY_BUDGET loop's OWN cost tally, kept
+  // separate from the main worker's `mainCost` (driveItem): the ledger's
+  // "worker tokens" and "retry tokens" are two DIFFERENT figures (epic
+  // #2062's item 5/11). retryTokens stays null until a retry actually fires
+  // — "never attempted" and "attempted, zero tokens observed" are different
+  // facts, and only the latter earns a 0.
+  let retryCount = 0;
+  let retryTokens = null;
+  let retryWallClockMs = null;
 
   for (let slice = 0; slice < maxSlices; slice++) {
     if (buffer.length === 0) {
@@ -6544,7 +6757,7 @@ async function ciPollLoop(item, ownerRepo, pr, initialSha, wt) {
       { outcome: 'ERROR', error: 'ci-poll step produced no result in its batch' };
 
     if (out.outcome === 'CI_GREEN') {
-      return { ok: true, finalSha: sha, fixReviewRounds };
+      return { ok: true, finalSha: sha, fixReviewRounds, retryCount, retryTokens, retryWallClockMs };
     }
 
     if (out.outcome === 'NO_CI') {
@@ -6555,7 +6768,7 @@ async function ciPollLoop(item, ownerRepo, pr, initialSha, wt) {
       // `no_ci: true` sentinel, instead of falling through to the catch-all
       // below and escalating `ci-failed` (the exact mis-escalation this fixes).
       log(`[${item.slug}] PR #${pr}: no CI configured on this SHA — skipping the CI gate (slice ${slice + 1})`);
-      return { ok: true, finalSha: sha, noCi: true, fixReviewRounds };
+      return { ok: true, finalSha: sha, noCi: true, fixReviewRounds, retryCount, retryTokens, retryWallClockMs };
     }
 
     if (out.outcome === 'TIMEOUT') {
@@ -6570,9 +6783,12 @@ async function ciPollLoop(item, ownerRepo, pr, initialSha, wt) {
         return { escalation: 'ci-failed', payload: { ciOut: out, sha } };
       }
       retriesLeft--;
+      retryCount++; // temperloop#2065 — counted at ATTEMPT time, not at success
       // Re-spawn the worker against the SAME worktree to fix CI, then
       // force-push and re-poll PINNED to the new SHA (#254 guard).
       log(`[${item.slug}] CI failed — re-spawning worker (retries left ${retriesLeft})`);
+      const cifixLabel = `worker-cifix:${item.slug}`;
+      const cifixStartS = await workerClockNow(item, cifixLabel, enterStage(STAGE_CI));
       const fixVerdict = await agent(
         workerPrompt(
           item,
@@ -6583,7 +6799,7 @@ async function ciPollLoop(item, ownerRepo, pr, initialSha, wt) {
             'Failed run ids: ' + JSON.stringify(out.failed_run_ids ?? []) + '.',
         ),
         {
-          label: `worker-cifix:${item.slug}`,
+          label: cifixLabel,
           // A WORKER agent, but it belongs to the CI stage (temperloop#1294) —
           // grouping it there is what makes the CI box read as "CI is being fixed"
           // rather than dropping it back into a build box the level already left.
@@ -6592,6 +6808,22 @@ async function ciPollLoop(item, ownerRepo, pr, initialSha, wt) {
           schema: WORKER_VERDICT_SCHEMA,
         },
       );
+      // temperloop#2065 — the retry's own cost, regardless of what fixVerdict
+      // turns out to be below: the tokens were spent (and the wall-clock
+      // burned) the moment agent() returned, and a fix that FAILS still cost
+      // real money. Tokens roll up into ONE combined `retryTokens` figure
+      // (the epic's ledger names "retry tokens" as a single number, unlike
+      // the main worker's split tokens_in/tokens_out — see park()); wall-clock
+      // rolls into the SAME total `wall_clock_ms` the main worker contributes
+      // to (driveItem sums it into mainCost at the ciPollLoop call site) —
+      // there is one wall-clock figure for the whole item, not a per-phase one.
+      {
+        const cifixUsage = await workerUsageEmit(item, cifixLabel, 'build-worker', enterStage(STAGE_CI));
+        const inT = cifixUsage.tokensIn ?? 0;
+        const outT = cifixUsage.tokensOut ?? 0;
+        retryTokens = (retryTokens ?? 0) + inT + outT;
+        retryWallClockMs = (retryWallClockMs ?? 0) + (elapsedMs(cifixStartS, cifixUsage.epochS) ?? 0);
+      }
       if (fixVerdict == null) {
         // agent() returned null — user skip or terminal API error in the CI-fix
         // worker. Already inside a CI-failure retry context; escalate cleanly.

@@ -344,8 +344,9 @@ check_eq "CI_WIDTH_PCT is forwarded (80, not the pinned/default 95)" \
 check "...and actually narrows the interval, so the width is not inert" \
   awk -v n="$NARROW_W" -v w="$WIDE_W" 'BEGIN{exit !(n<w)}'
 
-# EMIT_FEASIBLE_SEATS: pinned 3, default 3 — same situation. Override to 4 and
-# watch the DENOMINATOR move: 2 of 4 is 50%, 2 of 3 would be 66.7%.
+# EMIT_FEASIBLE_SEATS: pinned 3 (this suite's PINNED_ENV), default 4 as of
+# temperloop#2065 (build-worker joined the roster) — override to 4 and watch
+# the DENOMINATOR move: 2 of 4 is 50%, 2 of 3 would be 66.7%.
 COV_ENV="$(run_with MODEL_COMPARISON_EMIT_FEASIBLE_SEATS=4 coverage --observed-seats 2)"
 check_eq "EMIT_FEASIBLE_SEATS drives the denominator (4, not the built-in 3)" \
   "4" "$(jqr "$COV_ENV" '.feasible_seats')"

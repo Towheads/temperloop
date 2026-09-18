@@ -1372,12 +1372,19 @@ fi
 # run had the statistical power to ENFORCE that bar, which is the gap this
 # figure makes visible instead of leaving to be worked out by hand.
 : "${MODEL_COMPARISON_QUALITY_TARGET_EFFECT_PCT:=5}"
-# `coverage`'s denominator: the emit-FEASIBLE seat subset the L0
-# usage-capture-feasibility spike (temperloop#1246) measured — "only 3 of the
-# pipeline's 12 spawn seats can emit a token-bearing attribution record
-# today" — deliberately NOT the full 12-seat inventory. A coverage figure
-# below 100% is expected and structural, not a defect to chase to zero.
-: "${MODEL_COMPARISON_EMIT_FEASIBLE_SEATS:=3}"
+# `coverage`'s denominator: the emit-FEASIBLE seat subset — the three seats
+# the L0 usage-capture-feasibility spike (temperloop#1246) measured ("only 3
+# of the pipeline's 12 spawn seats can emit a TOKEN-BEARING attribution
+# record today") PLUS "build-worker" (temperloop#2065 "worker-cost-capture"),
+# the /build 3c per-item worker — emit-feasible (it DOES write a record) but
+# never token-bearing (a Workflow agent() call has no envelope to read tokens
+# from; its record is permanently attribution-only). "Feasible" here tracks
+# WIRING — did the seat write a record for this outcome — never "carries real
+# tokens"; see workflows/scripts/report-producers/model-comparison's own
+# FEASIBLE_SEAT_ROSTER comment. Deliberately NOT the full 12-seat inventory.
+# A coverage figure below 100% is expected and structural, not a defect to
+# chase to zero.
+: "${MODEL_COMPARISON_EMIT_FEASIBLE_SEATS:=4}"
 
 # ── Replay corpus selection + isolation (temperloop#1254, epic #1225 "model
 #    comparison harness") ───────────────────────────────────────────────────

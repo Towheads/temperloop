@@ -636,18 +636,31 @@ amendment).
 
 **Emit coverage is structurally partial — by design, not by omission.**
 The L0 usage-capture-feasibility spike (temperloop#1246) found that today,
-only **3 of the pipeline's 12 spawn seats** can emit a token-bearing
+only **3 of the pipeline's 12 spawn seats** can emit a **token-bearing**
 attribution record (three more become emit-feasible with a one-flag
 change; the remainder cannot, as things stand). The reason is structural:
 the seat's **name** and the spawn's **token counts** currently sit on
 opposite sides of a boundary with no join key between them.
-`build-level.mjs`, for instance, passes a per-seat label into every
-`agent()` call, but the harness drops that label rather than threading it
-through to the result — the run journal does carry usage figures, but the
-`.mjs` caller that knows the seat name never sees them. A comparison
-report's emit-coverage percentage is therefore expected to read below
-100%; that is not itself a defect to chase to zero, it is an honest
-denominator this module states outright rather than silently rounding up.
+`build-level.mjs`'s machinery calls are the clearest case: the harness
+drops the per-seat label before the run journal is written, so the
+`.mjs` caller that knows the seat name never sees the journal's usage
+figures.
+
+**Update (temperloop#2065 "worker-cost-capture").** `build-level.mjs`'s
+per-item WORKER call (shared by `/build`, `/sweep` and `/fix`) closes that
+specific gap differently: rather than correlating a journal after the
+fact, its own emitted-shell seam (`workflows/scripts/build/
+worker-usage.sh`) supplies the seat label and outcome ref directly,
+joining the attribution stream as a fourth emit-feasible seat,
+`build-worker`. It is emit-feasible but **never** token-bearing — a
+Workflow `agent()` call has no `claude -p` envelope to read tokens from,
+so its own record is permanently attribution-only — so the "3 of 12 can
+emit a token-bearing record" sentence above still holds; only the emit-
+feasible *denominator* (`MODEL_COMPARISON_EMIT_FEASIBLE_SEATS`, 4) grew.
+A comparison report's emit-coverage percentage is therefore expected to
+read below 100%; that is not itself a defect to chase to zero, it is an
+honest denominator this module states outright rather than silently
+rounding up.
 The full seat-by-seat inventory and mechanism is recorded in the operator's
 knowledge store as `Context/temperloop - per-seat usage capture
 feasibility.md` (not part of this repo's tracked tree); a stranger without
