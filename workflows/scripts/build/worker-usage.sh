@@ -101,14 +101,22 @@ case "$cmd" in
     [ -n "$seat" ] && [ -n "$outcome_ref" ] || die "usage: worker-usage.sh emit <seat> <model> <outcome-ref> [repo]"
     epoch_s="$(date +%s)"
     # THE HONEST DEGRADE (see header): `{}` — no envelope exists for a
-    # Workflow agent() call. Sourced only if present, so a checkout missing
-    # this sibling library (a stale vendored copy) still prints a clean
-    # WORKER_USAGE line — the durable attribution write is a best-effort
-    # side effect, never a precondition for this script's own output.
-    if [ -f "$ENVELOPE_LIB" ]; then
-      # shellcheck source=../lib/model-usage-envelope.sh
-      . "$ENVELOPE_LIB"
-      printf '{}' | model_usage_emit_from_envelope "$seat" "$model" "$outcome_ref" "$repo" "$EMIT_SCRIPT"
+    # Workflow agent() call. Sourced only if present AND readable AND it
+    # actually defines the function once sourced, so a checkout missing this
+    # sibling library (a stale vendored copy, an unreadable file, a corrupt
+    # one) still prints a clean WORKER_USAGE line — the durable attribution
+    # write is a best-effort side effect, never a precondition for this
+    # script's own output. All three checks sit in the CONDITION (not the
+    # body) so `set -e` never sees the `source`/call fail: `-f` alone tests
+    # existence, not readability, and a corrupt/truncated lib or one that
+    # predates this function would otherwise abort the whole script before
+    # the WORKER_USAGE line ever prints (temperloop#2065 review round 1
+    # [HIGH] — verified empirically: unreadable/corrupt/stale-lib all aborted
+    # with no stdout before this guard).
+    # shellcheck source=../lib/model-usage-envelope.sh
+    if [ -r "$ENVELOPE_LIB" ] && . "$ENVELOPE_LIB" 2>/dev/null \
+        && command -v model_usage_emit_from_envelope >/dev/null 2>&1; then
+      printf '{}' | model_usage_emit_from_envelope "$seat" "$model" "$outcome_ref" "$repo" "$EMIT_SCRIPT" || true
     fi
     printf '{"outcome":"WORKER_USAGE","epoch_s":%s,"usage_source":"unavailable","input_tokens":null,"output_tokens":null}\n' \
       "$epoch_s"
