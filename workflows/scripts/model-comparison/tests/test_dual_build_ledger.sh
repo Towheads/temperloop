@@ -54,6 +54,20 @@ gitc() { git -c user.name="DBL Test" -c user.email="dbl-test@example.com" -c com
 
 sut() { bash "$SUT" "$@"; }
 
+# epoch_stamp <epoch-seconds> -> `touch -t` stamp. BSD `date -r` takes an
+# epoch; GNU `date -r` takes a reference FILE instead — so a bare
+# `date -u -r "$epoch" +...` is BSD/macOS-only and silently empty (touch -t
+# ""  errors) on the ubuntu-latest CI runner. Same feature-detect-once shape
+# as workflows/scripts/build/tests/test_state_graph_local.sh's own
+# epoch_stamp helper.
+epoch_stamp() {
+  if date -r 0 '+%Y' >/dev/null 2>&1; then
+    date -r "$1" '+%Y%m%d%H%M.%S'          # BSD/macOS
+  else
+    date -d "@$1" '+%Y%m%d%H%M.%S'         # GNU coreutils
+  fi
+}
+
 # row <slug> <arm> [overrides-jq-filter] — a minimal, fully-valid row.
 row() {
   local slug="$1" arm="$2" extra="${3:-.}"
@@ -237,7 +251,7 @@ sut append --dir "$DPR" --row "$(row r1 baseline)" >/dev/null
 echo old >"$DPR/archives/old@baseline.patch"
 echo new >"$DPR/archives/new@baseline.patch"
 old_epoch=$(( $(date -u +%s) - 40 * 86400 ))
-touch -t "$(date -u -r "$old_epoch" +%Y%m%d%H%M.%S)" "$DPR/archives/old@baseline.patch"
+touch -t "$(epoch_stamp "$old_epoch")" "$DPR/archives/old@baseline.patch"
 sut prune --dir "$DPR" --retention-days 30 >/dev/null   # dry run: no removal
 [ -f "$DPR/archives/old@baseline.patch" ] || fail "20a: a dry-run prune must not delete anything"
 sut prune --dir "$DPR" --retention-days 30 --apply >/dev/null
@@ -253,7 +267,12 @@ ok "21 prune falls back to the DUAL_BUILD_ARCHIVE_RETENTION_DAYS setting (named-
 
 count
 unset DUAL_BUILD_ARCHIVE_RETENTION_DAYS
-out="$(sut prune --dir "$DPR" 2>&1)"; rc=$?
+# BUILD_CONFIG pointed at a path that cannot exist makes this genuinely
+# unconfigured regardless of whether the sibling `dual-build-settings` item
+# (#2071) has landed a DUAL_BUILD_ARCHIVE_RETENTION_DAYS row in the real
+# build.config.sh by the time this suite runs — see BUILD_CONFIG's own
+# "fixture-isolation override point" comment in the SUT.
+out="$(BUILD_CONFIG="$WORK/no-such-build-config.sh" sut prune --dir "$DPR" 2>&1)"; rc=$?
 [ "$rc" -ne 0 ] && [[ "$out" == *"no retention window configured"* ]] \
   || fail "22: prune with neither --retention-days nor the env setting should refuse clearly (got rc=$rc: $out)"
 ok "22 prune refuses clearly (no silent default) when no retention window is configured at all"

@@ -78,12 +78,19 @@
 #
 # Exit 0 on success. `read`/`archive-check` exit non-zero on a real negative
 # verdict (records missing / patch does not apply) as well as on usage error.
+#
+# `set -e` posture: deliberately OMITTED, not forgotten. Every mutating call
+# is followed by an explicit `|| die` (or, where the exit status itself is
+# meaningful rather than just pass/fail, an explicit `rc=$?` capture right
+# after the assignment — see `_validate_row`'s caller and `_lock_acquire`'s
+# use). Preserve that invariant in any new code path: a bare command whose
+# failure matters needs its own `|| die`/`rc=$?`, since `-e` will not do it.
 set -uo pipefail
 
 HERE="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -P "$HERE/../../.." && pwd)"
 
-BUILD_CONFIG="$REPO_ROOT/workflows/scripts/build/build.config.sh"
+BUILD_CONFIG="${BUILD_CONFIG:-$REPO_ROOT/workflows/scripts/build/build.config.sh}"  # setting:exempt — fixture-isolation override point (lets a test point this at an absent path to assert the genuinely-unconfigured-environment refusal, independent of what build.config.sh happens to declare); not a project-configurable setting
 # shellcheck source=../build/build.config.sh
 [ -f "$BUILD_CONFIG" ] && . "$BUILD_CONFIG"
 
@@ -104,10 +111,21 @@ command -v git >/dev/null 2>&1 || die "git not found"
 _operator_default() { echo "${USER:-${LOGNAME:-unknown}}"; }  # setting:exempt — OS-identity passthrough (who is running this process), not a project-configurable override point
 _host_default() { hostname -s 2>/dev/null || hostname 2>/dev/null || echo unknown; }
 
-# BSD stat (macOS) vs GNU stat (Linux CI) — try both forms (#1024's own
-# "check the platform's dialect" lesson: neither flag set is universal).
+# GNU stat (Linux CI) vs BSD stat (macOS) — guarded capture, GNU first, each
+# branch emitting ONLY on a non-empty success (#1024's own "check the
+# platform's dialect" lesson: neither flag set is universal). A bare
+# `stat -f %m X || stat -c %Y X` fallback chain is NOT safe: on GNU
+# coreutils, `-f` means `--file-system`, so `%m` is parsed as a FILE operand
+# — stat exits 1 but still prints a multi-line filesystem blob to stdout,
+# so the captured value becomes that blob concatenated with the real epoch
+# from the `||` branch. Same guarded-capture idiom as
+# workflows/scripts/build/env-reconcile.sh's `file_mtime` and
+# workflows/scripts/install/doctor.sh's `_doctor_stat_mtime`.
 _mtime_epoch() {
-  stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null
+  local m
+  if m="$(stat -c %Y "$1" 2>/dev/null)" && [ -n "$m" ]; then printf '%s\n' "$m"; return 0; fi
+  if m="$(stat -f %m "$1" 2>/dev/null)" && [ -n "$m" ]; then printf '%s\n' "$m"; return 0; fi
+  return 1
 }
 
 # _ledger_max_seq <rows-file> — highest well-formed `.seq` seen, 0 if none/absent.
@@ -180,6 +198,7 @@ _validate_row() {
       elif ($r.guard_armed != "ARMED" and $r.guard_armed != "UNARMED" and $r.guard_armed != "UNKNOWN") then "guard_armed must be ARMED, UNARMED or UNKNOWN"
       elif (($r.loss_reason // null) != null and (["gate","judge","infra","incomplete"] | index($r.loss_reason)) == null) then "loss_reason must be gate, judge, infra, incomplete or null"
       elif (($r.slug | type) != "string" or ($r.slug | length) == 0) then "slug must be a non-empty string"
+      elif (($r.slug | type) == "string" and (($r.slug | test("^[A-Za-z0-9._-]+$")) | not)) then "slug must match [A-Za-z0-9._-]+ (it becomes a filesystem path component)"
       elif (($r.base_sha | type) != "string" or ($r.base_sha | length) == 0) then "base_sha must be a non-empty string"
       elif (($r.head_sha | type) != "string" or ($r.head_sha | length) == 0) then "head_sha must be a non-empty string"
       elif (($r.machinery_version | type) != "string" or ($r.machinery_version | length) == 0) then "machinery_version must be a non-empty string"
@@ -221,6 +240,20 @@ cmd_append() {
   local rows_file="$dir/$ROWS_FILE_NAME"
 
   _lock_acquire "$dir" || die "append: lock failed"
+  # A SIGINT/SIGTERM (or a driver's `timeout`) between acquire and the
+  # explicit releases below must not leave `.append.lock` on disk — that
+  # would wedge every future append behind the 100x0.05s spin until a
+  # manual `rmdir`. Deliberately INT/TERM only, not EXIT: a signal fires
+  # while this function is still live on the call stack, so `$dir` is a
+  # valid local here — but an EXIT trap set in a function fires at the
+  # SCRIPT's eventual exit, by which point (on the normal, non-`exit`
+  # return path below) this function has already returned and `$dir` no
+  # longer exists, which under `set -u` dies "dir: unbound variable" on
+  # every ordinary append. `_lock_release` is idempotent (`|| true`), so
+  # this composes harmlessly with the explicit releases below; the
+  # trailing `exit 1` reproduces the terminate-on-signal behavior a bare
+  # (untrapped) SIGINT/SIGTERM would otherwise have had.
+  trap '_lock_release "$dir"; exit 1' INT TERM
   local next_seq max
   max="$(_ledger_max_seq "$rows_file")"
   next_seq=$((max + 1))
@@ -286,6 +319,16 @@ cmd_read() {
 
   local tmp total_lines=0 malformed=0 max_seq=0 seen_seqs="" line s
   tmp="$(mktemp "${TMPDIR:-/tmp}/dual-build-ledger-read.XXXXXX")" || die "read: mktemp failed"
+  # Cleanup via trap, not a duplicated `rm -f "$tmp"` on every exit path.
+  # Every path out of this function below calls `exit`, not bare `return` —
+  # deliberately: a function-local EXIT trap fires live (locals still in
+  # scope) when `exit` is called from inside the function, but fires LATER,
+  # after the local has already gone out of scope, if the function instead
+  # returns normally and the trap only runs at the whole script's eventual
+  # exit — which under `set -u` dies "tmp: unbound variable" on every
+  # ordinary read. See cmd_append's `_lock_release` trap note for the same
+  # trap-scoping rule from the other direction (INT/TERM there, EXIT here).
+  trap 'rm -f "$tmp"' EXIT
   : >"$tmp"
   while IFS= read -r line || [ -n "$line" ]; do
     [ -n "$line" ] || continue
@@ -294,7 +337,7 @@ cmd_read() {
       malformed=$((malformed + 1))
       continue
     fi
-    echo "$line" >>"$tmp"
+    printf '%s\n' "$line" >>"$tmp"
     s="$(jq -r '.seq // empty' <<<"$line")"
     case "$s" in
       ''|*[!0-9]*) : ;;
@@ -320,12 +363,12 @@ cmd_read() {
   if [ "$malformed" -gt 0 ] || [ "$gap" -eq 1 ] || [ "$valid_count" -lt "$target" ]; then
     printf 'dual-build-ledger.sh: records missing — %s valid record(s), %s malformed line(s), expected %s (max seq %s) in %s\n' \
       "$valid_count" "$malformed" "$target" "$max_seq" "$rows_file" >&2
-    rm -f "$tmp"
     exit 1
   fi
 
-  jq -cs 'sort_by(.seq)' <"$tmp"
-  rm -f "$tmp"
+  local rc
+  jq -cs 'sort_by(.seq)' <"$tmp"; rc=$?
+  exit "$rc"
 }
 
 cmd_archive() {
@@ -345,6 +388,7 @@ cmd_archive() {
     esac
   done
   [ -n "$slug" ] && [ -n "$arm" ] || die "archive: usage: archive <slug> <arm> --from <patch-file>|-"
+  case "$slug" in ''|*[!A-Za-z0-9._-]*) die "archive: slug must match [A-Za-z0-9._-]+ (it becomes a filesystem path component)" ;; esac
   case "$arm" in baseline|candidate) : ;; *) die "archive: arm must be baseline or candidate" ;; esac
   [ -n "$from" ] || die "archive: --from <patch-file>|- is required"
 
@@ -379,6 +423,7 @@ cmd_archive_check() {
     esac
   done
   [ -n "$slug" ] && [ -n "$arm" ] || die "archive-check: usage: archive-check <slug> <arm> [--base SHA] [--repo PATH]"
+  case "$slug" in ''|*[!A-Za-z0-9._-]*) die "archive-check: slug must match [A-Za-z0-9._-]+ (it becomes a filesystem path component)" ;; esac
   local patch="$dir/$ARCHIVES_SUBDIR/${slug}@${arm}.patch"
   [ -f "$patch" ] || die "archive-check: no archived patch at $patch"
   patch="$(cd -P "$(dirname "$patch")" && pwd)/$(basename "$patch")"
@@ -398,17 +443,19 @@ cmd_archive_check() {
 
   local tmp
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/dual-build-archive-check.XXXXXX")" || die "archive-check: mktemp -d failed"
+  # Trap, not a duplicated `rm -rf "$tmp"` on every die/exit path below — an
+  # interrupt (or a future `die` added between clone and cleanup) must not
+  # leak a whole throwaway `--shared` clone under $TMPDIR.
+  trap 'rm -rf "$tmp"' EXIT
 
   # A throwaway, object-sharing clone (not a `git worktree add` on the real
   # repo) sidesteps the `.git/config` write-lock a worktree add would contend
   # for (temperloop#1171's hazard) — this check runs read-only against the
   # real repo either way, so a genuinely separate repo is strictly simpler.
   if ! git clone --quiet --no-checkout --shared "$repo" "$tmp/clone" >/dev/null 2>&1; then
-    rm -rf "$tmp"
     die "archive-check: could not clone $repo"
   fi
   if ! git -C "$tmp/clone" checkout --quiet --detach "$base" >/dev/null 2>&1; then
-    rm -rf "$tmp"
     die "archive-check: base sha $base not found in $repo"
   fi
 
@@ -417,7 +464,6 @@ cmd_archive_check() {
     applies=0
     git -C "$tmp/clone" am --abort >/dev/null 2>&1 || true
   fi
-  rm -rf "$tmp"
 
   if [ "$applies" -eq 1 ]; then
     jq -cn --arg slug "$slug" --arg arm "$arm" --arg base "$base" \
@@ -476,7 +522,12 @@ cmd_prune() {
 
   local now cutoff removed=0 kept=0 f mtime
   now="$(date -u +%s)"
-  cutoff=$((now - retention * 86400))
+  # `10#$retention` forces base-10: a leading-zero value (e.g. "08") passes
+  # the digit-only guard above but bash arithmetic otherwise parses it as
+  # invalid octal ("value too great for base"), which under `set -uo
+  # pipefail` (no `-e`) would leave `cutoff` unset and error the loop's
+  # `-lt` test once per file instead of failing this command outright.
+  cutoff=$((now - 10#$retention * 86400))
   for f in "$archdir"/*.patch; do
     [ -e "$f" ] || continue
     mtime="$(_mtime_epoch "$f")" || { kept=$((kept + 1)); continue; }
