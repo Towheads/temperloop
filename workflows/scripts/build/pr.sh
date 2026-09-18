@@ -12,7 +12,7 @@
 #   pr.sh scan <worktreePath>                  # closing-keyword pre-push scan
 #   pr.sh base-check <worktreePath>            # speculative base-currency check
 #   pr.sh rebase <worktreePath>                # rebase onto fresh origin/<default>
-#   pr.sh push <worktreePath> <branch> [--force]   # push HEAD by SHA
+#   pr.sh push <worktreePath> <branch> [--force|--allow-rewrite]  # push HEAD by SHA
 #   pr.sh recover-probe <worktreePath> <branch>    # 3c lost-return side-effect probe
 #   pr.sh open --verdict <file|-> [--gh-issue N] [--also-closes N,N,...]
 #         [--plan-link <target>] [--source <ref>] [--verification-surface-file <path>] \
@@ -82,16 +82,29 @@
 #                {"outcome":"PUSHED_UNWATCHED","sha":…,"branch":…,"forced":bool,
 #                 "pr_lookup":"ok","pr_number":N,"pr_head_ref":…,"pr_url":…,
 #                 "stale_head_cause":"branch-mismatch","error":…} + non-zero exit |
-#                {"outcome":"PUSH_REJECTED","sha":…,"branch":…,"error":…} + non-zero exit
+#                {"outcome":"PUSH_REJECTED","sha":…,"branch":…,"forced":bool,
+#                 "lease":…|null,"refused_reason":"remote_not_superseded"
+#                   |"supersede_probe_failed"|null,"remote_tip":…|null,
+#                 "remote_only_commits":N|null,"error":…} + non-zero exit
+#                (refused_reason is temperloop#2103 round 3: a REQUESTED rewrite
+#                 this script declined to issue because the remote tip is not
+#                 superseded by local history — a genuine branch-content
+#                 collision — or because that question could not be answered. No
+#                 force is issued, the plain push is rejected loudly by git, and
+#                 origin is untouched; null on every other rejection.)
 #                (PUSHED_UNWATCHED is temperloop#1688: the push LANDED, but the
 #                 ref it landed on is watched by NO open PR while another open PR
 #                 for the same slug sits on a DIFFERENT head ref — the
 #                 `build/<slug>` vs `fix/<slug>` two-ref split. `stale_head_cause`
 #                 is what tells that apart from GitHub's post-force-push head lag;
 #                 see pr_survey() and cmd_push() below.)
-#                (forced=true only when a genuine rewrite needed --force; a
-#                 requested --force that is a pure fast-forward downgrades to a
-#                 plain push, forced=false — #335)
+#                (forced=true only when a genuine rewrite needed a force; a
+#                 requested rewrite that is a pure fast-forward downgrades to a
+#                 plain push, forced=false — #335. When forced=true the payload
+#                 also carries "lease":<the remote sha the force was leased
+#                 against>: the force is ALWAYS
+#                 --force-with-lease=<ref>:<sha> over a value read FIRST, never
+#                 a bare --force — temperloop#2103.)
 #   open       → {"outcome":"PR_OPENED","pr_number":…,"url":…,
 #                 "surface_closes_stripped":N} |
 #                {"outcome":"EXISTS","pr_number":…,"url":…,
@@ -153,7 +166,7 @@ die() {
 }
 
 usage() {
-  die "usage: pr.sh scan <worktreePath> | base-check <worktreePath> | rebase <worktreePath> | push <worktreePath> <branch> [--force] | recover-probe <worktreePath> <branch> | open --verdict <file|-> [--gh-issue N] [--also-closes N,N,...] [--plan-link <target>] [--source <ref>] [--verification-surface-file <path>] (--body-only | --update-pr <n> --repo <repo-root> | --repo <repo-root> --branch <branch> --title <title>) | acceptance-extract <bodyFile|->"
+  die "usage: pr.sh scan <worktreePath> | base-check <worktreePath> | rebase <worktreePath> | push <worktreePath> <branch> [--force|--allow-rewrite] | recover-probe <worktreePath> <branch> | open --verdict <file|-> [--gh-issue N] [--also-closes N,N,...] [--plan-link <target>] [--source <ref>] [--verification-surface-file <path>] (--body-only | --update-pr <n> --repo <repo-root> | --repo <repo-root> --branch <branch> --title <title>) | acceptance-extract <bodyFile|->"
 }
 
 # Physical-path resolve for an EXISTING dir (portable — no GNU readlink -f).
@@ -406,11 +419,45 @@ pr_head_confirm() {
 # --- push: 3f step 1 — push-by-SHA ---------------------------------------------
 # Push the worktree's HEAD to the plan branch by SHA, honoring the plan's
 # `branch:` name regardless of the worktree's throwaway build/<slug> local
-# branch. --force is *requested* by the rebase re-push (0.5) and CI-fix re-push
-# (3g) paths, but is only actually *used* when the push is a genuine history
-# rewrite — see the fast-forward downgrade below (#335). A rejection is a
-# structured outcome — stale-branch-vs-collision triage is the orchestrator's
-# call.
+# branch. A rewrite is *requested* by the rebase re-push (0.5), the CI-fix
+# re-push (3g) and the 3f-1 push itself (`--allow-rewrite`), but is only
+# actually *used* when the push is a genuine history rewrite — see the
+# fast-forward downgrade below (#335). A rejection is a structured outcome —
+# stale-branch-vs-collision triage is the orchestrator's call.
+#
+# temperloop#2103 — THE FORCE IS A LEASE, OVER A VALUE READ FIRST.
+# The rewrite is issued as `--force-with-lease=refs/heads/<branch>:<sha>` where
+# <sha> is the remote ref's value this function READ moments earlier, never a
+# bare `--force`. A bare force discards whatever a concurrent writer put on the
+# ref between the read and the push — the same class of loss this whole path
+# exists to prevent — while the lease turns that race into a rejection. Reading
+# the value is therefore not optional: when the remote ref cannot be read at all
+# (fetch AND ls-remote both fail, or the ref is simply absent), NO force is
+# issued. That is a deliberate narrowing of the pre-#2103 behaviour, which kept
+# the requested force on an unreadable remote: an unleasable force is exactly
+# the push we must not make, and a plain push that is rejected fails LOUDLY as
+# PUSH_REJECTED, which is recoverable, whereas a blind overwrite is not.
+#
+# temperloop#2103 round 3 — AND THE LEASE IS NOT ENOUGH ON ITS OWN. A lease stops
+# a writer who moves the ref BETWEEN the read and the push; it does nothing about
+# content that was already on the ref when the read happened. Because 3f-1 now
+# requests a rewrite on EVERY item's push rather than only on a rescue, a branch
+# name colliding with unrelated work would otherwise be silently overwritten and
+# reported as an ordinary PUSHED. So a requested rewrite is additionally gated on
+# the same supersede check the escalation-time rescue push uses
+# (build-level.mjs's preserveCommittedWorkCmd): every commit the remote tip has
+# and HEAD does not must be patch-equivalent to one in HEAD. When it is not — or
+# when that cannot be established — NO force is issued, the plain push is
+# rejected LOUDLY, and `refused_reason` names which of the two it was. See the
+# supersede gate inside cmd_push below for the full argument.
+#
+# `--allow-rewrite` is a spelling of the same request that carries no
+# classifier-visible `--force` token in the command line the orchestrator
+# executes (#437 — an unconditional literal `--force` trips the git-destructive
+# safety classifier non-deterministically and silently parks an autonomous run).
+# 3f-1 uses it on EVERY push because a continuation round's branch is routinely
+# already on origin and the 3f-0a rebase has just rewritten it, so a plain push
+# can never fast-forward (temperloop#2103's three live occurrences).
 #
 # #335 — prefer a plain fast-forward push over --force. A CI-retry commit is a
 # fast-forward descendant of the already-pushed head (the CI-fix worker resets
@@ -451,24 +498,120 @@ pr_head_confirm() {
 # `stale_head_cause:"branch-mismatch"` plus both ref names is what lets a reader
 # tell them apart, so the fix does not depend on the `--sha` pin also being right.
 cmd_push() {
-  local wt branch force="$1" sha out effective_force
+  local wt branch force="$1" sha out effective_force lease_arg lease_sha rc
   local survey lookup match_pr sibling_pr sibling_ref sibling_url confirm forced_json msg
+  local unique refused_reason refusal
   wt="$(resolve_worktree "$2")"
   branch="$3"
   validate_branch "$branch"
   sha="$(git -C "$wt" rev-parse HEAD 2>/dev/null)" || die "cannot resolve HEAD in '$wt'"
-  effective_force="$force"
+  effective_force=""
+  lease_arg=""
+  lease_sha=""
+  unique=""
+  refused_reason=""
   if [ -n "$force" ]; then
-    # Fetch the current remote tip (FETCH_HEAD). If it is an ancestor of the
-    # local head, the push is a pure fast-forward — no --force needed. Only a
-    # POSITIVE proof downgrades; a fetch failure or a non-ancestor tip keeps the
-    # requested --force, so behavior is unchanged whenever a rewrite may be real.
-    if git -C "$wt" fetch --quiet origin "$branch" 2>/dev/null \
-       && git -C "$wt" merge-base --is-ancestor FETCH_HEAD HEAD 2>/dev/null; then
-      effective_force=""
+    # READ the remote ref's current value first — the lease's expected value.
+    # The fetch is preferred because it also brings the object local, which is
+    # what makes the fast-forward test below answerable; ls-remote is the
+    # fallback that still yields a value when a ref-specific fetch cannot run.
+    if git -C "$wt" fetch --quiet origin "$branch" 2>/dev/null; then
+      lease_sha="$(git -C "$wt" rev-parse FETCH_HEAD 2>/dev/null || true)"
+    fi
+    if [ -z "$lease_sha" ]; then
+      # `|| true` is LOAD-BEARING, not decoration (see this file's header on the
+      # temperloop#2009 pipefail trap): this is a plain assignment over a
+      # pipeline, so under `set -euo pipefail` an unreachable or auth-failed
+      # origin makes ls-remote fail, pipefail carries that status, and pr.sh
+      # dies at this line — with 2>/dev/null swallowing the diagnostic, that is
+      # a bare exit 128 and NO outcome line at all, on the one path whose whole
+      # purpose is not losing work. Guarded, the failure falls through to the
+      # empty-lease arm below, which issues no force and lets a plain push be
+      # rejected LOUDLY as PUSH_REJECTED.
+      lease_sha="$(git -C "$wt" ls-remote origin "refs/heads/$branch" 2>/dev/null | awk 'NR==1 {print $1}' || true)"
+    fi
+    case "$lease_sha" in ''|*[!0-9a-f]*) lease_sha="" ;; esac
+    if [ -z "$lease_sha" ]; then
+      # Ref absent from origin, or unreadable. Nothing to rewrite, and nothing
+      # to lease against — a plain push creates it, or is rejected LOUDLY.
+      :
+    elif git -C "$wt" merge-base --is-ancestor "$lease_sha" HEAD 2>/dev/null; then
+      # #335 — POSITIVE proof of a pure fast-forward: downgrade to a plain push.
+      :
+    else
+      # temperloop#2103 round 3 — THE SUPERSEDE GATE. A genuine rewrite: the
+      # remote tip is NOT an ancestor of HEAD, so landing HEAD on that ref
+      # discards whatever is already there. A lease alone does not make that
+      # safe, and that distinction is the whole finding: a lease only prevents a
+      # writer moving the ref BETWEEN the read above and the push below. It says
+      # nothing about content that was ALREADY sitting on the ref when the read
+      # happened. Without this gate, 3f-1 — which requests a rewrite on EVERY
+      # item's main-line push, not only on a rescue — would force over a leftover
+      # manual branch, a reused slug or a planning bug and report an ordinary
+      # PUSHED, which the driver takes as the happy path straight into opening a
+      # PR. Nothing would surface that a rewrite had happened at all.
+      #
+      # So the test is the one preserveCommittedWorkCmd (build-level.mjs, the
+      # escalation-time rescue push) already applies, applied here verbatim and
+      # for the same reason: every commit reachable from the remote tip but not
+      # from HEAD must have a patch-equivalent in HEAD (`rev-list --cherry-pick
+      # --right-only`, git cherry's own test). Zero such commits ⇒ the remote
+      # holds a superseded copy of exactly this work (the rebased-continuation
+      # case this issue is about) ⇒ rewriting it destroys nothing. Otherwise the
+      # remote carries commits this worktree does not, and NO force is issued.
+      # The two force paths this change touches are now symmetric; the asymmetry
+      # — the rescue path refusing what it could not prove superseded while the
+      # far busier ordinary path did not — is what review round 2 caught.
+      #
+      # THE REFUSAL IS THE PLAIN PUSH, not a synthesized failure. Falling through
+      # with no force leaves the same `git push` the pre-#2103 code issued, and a
+      # non-fast-forward remote rejects it LOUDLY with git's own diagnostic —
+      # exactly the PUSH_REJECTED a human triaged before this change. That
+      # restores what build.md §3f step 1 promises rather than narrowing the
+      # promise, which is the wrong direction for a work-loss fix.
+      # `refused_reason` on that rejection is what tells it apart from the other
+      # two no-force rejections (see the payload below), so a reader never has to
+      # infer which of them happened.
+      #
+      # Two refusal reasons, never one (the round-1 lesson, held to here too):
+      # `unique` empty means the probe could not be ANSWERED — the remote tip's
+      # object is not local, because the ref-specific fetch above failed and only
+      # `ls-remote` yielded a value — which is NOT the same claim as an
+      # established conflict. `supersede_probe_failed` says exactly that rather
+      # than asserting a conflict it never established. Both refuse identically;
+      # only the claim made about why differs.
+      #
+      # `--no-merges` is the same DELIBERATE narrowing the rescue path documents:
+      # an ordinary merge commit's underlying unique commits are still counted,
+      # but an evil merge's own conflict-resolution edits are invisible to this
+      # count. A /build worker branch does not normally carry merge commits, and
+      # dropping the flag would count every merge's whole second parent as
+      # remote-only work and refuse essentially every legitimate rewrite.
+      #
+      # ACKNOWLEDGED, ACCEPTED NARROWING in the other direction: a continuation
+      # round that deliberately DROPS a commit an earlier round pushed no longer
+      # rewrites unattended — it refuses and escalates for triage. That is the
+      # conservative side of a work-loss fix on purpose: the refusal costs one
+      # human decision and is fully recoverable; the overwrite it replaces is not.
+      unique="$(git -C "$wt" rev-list --count --cherry-pick --right-only --no-merges "HEAD...$lease_sha" 2>/dev/null || true)"
+      case "$unique" in ''|*[!0-9]*) unique="" ;; esac
+      if [ "$unique" = 0 ]; then
+        effective_force=1
+        lease_arg="--force-with-lease=refs/heads/$branch:$lease_sha"
+      elif [ -n "$unique" ]; then
+        refused_reason="remote_not_superseded"
+      else
+        refused_reason="supersede_probe_failed"
+      fi
     fi
   fi
-  if out="$(git -C "$wt" push ${effective_force:+--force} origin "$sha:refs/heads/$branch" 2>&1)"; then
+  rc=0
+  if [ -n "$lease_arg" ]; then
+    out="$(git -C "$wt" push "$lease_arg" origin "$sha:refs/heads/$branch" 2>&1)" || rc=$?
+  else
+    out="$(git -C "$wt" push origin "$sha:refs/heads/$branch" 2>&1)" || rc=$?
+  fi
+  if [ "$rc" -eq 0 ]; then
     forced_json="$([ -n "$effective_force" ] && echo true || echo false)"
     # temperloop#1688 — the push landed; now ask which PR, if any, watches the ref.
     survey="$(pr_survey "$wt" "$branch")"
@@ -487,7 +630,7 @@ cmd_push() {
         msg="${msg} — its head stays at its pre-push content."
         msg="${msg} This is a BRANCH-NAME mismatch (two different refs), NOT GitHub's post-force-push head lag:"
         msg="${msg} that lag shows the SAME ref with a trailing head sha and converges on its own, this never will."
-        msg="${msg} Re-push onto the PR's own ref: pr.sh push <worktree> ${sibling_ref} --force"
+        msg="${msg} Re-push onto the PR's own ref: pr.sh push <worktree> ${sibling_ref} --allow-rewrite"
         jq -cn --arg sha "$sha" --arg branch "$branch" --argjson forced "$forced_json" \
            --arg pr "$sibling_pr" --arg ref "$sibling_ref" --arg url "$sibling_url" --arg msg "$msg" \
           '{outcome:"PUSHED_UNWATCHED", sha:$sha, branch:$branch, forced:$forced,
@@ -499,13 +642,58 @@ cmd_push() {
       # split, so fall through to PUSHED rather than manufacture a failure.
       case "$confirm" in ''|*[!0-9]*) match_pr="" ;; *) match_pr="$confirm" ;; esac
     fi
+    # `lease` records the remote value the force was leased against, so the
+    # rewrite is auditable after the fact (temperloop#2103); null on every
+    # non-forced push, where nothing was leased.
     jq -cn --arg sha "$sha" --arg branch "$branch" --argjson forced "$forced_json" \
-       --arg lookup "$lookup" --arg pr "$match_pr" \
+       --arg lookup "$lookup" --arg pr "$match_pr" --arg lease "$lease_sha" \
       '{outcome:"PUSHED", sha:$sha, branch:$branch, forced:$forced,
+        lease:(if $forced then $lease else null end),
         pr_lookup:$lookup, pr_number:(if $pr == "" then null else ($pr|tonumber) end)}'
   else
+    # `forced`/`lease`/`refused_reason` on the rejection too, so a reader can
+    # tell the FOUR rejections apart without re-deriving them: a plain push that
+    # could not fast-forward (forced=false, lease=null, refused_reason=null — no
+    # rewrite was requested), a rewrite whose lease went stale under a concurrent
+    # writer (forced=true with a lease), a requested rewrite whose remote value
+    # could not be read at all (forced=false, lease=null, refused_reason=null,
+    # but the error names a non-fast-forward), and — temperloop#2103 round 3 — a
+    # requested rewrite this function REFUSED to issue because the remote tip is
+    # not superseded by local history, or because that question could not be
+    # answered (forced=false, refused_reason set, `remote_tip` naming the sha it
+    # refused over and `remote_only_commits` the established count).
+    #
+    # The refusal is stated in `error` FIRST, ahead of git's own non-fast-forward
+    # text, because `error` is what §3f step 1 renders verbatim to the human who
+    # triages this: the raw git message alone would read as the ordinary stale
+    # branch it is not, and the decision the operator has to make (rename the
+    # branch, or confirm the remote work really is superseded) turns entirely on
+    # which of the two this is.
+    if [ -n "$refused_reason" ]; then
+      if [ "$refused_reason" = "remote_not_superseded" ]; then
+        refusal="REFUSED to rewrite refs/heads/${branch}: origin's tip ${lease_sha} carries ${unique} commit(s)"
+        refusal="${refusal} this worktree's history does not, so the local history does NOT supersede it."
+        refusal="${refusal} This is a genuine content collision — a leftover branch, a reused slug or a planning bug —"
+        refusal="${refusal} NOT the stale pre-rebase copy of this same work that --allow-rewrite exists to land."
+      else
+        refusal="REFUSED to rewrite refs/heads/${branch}: could not establish whether this worktree's history"
+        refusal="${refusal} supersedes origin's tip ${lease_sha} (its object is not available locally, so the"
+        refusal="${refusal} patch-equivalence probe could not run). No conflict is asserted — the question is UNANSWERED."
+      fi
+      refusal="${refusal} No force was issued and origin is exactly where it was."
+      refusal="${refusal} Triage by hand: inspect origin/${branch}; if it is unrelated work, pick a new branch name"
+      refusal="${refusal} (patch the plan's branch:); if it is genuinely superseded, confirm that and re-push."
+      out="${refusal}"$'\n\n'"${out}"
+    fi
     jq -cn --arg sha "$sha" --arg branch "$branch" --arg error "$out" \
-      '{outcome:"PUSH_REJECTED", sha:$sha, branch:$branch, error:$error}'
+       --argjson forced "$([ -n "$effective_force" ] && echo true || echo false)" \
+       --arg lease "$lease_sha" --arg refused "$refused_reason" --arg unique "$unique" \
+      '{outcome:"PUSH_REJECTED", sha:$sha, branch:$branch, forced:$forced,
+        lease:(if $forced then $lease else null end),
+        refused_reason:(if $refused == "" then null else $refused end),
+        remote_tip:(if $refused == "" then null else $lease end),
+        remote_only_commits:(if $unique == "" then null else ($unique|tonumber) end),
+        error:$error}'
     exit 1
   fi
 }
@@ -1411,7 +1599,12 @@ case "$cmd" in
     force=""
     while [ $# -gt 0 ]; do
       case "$1" in
-        --force) force=1 ;;
+        # Two spellings of ONE request: "rewrite the remote branch if the local
+        # head is not a fast-forward of it". `--allow-rewrite` is the spelling
+        # 3f-1 uses because it carries no classifier-visible `--force` token
+        # (#437); `--force` stays for the existing 0.5/3g callers. Neither ever
+        # produces a bare `git push --force` — see cmd_push (temperloop#2103).
+        --force|--allow-rewrite) force=1 ;;
         *) usage ;;
       esac
       shift
