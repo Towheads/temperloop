@@ -296,6 +296,10 @@ install-cli workflows/scripts/tests/test_doctor_cross_checkout_split.sh
 # (does the installed state match the running checkout), so it claims here
 # too rather than carving out a new feature.
 install-cli workflows/scripts/tests/test_doctor_installed_workflow_drift.sh
+# classify_entry()'s own symlink verdict (temperloop#1909) — the same core
+# subject matter as the two above (does the installed state match the running
+# checkout), so it claims here rather than carving out a new feature.
+install-cli workflows/scripts/tests/test_doctor_symlinked_home.sh
 # (workflows/scripts/demo/ is claimed by the `testbed` slug below — it is the
 # testbed seed-content home now, not the try-era demo-repo generator.)
 install-cli workflows/scripts/proposal/*

@@ -6,15 +6,17 @@
 #
 # Status codes (printed per-entry and in the summary):
 #
-#   OK        symlink present and points at expected source
+#   OK        symlink present and resolves to the expected source
 #             OR managed real file / shim is present
 #   MISSING   target path does not exist (and is not a broken symlink)
-#   DRIFT     symlink present but points at a DIFFERENT source
+#   DRIFT     symlink present but points at a DIFFERENT file
 #   SHADOWED  a real file/directory exists where a symlink is expected
 #   DANGLING  symlink present but its target path does not exist on disk
 #
 # Those five classify the managed link TABLE only — they compare a symlink's
-# TARGET STRING, never file CONTENT. Content drift is a separate section:
+# target PATH IDENTITY (exact target string, else same device+inode —
+# temperloop#1909, so a symlinked $HOME is not mistaken for drift), never
+# file CONTENT. Content drift is a separate section:
 # check_installed_workflow_drift() (temperloop#1397) compares the installed
 # ~/.claude/workflows/*.mjs against this checkout's claude/workflows/*.mjs by
 # sha256 and reports OK / DRIFT / ABSENT / UNKNOWN / SKIPPED — see that
@@ -86,9 +88,48 @@ fi
 source "$GITIGNORE_SAFETY_SH"
 
 # ---------------------------------------------------------------------------
+# same_physical_file <path_a> <path_b>
+#
+# True when both paths exist AND name the SAME physical file — same device +
+# inode, with every symlinked component followed. Bash's `test -ef` is the
+# whole implementation: it is POSIX-portable, present in bash 3.2 (stock
+# macOS), and needs no `realpath`/`readlink -f` — neither of which exists in
+# a usable form on a stock BSD/macOS host (GNU `readlink -f` is absent there,
+# so a path-string resolution would have to be hand-rolled per-platform).
+#
+# WHY THIS EXISTS (temperloop#1909). classify_entry() used to decide a
+# symlink's status by comparing the link's TARGET STRING against the expected
+# source string. Two correct-but-differently-spelled paths for the same file
+# then read as DRIFT: a first-run persona install under `mktemp -d` on macOS
+# reported ALL 24 managed symlinks as DRIFT because the links were created
+# through the resolved `/private/var/folders/...` spelling while doctor's own
+# $FOUNDATION/$HOME carried the unresolved `/var/folders/...` one. Any $HOME
+# that resolves through a symlink (macOS `/var` -> `/private/var`, `/tmp` ->
+# `/private/tmp`, a bind-mounted or external-volume home) hits it, and the
+# operator sees a wall of DRIFT for a perfectly correct install.
+#
+# Identity, not spelling, is the question the DRIFT verdict is actually
+# asking, so identity is what it now compares. This never WEAKENS the check:
+# a link pointing at a genuinely different file has a different inode and is
+# still DRIFT, and a dangling link cannot satisfy `-ef` at all (both operands
+# must exist), so it never launders a broken install into an OK.
+# ---------------------------------------------------------------------------
+same_physical_file() {
+  local a="$1" b="$2"
+  [ -n "$a" ] && [ -n "$b" ] || return 1
+  [ -e "$a" ] && [ -e "$b" ] || return 1
+  [ "$a" -ef "$b" ]
+}
+
+# ---------------------------------------------------------------------------
 # classify_entry <target> <expected_source> <kind>
 #
 # Prints the status string for a single managed path.
+#
+# For kind=symlink the OK test is TWO-STEP (temperloop#1909): the cheap exact
+# target-string match first, then same_physical_file() above as the fallback
+# that keeps a differently-spelled path to the same file out of DRIFT. See
+# that helper's header for why string equality alone was wrong.
 # ---------------------------------------------------------------------------
 classify_entry() {
   local target="$1"
@@ -134,6 +175,10 @@ classify_entry() {
       else
         echo "DANGLING"
       fi
+    elif same_physical_file "$target" "$expected_src"; then
+      # Different spelling, same physical file — e.g. a $HOME or a checkout
+      # root that resolves through a symlink (temperloop#1909). Not drift.
+      echo "OK"
     else
       echo "DRIFT"
     fi
@@ -827,8 +872,8 @@ check_legacy_host_config() {
 #
 # Same class as temperloop#1365/#1591: stale machinery never announces
 # itself — it runs old logic and reports success. The existing surfaces
-# genuinely cannot see it. classify_entry() compares a symlink's TARGET
-# STRING, so an installed real-file copy, or a symlink that points at the
+# genuinely cannot see it. classify_entry() compares a symlink's target PATH
+# IDENTITY, so an installed real-file copy, or a symlink that points at the
 # intended directory whose CONTENT is stale, both read OK.
 # check_cross_checkout_split() resolves ~/.claude/hooks and would catch
 # ~/.claude/workflows being bound to a different checkout, but it is a
