@@ -1011,9 +1011,32 @@ echo "PASS: an unreachable origin fails SAFE — preserve unchanged, basis=unref
 
 R20="$(mkfix arms)"
 
+# Hermetic guard registration for the per-arm `guard` verdict asserted below.
+# Same fixture idiom — and the same reason — as test_guard_arming_probe.sh's
+# own header note: the two arm creates below run under a THROWAWAY $HOME
+# carrying a registration for the REAL hook, so the verdict is a pure function
+# of THIS fixture rather than of whatever ~/.claude/settings.json the
+# developer's workstation or the CI runner happens to carry. Read against the
+# ambient HOME the assertion said ARMED on a workstation that registers the
+# hook and UNARMED (registration=missing) on a clean ubuntu-latest runner — an
+# assertion about the HOST, not about arm naming.
+ARM_HOME="$TMP/arm_home"
+mkdir -p "$ARM_HOME/.claude"
+ARM_HOOK="$(cd "$(dirname "$SCRIPT")/../../.." && pwd)/claude/hooks/build-worktree-guard.sh"
+[ -f "$ARM_HOOK" ] || fail "#2065: real guard hook not found at $ARM_HOOK"
+jq -cn --arg c "bash $ARM_HOOK" \
+  '{hooks:{PreToolUse:[{matcher:"Bash|Edit|Write|MultiEdit",
+                        hooks:[{type:"command", command:$c}]}]}}' \
+  > "$ARM_HOME/.claude/settings.json"
+
+# arm_create <tag> <slug> <arm-spec> — one create under the pinned HOME, with
+# stderr captured at $TMP/arm_<tag>.err so each arm's own guard BANNER (which
+# names the worktree it judged) can be asserted, not just the JSON field.
+arm_create() { HOME="$ARM_HOME" bash "$SCRIPT" create "$R20" "$2" --arm "$3" 2>"$TMP/arm_$1.err"; }
+
 # --- create --arm produces the arm-disambiguated path/branch, and the
 #     .dual-build-arm marker carries the DECLARED sibling pair -----------------
-outA="$(bash "$SCRIPT" create "$R20" dualslug --arm control:candidate)"
+outA="$(arm_create A dualslug control:candidate)"
 [ "$(jq -r .outcome <<<"$outA")" = "CREATED" ] || fail "#2065: arm create outcome (got: $outA)"
 [ "$(jq -r .path <<<"$outA")" = "$R20.wt/dualslug@control" ] \
   || fail "#2065: arm-disambiguated path (got: $outA)"
@@ -1038,18 +1061,36 @@ marker="$(cat "$R20.wt/dualslug@control/.dual-build-arm")"
   || fail "#2065: .dual-build-arm leaked into git status — not excluded"
 # create's own guard-probe verdict is recorded per arm (it is just the
 # ordinary per-invocation guard_probe call — no separate mechanism needed).
+# ARMED here is a REAL end-to-end probe against the shipped hook body, not a
+# host artefact: the registration above is the fixture's own, so this goes RED
+# if the hook stops denying inside an arm-suffixed worktree — e.g. if the
+# guard's `case "$(dirname "$wt")" in *.wt)` arming gate ever stopped
+# tolerating an `@<arm>` basename.
 [ "$(jq -r .guard <<<"$outA")" = "ARMED" ] \
   || fail "#2065: create's guard-probe verdict missing/not ARMED for an arm worktree (got: $outA)"
+detailA="$(jq -r .guard_detail <<<"$outA")"
+case "$detailA" in
+  *"registration=ok"*"bash_arm=deny"*"write_arm=deny"*) ;;
+  *) fail "#2065: arm A's ARMED verdict is not a real deny-on-both-arms probe (got: $detailA)" ;;
+esac
+grep -qF "build-worktree-guard: ARMED for $R20.wt/dualslug@control (" "$TMP/arm_A.err" \
+  || fail "#2065: arm A's guard banner does not name arm A's OWN worktree (see $TMP/arm_A.err)"
 echo "PASS: create --arm <name>:<sibling> produces <slug>@<arm> path/branch + .dual-build-arm marker with the declared sibling pair, and its own per-arm guard verdict (#2065)"
 
 # --- two arms of ONE slug create without collision, sit alongside each other,
 #     and prune without collision (both independently mergeable) -------------
-outB="$(bash "$SCRIPT" create "$R20" dualslug --arm candidate:control)"
+outB="$(arm_create B dualslug candidate:control)"
 [ "$(jq -r .outcome <<<"$outB")" = "CREATED" ] || fail "#2065: second arm create outcome (got: $outB)"
 [ "$(jq -r .path <<<"$outB")" = "$R20.wt/dualslug@candidate" ] \
   || fail "#2065: second arm path (got: $outB)"
 [ "$(jq -r .branch <<<"$outB")" = "build/dualslug@candidate" ] \
   || fail "#2065: second arm branch (got: $outB)"
+# PER ARM, not per slug: the second arm carries its OWN guard verdict, and its
+# banner names ITS OWN worktree — two distinct probes, one per arm worktree.
+[ "$(jq -r .guard <<<"$outB")" = "ARMED" ] \
+  || fail "#2065: the second arm's own guard-probe verdict missing/not ARMED (got: $outB)"
+grep -qF "build-worktree-guard: ARMED for $R20.wt/dualslug@candidate (" "$TMP/arm_B.err" \
+  || fail "#2065: arm B's guard banner does not name arm B's OWN worktree (see $TMP/arm_B.err)"
 # Both worktrees AND both branches coexist — no collision.
 [ -d "$R20.wt/dualslug@control" ] || fail "#2065: arm A worktree vanished after arm B create"
 [ -d "$R20.wt/dualslug@candidate" ] || fail "#2065: arm B worktree missing"
