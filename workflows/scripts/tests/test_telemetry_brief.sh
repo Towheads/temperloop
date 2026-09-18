@@ -518,6 +518,127 @@ else
   ok "the stream's second writer grows no phantom \$HOME/dev/foundation tree either"
 fi
 
+# OVERRIDE-BEFORE-RESOLVER (temperloop#1902, round-2 HIGH). The per-stream
+# override seam is NOT the shared library's to own: when ISSUE_TOUCHES_RAW_DIR
+# is set, nothing needs resolving, so the emit must honor it even where
+# board/lib/raw_lake.sh is absent entirely. This is a real regression risk, not
+# a style point — build.md's 3f/4d call this script as `… || true`, so a
+# resolver-presence guard placed AHEAD of the override drops the record while
+# the call site still reads as success. Sandbox: a copy of the writer with NO
+# board/lib/ subtree beside it at all.
+no_lib="$TMP/no-lib-1902"
+mkdir -p "$no_lib/workflows/scripts"
+cp "$REPO/workflows/scripts/emit-issue-touch.sh" "$no_lib/workflows/scripts/emit-issue-touch.sh"
+override_sink="$TMP/override-sink-1902"
+env -u CLAIMS_RAW_DIR -u TELEMETRY_RAW_DIR \
+    HOME="$decoy_home" SUBSET_HOST_LABEL=testhost \
+    ISSUE_TOUCHES_RAW_DIR="$override_sink" \
+    bash "$no_lib/workflows/scripts/emit-issue-touch.sh" \
+      --repo example/repo --issue 1902 --kind merge >/dev/null 2>&1
+ovr_rc=$?
+assert_rc0 "$ovr_rc" "emit-issue-touch.sh exits 0 honoring ISSUE_TOUCHES_RAW_DIR with no resolver present"
+if [ -f "$override_sink/issue-touches-${month}.jsonl" ]; then
+  ok "ISSUE_TOUCHES_RAW_DIR is honored even when board/lib/raw_lake.sh is ABSENT — the override is consulted BEFORE the resolver-presence guard (temperloop#1902)"
+else
+  fail_test "ISSUE_TOUCHES_RAW_DIR is honored even when board/lib/raw_lake.sh is ABSENT — the override is consulted BEFORE the resolver-presence guard (temperloop#1902)" "no $override_sink/issue-touches-${month}.jsonl — the resolver guard short-circuited a fully-specified sink"
+fi
+
+# SYMLINK-CHAIN resolution through the writer (temperloop#1902): an
+# installed-on-PATH symlink — including a multi-hop chain with a relative hop —
+# must still find its SOURCE checkout's library, and through it that checkout's
+# own lake, not the link's directory.
+link_dir="$TMP/bin-1902"
+mkdir -p "$link_dir"
+ln -s "$fake/workflows/scripts/emit-issue-touch.sh" "$link_dir/emit-issue-touch-a.sh"
+ln -s "$link_dir/emit-issue-touch-a.sh" "$link_dir/emit-issue-touch-b.sh"
+ln -s "emit-issue-touch-b.sh" "$link_dir/emit-issue-touch.sh"
+(
+  cd "$TMP" &&
+  env -u CLAIMS_RAW_DIR -u ISSUE_TOUCHES_RAW_DIR -u TELEMETRY_RAW_DIR \
+      HOME="$decoy_home" SUBSET_HOST_LABEL=testhost \
+      bash "$link_dir/emit-issue-touch.sh" \
+        --repo example/repo --issue 1902 --kind merge >/dev/null 2>&1
+) || fail_test "emit-issue-touch.sh symlink-chain leg runs" "the emit exited non-zero"
+touch_lines="$(wc -l < "$fake/meta/data/raw/issue-touches-${month}.jsonl" 2>/dev/null | tr -d ' ')"
+if [ "${touch_lines:-0}" -ge 2 ]; then
+  ok "a 3-hop symlink chain still resolves to the SOURCE checkout's lake (temperloop#1902)"
+else
+  fail_test "a 3-hop symlink chain still resolves to the SOURCE checkout's lake (temperloop#1902)" "expected >=2 records in $fake/meta/data/raw/issue-touches-${month}.jsonl, got ${touch_lines:-0}"
+fi
+
+# BOUNDED symlink loops (temperloop#1902, round-2 MEDIUM). A symlink cycle
+# keeps `[ -L ]` true forever, and an unbounded resolve loop spins at 100% CPU
+# with no exit — the same never-fail-or-block-the-spawn-site class
+# emit-issue-touch.sh's own ARG LOOP header (temperloop#1342) calls strictly
+# worse than the failure it guards, since `emit-… || true` cannot save a caller
+# from a hang. A cycle is not reachable through exec (the kernel refuses to
+# open it first), so the bound is asserted statically, at the loop itself.
+if grep -Eq 'while \[ -L "\$here" \] && \[ "\$_hops" -lt [0-9]+ \]' "$REPO/workflows/scripts/emit-issue-touch.sh"; then
+  ok "emit-issue-touch.sh's symlink-resolution loop is bounded (no unbounded spin on a cycle)"
+else
+  fail_test "emit-issue-touch.sh's symlink-resolution loop is bounded (no unbounded spin on a cycle)" "no iteration cap on the 'while [ -L \"\$here\" ]' loop"
+fi
+if grep -Eq 'while \[ -L "\$src" \] && \[ "\$hops" -lt [0-9]+ \]' "$REPO/workflows/scripts/board/lib/raw_lake.sh"; then
+  ok "raw_lake.sh's own symlink-resolution loop is bounded (no unbounded spin on a cycle)"
+else
+  fail_test "raw_lake.sh's own symlink-resolution loop is bounded (no unbounded spin on a cycle)" "no iteration cap on the 'while [ -L \"\$src\" ]' loop"
+fi
+
+# NEVER-FAILS contract (temperloop#1902, round-2 MEDIUM). raw_lake.sh's header
+# promises an unresolvable checkout FALLS BACK rather than returning non-zero,
+# because both callers evaluate it at module scope under `set -euo pipefail` —
+# claim.sh, the cross-session board lock, would otherwise die at startup over a
+# telemetry path lookup. The bare `$HOME` in the fallback broke that promise
+# under the caller's inherited `set -u`: unset HOME => unbound variable =>
+# non-zero => the whole board command aborts. Exercise the exact shape: outside
+# any git checkout (so the fallback leg is the one taken), with HOME unset,
+# under set -euo pipefail.
+nogit="$TMP/nogit-1902"
+mkdir -p "$nogit"
+cp "$REPO/workflows/scripts/board/lib/raw_lake.sh" "$nogit/raw_lake.sh"
+nf_out="$(cd "$nogit" && env -u HOME bash -c '
+  set -euo pipefail
+  . ./raw_lake.sh
+  D="$(raw_lake_dir)"
+  printf "%s\n" "$D"
+' 2>&1)"; nf_rc=$?
+assert_rc0 "$nf_rc" "raw_lake_dir() returns 0 for a set -euo pipefail caller with HOME unset and no git checkout (temperloop#1902)"
+assert_not_has "$nf_out" "unbound variable" "raw_lake_dir() reads no bare \$HOME — a set -u caller sees no unbound-variable error from a telemetry path lookup"
+# The exact fallback VALUE matters, not just its suffix: the bare-$HOME form
+# aborted its own `|| echo` subshell mid-expansion and silently yielded the
+# TRUNCATED "/meta/data/raw" (an empty root), which still ends in meta/data/raw
+# and would slip a suffix-only check. Assert the whole string.
+if [ "$nf_out" = "/dev/foundation/meta/data/raw" ]; then
+  ok "raw_lake_dir()'s unresolvable-checkout fallback yields the whole \${HOME:-}/dev/foundation literal, not a truncated root"
+else
+  fail_test "raw_lake_dir()'s unresolvable-checkout fallback yields the whole \${HOME:-}/dev/foundation literal, not a truncated root" "got: $nf_out"
+fi
+
+# SELF-SYMLINK resolution in the OWNER itself (temperloop#1902, round-2 LOW).
+# `cd -P "$(dirname …)"` resolves the DIRECTORY components but not the file, so
+# a raw_lake.sh reached through a symlink would report the git toplevel of the
+# LINK's checkout — breaking the caller-independence its header claims and the
+# end-to-end symlink safety the writer's comment claims. Two sandbox checkouts:
+# source the DECOY's link, expect the SOURCE's lake.
+lib_src="$TMP/lib-src-1902"
+lib_decoy="$TMP/lib-decoy-1902"
+mkdir -p "$lib_src/lib" "$lib_decoy/lib"
+git -C "$lib_src" init -q
+git -C "$lib_decoy" init -q
+cp "$REPO/workflows/scripts/board/lib/raw_lake.sh" "$lib_src/lib/raw_lake.sh"
+ln -s "$lib_src/lib/raw_lake.sh" "$lib_decoy/lib/raw_lake.sh"
+lib_src_phys="$(cd -P "$lib_src" && pwd)"
+sym_out="$(cd "$lib_decoy" && bash -c '
+  set -euo pipefail
+  . ./lib/raw_lake.sh
+  raw_lake_dir
+' 2>&1)"
+if [ "$sym_out" = "$lib_src_phys/meta/data/raw" ]; then
+  ok "raw_lake_dir() resolves its OWN symlink — a linked copy answers with the SOURCE checkout's lake (temperloop#1902)"
+else
+  fail_test "raw_lake_dir() resolves its OWN symlink — a linked copy answers with the SOURCE checkout's lake (temperloop#1902)" "expected $lib_src_phys/meta/data/raw, got $sym_out"
+fi
+
 # SINGLE-OWNER convention check (temperloop#1902), the static half of the leg
 # above: the behavioral leg proves WHERE the record lands, but in the kernel's
 # own layout a re-inlined `../..` hop would land in the same place and slip
