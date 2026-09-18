@@ -964,6 +964,16 @@ esac
 ok "G2 a flag-like value for a flag that needs an operand is rejected, not silently consumed"
 
 count
+out="$(run_with_timeout 5 bash "$JUDGE" judge --record "$RECORD" --model "" --judge-runner "bash $JSTUB" 2>&1)"
+rc=$?
+[ "$rc" -eq 2 ] || fail "G2b: an empty-string --model must be rejected (rc 2), got $rc: $out"
+case "$out" in
+  *"non-empty value"*) ;;
+  *) fail "G2b: expected the empty-operand rejection message, got: $out" ;;
+esac
+ok "G2b an empty-string operand (--model \"\") is rejected — an empty judge_model would otherwise silently drop the --model flag on a --live spawn and resolve the host's saved default model instead of the caller's chosen tier"
+
+count
 out="$(run_with_timeout 5 bash "$JUDGE" judge --record "$RECORD" --not-a-real-flag 2>&1)"
 rc=$?
 [ "$rc" -eq 2 ] || fail "G3: an unknown flag must fail with rc 2, got $rc: $out"

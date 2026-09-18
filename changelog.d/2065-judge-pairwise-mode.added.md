@@ -11,4 +11,10 @@
   rather than a confident-looking number driven by screen position. The
   existing judge-equals-candidate guard now checks BOTH candidates — an exact
   provider+model match with either one refuses the whole comparison before
-  any call is made. Inert per ADR 0027: nothing calls this mode for you yet.
+  any call is made. A same-item precondition (matching `issue`/`pr` ref plus
+  `title`/`scope`/`acceptance`) also refuses, before any spend, if the two
+  records describe different items — the two orders must differ ONLY in
+  candidate position. A `tie` reply is only accepted with `margin:0`; an
+  off-contract non-zero-margin tie UNAVAILABLEs that order rather than
+  averaging into a fabricated confidence figure. Inert per ADR 0027: nothing
+  calls this mode for you yet.
