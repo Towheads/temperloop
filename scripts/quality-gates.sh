@@ -814,6 +814,20 @@ KERNEL_GATES=(
   # to compensated summation in CPython 3.12 (gh-100425), which moved the
   # reported bound and failed this suite on 3.9 until fsum replaced it.
   "make test-model-comparison-stats"
+  # `stats.sh exact-binom` (temperloop#2065): the two-sided exact
+  # (Clopper-Pearson) confidence interval for a win proportion k/n against
+  # the fixed null p=0.5, inverting the binomial CDF directly rather than a
+  # normal approximation or a bootstrap resample — known-answer fixture
+  # (7/10, 95% CI), excludes_null in both directions, the SAME shared
+  # inconclusive floor bootstrap-ci/verdict enforce (asserted at the
+  # threshold boundary), k=0/k=n edge cases, and error paths. A DIRECT
+  # `bash` gate, not folded into `make test-model-comparison-stats` above,
+  # so this item's activation proof (`scripts/quality-gates.sh --list |
+  # grep -q test_stats_exact_binom`, temperloop#1934) resolves to a real
+  # by-name gate line — `--list` prints only the literal command strings in
+  # this array, never a comment, same convention as test_state_graph.sh's
+  # own explicit registration above.
+  "bash workflows/scripts/model-comparison/tests/test_stats_exact_binom.sh"
   # Portable-timeout shared shim (temperloop#256): run_with_timeout's
   # backend selection (native `timeout` -> `gtimeout` -> the bash-3.2-safe
   # background+kill fallback), the 124->137 exit-code normalization across

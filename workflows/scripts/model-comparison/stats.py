@@ -81,6 +81,24 @@ error prints to stderr and exits 2):
                  "no_significant_difference" with `degenerate: true`, never
                  as a maximally-confident winner on a zero-width interval.
 
+  exact-binom    Two-sided EXACT (Clopper-Pearson) confidence interval for a
+                 win proportion k/n against the null p=0.5 (a fair-coin sign
+                 test) — computed by inverting the binomial CDF directly (via
+                 `math.comb` + bisection), never a normal approximation or a
+                 bootstrap resample, so it stays valid at the small N a
+                 bootstrap needs many more outcomes to trust. Subject to the
+                 SAME inconclusive floor as `bootstrap-ci`/`verdict`: below
+                 `--min-sample` outcomes `lower`/`upper`/`excludes_null` are
+                 null and `below_min_sample` is true — no caller reads a
+                 significance verdict off a too-small sample here either. At
+                 or above the floor: `phat` = k/n, `lower`/`upper` bracket
+                 the exact interval at `--ci-width`, and `excludes_null` is
+                 true iff the fixed null 0.5 falls OUTSIDE [lower, upper]
+                 (the win rate is significantly different from a coin flip
+                 at this confidence level). JSON fields: n, k, min_sample,
+                 below_min_sample, ci_width_pct, null_p (always 0.5), phat,
+                 lower, upper, excludes_null.
+
   coverage       Emit-coverage percentage against the STRUCTURAL denominator
                  the L0 usage-capture-feasibility spike (temperloop#1246)
                  defined: the emit-FEASIBLE seat subset, never the full seat
@@ -119,6 +137,21 @@ from statistics import NormalDist
 # thing, overridable per-invocation via --power for a caller who wants a
 # different bar.
 DEFAULT_POWER = 0.80
+
+# The fixed null proportion `exact-binom` tests against — a fair-coin sign
+# test (win rate exactly 0.5). Not an operator setting: the acceptance
+# scope is explicitly "vs p=0.5", so there is deliberately no --null-p flag.
+EXACT_BINOM_NULL_P = 0.5
+
+# Bisection depth for exact-binom's Clopper-Pearson root-find. Each
+# iteration halves the bracket, so 200 iterations converges to a bracket
+# width of 2**-200 — vastly tighter than double precision (2**-52) can even
+# represent, i.e. the loop converges to the nearest representable float
+# well before exhausting its budget. Purely mechanical bisection over a
+# monotone function (no RNG, no summation-order dependence), so unlike the
+# bootstrap resampling above it carries no separate cross-version
+# reproducibility risk to guard.
+EXACT_BINOM_BISECTION_ITERS = 200
 
 # Floor on the bootstrap resample count. Below ~2/alpha resamples the
 # percentile indices degenerate: `lo_idx` rounds to 0 and `hi_idx` to B-1, so
@@ -394,6 +427,109 @@ def cmd_verdict(args: argparse.Namespace) -> int:
     return 0
 
 
+def _binom_tail_terms(j: int, n: int) -> list[tuple[int, int]]:
+    """The (index, binomial-coefficient) pairs for P(X >= j | n, p) as a
+    function of p, precomputed ONCE per root-find so the bisection loop below
+    doesn't recompute the same `math.comb` values on every iteration."""
+    return [(i, math.comb(n, i)) for i in range(j, n + 1)]
+
+
+def _tail_prob_from_terms(p: float, terms: list[tuple[int, int]], n: int) -> float:
+    # math.fsum, same convention as _mean/_sample_stdev above — exactly
+    # rounded accumulation regardless of term order or interpreter version.
+    if not terms:
+        return 0.0
+    return math.fsum(c * (p ** i) * ((1.0 - p) ** (n - i)) for i, c in terms)
+
+
+def _solve_tail_prob(target: float, j: int, n: int) -> float:
+    """The p in [0, 1] such that P(X >= j | n, p) == target, found by
+    bisection. P(X >= j | n, p) is monotonically non-decreasing in p (a
+    higher success probability can only make `>= j` successes more likely),
+    so the bracket [0, 1] always contains exactly one root and bisection
+    converges unconditionally — no initial guess, no divergence case."""
+    terms = _binom_tail_terms(j, n)
+    lo, hi = 0.0, 1.0
+    for _ in range(EXACT_BINOM_BISECTION_ITERS):
+        mid = (lo + hi) / 2.0
+        if _tail_prob_from_terms(mid, terms, n) < target:
+            lo = mid
+        else:
+            hi = mid
+    return (lo + hi) / 2.0
+
+
+def _clopper_pearson(k: int, n: int, ci_width_pct: float) -> tuple[float, float]:
+    """The two-sided exact (Clopper-Pearson) confidence interval for a
+    binomial proportion: the standard textbook definition, inverting the
+    binomial CDF directly rather than a normal approximation.
+
+      lower = 0                                        if k == 0
+              solve P(X >= k | n, p) = alpha/2          otherwise
+      upper = 1                                        if k == n
+              solve P(X >= k+1 | n, p) = 1 - alpha/2    otherwise
+
+    Both roots are solved via the SAME monotonically-increasing tail
+    function (`_solve_tail_prob`), just at a different target/index — the
+    "P(X <= k) = alpha/2" textbook phrasing for `upper` is algebraically
+    identical to "P(X >= k+1) = 1 - alpha/2", chosen here so one root-finder
+    handles both bounds instead of a second, oppositely-monotone one.
+    """
+    if not (0.0 < ci_width_pct < 100.0):
+        raise ValueError("--ci-width must be strictly between 0 and 100 (got %r)" % (ci_width_pct,))
+    alpha = (100.0 - ci_width_pct) / 100.0
+    lower = 0.0 if k <= 0 else _solve_tail_prob(alpha / 2.0, k, n)
+    upper = 1.0 if k >= n else _solve_tail_prob(1.0 - alpha / 2.0, k + 1, n)
+    return lower, upper
+
+
+def cmd_exact_binom(args: argparse.Namespace) -> int:
+    if args.n < 1:
+        raise ValueError("--n must be >= 1 (got %r)" % (args.n,))
+    if args.k < 0 or args.k > args.n:
+        raise ValueError("--k must be between 0 and --n inclusive (got k=%r, n=%r)" % (args.k, args.n))
+    _check_min_sample(args.min_sample)
+
+    n = args.n
+    phat = args.k / n
+
+    # THE INCONCLUSIVE FLOOR — the SAME refusal `bootstrap-ci`/`verdict`
+    # enforce (temperloop#2065 acceptance bullet 2): below `--min-sample`
+    # outcomes, no significance-shaped field (lower/upper/excludes_null) is
+    # populated. This is a property of the MODULE, not of any one
+    # subcommand — see cmd_bootstrap_ci's identical comment.
+    if n < args.min_sample:
+        _emit({
+            "n": n,
+            "k": args.k,
+            "min_sample": args.min_sample,
+            "below_min_sample": True,
+            "ci_width_pct": args.ci_width,
+            "null_p": EXACT_BINOM_NULL_P,
+            "phat": phat,
+            "lower": None,
+            "upper": None,
+            "excludes_null": None,
+        })
+        return 0
+
+    lower, upper = _clopper_pearson(args.k, n, args.ci_width)
+    excludes_null = not (lower <= EXACT_BINOM_NULL_P <= upper)
+    _emit({
+        "n": n,
+        "k": args.k,
+        "min_sample": args.min_sample,
+        "below_min_sample": False,
+        "ci_width_pct": args.ci_width,
+        "null_p": EXACT_BINOM_NULL_P,
+        "phat": phat,
+        "lower": lower,
+        "upper": upper,
+        "excludes_null": excludes_null,
+    })
+    return 0
+
+
 def cmd_coverage(args: argparse.Namespace) -> int:
     if args.feasible_seats < 1:
         raise ValueError("--feasible-seats must be >= 1 (got %r)" % (args.feasible_seats,))
@@ -454,6 +590,14 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--observed-seats", type=int, required=True, dest="observed_seats")
     c.add_argument("--feasible-seats", type=int, required=True, dest="feasible_seats")
     c.set_defaults(func=cmd_coverage)
+
+    e = sub.add_parser("exact-binom", help="two-sided exact (Clopper-Pearson) CI for k/n vs the null p=0.5")
+    e.add_argument("--n", type=int, required=True)
+    e.add_argument("--k", type=int, required=True)
+    e.add_argument("--ci-width", type=float, required=True, dest="ci_width")
+    e.add_argument("--min-sample", type=int, required=True, dest="min_sample",
+                   help="inconclusive floor; below this N lower/upper/excludes_null are null")
+    e.set_defaults(func=cmd_exact_binom)
 
     return p
 
