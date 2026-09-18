@@ -215,6 +215,7 @@ bash workflows/scripts/tests/test_reviewer_seat_tiers.sh	claude/agents/** claude
 bash workflows/scripts/tests/test_doctor_reviewer_coverage.sh	workflows/scripts/install/** workflows/scripts/tests/test_doctor_reviewer_coverage.sh
 bash workflows/scripts/tests/test_doctor_knowledge_root.sh	workflows/scripts/install/** workflows/scripts/lib/knowledge_store*.sh workflows/scripts/build/build.config.sh workflows/scripts/tests/test_doctor_knowledge_root.sh
 bash workflows/scripts/tests/test_doctor_cross_checkout_split.sh	workflows/scripts/install/** workflows/scripts/build/env-reconcile.sh workflows/scripts/tests/test_doctor_cross_checkout_split.sh
+bash workflows/scripts/tests/test_doctor_symlinked_home.sh	workflows/scripts/install/** workflows/scripts/tests/test_doctor_symlinked_home.sh
 bash workflows/scripts/tests/test_doctor_installed_workflow_drift.sh	workflows/scripts/install/** claude/workflows/** workflows/scripts/tests/test_doctor_installed_workflow_drift.sh
 bash workflows/scripts/tests/test_doctor_bm_tool.sh	workflows/scripts/install/** workflows/scripts/lib/knowledge_* workflows/scripts/tests/test_doctor_bm_tool.sh
 bash workflows/scripts/tests/test_legacy_host_preflight.sh	workflows/scripts/install/** workflows/scripts/tests/test_legacy_host_preflight.sh

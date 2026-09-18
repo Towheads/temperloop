@@ -276,12 +276,25 @@ KERNEL_GATES=(
   # $FOUNDATION. Same direct-`bash` form as the sibling doctor gates above
   # (kernel Makefile is generator-owned; no new target added here).
   "bash workflows/scripts/tests/test_doctor_cross_checkout_split.sh"
+  # Symlinked-\$HOME false-DRIFT guard (temperloop#1909): classify_entry()
+  # compares a managed symlink's target PATH IDENTITY (exact string, else
+  # same device+inode via `test -ef`) rather than its target STRING, so a
+  # $HOME or checkout root that resolves through a symlink — the DEFAULT for
+  # a macOS scratch home (/var -> /private/var, /tmp -> /private/tmp) — no
+  # longer reports a correct install as a wall of DRIFT. Pins the whole
+  # discrimination set, not just the happy case: a respelled-but-identical
+  # link is OK, a link to a DIFFERENT file is still DRIFT, DANGLING is never
+  # laundered into OK, and an unestablishable identity stays DRIFT. Hermetic:
+  # an isolated `env -i` HOME over a throwaway fixture, never the operator's
+  # real ~/.claude. Same direct-`bash` form as the sibling doctor gates above
+  # (kernel Makefile is generator-owned; no new target added here).
+  "bash workflows/scripts/tests/test_doctor_symlinked_home.sh"
   # Installed build-workflow CONTENT drift guard (temperloop#1397): doctor.sh's
   # check_installed_workflow_drift() — the CONTENT counterpart to the two
-  # checks above. classify_entry() compares a symlink's TARGET STRING and
-  # check_cross_checkout_split() compares PATH IDENTITY; neither can see a
-  # correctly-targeted ~/.claude/workflows/build-level.mjs whose CONTENT is
-  # weeks stale, which is what /build, /sweep and /fix actually execute by
+  # checks above. classify_entry() compares a symlink's target PATH IDENTITY
+  # and check_cross_checkout_split() compares WHICH CHECKOUT it lands in;
+  # neither can see a correctly-targeted ~/.claude/workflows/build-level.mjs
+  # whose CONTENT is weeks stale, which is what /build, /sweep and /fix execute by
   # scriptPath. Pins the full discrimination set — identical copies clean,
   # drifted copies reported with both sizes/mtimes and two DISTINCT sha256
   # digests plus which side is newer, an absent installed copy as its OWN
