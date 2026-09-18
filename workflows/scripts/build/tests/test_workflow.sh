@@ -2703,6 +2703,62 @@ console.log(JSON.stringify({ ok: true }));
 "
 
 # ============================================================================
+# TEST 21b: THROWING cifix verdict — CI-fix agent() THROWING (a
+# StructuredOutput-absent / retry-cap-exceeded subagent, #939's __throw shape)
+# escalates as ci-failed with retryable:true, exactly like the sibling
+# bare-null case above — NOT an uncaught exception, and NOT a generic
+# top-level worker-error (temperloop#2065 review round 1 [HIGH]). Also proves
+# the worker-usage.sh emit call for the CI-fix retry actually ran despite the
+# throw, by checking callLog for its label — before the fix this call was
+# skipped entirely (never reached), silently dropping the retry's cost.
+# ============================================================================
+run_node_case "throw-cifix: ci-fix agent THROWS → ci-failed escalation (not worker-error), and its usage-emit call still ran (temperloop#2065 review round 1 HIGH)" "
+$PREAMBLE
+happyMachinery('cifixthrow', 21, 'acf1f');
+machineryMap.set('cifixthrow', [
+  { outcome: 'CREATED', path: '/tmp/repo.wt/cifixthrow' },
+  { outcome: 'REVIEW_DIFF' },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'acf1f' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'acf1f', branch: 'build/cifixthrow' },
+  { outcome: 'PR_OPENED', pr_number: 21 },
+  { outcome: 'CI_FAILED', failed_run_ids: [1] },
+]);
+// Worker: first call (main) succeeds; second call (ci-fix re-spawn) THROWS —
+// the #939 __throw shape, faithfully simulating a StructuredOutput-absent /
+// retry-cap-exceeded subagent (an EXCEPTION, not a null return).
+setWorker('cifixthrow',
+  { status: 'done', summary: 'main done', acceptance_results: [{ criterion: 'c', passed: true, evidence: 'e' }], commits: [] },
+  { __throw: 'ci-fix boom' }
+);
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'cifixthrow', branch: 'build/cifixthrow', title: 'CI fix throw', kind: 'impl', acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+const result = await mod.default();
+const parked = result.parked ?? [];
+const escalations = result.escalations ?? [];
+if (parked.length !== 0)
+  { console.log(JSON.stringify({ ok: false, reason: 'throw-cifix: expected 0 parked, got ' + JSON.stringify(parked) })); process.exit(0); }
+// Before the fix: this throw propagated uncaught past ciPollLoop/driveItem to
+// the top-level driveItem(item).catch(...), which converts ANY throw into a
+// generic 'worker-error' escalation — NOT 'ci-failed'. That mismatch is the
+// discriminating assertion.
+if (escalations.length !== 1 || escalations[0].kind !== 'ci-failed')
+  { console.log(JSON.stringify({ ok: false, reason: 'throw-cifix: expected 1 ci-failed escalation (got a generic worker-error before the fix), got ' + JSON.stringify(escalations) })); process.exit(0); }
+if (!escalations[0].payload.retryable)
+  { console.log(JSON.stringify({ ok: false, reason: 'throw-cifix: expected retryable:true in payload, got ' + JSON.stringify(escalations[0].payload) })); process.exit(0); }
+// The retry's own workerUsageEmit() call must have run despite the throw —
+// before the fix it was skipped entirely (unreachable code after the bare
+// agent() call that threw), so this label never appeared in callLog.
+const cifixUsageCalls = callLog.filter(c => c.opts.label === 'worker-usage:cifixthrow#worker-cifix:cifixthrow');
+if (cifixUsageCalls.length !== 1)
+  { console.log(JSON.stringify({ ok: false, reason: 'throw-cifix: expected the ci-fix retry usage-emit call to have run exactly once despite the throw, got ' + cifixUsageCalls.length + ' — callLog labels: ' + JSON.stringify(callLog.map(c => c.opts.label)) })); process.exit(0); }
+console.log(JSON.stringify({ ok: true }));
+"
+
+# ============================================================================
 # TEST 22: CONFLICTING merge state — escalates merge-conflict on first slice,
 # no full CI_POLL_TOTAL_SECS spin (#543). ci-poll.sh is never called.
 # ============================================================================

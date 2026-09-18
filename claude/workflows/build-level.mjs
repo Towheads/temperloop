@@ -2525,6 +2525,12 @@ function workerUsageBin() {
 // null input_tokens/output_tokens) must degrade to null, never a false zero.
 function numOrNull(v) {
   if (v === null || v === undefined) return null;
+  // temperloop#2065 review round 1 [LOW]: Number('') === 0 and
+  // Number('   ') === 0 are both finite, so an empty/whitespace string would
+  // otherwise manufacture a false zero instead of degrading to null — the
+  // exact failure mode this function exists to prevent (epoch_s is
+  // schema-typed as string|number; a future envelope wiring could emit one).
+  if (typeof v === 'string' && v.trim() === '') return null;
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
 }
@@ -6789,40 +6795,69 @@ async function ciPollLoop(item, ownerRepo, pr, initialSha, wt) {
       log(`[${item.slug}] CI failed — re-spawning worker (retries left ${retriesLeft})`);
       const cifixLabel = `worker-cifix:${item.slug}`;
       const cifixStartS = await workerClockNow(item, cifixLabel, enterStage(STAGE_CI));
-      const fixVerdict = await agent(
-        workerPrompt(
-          item,
-          wt,
-          '## CI failed\nThe pushed branch failed CI. First run ' +
-            '`git fetch origin ' + item.branch + ' && git reset --hard FETCH_HEAD`, ' +
-            'then fix the failure and commit (do NOT push). ' +
-            'Failed run ids: ' + JSON.stringify(out.failed_run_ids ?? []) + '.',
-        ),
-        {
-          label: cifixLabel,
-          // A WORKER agent, but it belongs to the CI stage (temperloop#1294) —
-          // grouping it there is what makes the CI box read as "CI is being fixed"
-          // rather than dropping it back into a build box the level already left.
-          phase: enterStage(STAGE_CI),
-          // Escalate-on-retry: a CI-failure re-spawn runs top tier (omit model).
-          schema: WORKER_VERDICT_SCHEMA,
-        },
-      );
+      // temperloop#2065 review round 1 [HIGH]: agent({schema}) THROWS on a
+      // StructuredOutput-absent / retry-cap-exceeded subagent — the SAME
+      // primitive callWorker() wraps in try/catch for exactly this reason
+      // (see that function's own comment). This call used to be bare: an
+      // uncaught throw here skipped the workerUsageEmit() block below
+      // entirely (never reaching it) AND propagated past this function
+      // uncaught, converting to a generic top-level `worker-error`
+      // escalation whose payload carries no cost field — silently dropping
+      // not just the retry's own tokens but the item's WHOLE ledger (the
+      // main worker's already-successful tokens/wall-clock too), since
+      // driveItem never reaches park(). Catch it here and normalize into the
+      // SAME "no verdict" shape the null-return arm below already handles,
+      // so the emit call is never skippable and this always resolves to a
+      // clean, in-band escalation instead of an uncaught throw.
+      let fixVerdict = null;
+      let fixThrew = null;
+      try {
+        fixVerdict = await agent(
+          workerPrompt(
+            item,
+            wt,
+            '## CI failed\nThe pushed branch failed CI. First run ' +
+              '`git fetch origin ' + item.branch + ' && git reset --hard FETCH_HEAD`, ' +
+              'then fix the failure and commit (do NOT push). ' +
+              'Failed run ids: ' + JSON.stringify(out.failed_run_ids ?? []) + '.',
+          ),
+          {
+            label: cifixLabel,
+            // A WORKER agent, but it belongs to the CI stage (temperloop#1294) —
+            // grouping it there is what makes the CI box read as "CI is being fixed"
+            // rather than dropping it back into a build box the level already left.
+            phase: enterStage(STAGE_CI),
+            // Escalate-on-retry: a CI-failure re-spawn runs top tier (omit model).
+            schema: WORKER_VERDICT_SCHEMA,
+          },
+        );
+      } catch (err) {
+        fixThrew = String((err && err.message) || err);
+      }
       // temperloop#2065 — the retry's own cost, regardless of what fixVerdict
-      // turns out to be below: the tokens were spent (and the wall-clock
-      // burned) the moment agent() returned, and a fix that FAILS still cost
-      // real money. Tokens roll up into ONE combined `retryTokens` figure
-      // (the epic's ledger names "retry tokens" as a single number, unlike
-      // the main worker's split tokens_in/tokens_out — see park()); wall-clock
-      // rolls into the SAME total `wall_clock_ms` the main worker contributes
-      // to (driveItem sums it into mainCost at the ciPollLoop call site) —
-      // there is one wall-clock figure for the whole item, not a per-phase one.
+      // turns out to be below (or whether agent() threw above instead): the
+      // tokens were spent (and the wall-clock burned) the moment agent()
+      // returned OR threw, and a fix that FAILS — or never returns a verdict
+      // at all — still cost real money. Tokens roll up into ONE combined
+      // `retryTokens` figure (the epic's ledger names "retry tokens" as a
+      // single number, unlike the main worker's split tokens_in/tokens_out —
+      // see park()); wall-clock rolls into the SAME total `wall_clock_ms` the
+      // main worker contributes to (driveItem sums it into mainCost at the
+      // ciPollLoop call site) — there is one wall-clock figure for the whole
+      // item, not a per-phase one.
       {
         const cifixUsage = await workerUsageEmit(item, cifixLabel, 'build-worker', enterStage(STAGE_CI));
         const inT = cifixUsage.tokensIn ?? 0;
         const outT = cifixUsage.tokensOut ?? 0;
         retryTokens = (retryTokens ?? 0) + inT + outT;
         retryWallClockMs = (retryWallClockMs ?? 0) + (elapsedMs(cifixStartS, cifixUsage.epochS) ?? 0);
+      }
+      if (fixThrew != null) {
+        // agent() threw — the same "no verdict" outcome as the bare-null
+        // return handled just below, only reached via the throw arm instead.
+        // Escalate in-band rather than letting the throw propagate past this
+        // function uncaught (which would land as a generic worker-error).
+        return { escalation: 'ci-failed', payload: { reason: `ci-fix agent threw: ${fixThrew}`, retryable: true, sha } };
       }
       if (fixVerdict == null) {
         // agent() returned null — user skip or terminal API error in the CI-fix

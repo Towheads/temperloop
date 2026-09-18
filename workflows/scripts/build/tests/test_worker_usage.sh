@@ -111,32 +111,43 @@ fi
 # always prints regardless of its arguments.
 emit_out2="$(MODEL_USAGE_RAW_DIR="$WORK/lake1" "$USAGE_SH" emit a-different-seat haiku pr:9 owner/repo)"
 lake_file2="$(find "$WORK/lake1" -maxdepth 1 -name 'model-usage-*.jsonl' 2>/dev/null | head -1)"
-n_records="$(wc -l < "$lake_file2" | tr -d ' ')"
-if [ "$n_records" != "2" ]; then
-  fail "expected exactly 2 durable records after 2 emit calls, got $n_records"
+# temperloop#2065 review round 1 [LOW]: guard emptiness the same way $lake_file
+# is guarded above (line 87) — an unguarded `wc -l < ""` / `tail -1 ""` below
+# would emit a raw shell redirection error if section 3 already failed (no
+# lake file), reporting the WRONG problem instead of this section's own.
+if [ -z "$lake_file2" ] || [ ! -f "$lake_file2" ]; then
+  fail "no redirected raw lake file found at $WORK/lake1 after 2 emit calls — model_usage_emit_from_envelope was not reached"
 else
-  pass "a second emit call with DIFFERENT arguments appends a SECOND, distinct record (discrimination control)"
+  n_records="$(wc -l < "$lake_file2" | tr -d ' ')"
+  if [ "$n_records" != "2" ]; then
+    fail "expected exactly 2 durable records after 2 emit calls, got $n_records"
+  else
+    pass "a second emit call with DIFFERENT arguments appends a SECOND, distinct record (discrimination control)"
+  fi
+  last_record="$(tail -1 "$lake_file2")"
+  case "$last_record" in
+    *'"seat":"a-different-seat"'*'"outcome_ref":"pr:9"'*) pass "the second record carries ITS OWN seat/outcome-ref, not the first call's" ;;
+    *) fail "the second record did not carry its own arguments — records may be getting confused/overwritten: $last_record" ;;
+  esac
 fi
-last_record="$(tail -1 "$lake_file2")"
-case "$last_record" in
-  *'"seat":"a-different-seat"'*'"outcome_ref":"pr:9"'*) pass "the second record carries ITS OWN seat/outcome-ref, not the first call's" ;;
-  *) fail "the second record did not carry its own arguments — records may be getting confused/overwritten: $last_record" ;;
-esac
 
 # --- 5. FAIL-OPEN: a missing envelope library never breaks emit's own output
+# temperloop#2065 review round 1 [MEDIUM]: the inner `bash -c` body used to
+# open with its own `set -e`, so a non-zero exit from the worker-usage.sh
+# call on line 136 would terminate that shell IMMEDIATELY — the `rc=$?` /
+# `rm -rf "$tmp"` / `exit "$rc"` below it never ran, silently leaking `$tmp`
+# into `$TMPDIR` on exactly the RED path this section exists to catch (the
+# `rc=$?` on the outer line 141 still read the subshell's real exit status
+# correctly either way — only the cleanup was dead). Fixed by putting the
+# scratch tree under $WORK (mkdir, not mktemp) instead, so this suite's own
+# top-of-file `trap 'rm -rf "$WORK"' EXIT` (line 44) owns cleanup regardless
+# of how the inner shell exits — no separate rc/rm/exit dance needed inside it.
+tmp5="$WORK/missing-lib"
+mkdir -p "$tmp5/build"
+cp "$USAGE_SH" "$tmp5/build/worker-usage.sh"
 missing_lib_out="$(env MODEL_USAGE_RAW_DIR="$WORK/lake2" bash -c '
   set -euo pipefail
-  src="'"$USAGE_SH"'"
-  tmp="$(mktemp -d)"
-  # Copy the script tree one level up so its relative ../lib resolution
-  # points at a directory with NO model-usage-envelope.sh — the missing-
-  # library path, never touching the real checkout.
-  mkdir -p "$tmp/build"
-  cp "$src" "$tmp/build/worker-usage.sh"
-  "$tmp/build/worker-usage.sh" emit build-worker sonnet-5 issue:1 owner/repo
-  rc=$?
-  rm -rf "$tmp"
-  exit "$rc"
+  "'"$tmp5"'/build/worker-usage.sh" emit build-worker sonnet-5 issue:1 owner/repo
 ')"
 rc=$?
 if [ "$rc" -eq 0 ]; then
