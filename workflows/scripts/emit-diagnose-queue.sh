@@ -135,8 +135,8 @@ month="$(date -u +%Y-%m)"
 session_id="${CLAUDE_CODE_SESSION_ID:-}"
 host="${SUBSET_HOST_LABEL:-$(hostname -s)}"
 
-# Resolve the raw sink dir the same way emit-issue-touch.sh / emit-command-run.sh
-# resolve theirs: an explicit override env var first, else the repo this
+# Resolve the raw sink dir the same way emit-command-run.sh resolves
+# its own: an explicit override env var first, else the repo this
 # script lives in (workflows/scripts/../.. = repo root), so it works from any
 # checkout that vendors this file, not just a hardcoded $HOME/dev/foundation path.
 here="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

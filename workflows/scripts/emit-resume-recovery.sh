@@ -216,8 +216,8 @@ if [ "$print_only" -eq 1 ]; then
   exit 0
 fi
 
-# Resolve the raw sink dir the same way emit-issue-touch.sh resolves
-# ISSUE_TOUCHES_RAW_DIR: an explicit override env var first, else the repo
+# Resolve the raw sink dir the same way emit-command-run.sh resolves
+# CMD_RUN_RAW_DIR: an explicit override env var first, else the repo
 # this script lives in (workflows/scripts/../.. = repo root), so it works
 # from any checkout that vendors this file, not just a hardcoded
 # $HOME/dev/foundation path.
