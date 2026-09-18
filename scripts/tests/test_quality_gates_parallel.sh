@@ -509,16 +509,47 @@ printf '%s %s\n' "$serial_rc" "${pooled_rc:-none}"
 PROBE
 chmod +x "$WORK/sigprobe.sh"
 
-probe_default="$(bash "$WORK/sigprobe.sh" "$LIB" "$WORK/selfint.sh" 2>/dev/null)"
+# The probe's stderr is KEPT, not discarded (review round 1): it is the only
+# account of WHY a probe produced nothing, and a fixture whose failure mode is
+# undiagnosable is one nobody can act on.
+probe_default="$(bash "$WORK/sigprobe.sh" "$LIB" "$WORK/selfint.sh" 2>"$WORK/sigprobe.default.err")"
 probe_ignored="$(bash -c 'trap "" INT; exec bash "$0" "$1" "$2"' \
-  "$WORK/sigprobe.sh" "$LIB" "$WORK/selfint.sh" 2>/dev/null)"
+  "$WORK/sigprobe.sh" "$LIB" "$WORK/selfint.sh" 2>"$WORK/sigprobe.ignored.err")"
 
-if [ "${probe_default% *}" = "${probe_default#* }" ]; then
+# FAIL-CLOSED ON THE READING ITSELF (review round 1, temperloop#2094).
+# Comparing "${p% *}" against "${p#* }" and nothing else is fail-OPEN: for any
+# value carrying no space BOTH expansions return the whole string, so they are
+# trivially equal. Two live paths reached that: the probe prints its own
+# `init-failed init-failed` sentinel when gate_pool_init fails, and any death of
+# sigprobe.sh before its final printf yields an EMPTY capture — a missing lib, an
+# unbound variable, an unset "$1". Both reported GREEN, from the one fixture whose
+# whole job is stopping the absolute form from silently returning. So the SHAPE is
+# validated before the two halves are compared, per this suite's own FAIL-CLOSED
+# clause: a reading that is not "<digits> <digits>" is a FAILURE, never a pass.
+probe_reading_ok() { # <reading> — true only for two space-separated integers
+  case "$1" in
+    [0-9]*' '[0-9]*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+probe_why() { # <errfile> — a one-line account of a probe that produced nothing
+  if [ -s "$1" ]; then
+    printf ' — probe stderr: %s' "$(tr '\n' ' ' <"$1")"
+  else
+    printf ' — probe wrote nothing to stderr'
+  fi
+}
+
+if ! probe_reading_ok "$probe_default"; then
+  fail "sigprobe produced no usable reading under the DEFAULT invocation: [$probe_default]$(probe_why "$WORK/sigprobe.default.err")"
+elif [ "${probe_default% *}" = "${probe_default#* }" ]; then
   pass "pool transparency holds under the invoker's own disposition (serial/pooled: $probe_default)"
 else
   fail "the pool changed the disposition under the default invocation (serial/pooled: $probe_default)"
 fi
-if [ "${probe_ignored% *}" = "${probe_ignored#* }" ]; then
+if ! probe_reading_ok "$probe_ignored"; then
+  fail "sigprobe produced no usable reading under an inherited SIG_IGN: [$probe_ignored]$(probe_why "$WORK/sigprobe.ignored.err")"
+elif [ "${probe_ignored% *}" = "${probe_ignored#* }" ]; then
   pass "pool transparency holds when SIGINT is hard-ignored by an ANCESTOR (serial/pooled: $probe_ignored) — a backgrounded suite can no longer false-fail (temperloop#2094)"
 else
   fail "the pool changed the disposition under an inherited SIG_IGN (serial/pooled: $probe_ignored)"

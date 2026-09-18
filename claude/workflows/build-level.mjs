@@ -6002,14 +6002,17 @@ async function driveItem(item) {
   // script, so an older copy can only ever produce GATE_PASS / GATE_FAIL.
   //
   // `set -o pipefail` is LOAD-BEARING (temperloop#68 — see build.md §3e.5).
-  // The gate verdict is derived from the subshell's own exit status; the
-  // subshell here is redirected (`>log 2>&1`), not piped, so today the exit
-  // reaches `$?` cleanly. pipefail is the durable guard: should a future
-  // edit ever route the gate through a downstream filter/`tee` to capture its
-  // output (e.g. `qgBin | tee log`), a bare pipe's status reflects the LAST
-  // stage (tee's 0), swallowing a RED gate and degrading 3e.5 to a silent
-  // no-op. With pipefail set, the gate's own non-zero exit propagates and
-  // GATE_FAIL is still emitted — the runtime match for the documented rule.
+  // The gate verdict is derived from the subshell's own exit status, and since
+  // temperloop#2094 that subshell IS piped — through `tee`, so one slice's
+  // output can be isolated for trailer parsing while still STREAMING into the
+  // cumulative operator log (see gateSliceLog below for why both are required).
+  // A bare pipe's status reflects the LAST stage (tee's 0), which would swallow
+  // a RED gate and degrade 3e.5 to a silent no-op; with pipefail set, the gate's
+  // own non-zero exit propagates to `$?` and GATE_FAIL is still emitted. This is
+  // the exact case build.md §3e.5 permits ("if the gate must be piped, `set -o
+  // pipefail` first"), and the exit is read as a bare `$?` — NOT through
+  // PIPESTATUS[0], a bash array that expands empty under the zsh this harness's
+  // Bash tool actually runs, which is temperloop#801's misread.
   //
   // The log is truncated on the first slice and APPENDED to thereafter, so
   // /tmp/qg-<slug>.log stays the single artifact an operator reads, carrying the
@@ -6022,11 +6025,28 @@ async function driveItem(item) {
   // question about THIS slice with the previous slice's numbers whenever this
   // slice printed none of its own — a slice killed before it could report, or
   // one whose `cd`/`unset` prelude failed, inherits a resume point and a
-  // failure count it never established. Each slice therefore writes its own
-  // output here first, the trailers are parsed from HERE, and the cumulative
-  // log is then appended to, unchanged in meaning for the operator who reads
-  // it. A trailer present in this file was printed by the slice just run —
-  // which is what makes the classifier below able to trust it.
+  // failure count it never established. The trailers are therefore parsed from
+  // HERE, never from the cumulative log: a trailer present in this file was
+  // printed by the slice just run, which is what makes the classifier below
+  // able to trust it.
+  //
+  // IT IS A TEE, NOT A REDIRECT-THEN-COPY (review round 1). Writing the slice
+  // to this file and `cat`-ing it into ${gateLog} afterwards bought the
+  // isolation above at the cost of the guarantee that matters most on the one
+  // path that has no other diagnostic: the executor KILLS this whole command at
+  // GATE_BASH_TIMEOUT_MS, and a copy step scheduled after the gate never runs.
+  // The killed slice's partial output — the only evidence a timeout produces —
+  // would never reach /tmp/qg-<slug>.log, the single artifact the escalation
+  // payload hands the operator; and with the first-slice truncation moved into
+  // that same copy, a timed-out first slice would leave the PREVIOUS run's log
+  // in place and the escalation would point at stale content presented as
+  // current. So ${gateLog} is truncated UP FRONT on slice 0 and the gate streams
+  // into both files through `tee` — per-slice isolation and live, kill-proof
+  // streaming at once. `set -o pipefail` is at the head of the command, so the
+  // pipeline's `$?` is still the gate's own status (`tee` exits 0); the bare
+  // `$?` read is deliberate and dialect-safe — PIPESTATUS[0] is a bash
+  // array that expands EMPTY under the zsh this harness's Bash tool runs
+  // (temperloop#801), which is the misread that swallows a red gate.
   const gateSliceLog = `${gateLog}.slice`;
   // temperloop#1663: run the acceptance gate DIFF-SCOPED — only the gates this
   // item's own changed paths can reach, resolved through gate-paths.tsv.
@@ -6089,17 +6109,28 @@ async function driveItem(item) {
   const gatePin = `/tmp/qg-${item.slug}.selection-pin`;
   const gateCmd = (startAt, expectSelection) =>
     `set -o pipefail; if [ ! -x ${sq(qgBin)} ]; then echo '{"outcome":"GATE_ABSENT"}'; ` +
-    `else ${startAt === 0 ? `rm -f ${sq(gatePin)}; ` : ''}` +
+    `else ${startAt === 0 ? `rm -f ${sq(gatePin)} ${sq(gateSliceLog)}; : >${sq(gateLog)}; ` : ''}` +
     `( cd ${sq(wt)} && unset $(bash ${sq(settingsBin)} 2>/dev/null) && ` +
     `${gateScopeEnv} QUALITY_GATES_SELECTION_PIN=${sq(gatePin)} ` +
     `${expectSelection ? `QUALITY_GATES_EXPECT_SELECTION=${sq(expectSelection)} ` : ''}` +
     `QUALITY_GATES_START_AT=${startAt} QUALITY_GATES_BUDGET_SECS=${GATE_SLICE_SECS} ${sq(qgBin)} ) ` +
-    `>${gateSliceLog} 2>&1; __rc=$?; ` +
-    `cat ${gateSliceLog} ${startAt === 0 ? '>' : '>>'}${gateLog}; ` +
-    `__el=$(sed -n 's/.*passed in \\([0-9]*\\)s.*/\\1/p;s/.*of [0-9]* in \\([0-9]*\\)s.*/\\1/p' ${gateSliceLog} | tail -1); ` +
-    `__f=$(sed -n 's/^QUALITY_GATES_FAILED=//p' ${gateSliceLog} | tail -1); ` +
-    `__r=$(sed -n 's/^QUALITY_GATES_RESUME_AT=//p' ${gateSliceLog} | tail -1); ` +
-    `__s=$(sed -n 's/^QUALITY_GATES_SELECTION=//p' ${gateSliceLog} | tail -1); ` +
+    `2>&1 | tee ${sq(gateSliceLog)} >>${sq(gateLog)}; __rc=$?; ` +
+    `__el=$(sed -n 's/.*passed in \\([0-9]*\\)s.*/\\1/p;s/.*of [0-9]* in \\([0-9]*\\)s.*/\\1/p' ${sq(gateSliceLog)} | tail -1); ` +
+    `__f=$(sed -n 's/^QUALITY_GATES_FAILED=//p' ${sq(gateSliceLog)} | tail -1); ` +
+    `__r=$(sed -n 's/^QUALITY_GATES_RESUME_AT=//p' ${sq(gateSliceLog)} | tail -1); ` +
+    // THE RESUME POINT IS LOAD-BEARING, SO ITS SHAPE IS CHECKED (review round 1).
+    // Dropping the old `[ "$__rc" = 75 ]` co-condition removed the only
+    // cross-check on a value that is matched against the whole slice log, gate
+    // output included, and then interpolated RAW into JSON by `%s` below. A
+    // non-numeric or half-written trailer would emit a syntactically invalid
+    // line, which lands in the executor's "outside the closed set" path instead
+    // of being classified. Anchoring to digits here is the whole defense: a
+    // reading that is not a plain integer is treated as ABSENT, exactly as a
+    // missing trailer already is. (`0` is not a resume point either — the
+    // trailer is only ever printed with gates REMAINING — and gateSliceResumeAt()
+    // already drops it downstream.)
+    `case "$__r" in ''|*[!0-9]*) __r='' ;; esac; ` +
+    `__s=$(sed -n 's/^QUALITY_GATES_SELECTION=//p' ${sq(gateSliceLog)} | tail -1); ` +
     // A RESUME POINT THIS SLICE PRINTED IS THE VERDICT (temperloop#2094).
     // quality-gates.sh emits `QUALITY_GATES_RESUME_AT=` on exactly one path:
     // it spent its budget, stopped CLEANLY BETWEEN GATES, and is telling the

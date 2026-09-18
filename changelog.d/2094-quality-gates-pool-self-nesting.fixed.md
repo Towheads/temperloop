@@ -25,4 +25,11 @@
   through the gate list can no longer claim to have covered all of it. Slice
   trailers are also read from that slice's own output rather than the
   accumulated log, so a slice that reports nothing cannot inherit the previous
-  one's resume point.
+  one's resume point — and a non-numeric trailer is read as absent rather than
+  interpolated raw into the outcome line. That per-slice file is written by
+  `tee`, not copied in after the gate finishes: `/tmp/qg-<slug>.log` is
+  truncated before the first slice starts and streams for the whole run, so a
+  slice the executor kills on a timeout still leaves its partial output — the
+  only diagnostic a timeout produces — in the log the escalation points the
+  operator at, and a timed-out first slice can no longer leave the previous
+  run's log in place to be read as this run's.
