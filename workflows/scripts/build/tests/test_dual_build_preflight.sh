@@ -133,6 +133,26 @@ count; v="$(run "$ITEMS_MIXED")"
 count; [ "$(field "$v" '.in_scope_slugs | sort | join(",")')" = "a,c,d" ] && ok "in_scope_slugs = a,c,d" || fail "in_scope_slugs: got $(field "$v" '.in_scope_slugs')"
 count; [ "$(field "$v" .outcome)" = "PREFLIGHT" ] && ok "outcome=PREFLIGHT" || fail "outcome: got $(field "$v" .outcome)"
 
+# ── 3b: absent .model key (temperloop#2079 regression — claude/plan-schema.md
+# § "Optional model: field" makes model: OPTIONAL; absent means "inherit the
+# session model (top tier)", which /assess deliberately leaves absent on
+# every kind: spike item and every size: L item. ITEMS_MIXED above always
+# stamps .model on every element, which is exactly why the original
+# `.model|type=="string"` validation predicate's bug went untested: an item
+# with NO .model key at all must be silently excluded from scope (never
+# CANNOT_EVALUATE as a "malformed" record), and in_scope_n must resolve
+# correctly around it ─────────────────────────────────────────────────────
+echo "--- 3b: item with no .model key at all (absent, not stamped) ---"
+ITEMS_NO_MODEL_KEY='[{"slug":"a","model":"sonnet"},{"slug":"b"}]'
+count; rc=0; v="$(run "$ITEMS_NO_MODEL_KEY" DUAL_BUILD_MIN_INSCOPE_ITEMS=1)" || rc=$?
+[ "$(field "$v" .outcome)" = "PREFLIGHT" ] && [ "$rc" -eq 0 ] \
+  && ok "an item with no .model key is NOT treated as a malformed record (outcome=PREFLIGHT, exit 0)" \
+  || fail "no-model-key: outcome=$(field "$v" .outcome) rc=$rc"
+count; [ "$(field "$v" .in_scope_n)" = "1" ] && ok "in_scope_n=1 (only a, which has model:sonnet; b has no .model key and is excluded)" \
+  || fail "in_scope_n: got $(field "$v" .in_scope_n)"
+count; [ "$(field "$v" '.in_scope_slugs | join(",")')" = "a" ] && ok "in_scope_slugs = a (b silently excluded, not counted, not erroring)" \
+  || fail "in_scope_slugs: got $(field "$v" '.in_scope_slugs')"
+
 # ── 4-6: DUAL_BUILD_MIN_INSCOPE_ITEMS floor ─────────────────────────────────
 echo "--- 4-6: min-inscope floor ---"
 count; v="$(run "$ITEMS_MIXED" DUAL_BUILD_MIN_INSCOPE_ITEMS=3)"

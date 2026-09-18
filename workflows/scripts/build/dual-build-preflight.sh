@@ -203,8 +203,8 @@ fi
 
 printf '%s' "$items_json" | jq -e 'type=="array"' >/dev/null 2>&1 \
   || _dbp_ce "items-file is not a JSON array: $items_file"
-printf '%s' "$items_json" | jq -e 'all(.[]; (.slug|type=="string") and (.slug|length>0) and (.model|type=="string"))' >/dev/null 2>&1 \
-  || _dbp_ce "malformed item record (each item needs a non-empty string .slug and a string .model): $items_file"
+printf '%s' "$items_json" | jq -e 'all(.[]; (.slug|type=="string") and (.slug|length>0) and (.model == null or (.model|type=="string")))' >/dev/null 2>&1 \
+  || _dbp_ce "malformed item record (each item needs a non-empty string .slug, and .model — when present — must be a string): $items_file"
 
 # ── settings this script CONSUMES — CANNOT_EVALUATE on unset/non-integer ────
 # Same fail-closed floor replay.sh preflight's own settings-validation loop
