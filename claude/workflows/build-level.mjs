@@ -5942,17 +5942,35 @@ async function driveArm(item, dual, armName, order) {
   }
 
   const built = await driveItemBuild(ai, { name: armName, sibling, slug: item.slug, order });
+  // temperloop#2080 round-1 review [MEDIUM]. driveItemBuildPhase returns a
+  // TERMINAL record on two paths that mean OPPOSITE things: escalate() (a real
+  // failure) and — for kind:spike alone — park() (the read-only verdict marker,
+  // that item's NORMAL completion, and the only park() the build phase returns
+  // at all). Folding "any terminal record" into the loss path recorded a
+  // successful spike arm as `gate:'fail' loss_reason:'infra'`, corrupting
+  // exactly the ledger this feature exists to produce and making judgeArms
+  // report `one-arm-only` for a pair where BOTH arms finished. A spike creates
+  // no worktree and runs no gate, so this arm honestly carries no
+  // base_sha/guard/cost — but it completed, so it is a passing arm.
+  if (built.result && built.result._kind === 'parked') {
+    log(`[${ai.slug}] dual-build arm completed as a read-only spike verdict (no worktree, no gate) — a passing arm, not a loss`);
+    return {
+      ...base,
+      gate: 'pass',
+      lossReason: null,
+      spike: true,
+      acceptanceResults: built.result.parked?.acceptance_results ?? [],
+    };
+  }
   if (built.result) {
-    const kind = built.result._kind === 'escalation'
-      ? built.result.escalation.kind
-      : 'parked-without-gate';
+    const kind = built.result.escalation.kind;
     const lossReason = dualBuildLossReason(kind);
     log(`[${ai.slug}] dual-build arm did not reach a gate-passing branch (${kind}) — recorded as a ${lossReason} loss`);
     return {
       ...base,
-      gate: lossReason === 'gate' ? 'fail' : 'fail',
+      gate: 'fail',
       lossReason,
-      failure: { kind, payload: built.result._kind === 'escalation' ? built.result.escalation.payload : null },
+      failure: { kind, payload: built.result.escalation.payload },
     };
   }
   const ctx = built.ctx;
@@ -6009,6 +6027,20 @@ async function judgeArms(item, dual, arms) {
       judged: false,
       reason: 'one-arm-only',
       detail: `no pairwise comparison is possible: ${lost.join(' and ')} produced no gate-passing branch`,
+      judge: null,
+    };
+  }
+  // temperloop#2080 round-1 review [MEDIUM], the companion to driveArm's
+  // spike-park branch: a spike arm produces a VERDICT NOTE, not a diff, and its
+  // worktree does not exist — so `judge.sh pairwise`, which compares the two
+  // arms' diffs against their recorded bases, would compare two empty excerpts
+  // and return a verdict about nothing. That is a named DISPOSITION (this
+  // function's own contract: never silence), not a judgement.
+  if (a.spike || b.spike) {
+    return {
+      judged: false,
+      reason: 'spike-arm',
+      detail: `${item.slug} is a read-only spike: its arms produce a verdict note rather than a diff, so a pairwise code judge has nothing to compare`,
       judge: null,
     };
   }
@@ -6253,6 +6285,36 @@ function dualBuildArmSummary(a) {
 }
 
 // -----------------------------------------------------------------------------
+// dualBuildGuarded — the #437 silent-loss guard, applied BY CONSTRUCTION.
+// -----------------------------------------------------------------------------
+// `parallel()` is not `Promise.all`: a REJECTED thunk is dropped to `null`
+// rather than failing the batch, and buildLevel's consuming loop
+// (`for (const r of results) { if (!r) continue; }`) then skips that slot in
+// silence — leaving the item in NEITHER `parked` NOR `escalations`. That is
+// temperloop#437 exactly (a real run hit `item.acceptance.map` on a string and
+// the item vanished), and the single-arm fan-out was hardened against it with a
+// per-item `.catch()`.
+//
+// temperloop#2080 round-1 review [HIGH]: that guard is a CONVENTION every
+// fan-out site has to remember, and the dual-build fan-outs remembered it for
+// the not-in-scope branch only — so an in-scope item whose drive threw was
+// silently lost again. Wrapping the thunk here makes the guard structural
+// instead: every dual-build fan-out builds its thunks through this, so a future
+// edit that adds an un-caught `await` inside one cannot reintroduce the drop.
+// The returned thunk is `async` deliberately — that converts a SYNCHRONOUS
+// throw in `fn`'s body (not just a rejected promise) into a rejection this
+// function itself catches, which a bare `fn().catch()` would let escape.
+function dualBuildGuarded(fn, onError) {
+  return async () => {
+    try {
+      return await fn();
+    } catch (err) {
+      return await onError(err);
+    }
+  };
+}
+
+// -----------------------------------------------------------------------------
 // driveLevelDualBuild — the level driver, and the BARRIER itself.
 // -----------------------------------------------------------------------------
 // Three phases, in this order, and the order IS the contract:
@@ -6275,17 +6337,39 @@ async function driveLevelDualBuild(activeItems, dual) {
 
   // --- Phase 1 + the barrier ----------------------------------------------
   const runs = await parallel(
-    activeItems.map((item) => () => {
-      if (!dual.inScope.has(item.slug)) {
-        // Not in scope: the unchanged single-arm drive, including its PR.
-        return driveItem(item)
-          .catch((err) => escalate(item.slug, 'worker-error', { error: String((err && err.stack) || err) }))
-          .then((r) => preserveOnEscalation(item, r))
-          .then((r) => stampSideline(item, r))
-          .then((record) => ({ item, inScope: false, record }));
-      }
-      return driveInScopeItem(item, dual, boardWrites);
-    }),
+    activeItems.map((item) =>
+      dualBuildGuarded(
+        () => {
+          if (!dual.inScope.has(item.slug)) {
+            // Not in scope: the unchanged single-arm drive, including its PR.
+            return driveItem(item)
+              .catch((err) => escalate(item.slug, 'worker-error', { error: String((err && err.stack) || err) }))
+              .then((r) => preserveOnEscalation(item, r))
+              .then((r) => stampSideline(item, r))
+              .then((record) => ({ item, inScope: false, record }));
+          }
+          return driveInScopeItem(item, dual, boardWrites);
+        },
+        // The IN-SCOPE throw (the not-in-scope branch carries its own catch
+        // above, so this is what it adds). `escaped` marks a run that produced
+        // NO arms: phase 3 hands its record straight to the level's disposition
+        // rather than judging arms that do not exist or inventing a
+        // not-in-scope ledger row for an item that IS in scope. No
+        // preserveOnEscalation here on purpose — an in-scope item's commits
+        // live in `<slug>@baseline` / `<slug>@candidate`, not the `<slug>`
+        // worktree that helper pushes from, so calling it would push the wrong
+        // (or an absent) tree.
+        (err) => ({
+          item,
+          inScope: false,
+          escaped: true,
+          record: escalate(item.slug, 'worker-error', {
+            error: String((err && err.stack) || err),
+            phase: 'dual-build build phase',
+          }),
+        }),
+      ),
+    ),
   );
   log(
     `dual-build: LEVEL BARRIER reached — every in-scope arm has a gate result ` +
@@ -6296,7 +6380,14 @@ async function driveLevelDualBuild(activeItems, dual) {
   // --- Phase 3: judge, record, dispose -------------------------------------
   const ledger = { appended: 0, rejected: 0, unavailable: 0 };
   const disposed = await parallel(
-    runs.map((run) => async () => {
+    runs.map((run) =>
+      dualBuildGuarded(async () => {
+      if (run.escaped) {
+        // Phase 1's guard already converted this item's throw into an
+        // escalation and it produced no arms — nothing to judge, no row to
+        // write. Straight to the level's disposition.
+        return run.record;
+      }
       if (!run.inScope) {
         // One row for the item that was built ONCE, so the level's ledger
         // accounts for every item rather than only the compared ones. `arm` is
@@ -6389,7 +6480,15 @@ async function driveLevelDualBuild(activeItems, dual) {
       record.parked.dual_build = dualBuildRecord;
       record.parked.awaiting_pick = true;
       return record;
-    }),
+      },
+      // A throw in the JUDGE/LEDGER/RECORD phase is the same silent-loss risk
+      // as one in the build phase — the item would be dropped to `null` after
+      // its arms had already been built. Surface it instead.
+      (err) => escalate(run.item.slug, 'worker-error', {
+        error: String((err && err.stack) || err),
+        phase: 'dual-build judge/record phase',
+      })),
+    ),
   );
 
   return {

@@ -12042,6 +12042,140 @@ console.log(JSON.stringify({ ok: true }));
 "
 
 # ---------------------------------------------------------------------------
+# K2080 round-1 review [MEDIUM]: a spike arm's park is a SUCCESS, not a loss
+# ---------------------------------------------------------------------------
+run_node_case "K2080 spike arms: an in-scope kind:spike item's read-only verdict park is recorded as a PASSING arm (never a gate:fail infra loss), and the pairwise judge is not spent on a pair with no diffs" "
+$PREAMBLE
+$DUAL_FIXTURE
+
+// A spike skips 3b-3h entirely: no worktree, no review diff, no gate. With the
+// board OFF its prelude is EMPTY, so the baseline arm makes no machinery call at
+// all and the candidate arm's only one is the candidate-session seam.
+setMachinery('sp1@candidate', { outcome: 'CANDIDATE_READY' });
+happyWorker('sp1@baseline');
+happyWorker('sp1@candidate');
+// The item-level queue is the ledger rows ALONE — a spike pair must never reach
+// the judge, so no JUDGED entry is queued for it.
+setMachinery('sp1', { outcome: 'ROW_APPENDED', arm: 'baseline' }, { outcome: 'ROW_APPENDED', arm: 'candidate' });
+
+globalThis.args = { ...dualArgs(['sp1']), items: [
+  { slug: 'sp1', branch: 'build/sp1', title: 'SP1', kind: 'spike', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+
+if ((result.escalations ?? []).length !== 0)
+  { console.log(JSON.stringify({ ok: false, reason: 'two completed spike arms must not escalate: ' + JSON.stringify(result.escalations) })); process.exit(0); }
+const sp = (result.parked ?? []).find(p => p.slug === 'sp1');
+if (!sp || !sp.dual_build)
+  { console.log(JSON.stringify({ ok: false, reason: 'the spike item never parked with a dual_build record: ' + JSON.stringify(result) })); process.exit(0); }
+const bad = sp.dual_build.arms.filter(a => a.gate !== 'pass' || a.loss_reason !== null);
+if (bad.length !== 0)
+  { console.log(JSON.stringify({ ok: false, reason: \"a spike's successful park was recorded as an arm loss: \" + JSON.stringify(bad) })); process.exit(0); }
+if (sp.dual_build.judge !== null || sp.dual_build.judge_unavailable_reason !== 'spike-arm')
+  { console.log(JSON.stringify({ ok: false, reason: 'a spike pair must get the named spike-arm disposition, never a verdict: ' + JSON.stringify(sp.dual_build) })); process.exit(0); }
+if (callLog.some(c => String(c.opts.label ?? '').indexOf('judge:') === 0))
+  { console.log(JSON.stringify({ ok: false, reason: 'the pairwise judge was spent on a pair that produces no diffs' })); process.exit(0); }
+const rb = rowFor('sp1', 'baseline');
+const rc = rowFor('sp1', 'candidate');
+if (!rb || !rc || rb.gate !== 'pass' || rc.gate !== 'pass' || rb.loss_reason !== null || rc.loss_reason !== null)
+  { console.log(JSON.stringify({ ok: false, reason: 'the ledger recorded a completed spike arm as a loss: ' + JSON.stringify([rb, rc]) })); process.exit(0); }
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+# ---------------------------------------------------------------------------
+# K2080 round-1 review [HIGH]: no item is silently lost to an uncaught throw
+# ---------------------------------------------------------------------------
+# parallel() drops a REJECTED thunk to null and buildLevel's consuming loop then
+# skips it ('if (!r) continue'), so an item whose in-scope drive throws lands in
+# NEITHER parked NOR escalations — the temperloop#437 silent-loss defect. The
+# single-arm fan-out was hardened against it; these two cases hold the dual-build
+# fan-outs to the same invariant, one per phase.
+# ---------------------------------------------------------------------------
+run_node_case "K2080 no silent loss (build phase): an in-scope item whose drive THROWS surfaces as an escalation, and its healthy sibling still completes" "
+$PREAMBLE
+$DUAL_FIXTURE
+
+greenArm('t2', 'baseline');
+greenArm('t2', 'candidate');
+itemBarrier('t2');
+
+// Blow up the ARM fan-out of the first in-scope item, inside driveInScopeItem
+// but OUTSIDE the per-arm catch — the exact region the item fan-out's own guard
+// has to cover. Call 1 is the item fan-out; call 2 is t1's arm fan-out.
+const realParallel = globalThis.parallel;
+let outerSeen = false;
+let blown = false;
+globalThis.parallel = async (fns) => {
+  if (!outerSeen) { outerSeen = true; return realParallel(fns); }
+  if (!blown) { blown = true; throw new Error('boom: the arm fan-out substrate failed for t1'); }
+  return realParallel(fns);
+};
+
+globalThis.args = { ...dualArgs(['t1','t2']), items: [
+  { slug: 't1', branch: 'build/t1', title: 'T1', kind: 'impl', acceptance: ['c'] },
+  { slug: 't2', branch: 'build/t2', title: 'T2', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+
+const esc = (result.escalations ?? []).find(e => e.slug === 't1');
+if (!esc || esc.kind !== 'worker-error')
+  { console.log(JSON.stringify({ ok: false, reason: 'a thrown in-scope item must surface as a worker-error escalation: ' + JSON.stringify(result) })); process.exit(0); }
+if (!(result.parked ?? []).some(p => p.slug === 't2'))
+  { console.log(JSON.stringify({ ok: false, reason: 'one item throwing took its healthy sibling down with it: ' + JSON.stringify(result) })); process.exit(0); }
+const seen = [...(result.parked ?? []).map(p => p.slug), ...(result.escalations ?? []).map(e => e.slug)].sort().join(',');
+if (seen !== 't1,t2')
+  { console.log(JSON.stringify({ ok: false, reason: 'an item was silently lost — disposed set was: ' + seen })); process.exit(0); }
+if (result.zeroDisposition)
+  { console.log(JSON.stringify({ ok: false, reason: 'a level that disposed of both items reported a zero-disposition contradiction' })); process.exit(0); }
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+run_node_case "K2080 no silent loss (judge/record phase): an in-scope item whose post-barrier judge THROWS surfaces as an escalation, and its healthy sibling still parks" "
+$PREAMBLE
+$DUAL_FIXTURE
+
+greenArm('j1', 'baseline');
+greenArm('j1', 'candidate');
+greenArm('j2', 'baseline');
+greenArm('j2', 'candidate');
+itemBarrier('j2');
+
+// The judge seam throws for j1 ONLY, past the barrier — after both its arms
+// already built. machineryAgent() re-throws anything that is not an agent-type
+// resolution failure, so this reaches driveLevelDualBuild's phase-3 thunk.
+const realAgent = globalThis.agent;
+globalThis.agent = async (prompt, opts = {}) => {
+  if (String(opts.label ?? '') === 'judge:j1') throw new Error('boom: the judge seam blew up');
+  return realAgent(prompt, opts);
+};
+
+globalThis.args = { ...dualArgs(['j1','j2']), items: [
+  { slug: 'j1', branch: 'build/j1', title: 'J1', kind: 'impl', acceptance: ['c'] },
+  { slug: 'j2', branch: 'build/j2', title: 'J2', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+
+const esc = (result.escalations ?? []).find(e => e.slug === 'j1');
+if (!esc || esc.kind !== 'worker-error')
+  { console.log(JSON.stringify({ ok: false, reason: 'a throw past the barrier must surface as a worker-error escalation: ' + JSON.stringify(result) })); process.exit(0); }
+if (!(result.parked ?? []).some(p => p.slug === 'j2'))
+  { console.log(JSON.stringify({ ok: false, reason: 'the healthy sibling never parked: ' + JSON.stringify(result) })); process.exit(0); }
+const seen2 = [...(result.parked ?? []).map(p => p.slug), ...(result.escalations ?? []).map(e => e.slug)].sort().join(',');
+if (seen2 !== 'j1,j2')
+  { console.log(JSON.stringify({ ok: false, reason: 'an item was silently lost past the barrier — disposed set was: ' + seen2 })); process.exit(0); }
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+# ---------------------------------------------------------------------------
 # K2080: the two-arm sideline notice
 # ---------------------------------------------------------------------------
 run_node_case "K2080 sideline: when BOTH arms of one item sideline a resumable build, the level rollup keeps BOTH notices, named by arm" "
