@@ -494,7 +494,16 @@ cmd_push() {
       lease_sha="$(git -C "$wt" rev-parse FETCH_HEAD 2>/dev/null || true)"
     fi
     if [ -z "$lease_sha" ]; then
-      lease_sha="$(git -C "$wt" ls-remote origin "refs/heads/$branch" 2>/dev/null | awk 'NR==1 {print $1}')"
+      # `|| true` is LOAD-BEARING, not decoration (see this file's header on the
+      # temperloop#2009 pipefail trap): this is a plain assignment over a
+      # pipeline, so under `set -euo pipefail` an unreachable or auth-failed
+      # origin makes ls-remote fail, pipefail carries that status, and pr.sh
+      # dies at this line — with 2>/dev/null swallowing the diagnostic, that is
+      # a bare exit 128 and NO outcome line at all, on the one path whose whole
+      # purpose is not losing work. Guarded, the failure falls through to the
+      # empty-lease arm below, which issues no force and lets a plain push be
+      # rejected LOUDLY as PUSH_REJECTED.
+      lease_sha="$(git -C "$wt" ls-remote origin "refs/heads/$branch" 2>/dev/null | awk 'NR==1 {print $1}' || true)"
     fi
     case "$lease_sha" in ''|*[!0-9a-f]*) lease_sha="" ;; esac
     if [ -z "$lease_sha" ]; then

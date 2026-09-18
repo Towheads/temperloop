@@ -3264,11 +3264,32 @@ function preserveCommittedWorkCmd(wt, branch) {
     `pushed=false`,
     `forced=false`,
     `refused=false`,
+    `probe_failed=false`,
     `if git push origin "HEAD:refs/heads/$branch" >/dev/null 2>&1; then`,
     `  pushed=true`,
     `elif [ -n "$remote_sha" ] && [ -n "$head_sha" ] && [ "$remote_sha" != "$head_sha" ]; then`,
     // Bring the remote tip's objects local so the supersede test can run at
-    // all; a fetch failure leaves `unique` unset and the `&&` chain refuses.
+    // all; a fetch failure leaves `unique` unset and the arm refuses.
+    //
+    // `--no-merges` is a DELIBERATE, acknowledged narrowing, not an oversight:
+    // an ordinary merge commit's underlying unique commits are still counted
+    // (so a normal merge is not a blind spot), but an "evil merge" — one whose
+    // own conflict-resolution edits exist nowhere else — carries content this
+    // count cannot see. Accepted because a `/build` worker branch does not
+    // normally carry merge commits at all, and because dropping the flag would
+    // count every merge's whole second parent as remote-only work and refuse
+    // essentially every rescue. The narrowing is bounded by property 1: the
+    // push is still leased, so it can only ever land on the exact sha read here.
+    //
+    // THREE outcomes, not two (temperloop#2103 review round 1). A refusal on an
+    // UNANSWERABLE probe is right, but it must not be reported as a refusal on
+    // an ESTABLISHED conflict: `stale_remote_not_superseded` is what the log
+    // turns into the flat assertion "origin carries commits this worktree does
+    // NOT", and a human disposes the escalation against that sentence. When the
+    // fetch simply failed (the network dropped between the `ls-remote` above
+    // and this fetch), that sentence is unproven. So `unique` empty ⇒
+    // `supersede_probe_failed`, `unique > 0` ⇒ `stale_remote_not_superseded`.
+    // Both refuse identically — only the claim made about why differs.
     `  unique=""`,
     `  if git fetch --quiet origin "refs/heads/$branch" >/dev/null 2>&1; then`,
     `    unique="$(git rev-list --count --cherry-pick --right-only --no-merges "HEAD...$remote_sha" 2>/dev/null || true)"`,
@@ -3278,8 +3299,10 @@ function preserveCommittedWorkCmd(wt, branch) {
     `    if git push --force-with-lease="refs/heads/$branch:$remote_sha" origin "HEAD:refs/heads/$branch" >/dev/null 2>&1; then`,
     `      pushed=true; forced=true`,
     `    fi`,
-    `  else`,
+    `  elif [ -n "$unique" ]; then`,
     `    refused=true`,
+    `  else`,
+    `    probe_failed=true`,
     `  fi`,
     `fi`,
     // The outcome is the REMOTE's answer, not the push's. Re-read the ref: the
@@ -3295,6 +3318,7 @@ function preserveCommittedWorkCmd(wt, branch) {
     `if [ -n "$final_sha" ]; then facts="$facts,\\"remote_sha\\":\\"$final_sha\\""; fi`,
     `if [ "$forced" = true ]; then facts="$facts,\\"forced_with_lease\\":true,\\"rewrote_remote\\":\\"$remote_sha\\""; fi`,
     `if [ "$refused" = true ]; then facts="$facts,\\"stale_remote_not_superseded\\":true"; fi`,
+    `if [ "$probe_failed" = true ]; then facts="$facts,\\"supersede_probe_failed\\":true"; fi`,
     `printf '{"outcome":"%s","branch":"%s","base_resolved":%s,"pushed":%s%s%s}\\n' "$outcome" "$branch" "$base_resolved" "$pushed" "$extra" "$facts"`,
   ].join('\n');
 }
@@ -3342,6 +3366,7 @@ async function preserveOnEscalation(item, result) {
     ...(out?.remote_sha ? { remote_sha: out.remote_sha } : {}),
     ...(out?.forced_with_lease ? { forced_with_lease: true, rewrote_remote: out.rewrote_remote } : {}),
     ...(out?.stale_remote_not_superseded ? { stale_remote_not_superseded: true } : {}),
+    ...(out?.supersede_probe_failed ? { supersede_probe_failed: true } : {}),
     ...(out?.detail ? { detail: out.detail } : {}),
   };
   if (outcome === 'WORK_PRESERVED') {
@@ -3361,6 +3386,17 @@ async function preserveOnEscalation(item, result) {
           ? ` — origin's ${record.branch} is at ${String(record.remote_sha).slice(0, 8)} and carries commits this ` +
             `worktree does NOT, so the rescue push was REFUSED rather than overwrite them. Reconcile by hand ` +
             `(merge or confirm supersession), then: git push --force-with-lease=refs/heads/${record.branch}:${record.remote_sha} origin HEAD:refs/heads/${record.branch}`
+          : '') +
+        // NOT the sentence above. The refusal was the same, the reason is not:
+        // nothing was established about the remote, so claiming it "carries
+        // commits this worktree does NOT" would be a fabricated fact — and it
+        // is the sentence a human disposes the escalation against.
+        (record.supersede_probe_failed
+          ? ` — origin's ${record.branch} is at ${String(record.remote_sha).slice(0, 8)}, which differs from this ` +
+            `worktree's HEAD, but whether this worktree's history supersedes it could NOT be established (the ` +
+            `check could not reach origin). The rescue push was REFUSED on that uncertainty — no conflict is ` +
+            `claimed here. Re-run the check by hand first (git fetch origin ${record.branch}), and only then ` +
+            `decide whether to merge or to force over it`
           : ''),
     );
   }

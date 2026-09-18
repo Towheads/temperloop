@@ -417,6 +417,44 @@ rc=0; out="$(PATH="$NOGH:$PATH" bash "$SCRIPT" push "$LEASEREPO" fix/cont --allo
   || fail "THE LEASE FAILED TO PROTECT: origin's fix/cont was overwritten out from under a concurrent writer"
 echo "PASS: a force whose leased value has moved is REJECTED and origin is left untouched (#2103)"
 
+# --- push: an UNREACHABLE origin still prints its outcome line (#2103 round 2) ---
+# The lease read is the only network call that happens BEFORE the push, and it
+# runs under pr.sh's `set -euo pipefail`. A missing ref is benign (ls-remote
+# exits 0 and empty), but an unreachable or auth-failed origin — a network blip,
+# an expired credential, a GitHub outage mid-unattended-run — fails BOTH the
+# fetch and the ls-remote. Unguarded, pipefail carried that status into a plain
+# assignment and `set -e` killed pr.sh at the lease line, with 2>/dev/null
+# swallowing the diagnostic: exit 128, stdout and stderr EMPTY. That breaks
+# runMachinery's executor contract (a non-zero exit STILL prints its outcome
+# line) and leaves the solo executor to invent an outcome — on the one path
+# whose entire purpose is not losing work. The behaviour asserted here is the
+# one the pr.sh header already promises: an unreadable remote issues NO force,
+# and the plain push fails LOUDLY as a structured PUSH_REJECTED.
+git init -q --initial-branch=main "$TMP/unreachable-wt"
+UNREACHWT="$(cd "$TMP/unreachable-wt" && pwd -P)"
+git -C "$UNREACHWT" config user.email t@example.com
+git -C "$UNREACHWT" config user.name "t"
+git -C "$UNREACHWT" commit -q --allow-empty -m "work held only in this worktree"
+# An origin that cannot be reached at all — deterministic and offline (#3: no
+# live network in a fixture); a path that does not exist reproduces it exactly.
+git -C "$UNREACHWT" remote add origin "$TMP/no-such-origin.git"
+rc=0
+out="$(PATH="$NOGH:$PATH" bash "$SCRIPT" push "$UNREACHWT" fix/unreachable-2103 --allow-rewrite 2>/dev/null)" || rc=$?
+[ "$rc" -ne 0 ] || fail "a push to an unreachable origin must exit non-zero (got: $out)"
+[ -n "$out" ] \
+  || fail "#2103: pr.sh DIED without printing an outcome line on an unreachable origin (rc=$rc) — the lease read must be guarded"
+jq -e . >/dev/null 2>&1 <<<"$out" \
+  || fail "#2103: an unreachable origin must still print PARSEABLE JSON (got: $out)"
+[ "$(jq -r .outcome <<<"$out")" = "PUSH_REJECTED" ] \
+  || fail "#2103: an unreachable origin must be a structured PUSH_REJECTED (got: $out)"
+[ "$(jq -r .forced <<<"$out")" = "false" ] \
+  || fail "#2103: an UNREADABLE remote value must issue NO force at all (got: $out)"
+[ "$(jq -r .lease <<<"$out")" = "null" ] \
+  || fail "#2103: there is no leased value when the remote could not be read (got: $out)"
+[ -n "$(jq -r '.error // ""' <<<"$out")" ] \
+  || fail "#2103: the rejection must carry the diagnostic, not swallow it (got: $out)"
+echo "PASS: an unreachable origin is a structured PUSH_REJECTED with no force, not a silent exit-128 death (#2103)"
+
 # --- push: pr.sh never issues an UNGUARDED force ----------------------------------
 # A static floor under both blocks above: every `git push` in pr.sh that forces
 # must do so through --force-with-lease. A future edit that reaches for a bare
@@ -424,10 +462,23 @@ echo "PASS: a force whose leased value has moved is REJECTED and origin is left 
 # functional fixtures above.
 grep -q -- '--force-with-lease=refs/heads/' "$SCRIPT" \
   || fail "#2103: pr.sh must force through --force-with-lease=<ref>:<sha>"
-if grep -vE '^[[:space:]]*#' "$SCRIPT" | grep -nE 'git .*push .*--force([^-]|$)'; then
-  fail "#2103: pr.sh issues a BARE git push --force — a force here must always be leased"
+# Both spellings of a bare force are covered, because they are the two a future
+# author actually reaches for: the long `--force` and the `-f` shorthand. The
+# pipeline is fine here — it is an `if` condition, so pipefail's non-zero from
+# the inner grep is the intended "no match".
+if grep -vE '^[[:space:]]*#' "$SCRIPT" | grep -nE 'git[^|;&]*push[^|;&]*(--force([^-=]|$)|-f( |$))'; then
+  fail "#2103: pr.sh issues a BARE git push --force/-f — a force here must always be leased"
 fi
-echo "PASS: pr.sh forces only through --force-with-lease over a value it read first (#2103)"
+# And an expect-less `git push --force-with-lease` is a bare force wearing the
+# right name: with no `=<ref>:<sha>` it leases against the LOCAL remote-tracking
+# ref, which a preceding fetch has just made agree with origin — the classic
+# fetch-then-lease footgun, which silently clobbers exactly the concurrent
+# writer the lease is supposed to catch. Every occurrence must carry an explicit
+# expect value read at push time.
+if grep -vE '^[[:space:]]*#' "$SCRIPT" | grep -nE -- '--force-with-lease([^=]|$)'; then
+  fail "#2103: pr.sh uses --force-with-lease with NO =<ref>:<sha> expect value — that leases against the local tracking ref, not a value read from origin"
+fi
+echo "PASS: pr.sh forces only through --force-with-lease=<ref>:<sha> over a value it read first (#2103)"
 
 # --- push: the open-PR survey (temperloop#1688) -----------------------------------
 # The live 2026-08-21 shape: the worktree's local branch is `build/<slug>` while

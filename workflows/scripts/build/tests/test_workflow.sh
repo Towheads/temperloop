@@ -3487,6 +3487,28 @@ grep -q 'bashTimeoutMs: GATE_BASH_TIMEOUT_MS' "$MJS" \
   || fail "#115: 3e.5 gate runMachinery call must pass bashTimeoutMs: GATE_BASH_TIMEOUT_MS"
 echo "PASS: #115 gate-timeout guard — 3e.5 gate carries an explicit long Bash-tool timeout"
 
+# --- temperloop#2103: the ORDINARY 3f-1 push must carry --allow-rewrite, and so
+# must the pr-batch resume push. This is the site the whole issue is about: a
+# continuation round's branch was already pushed by an earlier round, 3f-0a then
+# rebased it, and a plain push of a rewritten ref can never fast-forward — it
+# came back PUSH_REJECTED three times in one live session. The flag is also the
+# non-classifier-tripping spelling of the force request (#437), so dropping it
+# in favour of a literal `--force` re-opens a second failure mode on the same
+# line. The mocked-outcome cases route on step KIND and never look at the
+# constructed command text, so without this static floor a future edit could
+# drop the flag from either call and nothing would fail until it recurs live. --
+_k2103_push_sites="$(grep -cE "push \\$\{sq\(wt\)\} \\$\{sq\(item\.branch\)\} --allow-rewrite" "$MJS")"
+[ "$_k2103_push_sites" -eq 2 ] \
+  || fail "#2103: expected BOTH push call sites (3f-1 and the pr-batch resume push) to carry --allow-rewrite on the constructed command line, found $_k2103_push_sites"
+grep -qF "addPrStep('push', \`\${prBin} push \${sq(wt)} \${sq(item.branch)} --allow-rewrite\`" "$MJS" \
+  || fail "#2103: driveItem's 3f-1 addPrStep('push', ...) must literally carry --allow-rewrite — a plain push of a rebased continuation branch is PUSH_REJECTED"
+grep -qF "kind: 'push', cmd: \`\${prBin} push \${sq(wt)} \${sq(item.branch)} --allow-rewrite\`" "$MJS" \
+  || fail "#2103: recoverLostReturn's resumed push must literally carry --allow-rewrite for the same reason 3f-1 does"
+if grep -nE "push \\$\{sq\(wt\)\} \\$\{sq\(item\.branch\)\} --force" "$MJS"; then
+  fail "#2103: an item push reverted to a literal --force — use --allow-rewrite (same request, no classifier-visible force token, #437)"
+fi
+echo "PASS: #2103 both item-push call sites statically carry --allow-rewrite on the constructed command line"
+
 # --- temperloop#1021: the gate budget is a NAMED SETTING, not a bare literal, and
 # EVERY caller wires it. The Workflow runtime has no shell, so the .mjs cannot
 # source build.config.sh itself — the setting rides the same Step-0 hand-off as
@@ -8921,10 +8943,10 @@ console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
 #   name — the round-3 MEDIUM: pushing HEAD under its local name mints a second,
 #   PR-less `build/<slug>` ref on every post-3f escalation.
 # ============================================================================
-run_node_case "K2020/K2103 preserve bash: the REAL generated shell (executed, not mocked) preserves an unpushed commit to origin under the PLAN's branch, skips a clean tree, reports a failed push, handles a missing worktree, resolves default without origin/HEAD, pushes rather than skipping when the base is unresolvable, is idempotent, LANDS a rebased branch already on origin under a lease over a value it read first, and REFUSES to overwrite a remote carrying work this worktree does not have" "
+run_node_case "K2020/K2103 preserve bash: the REAL generated shell (executed, not mocked) preserves an unpushed commit to origin under the PLAN's branch, skips a clean tree, reports a failed push, handles a missing worktree, resolves default without origin/HEAD, pushes rather than skipping when the base is unresolvable, is idempotent, LANDS a rebased branch already on origin under a lease over a value it read first, REFUSES to overwrite a remote carrying work this worktree does not have, and REFUSES WITHOUT CLAIMING A CONFLICT when the supersede probe cannot be answered" "
 $PREAMBLE
 const { execFileSync } = await import('node:child_process');
-const { mkdtempSync, rmSync } = await import('node:fs');
+const { mkdtempSync, rmSync, writeFileSync, chmodSync } = await import('node:fs');
 const { tmpdir } = await import('node:os');
 let reason = null;
 const internalsSrc = MJS_SRC.replace(/return await buildLevel\(\);\s*\$/, 'return { preserveCommittedWorkCmd };');
@@ -8941,6 +8963,15 @@ if (internalsSrc === MJS_SRC) {
   const sh = (cmd, cwd) => execFileSync('bash', ['-c', cmd], { encoding: 'utf8', cwd: cwd || root, env: GITENV });
   const run = (wt, branch) => {
     const out = execFileSync('bash', ['-c', I.preserveCommittedWorkCmd(wt, branch)], { encoding: 'utf8', cwd: root, env: GITENV });
+    const lines = out.trim().split('\\n').filter(Boolean);
+    return JSON.parse(lines[lines.length - 1]);
+  };
+  // Same as run(), but with a \`git\` on PATH that fails ONE subcommand. Arm J
+  // needs a remote that answers \`ls-remote\` and then refuses \`fetch\` — the
+  // real mid-flight network drop — which no static fixture can stage.
+  const runWithGitStub = (wt, branch) => {
+    const out = execFileSync('bash', ['-c', I.preserveCommittedWorkCmd(wt, branch)],
+      { encoding: 'utf8', cwd: root, env: { ...GITENV, PATH: root + '/stub:' + process.env.PATH } });
     const lines = out.trim().split('\\n').filter(Boolean);
     return JSON.parse(lines[lines.length - 1]);
   };
@@ -9122,6 +9153,39 @@ if (internalsSrc === MJS_SRC) {
       else if (i.stale_remote_not_superseded !== true) reason = 'I: the refusal must be NAMED, so the operator disposing this escalation knows it is a reconcile and not a dead remote, got ' + JSON.stringify(i);
       else if (i.remote_sha !== theirs) reason = 'I: the refusal must report the remote value it read, so neither the flag nor the branch existence has to be trusted alone, got ' + JSON.stringify(i);
       else if (sh(G + ' --git-dir=' + root + '/origin.git rev-parse refs/heads/fix/wti').trim() !== theirs) reason = 'I: THE REFUSAL DID NOT HOLD — origin fix/wti was overwritten, destroying commits this worktree never had';
+    }
+
+    // --- J: THE PROBE THAT COULD NOT BE ANSWERED (#2103 review round 1) ---
+    // Arm I refuses because the supersede check RAN and said no. This arm
+    // refuses because the check could not run at all: the remote answered
+    // \`ls-remote\` and then the \`fetch\` one step later failed (a network drop
+    // mid-step, an expired credential). Refusing is right either way — but the
+    // two must not be reported with the SAME flag, because
+    // \`stale_remote_not_superseded\` is what the escalation log turns into the
+    // flat assertion 'origin carries commits this worktree does NOT', and a
+    // human disposes the parked item against that sentence. Here nothing was
+    // established, so asserting it would be a fabricated fact handed to the
+    // person least able to check it.
+    if (!reason) {
+      clone('wtJ');
+      commitOn('wtJ', 'build/wtj', 'n.txt');
+      sh('cd wtJ && ' + G + ' checkout -q -b theirsj origin/main && printf theirs > theirsj.txt && ' + G + ' add -A && ' + G + ' commit -q -m theirsj && ' + G + ' push -q origin HEAD:refs/heads/fix/wtj && ' + G + ' checkout -q build/wtj');
+      const theirsJ = sh(G + ' --git-dir=' + root + '/origin.git rev-parse refs/heads/fix/wtj').trim();
+      sh('mkdir -p stub');
+      const realGit = sh('command -v git').trim();
+      writeFileSync(root + '/stub/git',
+        '#!/bin/sh\\n' +
+        'sub=\"\"\\n' +
+        'for a in \"\$@\"; do case \"\$a\" in -*) ;; *) sub=\"\$a\"; break ;; esac; done\\n' +
+        'if [ \"\$sub\" = fetch ]; then exit 128; fi\\n' +
+        'exec ' + realGit + ' \"\$@\"\\n');
+      chmodSync(root + '/stub/git', 0o755);
+      const j = runWithGitStub(root + '/wtJ', 'fix/wtj');
+      if (j.outcome !== 'WORK_PRESERVE_FAILED') reason = 'J: an unanswerable supersede probe must still REFUSE — fail-safe is the whole point, got ' + JSON.stringify(j);
+      else if (j.supersede_probe_failed !== true) reason = 'J: a refusal on an UNANSWERABLE probe must be named as one (supersede_probe_failed), got ' + JSON.stringify(j);
+      else if (j.stale_remote_not_superseded !== undefined) reason = 'J: an unanswerable probe must NOT claim the remote carries unsuperseded work — that fact was never established, got ' + JSON.stringify(j);
+      else if (j.remote_sha !== theirsJ) reason = 'J: the refusal must still report the remote value it read, got ' + JSON.stringify(j);
+      else if (sh(G + ' --git-dir=' + root + '/origin.git rev-parse refs/heads/fix/wtj').trim() !== theirsJ) reason = 'J: THE REFUSAL DID NOT HOLD — origin fix/wtj was overwritten on a probe that never answered';
     }
   } catch (err) {
     reason = 'the REAL generated shell (or its git fixture) threw: ' + ((err && err.message) || err);
