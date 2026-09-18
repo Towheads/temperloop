@@ -385,9 +385,9 @@ inside a wall-clock bound, emits `skipped — <agent> timed out after
 <actual>s` — the duration being the wall clock actually waited, not the bound
 budgeted. It is a separate shape rather than a rewording because the two
 carry opposite facts about the same agent (absent vs. present-and-slow) and
-route an investigator to opposite places; temperloop#2064 is the recorded
-cost of collapsing them. Its **one sanctioned exception** is the
-*shipped-but-not-installed* case: when
+route an investigator to opposite places; temperloop#2064 (§3e timeout
+misread as agent-unavailable) is the recorded cost of collapsing them. Its
+**one sanctioned exception** is the *shipped-but-not-installed* case: when
 the skipped capability is a subagent that **ships as source under
 `claude/agents/<agent>.md`** but is not resolvable as a live agent (no
 `.claude/agents/<agent>.md` and no `CLAUDE.md § Subagents` declaration), the
@@ -399,7 +399,7 @@ specific degradation has a known, in-the-moment fix the operator needs
 *while the panel is running*, not merely in a later durable record.
 Conciseness stays structurally enforced — one clause, this case only; every
 other mode-2 skip (a genuinely not-shipped agent, a timed-out one, or a
-non-agent capability with no `project-agents.sh` install path) stays bare. The two-shapes rule
+non-agent capability with no `project-agents.sh` install path) stays bare. The three-shapes rule
 governs a **skip** — a step that did not run — and is untouched by the
 **denied-capability variant** below, which reports a *refusal* the operator
 can lift right now and is therefore not a one-line skip notice at all. **This clause fixes the
