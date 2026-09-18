@@ -38,6 +38,43 @@
 #   3. AN EXPLICIT ESCALATION ROW (`ALL`). Paths whose blast radius is the gate
 #      machinery itself (quality-gates.sh, this lib, the map, the Makefile, the
 #      CI workflows, the kernel manifest) force the full set outright.
+#      ONE NARROW, CONTENT-CHECKED EXCEPTION (temperloop#1933): a diff to
+#      `scripts/quality-gates.sh` that REMOVES nothing and ADDS only
+#      gate-REGISTRATION lines, with comments and blank lines allowed to ride
+#      along. TWO line shapes count as a registration, and BOTH additionally
+#      require the literal to name a gate the caller's own list already carries:
+#        `<NAME>_GATES+=("<literal command>")`   the append form (l.1917+),
+#          self-describing — the array it appends to is ON the line; and
+#        `  "<literal command>"`                 a bare element of a
+#          `<NAME>_GATES=( … )` array literal; quality-gates.sh calls
+#          `KERNEL_GATES=(` "the ONE place this list is typed", the most
+#          idiomatic site of all. This shape names no array of its own, so it
+#          is additionally required to sit POSITIONALLY inside such a literal:
+#          the enclosing `-U0` hunk header's funcname context must itself read
+#          `<NAME>_GATES=(` / `<NAME>_GATES+=(`. Shape + membership is NOT
+#          enough for it — `SERIAL_LANE_PINS=( … )` and
+#          `SLOW_DISPATCH_HINTS=( … )` also hold bare quoted literals that ARE
+#          members of the run set, so without the positional test an addition
+#          to the serial-lane pin list (a correctness-bearing concurrency
+#          decision, not a registration) bought the narrow run and skipped
+#          `test_quality_gates_parallel.sh` — the one gate that would prove it.
+#      The membership requirement keeps the append form from reading a
+#      SKIPPED_KERNEL_GATES disclosure string (whose array name also ends
+#      `_GATES`) as a registration, and backs the bare-element form up behind
+#      the positional test.
+#      Such a diff ADDS a gate;
+#      it cannot change what any EXISTING gate runs, nor how the tree is
+#      classified — which is the whole reason quality-gates.sh sits on the ALL
+#      row. So the ALL row alone is skipped FOR THAT ONE PATH, the map's own
+#      non-ALL rows select the registry validators that a registration has to
+#      satisfy (check-gate-paths + its test, the check-surface degenerate-
+#      coverage pair, the exec-bit pair, and the ALWAYS floor that already
+#      carries check-setting-registry / validate-feature-docs / the kernel
+#      manifest), and the NEWLY REGISTERED gate commands are unioned in by name.
+#      Every other quality-gates.sh edit — any removed line, any added line that
+#      is not a registration, an added literal that is not a gate in the caller's
+#      list, a comment-only diff, a diff the probe cannot read at all — keeps the
+#      full escalation. The exception fails CLOSED.
 #   KNOWN, BOUNDED GAP (temperloop#1695): git reports a RENAME as a single line
 #      carrying the DESTINATION path, so moving a file OUT of a gated tree does
 #      not put the source tree in the changed set and that tree's gates are not
@@ -89,6 +126,11 @@
 #                              fixture tests, and quality-gates.sh's `--scoped`
 #                              mode, which hands in the LOCAL working-tree set
 #                              gate_selection_local_changed() computes below.
+#   GATE_SELECTION_DIFF_TEXT   OPTIONAL caller-supplied unified diff of
+#                              scripts/quality-gates.sh, used VERBATIM by the
+#                              registration-only probe (defense 3's exception)
+#                              instead of running git. The fixture seam for
+#                              this suite; no production caller sets it.
 #
 # Outputs (globals):
 #   GATE_SELECTION_MODE        full | diff
@@ -217,22 +259,33 @@ _gs_changed_paths() {
 # the static linter's "appears unused" is a false positive — same blanket
 # disable as gate_selection_resolve below.
 # shellcheck disable=SC2034
+# _gs_local_merge_base <root> — print the default-branch merge-base, or fail.
+# THE one candidate walk: origin/HEAD when the remote advertises one, else the
+# conventional names. Three callers share it (the two local-changed entry points
+# and the registration probe's base fallback), and they MUST agree — a probe that
+# resolved a different base than the changed set was computed against would
+# classify a diff the selection never saw.
+_gs_local_merge_base() {
+  local root="${1:-.}" default_ref="" base="" cand
+  git -C "$root" rev-parse --git-dir >/dev/null 2>&1 || return 1
+  default_ref="$(git -C "$root" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+  for cand in "$default_ref" origin/main origin/master main master; do
+    [[ -n "$cand" ]] || continue
+    if base="$(git -C "$root" merge-base "$cand" HEAD 2>/dev/null)" && [[ -n "$base" ]]; then
+      printf '%s\n' "$base"
+      return 0
+    fi
+  done
+  return 1
+}
+
 gate_selection_local_changed() {
-  local root="${1:-.}" default_ref="" base=""
+  local root="${1:-.}" base=""
   git -C "$root" rev-parse --git-dir >/dev/null 2>&1 || {
     printf 'gate-selection: %s is not a git checkout — cannot resolve a local changed set\n' "$root" >&2
     return 1
   }
-  # origin/HEAD when the remote advertises one, else the conventional names.
-  default_ref="$(git -C "$root" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"
-  local cand
-  for cand in "$default_ref" origin/main origin/master main master; do
-    [[ -n "$cand" ]] || continue
-    if base="$(git -C "$root" merge-base "$cand" HEAD 2>/dev/null)" && [[ -n "$base" ]]; then
-      break
-    fi
-    base=""
-  done
+  base="$(_gs_local_merge_base "$root" || true)"
   if [[ -z "$base" ]]; then
     printf 'gate-selection: no default-branch merge-base resolvable in %s\n' "$root" >&2
     return 1
@@ -273,18 +326,156 @@ gate_selection_local_changed_to_file() {
   paths="$(gate_selection_local_changed "$root")" || return 1
   # ...and recompute the base in THIS shell so the global lands where the caller
   # can see it. Cheap (one merge-base), and it cannot disagree with the sibling:
-  # both walk the identical candidate list against the identical HEAD.
-  local default_ref cand base=""
-  default_ref="$(git -C "$root" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"
-  for cand in "$default_ref" origin/main origin/master main master; do
-    [[ -n "$cand" ]] || continue
-    if base="$(git -C "$root" merge-base "$cand" HEAD 2>/dev/null)" && [[ -n "$base" ]]; then
-      break
-    fi
-    base=""
-  done
+  # both call _gs_local_merge_base against the identical HEAD.
+  local base=""
+  base="$(_gs_local_merge_base "$root" || true)"
   GATE_SELECTION_LOCAL_BASE="$base"
   printf '%s\n' "$paths" >"$out" || return 1
+  return 0
+}
+
+# --- the gate-REGISTRATION-only exception (temperloop#1933) ------------------
+# scripts/quality-gates.sh sits on the ALL row, so registering ONE new gate line
+# escalated the whole run to the ~110-gate set. A registration adds a gate; it
+# does not change what an existing gate runs. The two helpers below are what let
+# the selector tell those two diffs apart, and both fail CLOSED: anything they
+# cannot read, or cannot prove is registration-only, keeps the ALL escalation.
+_GS_QG_PATH="scripts/quality-gates.sh"
+# `<NAME>_GATES+=("<literal command>")`, optionally indented. The literal is
+# deliberately `$`- and backtick-free: a splat such as
+# `KERNEL_GATES+=("${SELF_DISTRIBUTION_GATES[@]}")` registers gates whose names
+# this probe cannot know, so it does NOT match and the diff escalates.
+_GS_REG_LINE_RE='^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*_GATES\+=\("([^"$`]+)"\)[[:space:]]*$'
+# ...and the OTHER registration site: a bare element of a `<NAME>_GATES=( … )`
+# array literal (quality-gates.sh's own comment calls `KERNEL_GATES=(` "the ONE
+# place this list is typed"), which diffs as `+  "make test-foo"` and would
+# otherwise be the most idiomatic way to register a gate and the one shape the
+# exception missed.
+#
+# Shape + membership is NOT sufficient for this form, because it carries no array
+# name of its own. `SERIAL_LANE_PINS=( … )` and `SLOW_DISPATCH_HINTS=( … )` are
+# two OTHER arrays in quality-gates.sh whose elements are bare quoted gate command
+# lines that ARE in the run set, so a pure addition to either passed both tests.
+# Neither is a registration: a serial-lane pin is a correctness-bearing
+# concurrency decision (its own comment records temperloop#1379's MEASURED data
+# race — six concurrent runs, four failures), and the narrow run it bought skipped
+# `bash scripts/tests/test_quality_gates_parallel.sh`, precisely the gate that
+# would prove a lane change safe. So a bare element must ALSO be positionally
+# inside a gate array: the enclosing hunk header's funcname context must match
+# _GS_REG_ARRAY_CTX_RE below. An unrecognised context fails CLOSED.
+_GS_REG_ELEM_RE='^[[:space:]]*"([^"$`]+)"[[:space:]]*$'
+# The hunk-header funcname that puts a bare element inside a gate array. git's
+# default funcname heuristic reports the nearest preceding line beginning at
+# column 0 with an alphabetic/`_`/`$` character — which for an addition ANYWHERE
+# in `KERNEL_GATES=( … )` (all ~1740 lines of it) is that opening line itself;
+# verified against the real file at both ends of the literal. The `--no-ext-diff`
+# / `--no-textconv` pins at the call site keep that context git's own.
+_GS_REG_ARRAY_CTX_RE='^[A-Za-z_][A-Za-z0-9_]*_GATES(\+)?=\([[:space:]]*$'
+
+# _gs_qg_diff <root> <base> — print a unified diff of $_GS_QG_PATH, or fail.
+# Unions the committed half (`<base>...HEAD`) with the working-tree half
+# (`HEAD`), because a /build worker running `--scoped` mid-work may have the
+# registration staged or merely saved rather than committed. A base that does
+# not resolve is a FAILURE, not an empty diff: an empty diff would read as
+# "nothing was removed" and narrow on no evidence at all.
+#
+# THE DIFF FORMAT IS PINNED AT THE CALL SITE, not inherited from the invoking
+# developer's git config. FOUR knobs on this seam, all pinned:
+#   * `diff.mnemonicPrefix=true` renders `--- c/… +++ w/…`, and
+#   * `diff.noprefix=true` renders `--- path +++ path` — both overridden by
+#     `--src-prefix`/`--dst-prefix`, which are portable further back than the
+#     newer `--default-prefix`;
+#   * a configured `diff.external` replaces the rendering wholesale —
+#     `--no-ext-diff` neutralises it;
+#   * a `.gitattributes` `diff=<driver>` whose driver sets `textconv` rewrites
+#     the CONTENT of every line before git diffs it, which `--no-ext-diff` does
+#     NOT disable — `--no-textconv` does.
+# Under any of the four the classifier reads a header or a mangled literal as an
+# added non-registration line and the exception silently never fires (it fails
+# CLOSED, so no correctness hole, but a capability that never fires is
+# indistinguishable from one that found nothing).
+_gs_qg_diff() {
+  local root="$1" base="$2" committed="" worktree=""
+  if [[ -n "${GATE_SELECTION_DIFF_TEXT+x}" ]]; then
+    printf '%s\n' "$GATE_SELECTION_DIFF_TEXT"
+    return 0
+  fi
+  [[ -n "$base" ]] || return 1
+  git -C "$root" rev-parse --git-dir >/dev/null 2>&1 || return 1
+  git -C "$root" rev-parse --verify --quiet "${base}^{commit}" >/dev/null 2>&1 || return 1
+  committed="$(git -C "$root" diff --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ -U0 "${base}...HEAD" -- "$_GS_QG_PATH" 2>/dev/null)" || return 1
+  worktree="$(git -C "$root" diff --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ -U0 HEAD -- "$_GS_QG_PATH" 2>/dev/null)" || return 1
+  printf '%s\n%s\n' "$committed" "$worktree"
+  return 0
+}
+
+# _gs_registration_only <diff-text> — classify the diff.
+# On success prints the newly registered gate commands, one per line. Fails
+# (leaving the ALL escalation in place) when the diff removes ANY line, adds any
+# line that is not a registration / comment / blank, or contains no registration
+# at all. That last clause is why a comment-only or whitespace-only diff still
+# escalates: the exception is for REGISTERING a gate, not for editing the file.
+_gs_registration_only() {
+  local diff_text="$1" line body lead stripped hunk_ctx found=0 gates=""
+  local in_hunk=0 elem_ok=0
+  while IFS= read -r line; do
+    # `diff --git …` and `@@…` are the two lines that can be recognised ANYWHERE,
+    # including mid-hunk: a REMOVED line always carries a leading `-`, so neither
+    # shape can be one. That is what lets the two halves of the unioned diff be
+    # read in a single pass, and it is why the hunk state below can be trusted.
+    case "$line" in
+      'diff --git '*) in_hunk=0; elem_ok=0; continue ;;
+      '@@'*)
+        in_hunk=1
+        # `@@ -a,b +c,d @@ <funcname context>` — strip through the second `@@ `.
+        # A hunk header with NO context leaves $hunk_ctx as the whole line, which
+        # matches no array and correctly denies the bare-element shape.
+        hunk_ctx="${line#@@ *@@ }"
+        if [[ $hunk_ctx =~ $_GS_REG_ARRAY_CTX_RE ]]; then elem_ok=1; else elem_ok=0; fi
+        continue
+        ;;
+    esac
+    # Every OTHER header shape is recognised only BEFORE the first `@@` of a file.
+    # Matching them on prefix alone at any position swallowed a real removal: with
+    # `-U0` a removed line whose content begins `-- a/` renders as `--- a/…` and a
+    # removed `++ b/…` as `+++ b/…`, so the header skip ran first and the removal
+    # never got to veto. Gating on "not yet inside a hunk" makes that structural
+    # rather than a bet on what content quality-gates.sh happens to hold.
+    if [[ $in_hunk -eq 0 ]]; then
+      case "$line" in
+        'index '*|'--- a/'*|'--- /dev/null'|'+++ b/'*|'+++ /dev/null') continue ;;
+        'old mode '*|'new mode '*|'new file mode '*|'deleted file mode '*) continue ;;
+        'similarity index '*|'rename from '*|'rename to '*) continue ;;
+      esac
+    fi
+    case "$line" in
+      -*) return 1 ;;   # a REMOVED line — never registration-only
+      +*) : ;;
+      *)  continue ;;   # context, `\ No newline...`, or padding between halves
+    esac
+    body="${line#+}"
+    if [[ $body =~ $_GS_REG_LINE_RE ]]; then
+      found=1
+      gates="${gates:+$gates$'\n'}${BASH_REMATCH[1]}"
+      continue
+    fi
+    # The bare-element form ONLY inside a `<NAME>_GATES=( … )` literal — see
+    # _GS_REG_ELEM_RE's comment: SERIAL_LANE_PINS / SLOW_DISPATCH_HINTS elements
+    # are gate-shaped AND members of the run set, and are not registrations.
+    if [[ $elem_ok -eq 1 ]] && [[ $body =~ $_GS_REG_ELEM_RE ]]; then
+      found=1
+      gates="${gates:+$gates$'\n'}${BASH_REMATCH[1]}"
+      continue
+    fi
+    lead="${body%%[![:space:]]*}"
+    stripped="${body#"$lead"}"
+    case "$stripped" in
+      ''|'#'*) continue ;;   # a blank or comment line rides along
+    esac
+    return 1
+  done <<<"$diff_text"
+  [[ $found -eq 1 ]] || return 1
+  printf '%s\n' "$gates"
   return 0
 }
 
@@ -363,6 +554,60 @@ gate_selection_resolve() {
     return 0
   fi
 
+  # The registration-only probe (temperloop#1933), run ONCE before the path
+  # loop.
+  #
+  # RESOLVING THE PROBE'S BASE IS THREE-STEP, and every step is load-bearing:
+  #   1. $base — the CI path's $LEAK_GUARD_BASE, and the fixture suite's.
+  #   2. $GATE_SELECTION_LOCAL_BASE — set by gate_selection_local_changed_to_file
+  #      on a local `--scoped` FIRST slice, whose $base is empty.
+  #   3. a merge-base resolved right here, the same walk (1)/(2) use.
+  # (3) is not belt-and-braces: it is what makes the exception reachable on the
+  # DEFAULT /build path at all. scripts/quality-gates.sh re-initialises
+  # GATE_SELECTION_LOCAL_BASE="" per process and only its first-slice branch
+  # fills it; slice 2..N reuses the PINNED changed set (temperloop#1663) and never
+  # calls that function, so steps (1) and (2) are BOTH empty there. Without (3)
+  # slice 1 would narrow, slice 2 would escalate, and the #1663 drift guard would
+  # see the fingerprint move and RESTART FROM GATE 0 ON THE FULL SET — costing
+  # more gate time than never having narrowed, under a note that misattributes
+  # the cause to a moved working tree. (3) is cheap (one merge-base) and cannot
+  # disagree with (2): the identical candidate walk against the identical HEAD.
+  local _gs_reg_only=0 _gs_reg_gates="" _gs_qg_diff_text=""
+  local _gs_qg_base="${base:-${GATE_SELECTION_LOCAL_BASE:-}}"  # setting:exempt — internal call-interface global set by gate_selection_local_changed(), not an operator default
+  if _gs_in_list "$_GS_QG_PATH" "$changed"; then
+    [[ -n "$_gs_qg_base" ]] || _gs_qg_base="$(_gs_local_merge_base "$root" || true)"
+    if _gs_qg_diff_text="$(_gs_qg_diff "$root" "$_gs_qg_base")" &&
+       _gs_reg_gates="$(_gs_registration_only "$_gs_qg_diff_text")"; then
+      _gs_reg_only=1
+    else
+      _gs_reg_gates=""
+    fi
+  fi
+  # EVERY captured literal must be a gate the caller's own list already carries.
+  # Two holes close together here, and this is the load-bearing half of the
+  # classifier rather than a tidy-up:
+  #   * FAIL-OPEN. `<NAME>_GATES` also matches SKIPPED_KERNEL_GATES, a
+  #     skip-DISCLOSURE array whose elements are human sentences, not commands
+  #     (`SKIPPED_KERNEL_GATES+=("test_update_kernel.sh — …")`). A diff adding one
+  #     is not a registration at all, yet it read as one and declined the ALL row
+  #     — the one direction this exception must never fail in.
+  #   * PHANTOM GATES. A captured literal that is not a real gate was unioned into
+  #     $selected, dropped later for not being in $all, but still counted in the
+  #     "+N gate(s)" the reason line shows an operator.
+  # Membership is preferred over anchoring the accepted array names because it is
+  # SELF-MAINTAINING: a new run-set array needs no edit here, and a new
+  # disclosure-shaped array cannot sneak in.
+  if [[ $_gs_reg_only -eq 1 ]]; then
+    local _gs_cap
+    while IFS= read -r _gs_cap; do
+      [[ -n "$_gs_cap" ]] || continue
+      _gs_in_list "$_gs_cap" "$all" && continue
+      _gs_reg_only=0
+      _gs_reg_gates=""
+      break
+    done <<<"$_gs_reg_gates"
+  fi
+
   local selected="" matched="" chg_path i key globs glob hit any_recognised
   local _gs_glob_list=()
   while IFS= read -r chg_path; do
@@ -376,6 +621,14 @@ gate_selection_resolve() {
       # An ALWAYS row is not a recogniser — see the header. Its gate is added
       # unconditionally further down.
       [[ "$globs" == "ALWAYS" ]] && continue
+      # temperloop#1933: skip the ALL row for a registration-only
+      # quality-gates.sh diff, and ONLY for that path. Every other ALL glob on
+      # the row — the Makefile, this lib, the map itself — still escalates, and
+      # quality-gates.sh still has to be recognised by a real (non-ALWAYS) row
+      # below or the unmapped-path default fires as usual.
+      if [[ $_gs_reg_only -eq 1 && "$key" == "ALL" && "$chg_path" == "$_GS_QG_PATH" ]]; then
+        continue
+      fi
       hit=0
       # `read -r -a` splits on IFS WITHOUT pathname expansion. A bare
       # `for glob in $globs` would let the shell expand `docs/**` against the
@@ -404,6 +657,18 @@ gate_selection_resolve() {
     fi
     matched="${matched:+$matched$'\n'}$chg_path"
   done <<<"$changed"
+
+  # Union in the gates the registration-only diff just REGISTERED. They are in
+  # $all already — the caller built that list from the same edited file — so
+  # naming them here is what makes a new gate RUN on the very PR that adds it,
+  # rather than first running on the next unrelated full set.
+  if [[ $_gs_reg_only -eq 1 && -n "$_gs_reg_gates" ]]; then
+    local _gs_new_gate
+    while IFS= read -r _gs_new_gate; do
+      [[ -n "$_gs_new_gate" ]] || continue
+      _gs_in_list "$_gs_new_gate" "$selected" || selected="${selected:+$selected$'\n'}$_gs_new_gate"
+    done <<<"$_gs_reg_gates"
+  fi
 
   # Emit in the caller's run order, and keep any gate the map does not mention
   # (defense 4 in the header: an unmapped gate over-runs, never under-runs).
@@ -445,5 +710,13 @@ gate_selection_resolve() {
   n_sel="$(printf '%s\n' "$ordered" | grep -c . || true)"
   n_all="$(printf '%s\n' "$all" | grep -c . || true)"
   GATE_SELECTION_REASON="diff-scoped — ${n_changed} changed path(s) vs '${base:-<seeded>}' select ${n_sel}/${n_all} gate(s)"
+  # A run that declined an ALL escalation must SAY so — a scoped run that
+  # silently skipped the escalation is indistinguishable from one whose diff
+  # never touched the gate machinery at all (the legible-degradation rule).
+  if [[ $_gs_reg_only -eq 1 ]]; then
+    local n_reg
+    n_reg="$(printf '%s\n' "$_gs_reg_gates" | grep -c . || true)"
+    GATE_SELECTION_REASON="${GATE_SELECTION_REASON}; ${_GS_QG_PATH} is a REGISTRATION-ONLY diff (+${n_reg} gate(s), nothing removed) so its ALL escalation was declined in favour of the registry validators (temperloop#1933)"
+  fi
   return 0
 }
