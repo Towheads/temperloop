@@ -2567,6 +2567,42 @@ async function workerUsageEmit(item, tag, seat, phaseName) {
   };
 }
 
+// USAGE_UNAVAILABLE — the degraded reading every workerUsageEmit() CALL SITE
+// falls back to when the call itself throws (see the guards below). Distinct
+// from workerUsageEmit()'s own internal "malformed response" null-collapse
+// (numOrNull()) — this is the "the machinery invocation never completed at
+// all" arm.
+const USAGE_UNAVAILABLE = Object.freeze({ epochS: null, tokensIn: null, tokensOut: null });
+
+// temperloop#2065 review round 2 [HIGH]: workerClockNow()/workerUsageEmit()
+// both bottom out in runMachinery() -> machineryAgent(), which explicitly
+// re-throws (does not degrade) an unresolvable-agentType / StructuredOutput-
+// absent / retry-cap-exceeded executor spawn — the exact throw shape
+// callWorker()'s own agent({schema}) call is documented as capable of, two
+// blocks below. The block comment above these two functions promises they
+// are FAIL-OPEN and "never a thrown error" — that promise covers only a
+// malformed VALUE in a successful response (numOrNull()'s job); it does not
+// cover the underlying machinery spawn itself throwing. These two guards are
+// what backs the promise with code: every call site below goes through one
+// of these instead of calling workerClockNow()/workerUsageEmit() bare, so a
+// cost-ledger bookkeeping failure can never abort the item build it is only
+// supposed to be measuring.
+async function safeWorkerClockNow(item, tag, phaseName) {
+  try {
+    return await workerClockNow(item, tag, phaseName);
+  } catch {
+    return null;
+  }
+}
+
+async function safeWorkerUsageEmit(item, tag, seat, phaseName) {
+  try {
+    return await workerUsageEmit(item, tag, seat, phaseName);
+  } catch {
+    return USAGE_UNAVAILABLE;
+  }
+}
+
 // elapsedMs — plain integer arithmetic on two already-resolved epoch-SECONDS
 // readings (never Date.now() — see above). null when either edge is
 // unavailable, so a partial reading never manufactures a false zero.
@@ -2607,7 +2643,7 @@ function mergeWorkerCost(acc, add) {
 // blows its return channel still spent real tokens, and the ledger records
 // that spend rather than silently dropping it.
 async function callWorker(item, wt, extraSection, label, phaseName) {
-  const startS = await workerClockNow(item, label, phaseName);
+  const startS = await safeWorkerClockNow(item, label, phaseName);
   try {
     const v = await agent(workerPrompt(item, wt, extraSection), {
       label,
@@ -2624,7 +2660,7 @@ async function callWorker(item, wt, extraSection, label, phaseName) {
       model: item.model || undefined, // "" or undefined → inherit session model
       schema: WORKER_VERDICT_SCHEMA,
     });
-    const usage = await workerUsageEmit(item, label, 'build-worker', phaseName);
+    const usage = await safeWorkerUsageEmit(item, label, 'build-worker', phaseName);
     // `nullReturn` (temperloop#1819): true only for the bare-null shape, where
     // NO error text exists — the caller's quota classification then falls back
     // to the agent-liveness canary instead of text matching.
@@ -2637,7 +2673,7 @@ async function callWorker(item, wt, extraSection, label, phaseName) {
       tokensOut: usage.tokensOut,
     };
   } catch (err) {
-    const usage = await workerUsageEmit(item, label, 'build-worker', phaseName);
+    const usage = await safeWorkerUsageEmit(item, label, 'build-worker', phaseName);
     return {
       verdict: null,
       error: String((err && err.message) || err),
@@ -6794,7 +6830,7 @@ async function ciPollLoop(item, ownerRepo, pr, initialSha, wt) {
       // force-push and re-poll PINNED to the new SHA (#254 guard).
       log(`[${item.slug}] CI failed — re-spawning worker (retries left ${retriesLeft})`);
       const cifixLabel = `worker-cifix:${item.slug}`;
-      const cifixStartS = await workerClockNow(item, cifixLabel, enterStage(STAGE_CI));
+      const cifixStartS = await safeWorkerClockNow(item, cifixLabel, enterStage(STAGE_CI));
       // temperloop#2065 review round 1 [HIGH]: agent({schema}) THROWS on a
       // StructuredOutput-absent / retry-cap-exceeded subagent — the SAME
       // primitive callWorker() wraps in try/catch for exactly this reason
@@ -6846,7 +6882,7 @@ async function ciPollLoop(item, ownerRepo, pr, initialSha, wt) {
       // ciPollLoop call site) — there is one wall-clock figure for the whole
       // item, not a per-phase one.
       {
-        const cifixUsage = await workerUsageEmit(item, cifixLabel, 'build-worker', enterStage(STAGE_CI));
+        const cifixUsage = await safeWorkerUsageEmit(item, cifixLabel, 'build-worker', enterStage(STAGE_CI));
         const inT = cifixUsage.tokensIn ?? 0;
         const outT = cifixUsage.tokensOut ?? 0;
         retryTokens = (retryTokens ?? 0) + inT + outT;

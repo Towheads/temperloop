@@ -376,13 +376,24 @@ globalThis.agent = async function agent(prompt, opts = {}) {
       // temperloop#2065: the worker-cost-capture seam's OWN queues — see
       // workerClockMap/workerUsageMap's comment above for why they cannot
       // share machineryMap's FIFO.
+      // temperloop#2065 review round 2 [HIGH]: a queued { __throw: msg } entry
+      // here models runMachinery()/machineryAgent()'s OWN re-throw (an
+      // unresolvable agentType, a StructuredOutput-absent/retry-capped
+      // executor) — the exact throw shape safeWorkerClockNow()/
+      // safeWorkerUsageEmit() exist to catch. Without that guard this
+      // propagates past callWorker()/ciPollLoop() uncaught, per the same
+      // #939 __throw precedent the worker-call branch below already uses.
       if (/^worker-clock:/.test(String(opts.label || ''))) {
-        return nextFromMap(workerClockMap, slug, { outcome: 'WORKER_CLOCK', epoch_s: 1000 });
+        const v = nextFromMap(workerClockMap, slug, { outcome: 'WORKER_CLOCK', epoch_s: 1000 });
+        if (v && v.__throw) throw new Error(v.__throw);
+        return v;
       }
       if (/^worker-usage:/.test(String(opts.label || ''))) {
-        return nextFromMap(workerUsageMap, slug, {
+        const v = nextFromMap(workerUsageMap, slug, {
           outcome: 'WORKER_USAGE', epoch_s: 1000, usage_source: 'unavailable', input_tokens: null, output_tokens: null,
         });
+        if (v && v.__throw) throw new Error(v.__throw);
+        return v;
       }
       // temperloop#2003: the §3e ceiling's timer executor, on its own queue
       // (see reviewWaitMap). Default REVIEW_WAIT_ELAPSED = "the interval
@@ -660,6 +671,70 @@ const planWrites = callLog.filter(c =>
 );
 if (planWrites.length > 0)
   { console.log(JSON.stringify({ ok: false, reason: 'plan-note write detected: ' + JSON.stringify(planWrites) })); process.exit(0); }
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+# ============================================================================
+# TEST 1b: worker-cost-capture guard — a throwing worker-clock/worker-usage
+# call degrades the ITEM's cost fields to null, it never aborts the item
+# (temperloop#2065 review round 2 [HIGH])
+# ============================================================================
+run_node_case "worker-cost-capture guard: workerClockNow()/workerUsageEmit() THROWING never aborts the item — cost fields degrade to null instead" "
+$PREAMBLE
+
+happyMachinery('clockthrow', 201, 'c500');
+happyWorker('clockthrow');
+// The main worker's OWN clock start throws (models machineryAgent()'s
+// re-throw on an unresolvable/retry-capped executor) — the SAME shape
+// callWorker() wraps the real agent({schema}) call in try/catch for.
+setWorkerClock('clockthrow', { __throw: 'agent type not found' });
+
+happyMachinery('usagethrow', 202, 'c600');
+happyWorker('usagethrow');
+// The main worker's OWN post-return usage-emit throws.
+setWorkerUsage('usagethrow', { __throw: 'agent type not found' });
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'clockthrow', branch: 'build/clockthrow', title: 'Clock throws', kind: 'impl', acceptance: ['c'] },
+  { slug: 'usagethrow', branch: 'build/usagethrow', title: 'Usage throws', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+
+const parked = result.parked ?? [];
+const escalations = result.escalations ?? [];
+
+// Pre-fix (bare workerClockNow()/workerUsageEmit() calls): the throw
+// propagates past callWorker() uncaught and the item never parks at all —
+// it either escalates as a generic worker-error or the whole level rejects.
+// Post-fix: BOTH items park normally, with the real worker verdict intact and
+// only the cost fields degraded.
+if (escalations.length !== 0)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected 0 escalations (the throw must degrade, not escalate), got ' + JSON.stringify(escalations) })); process.exit(0); }
+if (parked.length !== 2)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected 2 parked (both items survive the throw), got ' + parked.length + '; ' + JSON.stringify(result) })); process.exit(0); }
+
+const pClock = parked.find(p => p.slug === 'clockthrow');
+const pUsage = parked.find(p => p.slug === 'usagethrow');
+if (!pClock || pClock.pr !== 201)
+  { console.log(JSON.stringify({ ok: false, reason: 'clockthrow did not park with its real verdict: ' + JSON.stringify(pClock) })); process.exit(0); }
+if (!pUsage || pUsage.pr !== 202)
+  { console.log(JSON.stringify({ ok: false, reason: 'usagethrow did not park with its real verdict: ' + JSON.stringify(pUsage) })); process.exit(0); }
+
+// A thrown clock read means startS is null, so elapsedMs() (both-null-safe)
+// degrades wall_clock_ms to null rather than a bogus arithmetic result.
+if (pClock.wall_clock_ms !== null)
+  { console.log(JSON.stringify({ ok: false, reason: 'clockthrow: expected wall_clock_ms null (clock threw), got ' + pClock.wall_clock_ms })); process.exit(0); }
+if (pClock.tokens_in !== null || pClock.tokens_out !== null)
+  { console.log(JSON.stringify({ ok: false, reason: 'clockthrow: expected tokens_in/out null, got ' + JSON.stringify({in: pClock.tokens_in, out: pClock.tokens_out}) })); process.exit(0); }
+// A thrown usage-emit means the WHOLE usage reading degrades (epochS/tokensIn/
+// tokensOut all null) — never a partial object that manufactures a false zero.
+if (pUsage.tokens_in !== null || pUsage.tokens_out !== null)
+  { console.log(JSON.stringify({ ok: false, reason: 'usagethrow: expected tokens_in/out null (usage-emit threw), got ' + JSON.stringify({in: pUsage.tokens_in, out: pUsage.tokens_out}) })); process.exit(0); }
+if (pUsage.wall_clock_ms !== null)
+  { console.log(JSON.stringify({ ok: false, reason: 'usagethrow: expected wall_clock_ms null (usage-emit threw, so the end edge is unavailable), got ' + pUsage.wall_clock_ms })); process.exit(0); }
 
 console.log(JSON.stringify({ ok: true }));
 "
@@ -6398,10 +6473,10 @@ else {
     [/^worker:/,       'build'],
     // temperloop#2065 — the worker-cost-capture seam's own labels carry the
     // SAME phase as whichever worker call they bracket (see
-    // workerClockNow()/workerUsageEmit()'s `phaseName` param): the CI-fix
-    // variant (tag names `worker-cifix:`) belongs to 'CI', so its more
+    // workerClockNow()/workerUsageEmit()'s \`phaseName\` param): the CI-fix
+    // variant (tag names \`worker-cifix:\`) belongs to 'CI', so its more
     // specific pattern is checked FIRST; anything else (the main worker's
-    // `worker:<slug>`/`worker:<slug>#retry` tag) belongs to 'build'.
+    // \`worker:<slug>\`/\`worker:<slug>#retry\` tag) belongs to 'build'.
     [/^worker-(?:clock|usage):[^#]*#worker-cifix:/, 'CI'],
     [/^worker-(?:clock|usage):/, 'build'],
     [/^review-diff:/,  'review'],
