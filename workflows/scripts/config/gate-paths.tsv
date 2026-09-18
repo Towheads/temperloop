@@ -238,6 +238,7 @@ bash workflows/scripts/tests/test_install_manifest.sh	workflows/scripts/install/
 bash workflows/scripts/tests/test_install_project_agents.sh	workflows/scripts/install/** workflows/scripts/tests/test_install_project_agents.sh claude/agents/** claude/commands/**
 bash workflows/scripts/tests/test_project_agents_out_of_tree_copy.sh	workflows/scripts/install/** workflows/scripts/tests/test_project_agents_out_of_tree_copy.sh
 bash workflows/scripts/tests/test_project_agents_gitignore_propagation.sh	workflows/scripts/install/** workflows/scripts/tests/test_project_agents_gitignore_propagation.sh
+bash workflows/scripts/tests/test_project_agents_prune.sh	workflows/scripts/install/** workflows/scripts/tests/test_project_agents_prune.sh
 bash workflows/scripts/tests/test_reviewer_activation_coverage.sh	workflows/scripts/install/** workflows/scripts/config/reviewer-routing.tsv claude/agents/** workflows/scripts/tests/test_reviewer_activation_coverage.sh
 bash workflows/scripts/tests/test_reviewer_activate.sh	workflows/scripts/install/** workflows/scripts/config/reviewer-routing.tsv claude/agents/** workflows/scripts/tests/test_reviewer_activate.sh
 bash workflows/scripts/tests/test_reviewer_seat_tiers.sh	claude/agents/** claude/workflows/build-level.mjs workflows/scripts/tests/test_reviewer_seat_tiers.sh

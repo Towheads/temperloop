@@ -223,6 +223,21 @@ KERNEL_GATES=(
   # append. Same direct-`bash` form as the sibling project-agents gates
   # above (kernel Makefile is generator-owned; no new target added here).
   "bash workflows/scripts/tests/test_project_agents_gitignore_propagation.sh"
+  # Managed-link prune + its advisory doctor report (temperloop#1943):
+  # project-agents.sh had no prune/--sync/uninstall path, so deleting a
+  # claude/{agents,commands} source file left a DANGLING symlink in the
+  # project-scoped .claude/ tree — invisible, because the installer gitignores
+  # that tree itself, and live, because .claude/agents/ is exactly where the
+  # capability probe looks. The prune now runs on every deploy (no flag), and
+  # doctor.sh's check_project_agents_tree() reports whatever survives. The
+  # test covers the DISCRIMINATING set — removed source pruned, still-present
+  # source kept, six unrelated entries (real file, foreign link, basename
+  # mismatch, non-.md, nested, unmanaged category) left untouched — plus a
+  # differential proof that the doctor check touches no tally and never
+  # changes doctor's exit code. Same direct-`bash` form as the sibling
+  # project-agents gates above (kernel Makefile is generator-owned; no new
+  # target added here).
+  "bash workflows/scripts/tests/test_project_agents_prune.sh"
   # Reviewer activation-coverage scan (temperloop#548, ADR 0007/0008):
   # workflows/scripts/install/reviewer-activation-coverage.sh — the pure,
   # non-interactive data path that computes the gap set (catalogued
