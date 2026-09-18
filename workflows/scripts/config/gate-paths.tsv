@@ -67,8 +67,12 @@
 # ONE CONTENT-CHECKED EXCEPTION (temperloop#1933), implemented in
 # gate-selection.sh and NOT expressible in this file's path-only grammar:
 # `scripts/quality-gates.sh` stops escalating when its diff REMOVES nothing and
-# ADDS only gate-registration lines (`<NAME>_GATES+=("<literal>")`, with comments
-# and blanks allowed alongside). Registering a gate ADDS one; it cannot change
+# ADDS only gate-registration lines — either `<NAME>_GATES+=("<literal>")` or a
+# bare `  "<literal>"` element of the `KERNEL_GATES=( … )` array literal, with
+# comments and blanks allowed alongside, and in BOTH shapes only when the literal
+# names a gate already present in the run's own gate list (that membership check
+# is what keeps a SKIPPED_KERNEL_GATES disclosure string from reading as a
+# registration). Registering a gate ADDS one; it cannot change
 # what an existing gate runs or how the tree is classified, which is the only
 # reason this path is on the ALL row at all. The selector then skips the ALL row
 # FOR THAT PATH ONLY, lets the rows below that name `scripts/quality-gates.sh`

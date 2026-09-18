@@ -56,7 +56,15 @@
 #      b) a removed line, c) a non-registration addition, d) comments only,
 #      e) a splat registration, f) no readable diff -> FULL escalation, each.
 #      g/h) the same two verdicts end-to-end against a REAL git tree, with the
-#         uncommitted half of the diff carrying its own veto.
+#         uncommitted half of the diff carrying its own veto;
+#      i) the PINNED LATER SLICE — the default /build shape, where neither
+#         $LEAK_GUARD_BASE nor GATE_SELECTION_LOCAL_BASE is set and the probe
+#         must resolve its own base, or the selection moves between slices and
+#         the #1663 drift guard restarts the whole suite on the full set;
+#      j) diff.mnemonicPrefix / diff.noprefix cannot silently disable it;
+#      k) a SKIPPED_KERNEL_GATES disclosure line is not a registration;
+#      l/m) a bare element of the KERNEL_GATES array literal IS one — but only
+#         when the literal names a gate the caller list already carries.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -595,6 +603,129 @@ GATE_SELECTION_BASE="$REG_BASE"
 gate_selection_resolve
 [ "$GATE_SELECTION_MODE" = "full" ] || fail "22h: an UNCOMMITTED removal must still keep the full escalation (got $GATE_SELECTION_MODE / $GATE_SELECTION_REASON)"
 echo "PASS: 22h a removal in the uncommitted half alone still keeps the full escalation"
+
+# 22i — THE PINNED SECOND SLICE (temperloop#1663 x #1933). This is the DEFAULT
+# /build path, and the state 22a-22h all miss: build-level.mjs runs the
+# acceptance gate in slices, and quality-gates.sh re-initialises
+# GATE_SELECTION_LOCAL_BASE="" per process, filling it only on the FIRST slice.
+# Slice 2..N reuses the PINNED changed set and never calls the resolver that
+# fills it, and no $LEAK_GUARD_BASE exists on a local run — so the probe had NO
+# base at all and the ALL row fired. The cost is not a lost narrowing: slice 1
+# narrows, slice 2 widens, and the #1663 drift guard then RESTARTS FROM GATE 0
+# ON THE FULL SET, so the feature made its own target diff SLOWER than before it
+# existed. The selection must therefore be byte-identical across the two states.
+REG_REPO2="$TMP/regrepo2"
+mkdir -p "$REG_REPO2/scripts"
+git -C "$REG_REPO2" init -q
+git -C "$REG_REPO2" config user.email t@example.com
+git -C "$REG_REPO2" config user.name t
+printf 'KERNEL_GATES=()\nKERNEL_GATES+=("make test-kernel-manifest")\n' >"$REG_REPO2/scripts/quality-gates.sh"
+git -C "$REG_REPO2" add -A && git -C "$REG_REPO2" commit -qm base
+# Leave the default branch (main or master, whichever `git init` chose) parked on
+# the base commit so the base fallback has a candidate to walk to, exactly as a
+# /build worktree branched off origin/main does.
+git -C "$REG_REPO2" checkout -q -b work
+printf 'KERNEL_GATES+=("%s")\n' "$REG_NEW" >>"$REG_REPO2/scripts/quality-gates.sh"
+git -C "$REG_REPO2" add -A && git -C "$REG_REPO2" commit -qm register
+
+PIN="$TMP/pin-changed"
+# --- slice 1: the resolver runs, publishes the base, and writes the pin.
+reg_env
+GATE_SELECTION_ROOT="$REG_REPO2"
+GATE_SELECTION_LOCAL_BASE=""
+gate_selection_local_changed_to_file "$REG_REPO2" "$PIN" ||
+  fail "22i: fixture setup — no local changed set resolvable in $REG_REPO2"
+[ -n "$GATE_SELECTION_LOCAL_BASE" ] || fail "22i: fixture setup — slice 1 published no local base"
+GATE_SELECTION_CHANGED="$(cat "$PIN")"
+gate_selection_resolve
+[ "$GATE_SELECTION_MODE" = "diff" ] || fail "22i: slice 1 must narrow (got $GATE_SELECTION_MODE / $GATE_SELECTION_REASON)"
+SLICE1_SELECTED="$GATE_SELECTION_SELECTED"
+
+# --- slice 2..N: the SAME pin, in a fresh process. No base from either input.
+reg_env
+GATE_SELECTION_ROOT="$REG_REPO2"
+GATE_SELECTION_LOCAL_BASE=""
+GATE_SELECTION_CHANGED="$(cat "$PIN")"
+gate_selection_resolve
+[ "$GATE_SELECTION_MODE" = "diff" ] || fail "22i: a PINNED later slice must narrow identically to slice 1, not re-escalate (got $GATE_SELECTION_MODE / $GATE_SELECTION_REASON)"
+[ "$GATE_SELECTION_SELECTED" = "$SLICE1_SELECTED" ] || fail "22i: the selection must be IDENTICAL across slices — a changed fingerprint restarts the whole suite from gate 0 on the FULL set (temperloop#1663). slice1:
+$SLICE1_SELECTED
+slice2:
+$GATE_SELECTION_SELECTED"
+echo "PASS: 22i a pinned later slice resolves its own probe base and selects exactly what slice 1 selected"
+
+# 22j — the same pinned slice under diff.mnemonicPrefix / diff.noprefix. Those
+# render the diff header as `--- c/… +++ w/…` or as bare paths, which the
+# classifier would read as an added non-registration line: the exception fails
+# closed and is SILENTLY dead for any developer or runner carrying those common
+# settings. The call site pins the prefixes, so the config cannot reach it.
+git -C "$REG_REPO2" config diff.mnemonicprefix true
+git -C "$REG_REPO2" config diff.noprefix true
+reg_env
+GATE_SELECTION_ROOT="$REG_REPO2"
+GATE_SELECTION_LOCAL_BASE=""
+GATE_SELECTION_CHANGED="$(cat "$PIN")"
+gate_selection_resolve
+[ "$GATE_SELECTION_MODE" = "diff" ] || fail "22j: diff.mnemonicPrefix/diff.noprefix must not disable the exception (got $GATE_SELECTION_MODE / $GATE_SELECTION_REASON)"
+git -C "$REG_REPO2" config --unset diff.mnemonicprefix
+git -C "$REG_REPO2" config --unset diff.noprefix
+echo "PASS: 22j the registration probe pins its own diff prefixes, so a mnemonic/no-prefix git config cannot silently kill the exception"
+
+# 22k — SKIPPED_KERNEL_GATES is a skip-DISCLOSURE array, not a run set, and its
+# name also ends `_GATES`. Adding one of its human-sentence elements read as a
+# registration: the ALL row was declined and the sentence was counted as a gate.
+# That is the FAIL-OPEN direction the header promises cannot happen. The literal
+# is not in the caller gate list, so it now escalates.
+reg_env
+GATE_SELECTION_DIFF_TEXT="$(cat <<'DIFF'
+diff --git a/scripts/quality-gates.sh b/scripts/quality-gates.sh
+index 1111111..2222222 100755
+--- a/scripts/quality-gates.sh
++++ b/scripts/quality-gates.sh
+@@ -1876,0 +1877 @@ KERNEL_GATES+=("bash a.sh")
++  SKIPPED_KERNEL_GATES+=("test_update_kernel.sh — not the seam-bearing version")
+DIFF
+)"
+gate_selection_resolve
+[ "$GATE_SELECTION_MODE" = "full" ] || fail "22k: a SKIPPED_KERNEL_GATES disclosure line is not a registration and must keep the full escalation (got $GATE_SELECTION_MODE / $GATE_SELECTION_REASON)"
+echo "PASS: 22k a skip-disclosure line whose array name also ends _GATES keeps the full escalation"
+
+# 22l — the CANONICAL registration site: a bare element of the KERNEL_GATES=( … )
+# array literal, which quality-gates.sh calls the ONE place this list is typed.
+# It diffs as `+  "make test-foo"` and was the one idiomatic shape the exception
+# missed, so the most obvious way to register a gate got the widest possible run.
+reg_env
+GATE_SELECTION_DIFF_TEXT="$(cat <<'DIFF'
+diff --git a/scripts/quality-gates.sh b/scripts/quality-gates.sh
+index 1111111..2222222 100755
+--- a/scripts/quality-gates.sh
++++ b/scripts/quality-gates.sh
+@@ -119,0 +120 @@ KERNEL_GATES=(
++  "bash workflows/scripts/tests/test_ready_pr_sweep.sh"
+DIFF
+)"
+gate_selection_resolve
+[ "$GATE_SELECTION_MODE" = "diff" ] || fail "22l: a bare array-literal registration must narrow (got $GATE_SELECTION_MODE / $GATE_SELECTION_REASON)"
+case "$GATE_SELECTION_SELECTED" in *"$REG_NEW"*) : ;; *) fail "22l: the newly registered gate must run on the PR that adds it, got:
+$GATE_SELECTION_SELECTED" ;; esac
+echo "PASS: 22l a bare element added to the KERNEL_GATES array literal is a registration too"
+
+# 22m — ...and a bare quoted literal that is NOT a gate in the run list is just a
+# string, so it must not buy the narrow run. This is what makes 22l safe: the
+# membership requirement, not the line shape, is the load-bearing half.
+reg_env
+GATE_SELECTION_DIFF_TEXT="$(cat <<'DIFF'
+diff --git a/scripts/quality-gates.sh b/scripts/quality-gates.sh
+index 1111111..2222222 100755
+--- a/scripts/quality-gates.sh
++++ b/scripts/quality-gates.sh
+@@ -119,0 +120 @@ SOME_OTHER_LIST=(
++  "not a gate command at all"
+DIFF
+)"
+gate_selection_resolve
+[ "$GATE_SELECTION_MODE" = "full" ] || fail "22m: a bare literal that is not a gate in the caller list must keep the full escalation (got $GATE_SELECTION_MODE / $GATE_SELECTION_REASON)"
+echo "PASS: 22m a bare quoted literal that names no gate in the run list keeps the full escalation"
 
 
 echo "OK — gate-selection.sh: all cases passed"
