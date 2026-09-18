@@ -375,6 +375,10 @@ rc=0; out="$(PATH="$NOGH:$PATH" bash "$SCRIPT" push "$REPO" fix/cont)" || rc=$?
   || fail "rebase-then-plain-push must be PUSH_REJECTED (got: $out)"
 [ "$(jq -r .forced <<<"$out")" = "false" ] \
   || fail "a rejection with no rewrite requested must say forced=false (got: $out)"
+# The ORDINARY non-fast-forward rejection carries no refusal reason — this is the
+# control the collision-refusal block below is distinguished against (#2103 r3).
+[ "$(jq -r .refused_reason <<<"$out")" = "null" ] \
+  || fail "#2103: a rejection where NO rewrite was requested must not claim a refusal reason (got: $out)"
 [ "$(git -C "$BARE" rev-parse refs/heads/fix/cont)" = "$round1" ] \
   || fail "a rejected push must leave origin exactly where it was"
 # GREEN half — the same sequence with the rewrite requested.
@@ -388,6 +392,62 @@ out="$(PATH="$NOGH:$PATH" bash "$SCRIPT" push "$REPO" fix/cont --allow-rewrite)"
   || fail "the leased rewrite did not land the rebased tip on origin"
 echo "PASS: rebase-then-push — a plain push of a rewritten, already-pushed branch is REJECTED (never a silent success); --allow-rewrite lands it under a lease (#2103)"
 
+# --- push: a branch-name collision with UNRELATED content REFUSES (#2103 round 3) ---
+# THE ASYMMETRY THIS BLOCK CLOSES. The block above proves --allow-rewrite lands a
+# rebased continuation; because 3f-1 passes that flag on EVERY item's push rather
+# than only on a rescue, the same code path now runs over any branch name that
+# happens to already exist on origin. A lease does not help there: it only stops a
+# writer who moves the ref BETWEEN the read and the push, and says nothing about
+# content that was already sitting on it. So a leftover manual branch, a reused
+# slug or a planning bug would be force-overwritten and reported as an ordinary
+# PUSHED, which the driver takes straight into opening a PR — silent loss on the
+# busiest push path in the pipeline, and the exact shape this whole issue exists
+# about. The escalation-time rescue push refuses this case; this asserts the
+# ordinary push now refuses it too, on the same patch-equivalence test.
+#
+# The fixture is a GENUINE content collision, not a stale copy of the same work:
+# what is on origin (`unrelated.txt`) has no patch-equivalent anywhere in the
+# pushing worktree (`ours.txt`), so nothing here is superseded by anything.
+git -C "$REPO" fetch -q origin
+git -C "$REPO" checkout -q -B collide-theirs origin/main
+printf 'work that has nothing to do with our item\n' > "$REPO/unrelated.txt"
+git -C "$REPO" add -A -- unrelated.txt
+git -C "$REPO" commit -q -m "unrelated work already living on this branch name"
+out="$(PATH="$NOGH:$PATH" bash "$SCRIPT" push "$REPO" fix/collide)"
+[ "$(jq -r .outcome <<<"$out")" = "PUSHED" ] \
+  || fail "fixture setup: the colliding branch must exist on origin first (got: $out)"
+collide="$(git -C "$REPO" rev-parse HEAD)"
+# A DIFFERENT item now plans the same branch name. Its history diverged from the
+# default branch, so the remote tip is not an ancestor of HEAD and the rewrite
+# arm is reached — the same arm the rebased-continuation case takes.
+git -C "$REPO" checkout -q -B collide-ours origin/main
+printf 'a completely different item\n' > "$REPO/ours.txt"
+git -C "$REPO" add -A -- ours.txt
+git -C "$REPO" commit -q -m "a completely different item"
+rc=0; out="$(PATH="$NOGH:$PATH" bash "$SCRIPT" push "$REPO" fix/collide --allow-rewrite)" || rc=$?
+[ "$rc" -ne 0 ] \
+  || fail "#2103: a rewrite over UNRELATED remote content returned SUCCESS — that content is gone (got: $out)"
+[ "$(jq -r .outcome <<<"$out")" != "PUSHED" ] \
+  || fail "#2103: a refused collision must NOT be reported as an ordinary push (got: $out)"
+[ "$(jq -r .outcome <<<"$out")" = "PUSH_REJECTED" ] \
+  || fail "#2103: a collision with unrelated content must be a structured PUSH_REJECTED (got: $out)"
+[ "$(jq -r .forced <<<"$out")" = "false" ] \
+  || fail "#2103: a refused collision must issue NO force at all (got: $out)"
+[ "$(jq -r .refused_reason <<<"$out")" = "remote_not_superseded" ] \
+  || fail "#2103: the refusal must be distinguishable from an ordinary non-ff rejection (got: $out)"
+[ "$(jq -r .remote_tip <<<"$out")" = "$collide" ] \
+  || fail "#2103: the refusal must name the remote tip it refused over (got: $out)"
+[ "$(jq -r .remote_only_commits <<<"$out")" = "1" ] \
+  || fail "#2103: the refusal must report the established remote-only commit count (got: $out)"
+case "$(jq -r .error <<<"$out")" in
+  *REFUSED*) : ;;
+  *) fail "#2103: the rejection text must SAY it refused, ahead of git's non-ff message (got: $out)" ;;
+esac
+# The load-bearing assertion: the unrelated work is still on origin, byte for byte.
+[ "$(git -C "$BARE" rev-parse refs/heads/fix/collide)" = "$collide" ] \
+  || fail "#2103: THE COLLIDING BRANCH WAS OVERWRITTEN — unrelated work on origin/fix/collide was destroyed"
+echo "PASS: a branch-name collision with unrelated content REFUSES and leaves origin untouched, distinguishably (#2103)"
+
 # --- push: the lease is LOAD-BEARING — a moved remote is rejected, not clobbered ---
 # The discriminating test for temperloop#2103's "lease-guarded, never unguarded"
 # bar. A bare `--force` would land here and destroy whatever the remote gained
@@ -398,6 +458,14 @@ echo "PASS: rebase-then-push — a plain push of a rewritten, already-pushed bra
 # `round1`), while the PUSH url points at the real upstream (already advanced to
 # `$rebased` by the block above). That is precisely the state a real concurrent
 # writer creates — the value read is no longer the value on the ref.
+#
+# The pushing history is a CONTINUATION of `$rebased` (round 2 on top of the
+# landed round-1 work), deliberately, so that it supersedes the stale `$round1`
+# the fetch url serves and the supersede gate added in round 3 lets the force
+# through. That keeps this block pinning the property it names — the LEASE is
+# what catches the moved ref — rather than being short-circuited by the earlier
+# gate and silently testing nothing about leases at all. The genuine
+# non-superseding case has its own block above.
 git init -q --bare --initial-branch=main "$TMP/stale.git"
 git -C "$REPO" push -q "$TMP/stale.git" "$round1:refs/heads/fix/cont"
 git -C "$REPO" push -q "$TMP/stale.git" "$rebased:refs/heads/main"
@@ -405,13 +473,19 @@ git clone -q "$BARE" "$TMP/leaserepo" 2>/dev/null
 LEASEREPO="$(cd "$TMP/leaserepo" && pwd -P)"
 git -C "$LEASEREPO" remote set-url origin "$TMP/stale.git"
 git -C "$LEASEREPO" remote set-url --push origin "$BARE"
-git -C "$LEASEREPO" checkout -q -b leaser
-printf 'a third writer\n' > "$LEASEREPO/third.txt"
-git -C "$LEASEREPO" add -A -- third.txt
-git -C "$LEASEREPO" commit -q -m "a third writer's commit"
+git -C "$LEASEREPO" checkout -q -b leaser origin/fix/cont
+[ "$(git -C "$LEASEREPO" rev-parse HEAD)" = "$rebased" ] \
+  || fail "fixture setup: the leasing worktree must start from the landed rebased tip"
+printf 'round 2\n' > "$LEASEREPO/cont.txt"
+git -C "$LEASEREPO" add -A -- cont.txt
+git -C "$LEASEREPO" commit -q -m "continuation round 2 work"
 rc=0; out="$(PATH="$NOGH:$PATH" bash "$SCRIPT" push "$LEASEREPO" fix/cont --allow-rewrite)" || rc=$?
 [ "$rc" -ne 0 ] || fail "a STALE lease must not push (got: $out)"
 [ "$(jq -r .outcome <<<"$out")" = "PUSH_REJECTED" ] || fail "a stale lease must be PUSH_REJECTED (got: $out)"
+[ "$(jq -r .forced <<<"$out")" = "true" ] \
+  || fail "#2103: a SUPERSEDING rewrite must still be issued as a leased force — this block must reach the lease, not the supersede gate (got: $out)"
+[ "$(jq -r .refused_reason <<<"$out")" = "null" ] \
+  || fail "#2103: a stale-lease rejection is not a supersede refusal and must not claim to be (got: $out)"
 [ "$(jq -r .lease <<<"$out")" = "$round1" ] || fail "the rejection must name the stale value it leased against (got: $out)"
 [ "$(git -C "$BARE" rev-parse refs/heads/fix/cont)" = "$rebased" ] \
   || fail "THE LEASE FAILED TO PROTECT: origin's fix/cont was overwritten out from under a concurrent writer"
@@ -479,6 +553,18 @@ if grep -vE '^[[:space:]]*#' "$SCRIPT" | grep -nE -- '--force-with-lease([^=]|$)
   fail "#2103: pr.sh uses --force-with-lease with NO =<ref>:<sha> expect value — that leases against the local tracking ref, not a value read from origin"
 fi
 echo "PASS: pr.sh forces only through --force-with-lease=<ref>:<sha> over a value it read first (#2103)"
+
+# --- push: the force is gated on the SUPERSEDE probe, not on the lease alone ----
+# The second static floor, under the collision block above. The lease floor
+# immediately above proves every force is leased; it cannot tell whether the
+# force was allowed to be ISSUED in the first place. A future edit that deletes
+# the patch-equivalence gate and goes straight from "not an ancestor" to a leased
+# force passes every fixture that exercises a superseded remote — and silently
+# restores the overwrite. The probe is spelled here exactly as the rescue path in
+# build-level.mjs spells it, which is the symmetry review round 2 required.
+grep -q -- '--cherry-pick --right-only --no-merges' "$SCRIPT" \
+  || fail "#2103: cmd_push must gate a requested rewrite on the patch-equivalence supersede probe (git cherry's own test), not on the lease alone"
+echo "PASS: a requested rewrite is gated on the supersede probe, symmetric with the rescue push (#2103)"
 
 # --- push: the open-PR survey (temperloop#1688) -----------------------------------
 # The live 2026-08-21 shape: the worktree's local branch is `build/<slug>` while

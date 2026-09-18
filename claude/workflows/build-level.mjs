@@ -6498,6 +6498,18 @@ async function driveItem(item) {
   // concurrent writer is rejected rather than overwritten. The flag is spelled
   // `--allow-rewrite` rather than `--force` so the command line the orchestrator
   // executes carries no classifier-visible force token (#437).
+  //
+  // AND NOT ON THE LEASE ALONE (temperloop#2103 round 3). Because this call site
+  // requests a rewrite on EVERY item — not only on a rescue — it is the busiest
+  // force path in the pipeline, and a lease protects only against a writer who
+  // moves the ref BETWEEN pr.sh's read and its push, never against content that
+  // was already there. So pr.sh gates the force on the SAME supersede check
+  // preserveCommittedWorkCmd (below) applies on the rescue path: a branch name
+  // colliding with unrelated work — a leftover manual branch, a reused slug, a
+  // planning bug — comes back PUSH_REJECTED with `refused_reason` rather than
+  // being overwritten and reported as an ordinary PUSHED straight into pr-open.
+  // The two force paths this file drives are symmetric; the asymmetry between
+  // them was the round-2 finding.
   addPrStep('push', `${prBin} push ${sq(wt)} ${sq(item.branch)} --allow-rewrite`, ['PUSHED']);
 
   // 3f-2. Open the PR. The verification surface is read from the deterministic

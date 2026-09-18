@@ -26,10 +26,16 @@
     saved. The parked item's record carries both the commit in the worktree and
     the commit on the remote, so whoever picks the item up can see the real
     state rather than trust one flag.
-  - **The rescue push never overwrites work it cannot prove is superseded.** It
-    rewrites the remote branch only when this worktree's history already
-    contains every commit the remote has. If the remote carries something else,
-    or if that question cannot be answered because the remote became
-    unreachable mid-step, it refuses, leaves the remote untouched, and says
-    which of those two it was rather than asserting a conflict it never
-    established.
+  - **No push overwrites work it cannot prove is superseded — neither the
+    rescue push nor the ordinary one.** A branch is rewritten only when this
+    worktree's history already contains every commit the remote branch has,
+    which is what a rebase leaves behind: an outdated copy of the very same
+    work. If the branch name has instead collided with something unrelated — a
+    leftover branch, a name reused by accident — the push refuses, leaves the
+    remote exactly as it was, and reports which branch and how many commits it
+    declined to overwrite, so a person decides rather than discovering later
+    that the content is gone. If that question cannot be answered at all,
+    because the remote copy never became available to compare against, it
+    refuses the same way and says so, rather than asserting a conflict it never
+    established. This matters most on the ordinary push, which now asks to
+    rewrite on every single item rather than only when rescuing a failing one.
