@@ -93,15 +93,46 @@ fact and can only observe and record, never block.
   not covered. Those gaps are stated in the hook's own header and in
   `claude/hooks/README.md`, and the two that can be pinned mechanically are
   asserted as silence tests rather than left implied.
+- **arm-read-guard.sh** — matches `Read|Glob|Grep|Bash`. A dual-build level
+  builds one plan item twice, under two models, in two isolated worktrees off
+  one base SHA; the comparison is only evidence while the two arms stay
+  independent. This guard denies a read that reaches the *sibling* arm — a path
+  under its worktree (every path-shaped field of a Read/Glob/Grep input, and
+  the whole command text of a Bash call, so a relative `../<slug>@baseline`
+  reach or a `git log`/`git show` of the sibling branch is caught without
+  enumerating git subcommands). It arms only when the worktree carries a
+  `.dual-build-arm` marker naming the sibling, so a session that is not an arm
+  of a dual build never sees it. A denial also appends one JSON line to
+  `.dual-build-cross-read-attempts.jsonl` beside that marker, because a blocked
+  attempt that left no trace would be indistinguishable from a clean run. That
+  file's existence is the signal the per-level `/build` driver
+  (`claude/workflows/build-level.mjs`) folds into the arm's **ledger row** — the
+  per-arm result record a dual-build level writes for each of its two arms — as
+  `cross_read_attempted`. Both the marker and that record are written by the
+  dual-build harness landing with epic #2065; see the amendment in [ADR
+  0027](../adr/0027-model-comparison-ships-as-an-inert-opt-in-module.md) for why
+  this module ships a hook at all. Its gap is the same shape as the spawn
+  guard's — a sibling path assembled at run time out of shell variables, or a
+  read performed inside an already-committed script invoked by path, is not
+  visible in the command text.
 
-**The fail-open philosophy.** Every guard above shares the same posture:
-`ask`, never `deny`, and any internal error — missing `jq`, unparseable
-input, not a git repository, a network failure — exits `0` immediately and
-lets the command through unmodified. A guard's job is to make a risky action
-a *conscious* choice, not to hard-block legitimate work; a guard bug must
+**The fail-open philosophy.** Every guard above fails open: any internal error
+— missing `jq`, unparseable input, not a git repository, a network failure —
+exits `0` immediately and lets the command through unmodified. A guard bug must
 never be able to wedge a session that is doing something correct. This is a
 deliberate trade-off: a guard can be bypassed by a determined or confused
 caller, but it can never be the reason a legitimate write fails.
+
+The *verdict* is `ask` by default, so a risky action becomes a **conscious
+choice** rather than a hard block — and two guards deny instead, for the same
+pair of reasons. `build-worktree-guard.sh`'s Bash arm and `arm-read-guard.sh`
+both fire only inside a marker-armed, headless build worktree, where (a) no
+operator is present to answer an `ask`, so a prompt would hang the run or be
+auto-approved unread, and (b) the action they intercept has no legitimate form
+in that context — a destructive verb on a target that cannot be proven to stay
+inside the worktree, and an arm reading the sibling it is being compared
+against. Marker-scoped inertness is what keeps the stricter verdict confined to
+the situation that earns it; an ordinary session reaches neither.
 
 **`EVAL_RUN` self-suppression.** An unattended, headless evaluation run has
 no live operator to answer an interactive `ask` prompt — an unanswered
@@ -117,9 +148,12 @@ eval_guard_exit_if_eval   # exits 0 immediately when EVAL_RUN is non-empty
 The check is a single `[ -n "${EVAL_RUN:-}" ]` test. Setting `EVAL_RUN` to
 any non-empty value during a headless evaluation session suppresses every
 side-channel write (vault drain, session-stub logging, telemetry appends)
-and downgrades the interactive guards from `ask` to a silent pass-through.
+and downgrades the interactive guards from `ask` to a silent pass-through. The
+two deny-verdict guards are deliberately *not* suppressed: neither prompts, so
+neither can hang a headless run, and suppressing them would silently void the
+containment an evaluation run is least able to notice the loss of.
 
-**Session lifecycle hooks.** Beyond the five guards, a set of `SessionStart`
+**Session lifecycle hooks.** Beyond the six guards, a set of `SessionStart`
 and `SessionEnd` hooks handle non-blocking bookkeeping: writing a transcript
 stub when a session ends, draining accumulated stubs into durable storage
 when a new session starts, and a health-preflight check that injects a
