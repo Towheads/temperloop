@@ -162,6 +162,38 @@
 #       (too few JUDGED members, JUDGED members from only one provider
 #       family, or a stats.sh failure).
 #
+#   judge.sh pairwise --record-a <file> --record-b <file> [--rubric <path>] \
+#       ( --judge-runner <cmd> | --live ) [--model <id>] [--provider <name>] \
+#       [--out <file>] [--repo <owner/repo>]
+#       Compares TWO already-executed records for the SAME item (built by two
+#       different candidates, e.g. the two arms of a dual-build level) with
+#       ONE prompt template — the item's title/scope/acceptance criteria plus
+#       BOTH diffs — asking the judge for a preference and a margin, never a
+#       per-arm quality_score (see § PAIRWISE COMPARISON MODE below). The
+#       SAME prompt content is sent TWICE, in both position orders (each
+#       candidate shown as "Candidate 1" once), so a judge that merely favors
+#       a screen position rather than genuine content is distinguishable from
+#       one with a real, order-independent preference. Prints a single merged
+#       object — never attached to either input record, since doing so would
+#       read as favoring that record — carrying `preference` ("A"/"B"/"tie"),
+#       `margin`, and `order_agreement` (see the exit-code table below). The
+#       judge≠candidate guard runs against BOTH arms: an exact match with
+#       EITHER candidate's provider+model REFUSES before any spend.
+#       Exit 0  COMPARED — both position orders reached a judged reply. This
+#               covers a genuine, order-consistent preference for A or B
+#               (`order_agreement:true`) AND a genuine, order-consistent tie
+#               (both orders independently see no preference) — a resolved
+#               tie is a real, honestly-computed verdict, not a degradation.
+#       Exit 1  CANNOT_EVALUATE — malformed/absent/unreadable input (either
+#               record file, the rubric file), or either record carries no
+#               `.candidate.model`.
+#       Exit 2  REFUSED — the judge equals EITHER arm's provider+model. No
+#               call was ever made.
+#       Exit 4  UNAVAILABLE — at least one of the two position-order calls
+#               could not be judged (spawn/parse/schema failure) — the SAME
+#               named-degradation vocabulary `judge`'s own UNAVAILABLE path
+#               uses, never a fabricated preference standing in.
+#
 # ── OPTIONAL CROSS-FAMILY JUDGE ROTATION (temperloop#1260) ─────────────────
 # `judge-rotate` scores ONE record with SEVERAL judges (provider:model pairs
 # spanning more than one provider family) and reports the VARIANCE of their
@@ -207,6 +239,57 @@
 # pass, a fabricated variance figure, or a zero standing in for a score or a
 # variance this file never actually obtained.
 #
+# ── PAIRWISE COMPARISON MODE (temperloop#2065, epic #2065 "dual-build") ────
+# `pairwise` scores TWO candidate diffs for the SAME item against each other
+# — a PREFERENCE, never a second absolute quality_score. It exists because a
+# dual-build level's pick needs "which of these two is better", and asking
+# the single-judge path for two independent quality_scores and diffing them
+# would conflate scale noise (the same judge scoring the same quality 78 one
+# call and 81 the next) with an actual preference — this mode asks the ONE
+# question that actually needs answering, in one comparative call per order.
+#
+# ONE PROMPT TEMPLATE, TWO POSITION ORDERS. The prompt is built once per
+# order (`_je_build_pairwise_prompt`) from the SAME rubric.md checklist the
+# single-judge path uses (reused, not reauthored — see rubric.md's own
+# header for the "prompt content only" discipline this mode inherits
+# unchanged) plus the item's title/scope/acceptance criteria and BOTH
+# candidates' diffs, rendered via the SAME `_je_render_diff_text` the
+# single-judge path uses. The two candidates are labeled generically
+# ("Candidate 1" / "Candidate 2") — never "A"/"B" or a model name — so the
+# judge cannot infer identity from the label itself, only from content. The
+# rubric's own single-item "Output contract" example is explicitly
+# overridden in the pairwise-specific tail of the prompt (a preference +
+# margin shape, never a quality_score) — see _je_build_pairwise_prompt.
+#
+# WHY BOTH ORDERS. A judge is run TWICE per comparison — once with candidate
+# A in position 1, once with B in position 1 — and each order's raw
+# "position 1 / position 2 / tie" answer is normalized back to a real
+# candidate (A/B/tie) before the two are compared:
+#   * the two orders normalize to the SAME candidate (or both to "tie") ->
+#     `order_agreement:true`, `preference` is that candidate (or "tie"), and
+#     `margin` is the mean of the two orders' own margins — a genuine,
+#     position-independent verdict.
+#   * the two orders normalize to DIFFERENT candidates -> `order_agreement:
+#     false`, `preference:"tie"`, `margin:0` — the judge's answer tracked
+#     SCREEN POSITION, not content, so no real preference is reported. This
+#     is the failure mode a single-order ask cannot even detect.
+#
+# THE GUARD, DOUBLED. `_je_pairwise_guard_blocks` is the exact same
+# `_je_guard_blocks` predicate the single-judge path uses, checked against
+# EACH arm in turn — an exact match with EITHER candidate's provider+model
+# refuses the WHOLE comparison before either order is spawned, never just
+# the matching order.
+#
+# REUSE, NOT REIMPLEMENTATION. Every spawn-adjacent concern — the
+# candidate-session.sh containment overlay + preflight, the non-default-
+# provider allowlist+disclosure gate, response-JSON extraction
+# (`_je_extract_json_response`), the truncated-vs-unparseable distinction,
+# spawn-failure diagnostics (`spawn_failure_detail`), and the cannot-
+# evaluate emission idiom — is the SAME code the single-judge and rotation
+# paths already call. Only the prompt shape and the response schema
+# (`preference`+`margin` instead of `quality_score`+`dimensions`) are new to
+# this mode.
+#
 # Every tunable below is a registered setting (workflows/scripts/config/
 # setting-registry.tsv), defaulted in workflows/scripts/build/build.config.sh
 # — named symbolically, never re-valued in prose (§ Named-setting convention).
@@ -242,6 +325,11 @@ JUDGE_TRUSTED_DEFAULT_PROVIDER="anthropic"
 # in the usage lake from a single-judge call, same non-registry-row
 # vocabulary-constant shape.
 JUDGE_ROTATION_SEAT="replay-judge-rotation"
+# The ADR 0026 seat ROLE NAME `pairwise`'s per-order-call attribution records
+# carry — distinct from JUDGE_SEAT/JUDGE_ROTATION_SEAT above so a pairwise
+# comparison call is distinguishable in the usage lake, same non-registry-row
+# vocabulary-constant shape.
+JUDGE_PAIRWISE_SEAT="replay-judge-pairwise"
 
 # shellcheck source=../build/build.config.sh
 [ -f "$HERE/../build/build.config.sh" ] && . "$HERE/../build/build.config.sh"
@@ -346,6 +434,9 @@ usage: judge.sh judge --record <file> [--rubric <path>] (--judge-runner <cmd> | 
        judge.sh judge-rotate --record <file> --judges <provider:model,provider:model,...> \
                        [--rubric <path>] (--judge-runner <cmd> | --live) [--out <file>] [--repo <owner/repo>]
                        (optional, off by default — MODEL_COMPARISON_JUDGE_ROTATION_ENABLED=1 to enable)
+       judge.sh pairwise --record-a <file> --record-b <file> [--rubric <path>] \
+                       (--judge-runner <cmd> | --live) [--model <id>] [--provider <name>] \
+                       [--out <file>] [--repo <owner/repo>]
 EOF
 }
 
@@ -1291,6 +1382,412 @@ cmd_judge_rotate() {
   return "$exit_rc"
 }
 
+# ── pairwise (temperloop#2065, epic #2065 "dual-build") ────────────────────
+# See this file's header § PAIRWISE COMPARISON MODE for the design rationale.
+
+# _je_pairwise_guard_blocks <judge_provider> <judge_model>
+#                            <a_provider> <a_model> <b_provider> <b_model>
+# -> 0 (refuse) if the judge matches EITHER arm exactly, 1 (proceed) otherwise.
+# Reuses _je_guard_blocks verbatim per arm — never a second equality check.
+_je_pairwise_guard_blocks() {
+  _je_guard_blocks "$1" "$2" "$3" "$4" && return 0
+  _je_guard_blocks "$1" "$2" "$5" "$6" && return 0
+  return 1
+}
+
+# _je_pairwise_validate_record <file> <label> — the same existence/
+# readability/non-empty/JSON-object checks _je_one_record applies to its one
+# record, applied here to EACH of the two pairwise inputs under its own
+# labeled flag name.
+_je_pairwise_validate_record() {
+  local f="$1" label="$2"
+  if [ ! -f "$f" ] || [ ! -r "$f" ]; then
+    _je_cannot_evaluate "$label record not found or not a readable regular file: $f"
+    return 1
+  fi
+  if [ ! -s "$f" ]; then
+    _je_cannot_evaluate "$label record file is empty: $f"
+    return 1
+  fi
+  if ! jq -e 'type=="object"' "$f" >/dev/null 2>&1; then
+    _je_cannot_evaluate "$label record is not a JSON object: $f"
+    return 1
+  fi
+  return 0
+}
+
+# _je_build_pairwise_prompt <record-1st-file> <record-2nd-file> <rubric-file>
+#                            <prompt-file>
+# Builds ONE comparative prompt: the rubric checklist (reused verbatim, plain
+# text, never templated/executed — same discipline as _je_build_prompt), the
+# item's title/scope/acceptance criteria (read from the FIRST record; callers
+# only ever pair two records for the same item), then BOTH diffs under
+# generic "Candidate 1" / "Candidate 2" labels — never "A"/"B" or a model
+# name, so the judge cannot infer identity from the label. The tail
+# explicitly OVERRIDES the rubric's own single-item "Output contract"
+# example with the pairwise preference+margin shape.
+_je_build_pairwise_prompt() {
+  local rec1="$1" rec2="$2" rubric_file="$3" prompt_file="$4"
+  {
+    printf 'You are the independent PAIRWISE replay-record QUALITY JUDGE described in the rubric below. Read it in full before responding.\n\n'
+    printf '## Rubric (the same five scoring dimensions apply identically to BOTH candidates below)\n\n'
+    cat "$rubric_file"
+    printf '\n\n## Pairwise task\n\n'
+    printf 'You are given TWO candidate diffs for the SAME item below, produced independently by two different models. Judge which candidate better satisfies the rubric dimensions above, and by how much. Some items have no clearly-better answer — a genuine, honestly-considered tie is a valid verdict, never something to avoid reporting.\n\n'
+    printf -- '- item: %s\n' "$(jq -r '.issue // .pr // "unknown"' "$rec1")"
+    printf -- '- title: %s\n' "$(jq -r '.title // ""' "$rec1")"
+    printf -- '- scope: %s\n' "$(jq -r '.scope // ""' "$rec1")"
+    printf '\n## Acceptance criteria\n'
+    jq -r '(.acceptance // [])[] | "  - " + .' "$rec1"
+    local n label recfile
+    for n in 1 2; do
+      if [ "$n" -eq 1 ]; then recfile="$rec1"; else recfile="$rec2"; fi
+      label="Candidate $n"
+      printf '\n## %s\n\n' "$label"
+      printf -- '- mechanical verdict: %s\n' "$(jq -r '.score.verdict // "unknown"' "$recfile")"
+      printf '\n### %s diff summary (score.diff)\n' "$label"
+      jq -c '(.score.diff // {}) | del(.text_excerpt)' "$recfile"
+      printf '\n### %s diff text\n\n' "$label"
+      _je_render_diff_text "$recfile"
+      printf '\n### %s gate result\n' "$label"
+      jq -c '.score.gate_result // {}' "$recfile"
+    done
+    printf '\n## Output contract — IGNORE the rubric'"'"'s own "Output contract" example above (it describes single-item absolute scoring); for THIS pairwise task respond with exactly one JSON object instead, on its own, no markdown fence, no leading or trailing prose:\n\n'
+    # shellcheck disable=SC2016  # the literal backtick fence is prompt CONTENT
+    # (a markdown code fence the judge model reads), never a command substitution.
+    printf '```json\n{\n  "preference": "1",\n  "margin": 0,\n  "rationale": "2-4 sentences explaining the preference.",\n  "concerns": ["short phrase per concern, empty array if none"]\n}\n```\n\n'
+    printf '"preference" is EXACTLY "1" (Candidate 1 is better), "2" (Candidate 2 is better), or "tie" (genuinely no defensible preference). "margin" is an integer or float from 0 (barely any difference) to 100 (Candidate 1/2 is overwhelmingly better) — report 0 for a "tie" preference. Judge candidate 1 and candidate 2 on EXACTLY the same rubric dimensions; do not let the order they are presented in influence your answer.\n'
+  } >"$prompt_file"
+}
+
+# _je_pairwise_response_schema_ok <json-object> -> 0 if it matches the
+# {preference in {"1","2","tie"}, margin: 0-100} pairwise output contract.
+_je_pairwise_response_schema_ok() {
+  jq -e '
+    type=="object"
+    and has("preference") and ((.preference|type)=="string")
+    and (.preference=="1" or .preference=="2" or .preference=="tie")
+    and has("margin") and ((.margin|type)=="number") and (.margin>=0) and (.margin<=100)
+  ' >/dev/null 2>&1
+}
+
+# _je_pairwise_unavailable <order> <notice> <duration_ms> — prints the ONE
+# per-order degradation shape pairwise uses, mirroring _je_unavailable's own
+# vocabulary (scored-absent + a NAMED degradation_notice, never a fabricated
+# preference standing in for one never obtained).
+_je_pairwise_unavailable() {
+  local order="$1" notice="$2" dur="${3:-0}"
+  jq -cn --arg o "$order" --arg n "$notice" --argjson dur "$dur" \
+    '{outcome:"UNAVAILABLE", order:$o, preference_position:null, margin:null,
+      rationale:null, concerns:[], judge_model:null,
+      degradation_notice:$n, tokens:null, duration_ms:$dur, prompt_sha256:null}'
+}
+
+# _je_one_pairwise_order <rec1> <rec2> <rubric> <judge_provider> <judge_model>
+#                         <runner> <live> <order-label>
+# Builds the prompt for THIS order (rec1 shown as Candidate 1, rec2 as
+# Candidate 2 — the caller passes the records pre-arranged for the order it
+# wants), spawns the ONE judge call, and prints one compact JSON object:
+# JUDGED (rc 0) or UNAVAILABLE (rc 4) — the exact same spawn/parse/schema
+# pipeline _je_one_record uses, adapted to the preference+margin schema.
+# Never CANNOT_EVALUATE/REFUSED — the caller (cmd_pairwise) already resolved
+# those order-independent conditions before either order is ever spawned.
+_je_one_pairwise_order() {
+  local rec1="$1" rec2="$2" rubric_file="$3" judge_provider="$4" judge_model="$5" \
+        runner="$6" live="$7" order="$8"
+
+  local scratch_dir prompt_file envelope_file
+  scratch_dir="$(mktemp -d "${TMPDIR:-/tmp}/judge-pairwise.XXXXXX")" || {
+    printf '%s\n' "$(_je_pairwise_unavailable "$order" "scratch-dir-failed: could not create a scratch dir under ${TMPDIR:-/tmp}" 0)"
+    return 4
+  }
+  prompt_file="$scratch_dir/prompt.txt"
+  envelope_file="$scratch_dir/envelope.json"
+
+  _je_build_pairwise_prompt "$rec1" "$rec2" "$rubric_file" "$prompt_file"
+  local prompt_sha; prompt_sha="$(_je_sha256 <"$prompt_file")"
+
+  local started ended run_rc=0 measured_ms
+  started="$(_je_epoch_ms)"
+  if [ "$live" -eq 1 ]; then
+    local -a claude_args=(-p --output-format json)
+    [ -n "$judge_model" ] && claude_args+=(--model "$judge_model")
+    run_with_timeout "$MODEL_COMPARISON_JUDGE_TIMEOUT_SECS" \
+      bash "$CANDIDATE_SESSION_SH" spawn --provider "$judge_provider" -- "${claude_args[@]}" \
+      <"$prompt_file" >"$envelope_file" 2>"$scratch_dir/stderr.txt" || run_rc=$?
+  else
+    # Deliberately unquoted: a runner is a command STRING, split on
+    # whitespace — same convention as replay.sh execute / _je_one_record.
+    # shellcheck disable=SC2086
+    run_with_timeout "$MODEL_COMPARISON_JUDGE_TIMEOUT_SECS" \
+      $runner "$prompt_file" >"$envelope_file" 2>"$scratch_dir/stderr.txt" || run_rc=$?
+  fi
+  ended="$(_je_epoch_ms)"
+  measured_ms=$(( ended - started ))
+  [ "$measured_ms" -lt 0 ] && measured_ms=0
+
+  if [ "$run_rc" -eq 137 ]; then
+    printf '%s\n' "$(_je_pairwise_unavailable "$order" "judge-timeout: the judge call exceeded MODEL_COMPARISON_JUDGE_TIMEOUT_SECS (${MODEL_COMPARISON_JUDGE_TIMEOUT_SECS}s)" "$measured_ms")"
+    rm -rf "$scratch_dir"; return 4
+  fi
+  if [ "$run_rc" -ne 0 ]; then
+    printf '%s\n' "$(_je_pairwise_unavailable "$order" "judge-spawn: $(spawn_failure_detail "$run_rc" "$scratch_dir/stderr.txt" "$envelope_file" "the judge runner")" "$measured_ms")"
+    rm -rf "$scratch_dir"; return 4
+  fi
+  if ! jq -e 'type=="object"' "$envelope_file" >/dev/null 2>&1; then
+    printf '%s\n' "$(_je_pairwise_unavailable "$order" "envelope-parse: the judge runner's stdout is not a JSON object: $(head -c 400 "$envelope_file" 2>/dev/null)" "$measured_ms")"
+    rm -rf "$scratch_dir"; return 4
+  fi
+  if [ "$(jq -r '.is_error // false' "$envelope_file")" = "true" ]; then
+    printf '%s\n' "$(_je_pairwise_unavailable "$order" "vendor-error: the envelope reports is_error=true: $(jq -r '.subtype // .error // "no detail"' "$envelope_file")" "$measured_ms")"
+    rm -rf "$scratch_dir"; return 4
+  fi
+
+  local tokens_json
+  tokens_json="$(jq -c '
+    (.modelUsage // {}) | to_entries
+    | map(select((.value|type=="object")))
+    | if length == 0 then null else
+        {input:(map(.value.inputTokens // 0)|add),
+         output:(map(.value.outputTokens // 0)|add),
+         cache_read:(map(.value.cacheReadInputTokens // 0)|add),
+         cache_creation:(map(.value.cacheCreationInputTokens // 0)|add)}
+      end' "$envelope_file" 2>/dev/null)"
+  if [ -z "$tokens_json" ] || [ "$tokens_json" = "null" ]; then
+    printf '%s\n' "$(_je_pairwise_unavailable "$order" "envelope-usage-missing: the envelope carries no usable modelUsage block, so no token count exists for this judge call" "$measured_ms")"
+    rm -rf "$scratch_dir"; return 4
+  fi
+
+  local resolved_model
+  resolved_model="$(jq -r '
+    (.modelUsage // {}) | to_entries
+    | map(select((.value|type=="object")))
+    | sort_by( ((.value.inputTokens // 0) + (.value.outputTokens // 0)
+              + (.value.cacheReadInputTokens // 0) + (.value.cacheCreationInputTokens // 0)) )
+    | if length == 0 then "" else (last | .key) end' "$envelope_file" 2>/dev/null)"
+  [ -n "$resolved_model" ] || resolved_model="$judge_model"
+
+  local env_duration duration_ms
+  env_duration="$(jq -r '.duration_ms // empty' "$envelope_file" 2>/dev/null)"
+  case "$env_duration" in ''|*[!0-9]*) duration_ms="$measured_ms" ;; *) duration_ms="$env_duration" ;; esac
+
+  local resp_text parsed
+  resp_text="$(jq -r '.result // .raw // empty' "$envelope_file" 2>/dev/null)"
+  if [ -z "$resp_text" ]; then
+    printf '%s\n' "$(_je_pairwise_unavailable "$order" "response-empty: the envelope's .result/.raw carried no text to judge from" "$duration_ms")"
+    rm -rf "$scratch_dir"; return 4
+  fi
+  if ! parsed="$(_je_extract_json_response "$resp_text")"; then
+    local _first _reason _shape
+    _first="$(printf '%s' "$resp_text" | sed -e 's/^[[:space:]]*//' | cut -c1)"
+    if [ "$_first" = "{" ]; then
+      _reason="response-truncated"
+      _shape="the judge's reply BEGINS as the contracted JSON object and then stops parsing -- the signature of an output-cap or reply-capture truncation, NOT a malformed judgment"
+    else
+      _reason="response-unparseable"
+      _shape="the judge's reply was not the contracted JSON object (nor a markdown-fenced one), and does not begin as one either"
+    fi
+    printf '%s\n' "$(_je_pairwise_unavailable "$order" "$_reason: $_shape. ${#resp_text} bytes. HEAD: $(printf '%s' "$resp_text" | head -c 200) ||| TAIL: $(printf '%s' "$resp_text" | tail -c 200)" "$duration_ms")"
+    rm -rf "$scratch_dir"; return 4
+  fi
+  if ! _je_pairwise_response_schema_ok <<<"$parsed"; then
+    printf '%s\n' "$(_je_pairwise_unavailable "$order" "response-schema-invalid: the judge's reply parsed as JSON but did not carry preference in {\"1\",\"2\",\"tie\"} and a numeric margin (0-100): $parsed" "$duration_ms")"
+    rm -rf "$scratch_dir"; return 4
+  fi
+
+  local preference margin rationale concerns
+  preference="$(jq -r '.preference' <<<"$parsed")"
+  margin="$(jq -c '.margin' <<<"$parsed")"
+  rationale="$(jq -r '.rationale // ""' <<<"$parsed")"
+  concerns="$(jq -c '.concerns // []' <<<"$parsed")"
+
+  jq -cn --arg o "$order" --arg pref "$preference" --argjson margin "$margin" \
+    --arg rationale "$rationale" --argjson concerns "$concerns" \
+    --arg jm "$resolved_model" --argjson tokens "$tokens_json" --argjson dur "$duration_ms" \
+    --arg prompt "$prompt_sha" \
+    '{outcome:"JUDGED", order:$o, preference_position:$pref, margin:$margin,
+      rationale:$rationale, concerns:$concerns, judge_model:$jm,
+      tokens:$tokens, duration_ms:$dur, prompt_sha256:$prompt}'
+
+  rm -rf "$scratch_dir"
+  return 0
+}
+
+cmd_pairwise() {
+  local record_a="" record_b="" rubric="$DEFAULT_RUBRIC" provider="$JUDGE_TRUSTED_DEFAULT_PROVIDER" \
+        model="$MODEL_COMPARISON_JUDGE_MODEL" runner="" live=0 out="" owner_repo=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --record-a) need_operand --record-a "$#" "${2:-}" || return 2; record_a="$2"; shift 2 ;;
+      --record-b) need_operand --record-b "$#" "${2:-}" || return 2; record_b="$2"; shift 2 ;;
+      --rubric) need_operand --rubric "$#" "${2:-}" || return 2; rubric="$2"; shift 2 ;;
+      --provider) need_operand --provider "$#" "${2:-}" || return 2; provider="$2"; shift 2 ;;
+      --model) need_operand --model "$#" "${2:-}" || return 2; model="$2"; shift 2 ;;
+      --repo) need_operand --repo "$#" "${2:-}" || return 2; owner_repo="$2"; shift 2 ;;
+      --judge-runner) need_operand --judge-runner "$#" "${2:-}" || return 2; runner="$2"; shift 2 ;;
+      --out) need_operand --out "$#" "${2:-}" || return 2; out="$2"; shift 2 ;;
+      --live) live=1; shift ;;
+      *) printf 'judge.sh pairwise: unknown arg %s\n' "$1" >&2; return 2 ;;
+    esac
+  done
+
+  [ -n "$record_a" ] || { _je_cannot_evaluate "no --record-a given"; return 1; }
+  [ -n "$record_b" ] || { _je_cannot_evaluate "no --record-b given"; return 1; }
+  if [ -n "$runner" ] && [ "$live" -eq 1 ]; then
+    _je_cannot_evaluate "--judge-runner and --live are mutually exclusive — pick the recorded runner or the real spawn, never both"
+    return 1
+  fi
+  if [ -z "$runner" ] && [ "$live" -eq 0 ]; then
+    _je_cannot_evaluate "no judge runner configured: pass --judge-runner <cmd> (a recorded/stubbed runner) or the explicit --live flag. There is deliberately NO implicit fallback to a 'claude' binary on PATH — an unset seam refuses rather than silently spending, and pairwise spends TWO calls so this leak matters even more here"
+    return 1
+  fi
+
+  _je_pairwise_validate_record "$record_a" "--record-a" || return 1
+  _je_pairwise_validate_record "$record_b" "--record-b" || return 1
+
+  local a_provider a_model b_provider b_model
+  a_provider="$(jq -r '.candidate.provider // empty' "$record_a" 2>/dev/null)"
+  a_model="$(jq -r '.candidate.model // empty' "$record_a" 2>/dev/null)"
+  b_provider="$(jq -r '.candidate.provider // empty' "$record_b" 2>/dev/null)"
+  b_model="$(jq -r '.candidate.model // empty' "$record_b" 2>/dev/null)"
+  if [ -z "$a_model" ]; then
+    _je_cannot_evaluate "--record-a carries no .candidate.model — run replay.sh execute (or otherwise populate the candidate sub-object) before comparing"
+    return 1
+  fi
+  if [ -z "$b_model" ]; then
+    _je_cannot_evaluate "--record-b carries no .candidate.model — run replay.sh execute (or otherwise populate the candidate sub-object) before comparing"
+    return 1
+  fi
+
+  local item_ref
+  item_ref="$(_je_outcome_ref "$(jq -c . "$record_a")")"
+
+  # ── THE GUARD, DOUBLED — checked BEFORE any spend, any disclosure, any
+  #    spawn. An exact match with EITHER arm refuses the WHOLE comparison. ──
+  if _je_pairwise_guard_blocks "$provider" "$model" "$a_provider" "$a_model" "$b_provider" "$b_model"; then
+    jq -cn --arg jp "$provider" --arg jm "$model" \
+      --arg ap "$a_provider" --arg am "$a_model" --arg bp "$b_provider" --arg bm "$b_model" \
+      --arg ref "$item_ref" \
+      '{outcome:"REFUSED", reason:"judge-equals-arm",
+        judge_provider:$jp, judge_model:$jm,
+        candidate_a:{provider:$ap, model:$am}, candidate_b:{provider:$bp, model:$bm},
+        item_ref:$ref,
+        guard:{enforced:true,
+               scope:"prevents self-grading only (judge provider+model == EITHER arm'"'"'s provider+model); does NOT neutralize model-family style bias — see rubric.md and this script'"'"'s own header"}}'
+    printf 'judge.sh: pairwise REFUSED — judge (%s/%s) is identical to at least one arm (A: %s/%s, B: %s/%s) for %s; a model may not grade itself\n' \
+      "$provider" "$model" "$a_provider" "$a_model" "$b_provider" "$b_model" "$item_ref" >&2
+    return 2
+  fi
+
+  if [ ! -f "$rubric" ] || [ ! -r "$rubric" ]; then
+    _je_cannot_evaluate "rubric file not found or not a readable regular file: $rubric"
+    return 1
+  fi
+
+  if [ ! -f "$CANDIDATE_SESSION_SH" ]; then
+    _je_cannot_evaluate "candidate-session.sh not found at $CANDIDATE_SESSION_SH — the judge spawn seam is unavailable"
+    return 1
+  fi
+  local cs_out cs_rc=0
+  cs_out="$(bash "$CANDIDATE_SESSION_SH" resolve "Read" 2>&1)" || cs_rc=$?
+  if [ "$cs_rc" -ne 0 ]; then
+    _je_cannot_evaluate "candidate-session.sh reports its containment overlay is unusable (exit $cs_rc — 3=absent, 4=unreadable, 5=malformed): $cs_out"
+    return 1
+  fi
+  local pf_exec="live"
+  [ -n "$runner" ] && pf_exec="recorded"
+  local pf_out pf_rc=0
+  pf_out="$(bash "$CANDIDATE_SESSION_SH" preflight --provider "$provider" --execution "$pf_exec" 2>&1)" || pf_rc=$?
+  if [ "$pf_rc" -ne 0 ]; then
+    _je_cannot_evaluate "candidate-session.sh preflight refused judge provider '$provider': $pf_out"
+    return 1
+  fi
+
+  # ── disclose before sending (ADR 0028 pairing) — ONE disclosure entry for
+  #    the whole pairwise comparison (two calls, one judge identity, one
+  #    send-intent), same ordering guarantee _je_one_record enforces. ──────
+  local disclosed=false
+  if [ "$provider" != "$JUDGE_TRUSTED_DEFAULT_PROVIDER" ]; then
+    if [ ! -f "$ALLOWLIST_LIB" ]; then
+      _je_cannot_evaluate "allowlist.sh not found at $ALLOWLIST_LIB — cannot disclose a non-default-provider judge send, so refusing to make one"
+      return 1
+    fi
+    # shellcheck source=./allowlist.sh
+    . "$ALLOWLIST_LIB"
+    if ! pa_disclose "$provider" "$item_ref"; then
+      _je_cannot_evaluate "pa_disclose refused to record a judge send to non-default provider '$provider' for $item_ref — refusing to send undisclosed"
+      return 1
+    fi
+    disclosed=true
+  fi
+
+  # ── run BOTH position orders through the exact same per-order function ──
+  local orders_json='[]' order one_out one_rc
+  for order in AB BA; do
+    one_rc=0
+    if [ "$order" = "AB" ]; then
+      one_out="$(_je_one_pairwise_order "$record_a" "$record_b" "$rubric" "$provider" "$model" "$runner" "$live" "AB")" || one_rc=$?
+    else
+      one_out="$(_je_one_pairwise_order "$record_b" "$record_a" "$rubric" "$provider" "$model" "$runner" "$live" "BA")" || one_rc=$?
+    fi
+    orders_json="$(jq -c --argjson o "$one_out" '. + [$o]' <<<"$orders_json")"
+
+    if [ -x "$EMIT_MODEL_USAGE_SH" ]; then
+      local dur; dur="$(jq -r '.duration_ms // 0' <<<"$one_out")"
+      local -a ea=(--seat "$JUDGE_PAIRWISE_SEAT" --outcome-ref "$item_ref" --duration-ms "${dur:-0}")
+      if [ "$one_rc" -eq 0 ]; then
+        ea+=(--model "$(jq -r '.judge_model // "unknown"' <<<"$one_out")" --provider "$provider" --usage-source cli-envelope \
+             --input-tokens "$(jq -r '.tokens.input // 0' <<<"$one_out")" \
+             --output-tokens "$(jq -r '.tokens.output // 0' <<<"$one_out")" \
+             --cache-read-tokens "$(jq -r '.tokens.cache_read // 0' <<<"$one_out")" \
+             --cache-creation-tokens "$(jq -r '.tokens.cache_creation // 0' <<<"$one_out")")
+      else
+        ea+=(--model "${model:-unknown}" --usage-source unavailable)
+      fi
+      [ -n "$owner_repo" ] && ea+=(--repo "$owner_repo")
+      "$EMIT_MODEL_USAGE_SH" "${ea[@]}" >/dev/null 2>&1 || true
+    fi
+  done
+
+  # ── combine — normalize each order's raw position answer back to a real
+  #    arm (A/B/tie) and compare the two orders (see header § WHY BOTH
+  #    ORDERS). Never a second variance/statistics implementation needed
+  #    here: this is a plain equality + mean, computed in one jq filter. ───
+  local final_out
+  final_out="$(jq -cn --argjson orders "$orders_json" \
+    --arg jp "$provider" --arg jm "$model" \
+    --arg ap "$a_provider" --arg am "$a_model" --arg bp "$b_provider" --arg bm "$b_model" \
+    --arg ref "$item_ref" --argjson disclosed "$disclosed" --arg ts "$(_je_now_iso)" '
+    def norm_arm(order; pos):
+      if pos == "tie" then "tie"
+      elif order == "AB" then (if pos == "1" then "A" else "B" end)
+      else (if pos == "1" then "B" else "A" end)
+      end;
+    ($orders | map(select(.outcome=="JUDGED"))) as $judged
+    | ($orders | map(select(.outcome!="JUDGED"))) as $degraded
+    | {judge_provider:$jp, judge_model:$jm,
+       candidate_a:{provider:$ap, model:$am}, candidate_b:{provider:$bp, model:$bm},
+       item_ref:$ref, disclosed:$disclosed,
+       guard:{enforced:true, scope:"prevents self-grading only; does NOT neutralize model-family style bias"},
+       orders:$orders, evaluated_at:$ts} as $base
+    | if ($degraded | length) > 0 then
+        $base + {outcome:"UNAVAILABLE", preference:null, margin:null, order_agreement:null}
+      else
+        (norm_arm($judged[0].order; $judged[0].preference_position)) as $arm1
+        | (norm_arm($judged[1].order; $judged[1].preference_position)) as $arm2
+        | ($arm1 == $arm2) as $agree
+        | (if $agree then $arm1 else "tie" end) as $pref
+        | (if $agree then (($judged[0].margin + $judged[1].margin) / 2) else 0 end) as $marg
+        | $base + {outcome:"COMPARED", preference:$pref, margin:$marg, order_agreement:$agree}
+      end
+    ')"
+  printf '%s\n' "$final_out"
+  if [ -n "$out" ]; then printf '%s\n' "$final_out" >"$out" 2>/dev/null || true; fi
+
+  [ "$(jq -r '.outcome' <<<"$final_out")" = "COMPARED" ] && return 0
+  return 4
+}
+
 # ── dispatch ──────────────────────────────────────────────────────────────
 [ $# -ge 1 ] || { usage; exit 2; }
 cmd="$1"; shift
@@ -1298,6 +1795,7 @@ case "$cmd" in
   judge)        cmd_judge "$@" ;;
   judge-batch)  cmd_judge_batch "$@" ;;
   judge-rotate) cmd_judge_rotate "$@" ;;
+  pairwise)     cmd_pairwise "$@" ;;
   -h|--help)    usage; exit 0 ;;
   *)            usage; exit 2 ;;
 esac
