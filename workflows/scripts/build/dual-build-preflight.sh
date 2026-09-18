@@ -262,10 +262,15 @@ spend_account="$(git -C "$REPO_ROOT" config user.email 2>/dev/null)"
 
 spend_org="unknown — no resolvable origin remote"
 if command -v land__nwo >/dev/null 2>&1; then
-  export LAND_ROOT="$REPO_ROOT"
+  # LAND_ROOT is an IN-PARAM land__nwo (sourced from land-on-protected-main.sh,
+  # SC1091-unresolvable) reads from this same shell's variable space — no
+  # `export` needed since it's a plain function call, not a subprocess — so
+  # the static linter's "appears unused" is a false positive here.
+  # shellcheck disable=SC2034
+  LAND_ROOT="$REPO_ROOT"
   _nwo="$(land__nwo)"
   [ -n "$_nwo" ] && spend_org="$_nwo"
-  unset _nwo
+  unset _nwo LAND_ROOT
 fi
 
 # ── stop decision — priority: below_min_inscope > no_credential > ceiling ───
@@ -281,7 +286,7 @@ fi
 
 cumulative_spend_line="Cumulative dual-build spend projected for this level: $estimated_total_tokens cost-weighted token units across $in_scope_n in-scope item(s) tagged model: $tier (2 arms x $REPLAY_PREFLIGHT_TOKENS_PER_REPLAY per item), against a ceiling of $REPLAY_PREFLIGHT_CEILING_TOKENS (REPLAY_PREFLIGHT_CEILING_TOKENS — the replay harness's own shared ceiling setting, not a dual-build-specific one). Spend lands on account '$spend_account' (org: $spend_org)."
 
-jq -n \
+payload="$(jq -n \
   --arg tier "$tier" --arg baseline "$baseline" --arg candidate "$candidate" --arg provider "$provider" \
   --argjson in_scope_n "$in_scope_n" --argjson min_inscope_items "$DUAL_BUILD_MIN_INSCOPE_ITEMS" \
   --argjson in_scope_slugs "$in_scope_slugs_json" \
@@ -304,7 +309,9 @@ jq -n \
     spend_account:$spend_account, spend_org:$spend_org,
     stop:$stop, stop_reason: (if $stop_reason == "" then null else $stop_reason end),
     dualBuild: (if $stop then null else {tier:$tier, baseline:$baseline, candidate:$candidate, inScope:$in_scope_slugs} end),
-    cumulative_spend_line:$cumulative_spend_line}'
+    cumulative_spend_line:$cumulative_spend_line}')" || _dbp_ce "failed to emit the PREFLIGHT record"
+
+printf '%s\n' "$payload"
 
 [ "$stop" = "false" ] || exit 3
 exit 0
