@@ -584,7 +584,7 @@ _cal_judge_for_slug() {
   local rows_file="$1" slug="$2"
   jq -cs --arg slug "$slug" \
     '[.[] | select(.slug == $slug and .judge != null)] | (.[0].judge // null)' \
-    "$rows_file" 2>/dev/null
+    "$rows_file" 2>/dev/null || return 1
 }
 
 # _cal_labelled_slugs <pairs-file>
@@ -700,7 +700,7 @@ cmd_calibrate_sample() {
   while IFS= read -r slug; do
     [ -n "$slug" ] || continue
     [ "$n" -lt "$count" ] || break
-    printf '%s\n' "$labelled" | grep -Fx "$slug" >/dev/null && continue
+    printf '%s\n' "$labelled" | grep -Fx -- "$slug" >/dev/null && continue
     bpatch="$archdir/${slug}@baseline.patch"
     cpatch="$archdir/${slug}@candidate.patch"
     [ -f "$bpatch" ] && [ -f "$cpatch" ] || continue
@@ -740,7 +740,7 @@ cmd_calibrate_record() {
   local rows_file="$dir/$ROWS_FILE_NAME"
   [ -f "$rows_file" ] || die "calibrate-record: no ledger at $rows_file — nothing judged for slug $slug"
   local judge judge_pref judge_margin
-  judge="$(_cal_judge_for_slug "$rows_file" "$slug")"
+  judge="$(_cal_judge_for_slug "$rows_file" "$slug")" || die "calibrate-record: could not read $rows_file"
   [ "$judge" != "null" ] && [ -n "$judge" ] \
     || die "calibrate-record: no judged row found for slug $slug — cannot record a calibration pair against an unjudged item"
   judge_pref="$(jq -r '.preference // "null"' <<<"$judge")"
@@ -753,10 +753,26 @@ cmd_calibrate_record() {
   local pairs_file="$dir/$CALIBRATION_PAIRS_FILE_NAME"
 
   _lock_acquire "$dir" || die "calibrate-record: lock failed"
-  # Same INT/TERM-only trap-scoping rule as cmd_append's own lock use above
-  # (a function-local EXIT trap would fire after $dir has gone out of scope
-  # on the normal return path).
-  trap '_lock_release "$dir"; exit 1' INT TERM
+  # Unlike cmd_append's INT/TERM-only trap, this one ALSO covers EXIT —
+  # round-3 review [HIGH]: `_cal_write_status` below calls `die` (bare
+  # `exit 1`) on several internal failure paths (unconfigured bars, a
+  # corrupt pairs_file read, a failed status write), and since it runs as
+  # a plain command (not a subshell) that `exit` was terminating the whole
+  # script WHILE this function still held `.append.lock` — the `||
+  # { _lock_release …; die …; }` guards below can only fire on a
+  # *returning* failure, never on a callee that exits outright, so they
+  # never actually ran and the lock leaked permanently (100x0.05s spin,
+  # then a hard failure, for every later writer including plain `append`).
+  # The EXIT trap catches exactly that: `die`'s `exit 1` fires it WHILE
+  # cmd_calibrate_record is still on the call stack, so `$dir` is still a
+  # valid local — this is the opposite case from cmd_append's own comment
+  # (which is about a trap outliving the function's NORMAL return, once
+  # $dir has gone out of scope). We avoid that failure mode here the same
+  # way cmd_append avoids it for INT/TERM: explicitly clearing the trap
+  # (`trap - EXIT INT TERM` below) before falling through to a normal,
+  # successful return, so a stale EXIT trap is never left armed once $dir
+  # is gone.
+  trap '_lock_release "$dir"; exit 1' EXIT INT TERM
   local max next_seq
   max="$(_ledger_max_seq "$pairs_file")"
   next_seq=$((max + 1))
@@ -792,7 +808,7 @@ cmd_calibrate_record() {
   # either file".
   _cal_write_status "$dir" >/dev/null || { _lock_release "$dir"; die "calibrate-record: recorded the pair but failed rewriting calibration.json"; }
   _lock_release "$dir"
-  trap - INT TERM
+  trap - EXIT INT TERM
 
   printf '%s\n' "$row"
 }

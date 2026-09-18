@@ -51,6 +51,24 @@
 #         `grep -q` SIGPIPEs its writer under `pipefail` once the labelled
 #         list is large enough that grep's early exit outraces the writer;
 #         a short list, as in #8 above, never reaches that pipe-buffer size)
+#   16    round-3 review [HIGH]: a `die()` firing INSIDE the locked critical
+#         section of `cmd_calibrate_record` (bar validation inside
+#         `_cal_write_status`, triggered here via a genuinely-unconfigured
+#         BUILD_CONFIG) must release `.append.lock` rather than strand it —
+#         reproduces the exact leak the reviewer found and proves a
+#         subsequent call against the same dir is not left wedged
+#   17    round-3 review [MEDIUM]: a corrupted rows.jsonl makes
+#         calibrate-record die with a "could not read" message, not the
+#         misleading "no judged row found" message a swallowed jq failure
+#         would produce
+#   18    round-3 review [MEDIUM]: an explicit per-invocation pin of
+#         DUAL_BUILD_CALIBRATION_BAR_PCT/_BAR_N overrides a hostile ambient
+#         export — the discrimination for §10-12 now pinning their own
+#         bar fixture instead of coinciding with whatever the environment
+#         (or build.config.sh's default) happens to declare
+#   19    round-3 review [LOW]: calibrate-sample's dedupe still excludes a
+#         dash-leading slug already recorded — `grep -Fx --` guards against
+#         the slug being parsed as a grep option
 #
 # Usage: bash workflows/scripts/model-comparison/tests/test_judge_calibrate.sh
 set -uo pipefail
@@ -68,6 +86,16 @@ WORK="$(cd -P "$WORK" && pwd)"
 trap 'chmod -R u+rwX "$WORK" 2>/dev/null; rm -rf "$WORK"' EXIT
 
 sut() { bash "$SUT" "$@"; }
+
+# sut_cal_pinned — same as sut(), but with the calibration bars PINNED for
+# this one invocation rather than left to fall through to whatever
+# build.config.sh (or a hostile ambient export) happens to declare. §10-12
+# assert the literals 70/20/75/"calibrated" on the bar values themselves,
+# so those sections must supply their own fixture bar rather than
+# coincide with the current config default — same shape as the sibling
+# test_dual_build_ledger.sh's `DUAL_BUILD_ARCHIVE_RETENTION_DAYS=30 sut
+# prune …` pin (round-3 review [MEDIUM]).
+sut_cal_pinned() { DUAL_BUILD_CALIBRATION_BAR_PCT=70 DUAL_BUILD_CALIBRATION_BAR_N=20 bash "$SUT" "$@"; }
 
 # row <slug> <arm> <judge-json|null> — a minimal, fully-valid ledger row,
 # same shape as the sibling test_dual_build_ledger.sh's own `row()` helper.
@@ -192,7 +220,7 @@ while [ "$i" -le 20 ]; do
   slug="pair$i"
   seed_pair "$D10" "$slug" baseline
   if [ "$i" -le 15 ]; then pref=baseline; else pref=candidate; fi
-  sut calibrate-record --dir "$D10" --slug "$slug" --preference "$pref" --source blind >/dev/null || fail "10: calibrate-record failed on $slug"
+  sut_cal_pinned calibrate-record --dir "$D10" --slug "$slug" --preference "$pref" --source blind >/dev/null || fail "10: calibrate-record failed on $slug"
   i=$((i + 1))
 done
 out="$(cat "$D10/calibration.json")"
@@ -206,7 +234,7 @@ ok "10 a 20-pair fixture with 15 agreements reads n=20, agreement_pct=75, status
 count
 seed_pair "$D10" overriddenitem candidate
 before="$out"
-sut calibrate-record --dir "$D10" --slug overriddenitem --preference baseline --source override --reason "operator override" >/dev/null || fail "11: calibrate-record (override) failed"
+sut_cal_pinned calibrate-record --dir "$D10" --slug overriddenitem --preference baseline --source override --reason "operator override" >/dev/null || fail "11: calibrate-record (override) failed"
 after="$(cat "$D10/calibration.json")"
 [ "$(jq -r .n <<<"$after")" = "20" ] || fail "11: an override pair must NOT be counted in n (got: $after)"
 [ "$(jq -r .agreement_pct <<<"$after")" = "75" ] || fail "11: an override pair must NOT move agreement_pct (got: $after, was: $before)"
@@ -252,6 +280,53 @@ done
 out="$(sut calibrate-sample --dir "$D15" --count 5)" || fail "15: calibrate-sample failed against a large calibration-pairs.jsonl"
 [ "$(jq 'length' <<<"$out")" = "0" ] || fail "15: an already-recorded slug must stay excluded even against a several-thousand-line labelled corpus (got: $out)"
 ok "15 calibrate-sample's dedupe still excludes an already-recorded slug against a several-thousand-line calibration-pairs.jsonl"
+
+# ── 16. a die() inside the locked critical section releases the lock ──────
+count
+D16="$WORK/d16"
+seed_pair "$D16" lockleak baseline
+out="$(BUILD_CONFIG="$WORK/no-such-build-config.sh" sut calibrate-record --dir "$D16" --slug lockleak --preference baseline --source blind 2>&1)"; rc=$?
+[ "$rc" -ne 0 ] || fail "16a: calibrate-record must fail when the calibration bars are genuinely unconfigured (got rc=0: $out)"
+[ ! -d "$D16/.append.lock" ] || fail "16b: a die() firing inside the locked critical section must not strand .append.lock (round-3 review [HIGH] regression)"
+out2="$(sut calibrate-record --dir "$D16" --slug lockleak --preference baseline --source blind)" || fail "16c: a subsequent calibrate-record against the same dir must succeed once the lock is genuinely released (got: $out2)"
+ok "16 a die() firing while cmd_calibrate_record holds the lock releases .append.lock instead of stranding it (round-3 review [HIGH])"
+
+# ── 17. a corrupted rows.jsonl makes calibrate-record die, not misdiagnose ─
+count
+D17="$WORK/d17"
+seed_pair "$D17" corruptrows baseline
+printf '%s\n' 'not-json-at-all' >>"$D17/rows.jsonl"
+out="$(sut calibrate-record --dir "$D17" --slug corruptrows --preference baseline --source blind 2>&1)"; rc=$?
+[ "$rc" -ne 0 ] || fail "17a: calibrate-record must fail loudly on a corrupted rows.jsonl (got rc=0: $out)"
+[[ "$out" == *"could not read"* ]] || fail "17b: expected a 'could not read' die message, not a misdiagnosed 'no judged row found' (got: $out)"
+ok "17 a corrupted rows.jsonl makes calibrate-record die with a read error rather than the misleading 'no judged row found' message (round-3 review [MEDIUM])"
+
+# ── 18. an explicit bar pin overrides a hostile ambient export ────────────
+count
+D18="$WORK/d18"
+export DUAL_BUILD_CALIBRATION_BAR_PCT=1
+export DUAL_BUILD_CALIBRATION_BAR_N=1
+i=1
+while [ "$i" -le 20 ]; do
+  slug="bar$i"
+  seed_pair "$D18" "$slug" baseline
+  if [ "$i" -le 15 ]; then pref=baseline; else pref=candidate; fi
+  sut_cal_pinned calibrate-record --dir "$D18" --slug "$slug" --preference "$pref" --source blind >/dev/null || fail "18: calibrate-record failed on $slug"
+  i=$((i + 1))
+done
+unset DUAL_BUILD_CALIBRATION_BAR_PCT DUAL_BUILD_CALIBRATION_BAR_N
+out="$(cat "$D18/calibration.json")"
+[ "$(jq -r .bar_pct <<<"$out")" = "70" ] && [ "$(jq -r .bar_n <<<"$out")" = "20" ] || fail "18: an explicit per-invocation pin must win over a hostile ambient export of 1/1 (got: $out)"
+ok "18 an explicit per-invocation DUAL_BUILD_CALIBRATION_BAR_PCT/_BAR_N pin overrides a hostile ambient export (round-3 review [MEDIUM], the discrimination for §10-12's own pin)"
+
+# ── 19. dedupe survives a dash-leading slug ────────────────────────────────
+count
+D19="$WORK/d19"
+seed_pair "$D19" -dashslug baseline
+sut calibrate-record --dir "$D19" --slug -dashslug --preference baseline --source blind >/dev/null || fail "19: setup calibrate-record failed for a dash-leading slug"
+out="$(sut calibrate-sample --dir "$D19" --count 5)" || fail "19: calibrate-sample failed"
+[ "$(jq 'length' <<<"$out")" = "0" ] || fail "19: a dash-leading slug already recorded must still be excluded from a later sample (got: $out)"
+ok "19 calibrate-sample's dedupe correctly excludes a dash-leading slug (grep -Fx -- guards against option-parsing, round-3 review [LOW])"
 
 printf '\ntest_judge_calibrate.sh: %d/%d checks passed\n' "$pass" "$total"
 [ "$pass" -eq "$total" ] || exit 1
