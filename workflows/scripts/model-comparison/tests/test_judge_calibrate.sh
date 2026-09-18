@@ -41,6 +41,16 @@
 #         subset or a superset of those five keys
 #   13    calibrate-record refuses a --preference outside {baseline,
 #         candidate,tie} and a --source outside {blind,override}
+#   14    calibrate-sample dies loudly (never silently swallows) when
+#         calibration-pairs.jsonl is corrupted — round-2 review fix for
+#         temperloop#2082's [MEDIUM]: the pairs-file read had no `|| die`
+#         against this file's own stated set-e-omitted invariant
+#   15    calibrate-sample's dedupe still excludes an already-recorded slug
+#         against a several-thousand-line calibration-pairs.jsonl — the
+#         corpus-scale state temperloop#2082's [HIGH] named (a piped
+#         `grep -q` SIGPIPEs its writer under `pipefail` once the labelled
+#         list is large enough that grep's early exit outraces the writer;
+#         a short list, as in #8 above, never reaches that pipe-buffer size)
 #
 # Usage: bash workflows/scripts/model-comparison/tests/test_judge_calibrate.sh
 set -uo pipefail
@@ -218,6 +228,30 @@ out="$(sut calibrate-record --dir "$D10" --slug pair1 --preference nonsense --so
 out="$(sut calibrate-record --dir "$D10" --slug pair1 --preference tie --source nonsense 2>&1)"; rc=$?
 [ "$rc" -ne 0 ] && [[ "$out" == *"--source must be"* ]] || fail "13b: an invalid --source must be refused (got rc=$rc: $out)"
 ok "13 calibrate-record refuses a --preference/--source outside its closed enum"
+
+# ── 14. a corrupted pairs file makes calibrate-sample die, not swallow ─────
+count
+D14="$WORK/d14"
+seed_pair "$D14" corruptcase baseline
+printf '%s\n' '{"slug":"other"}' 'not-json-at-all' >"$D14/calibration-pairs.jsonl"
+out="$(sut calibrate-sample --dir "$D14" --count 5 2>&1)"; rc=$?
+[ "$rc" -ne 0 ] || fail "14: calibrate-sample must fail loudly on a corrupted calibration-pairs.jsonl (got rc=0: $out)"
+[[ "$out" == *"could not read"* ]] || fail "14: expected a 'could not read' die message (got: $out)"
+ok "14 a corrupted calibration-pairs.jsonl makes calibrate-sample die loudly rather than silently treating it as an empty dedupe set"
+
+# ── 15. dedupe holds against a large calibration-pairs.jsonl ───────────────
+count
+D15="$WORK/d15"
+seed_pair "$D15" bulkdup baseline
+sut calibrate-record --dir "$D15" --slug bulkdup --preference baseline --source blind >/dev/null || fail "15: setup calibrate-record failed"
+i=1
+while [ "$i" -le 3000 ]; do
+  printf '{"slug":"filler-%d-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}\n' "$i" >>"$D15/calibration-pairs.jsonl"
+  i=$((i + 1))
+done
+out="$(sut calibrate-sample --dir "$D15" --count 5)" || fail "15: calibrate-sample failed against a large calibration-pairs.jsonl"
+[ "$(jq 'length' <<<"$out")" = "0" ] || fail "15: an already-recorded slug must stay excluded even against a several-thousand-line labelled corpus (got: $out)"
+ok "15 calibrate-sample's dedupe still excludes an already-recorded slug against a several-thousand-line calibration-pairs.jsonl"
 
 printf '\ntest_judge_calibrate.sh: %d/%d checks passed\n' "$pass" "$total"
 [ "$pass" -eq "$total" ] || exit 1
