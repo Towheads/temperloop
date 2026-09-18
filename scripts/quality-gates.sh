@@ -1156,6 +1156,23 @@ KERNEL_GATES=(
   # no Makefile target, as the test_replay_preflight.sh gate immediately
   # above.
   "bash workflows/scripts/model-comparison/tests/test_live_tagging.sh"
+  # The dual-build `Model-comparison-arms:` PR trailer (temperloop#2065/
+  # #2078, ADR 0040): `tagging.sh stamp-arms` (writer) and its owned inverse
+  # `parse-arms`. Asserts the trailer rides ALONGSIDE an unchanged
+  # `Model-provenance:` line — the existing anchored single-model disclosure
+  # regex above still matches a two-line body untouched — and that
+  # parse-arms round-trips all four fields (baseline, candidate, pick,
+  # reason). Fail-closed: an absent trailer, a present-but-malformed one
+  # (missing/whitespace-corrupted field, an out-of-set pick), and a
+  # well-formed one are three mutually exclusive, mechanically distinct
+  # verdicts, and every stamp-arms usage error (including a --reason
+  # containing the quote/newline characters that would desync the emitted
+  # grammar) is a bounded exit 2. No side effects (no window record, no
+  # telemetry tag) — unlike `tag`, this is a pure formatter; the dual-build
+  # ledger is a separate item. Hermetic: no network, no jq/emit-model-
+  # usage.sh state touched. Same direct-`bash` form, no Makefile target, as
+  # the test_live_tagging.sh gate immediately above.
+  "bash workflows/scripts/model-comparison/tests/test_tagging_arms_trailer.sh"
   # Replay EXECUTION + SCORING (temperloop#1258, epic #1225): `replay.sh
   # execute` running a candidate headlessly inside a prepared replay
   # worktree, `score.sh` turning the result into a schema-complete
