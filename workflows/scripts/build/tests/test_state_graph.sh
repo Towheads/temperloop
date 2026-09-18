@@ -610,10 +610,16 @@ echo "PASS: pr_list source error — a whitespace-only payload (SPACEs survive s
 #      plainer `{"a":1}` fixture would NOT discriminate it — the arms would
 #      catch that one anyway, leaving the type clause deletable with the suite
 #      still green.
-#   3. ARRAY OF NON-OBJECTS (`["a","b"]`) — a GENUINE array of length 2, so it
-#      passes the arity/type guard LEGITIMATELY and still fails `.[]`. This is
-#      the case the guard fix alone does not close; it discriminates the
-#      honest-`error` transform arms specifically.
+#   3. ARRAY OF `number`-BEARING OBJECTS WITH A NON-PR FIELD
+#      (`[{"number":1,"title":"t","body":5}]`) — a GENUINE array whose every
+#      element passes the element clause added by temperloop#2001, so it clears
+#      the whole `count` guard LEGITIMATELY, and still fails the EDGE transform
+#      (`5 | split("\n")` exits 5). This is the case no guard tightening
+#      closes; it discriminates the honest-`error` transform arms specifically.
+#      It REPLACES the pre-#2001 fixture `["a","b"]`, which the element clause
+#      now rejects upstream at the guard — that fixture would still have gone
+#      green here, but as a guard case wearing a transform-arm case's label,
+#      leaving the arms undiscriminated.
 #
 # All three assert a ZERO return AND valid JSON AND status `error`, for the same
 # reason the two cases above do: the failure modes are a non-zero return with
@@ -647,16 +653,80 @@ echo "PASS: pr_list source error — an object whose values are PR-shaped report
 
 _board_gh() {
   case "$1 $2" in
-    "pr list") printf '["a","b"]' ;;
+    "pr list") printf '[{"number":1,"title":"t","body":5}]' ;;
     *) echo "test _board_gh: unhandled '$1 $2'" >&2; return 3 ;;
   esac
 }
 rc=0
 out="$(_sg_read_pr_list "$BOARD")" || rc=$?
-[ "$rc" -eq 0 ] || fail "pr_list array-of-non-objects payload must return 0 (rc=$rc, out: $out)"
-jq -e . >/dev/null 2>&1 <<<"$out" || fail "pr_list array-of-non-objects payload must emit valid JSON (got: $out)"
-[ "$(jq -r .status <<<"$out")" = "error" ] || fail "pr_list array whose elements are not PR objects must report error, never a confident ok with an empty node set (got: $out)"
-echo "PASS: pr_list source error — an array of non-objects reports error, not a wrong-empty ok"
+[ "$rc" -eq 0 ] || fail "pr_list transform-arm payload must return 0 (rc=$rc, out: $out)"
+jq -e . >/dev/null 2>&1 <<<"$out" || fail "pr_list transform-arm payload must emit valid JSON (got: $out)"
+[ "$(jq -r .status <<<"$out")" = "error" ] || fail "pr_list array whose elements clear the count guard but fail a transform must report error, never a confident ok with an empty node set (got: $out)"
+[ "$(jq -c '.nodes' <<<"$out")" = '[]' ] || fail "pr_list transform-arm error must carry no nodes (got: $out)"
+echo "PASS: pr_list source error — an array that clears the count guard but fails the edge transform reports error, not a wrong-empty ok"
+
+# --- pr_list: the `count` guard needs an ELEMENT test, not just arity+type --
+# temperloop#2001, the residual round 3 left open. The arity/type guard admits
+# a genuine single top-level array, and `.number` does NOT error on `null` or
+# on an object with no `number` key — and `null | tostring` is the string
+# "null". So each of the three payloads below projected CLEANLY pre-fix: both
+# transforms exited 0 with non-empty output, every guard passed, and the source
+# reported `ok` over a FABRICATED `{"id":"PR:null","number":null}` node that
+# `_sg_query_unlinked_prs` then emitted as a confident finding. This is the
+# invent-data twin of the wrong-empty class above, and the assertions are
+# shaped for it: status `error` AND an EMPTY node set, since a status-only
+# check would pass over a fabricated node had the guard merely been reordered.
+#
+#   a. `[null]`                       — a null element; `.number` yields null.
+#   b. `[{"a":1}]`                    — an object with no `number` key; same.
+#   c. `[{"number":1},{"number":"x"}]` — MIXED: one well-formed element and one
+#      whose `number` is a string. Partially projecting it would be worse than
+#      either pure case, because a HALF-read page reported `ok` looks exactly
+#      like a fully-read one downstream. `all` is all-or-nothing by
+#      construction, so the whole source reports `error`.
+for _sg_t2001 in '[null]' '[{"a":1}]' '[{"number":1},{"number":"x"}]'; do
+  # shellcheck disable=SC2317  # invoked indirectly, through _sg_read_pr_list
+  _board_gh() {
+    case "$1 $2" in
+      "pr list") printf '%s' "$_sg_t2001" ;;
+      *) echo "test _board_gh: unhandled '$1 $2'" >&2; return 3 ;;
+    esac
+  }
+  rc=0
+  out="$(_sg_read_pr_list "$BOARD")" || rc=$?
+  [ "$rc" -eq 0 ] || fail "pr_list malformed-element payload $_sg_t2001 must return 0 (rc=$rc, out: $out)"
+  jq -e . >/dev/null 2>&1 <<<"$out" || fail "pr_list malformed-element payload $_sg_t2001 must emit valid JSON (got: $out)"
+  [ "$(jq -r .status <<<"$out")" = "error" ] || fail "pr_list array whose elements lack a numeric number must report error, never a confident ok ($_sg_t2001 -> $out)"
+  [ "$(jq -c '.nodes' <<<"$out")" = '[]' ] || fail "pr_list must not fabricate a PR:null node ($_sg_t2001 -> $out)"
+done
+echo "PASS: pr_list source error — an array whose elements lack a numeric number (incl. a mixed array) reports error, not a fabricated PR:null node"
+
+# --- pr_list: the element clause must not break the empty or ok cases -------
+# `all` over `[]` is `true`, so an EMPTY array still counts 0 and still reports
+# `absent` — the element clause must not turn a legitimately empty PR list into
+# an error. Re-asserted HERE, next to the clause it constrains, rather than
+# relying on the `absent` case far above staying put.
+_board_gh() {
+  case "$1 $2" in
+    "pr list") printf '[]' ;;
+    *) echo "test _board_gh: unhandled '$1 $2'" >&2; return 3 ;;
+  esac
+}
+out="$(_sg_read_pr_list "$BOARD")"
+[ "$(jq -r .status <<<"$out")" = "absent" ] || fail "pr_list empty array must still report absent under the element clause (got: $out)"
+echo "PASS: pr_list source absent — an empty array still counts 0 under the element clause"
+
+_board_gh() {
+  case "$1 $2" in
+    "pr list") printf '[{"number":3,"title":"t3","body":"Closes #30\\n"},{"number":4,"title":"t4","body":"no linkage\\n"}]' ;;
+    *) echo "test _board_gh: unhandled '$1 $2'" >&2; return 3 ;;
+  esac
+}
+out="$(_sg_read_pr_list "$BOARD")"
+[ "$(jq -r .status <<<"$out")" = "ok" ] || fail "pr_list well-formed multi-element payload must still report ok (got: $out)"
+[ "$(jq -c '[.nodes[].id]' <<<"$out")" = '["PR:3","PR:4"]' ] || fail "pr_list well-formed payload nodes intact (got: $out)"
+[ "$(jq -c '[.edges[] | [.from,.to]]' <<<"$out")" = '[["PR:3","Issue:30"]]' ] || fail "pr_list well-formed payload closes edges intact (got: $out)"
+echo "PASS: pr_list source ok — a well-formed multi-element payload still projects its nodes and closes edges intact"
 
 # =============================================================================
 # source: worktrees (Worktree nodes)
