@@ -7,7 +7,10 @@
 # code here. The LLM orchestrator invokes this script; it never hand-rolls
 # `git worktree` for build items.
 #
-#   worktree.sh create <repo-root> <slug>        # add worktree + drop guard marker
+#   worktree.sh create <repo-root> <slug> [--arm <name>[:<sibling>]]
+#                                                # add worktree + drop guard
+#                                                # marker (+ dual-build arm
+#                                                # marker, temperloop#2065)
 #   worktree.sh restore <repo-root> <slug> [--ref <ref>]
 #                                                # fresh worktree + re-apply a
 #                                                # #1699 preservation ref
@@ -18,7 +21,12 @@
 #
 # Deterministic layout (pure function of the slug — never reported back by a
 # worker): path `<repo-root>.wt/<slug>`, branch `build/<slug>`, based on
-# `origin/<default>`.
+# `origin/<default>`. A dual-build `--arm <name>` (temperloop#2065, epic
+# K#2065) appends `@<name>` to both — `<repo-root>.wt/<slug>@<name>`,
+# `build/<slug>@<name>` — so two arms of the same slug never collide; see
+# § Dual-build arm naming below for the full contract (the marker, the
+# optional `:<sibling>` pairing, and why `remove`/`prune`/`restore` need no
+# change to already handle an arm-suffixed path/branch correctly).
 #
 # Guard marker (#171/#212): `create` drops a `.build-guard` marker file in
 # the new worktree root. The PreToolUse write-jail hook
@@ -54,7 +62,11 @@
 #   create →  {"outcome":"CREATED","path":…,"branch":…,"base":…,
 #              "guard":"ARMED"|"UNARMED"|"UNKNOWN","guard_detail":…,
 #              "preserved":bool,"preserved_ref":…,"preserved_detail":…,
-#              "sidelined":bool,"sidelined_path":…,"sidelined_branch":…}
+#              "sidelined":bool,"sidelined_path":…,"sidelined_branch":…,
+#              ["arm":…,"sibling_worktree":…,"sibling_branch":…]}
+#              — the bracketed `arm`/`sibling_*` trio appears ONLY when
+#              `--arm` was given (temperloop#2065); an arm-less create's line
+#              is byte-identical to before this trio existed.
 #   restore → {"outcome":"RESTORED","path":…,"branch":…,"base":…,"ref":…,"sha":…,
 #              "strategy":"fast-forward"|"merge","guard":…,"guard_detail":…} |
 #             {"outcome":"RESTORE_CONFLICT","path":…,"branch":…,"base":…,"ref":…,
@@ -122,7 +134,7 @@ die() {
 }
 
 usage() {
-  die "usage: worktree.sh create <repo-root> <slug> | restore <repo-root> <slug> [--ref <ref>] | remove <repo-root> <slug> | prune <repo-root> [--force] | deps-merged <repo-root> <sha,sha,...>"
+  die "usage: worktree.sh create <repo-root> <slug> [--arm <name>[:<sibling>]] | restore <repo-root> <slug> [--ref <ref>] | remove <repo-root> <slug> | prune <repo-root> [--force] | deps-merged <repo-root> <sha,sha,...>"
 }
 
 # Physical-path resolve for an EXISTING dir (portable — no GNU readlink -f).
@@ -147,6 +159,95 @@ validate_slug() {
   case "$slug" in
     *[!a-z0-9-]*|"") die "slug '$slug' invalid — must match [a-z0-9-]+" ;;
   esac
+}
+
+# --- Dual-build arm naming (temperloop#2065, sub-item of K#2065) -------------
+#
+# THE CONVENTION. A dual-build level runs the SAME item's SAME slug under two
+# concurrent workers, one per model "arm" — so the deterministic
+# `<repo-root>.wt/<slug>` / `build/<slug>` path from § the file header would
+# collide the instant the second arm's `create` ran. The fix is the SAME shape
+# the epic's own Contract names verbatim: append `@<arm>` to both — worktree
+# `<repo-root>.wt/<slug>@<arm>`, branch `build/<slug>@<arm>` — never a second,
+# parallel naming scheme. `@` is deliberately outside `validate_slug`'s
+# `[a-z0-9-]+` charset, so an arm-suffixed path can never collide with, or be
+# mistaken for, a plain slug's path — the two namespaces are lexically
+# disjoint by construction, not by convention alone.
+#
+# NO NEW OUTCOME, NO NEW SUBCOMMAND. `create`'s existing CREATED line and
+# `prune`'s existing PRUNED/SKIPPED_*/reap owners all key off `wt_path` and
+# `branch` as opaque strings — never off the slug's own charset — so an
+# arm-suffixed pair flows through `clear_path_*`, the mutation lock, and every
+# `prune_one`/preservation/sideline path UNCHANGED. This item's whole job is
+# computing that one pair of strings (plus the `.dual-build-arm` marker
+# below); it does not touch remove/prune/restore.
+#
+# THE SIBLING FIELD. `--arm <name>[:<sibling>]` accepts an optional
+# colon-separated sibling name, deliberately DECLARATIVE rather than
+# discovered: the sibling worktree/branch path is computed from the SAME
+# slug + sibling name, whether or not that worktree exists yet. Discovering
+# the sibling by globbing `<repo>.wt/<slug>@*` at create time would make the
+# marker's content depend on creation ORDER (the first-created arm would see
+# no sibling at all, the second would see the first) — the two-arm dual-build
+# shape this epic names always knows both arm names up front (its own
+# `--dual-build <tier>=<candidate>` flag already takes a pair), so the caller
+# passing both here costs it nothing and buys order-independence. Omitting
+# `:<sibling>` is valid — the marker then simply carries empty sibling fields
+# — the flag is not required to name a second arm at all, only able to.
+#
+# validate_arm mirrors validate_slug's charset: an arm name feeds the SAME
+# rm -rf'able path and branch-name positions, so it is held to the same
+# closed character set for the same reason.
+validate_arm() {
+  local arm="$1"
+  case "$arm" in
+    *[!a-z0-9-]*|"") die "arm '$arm' invalid — must match [a-z0-9-]+" ;;
+  esac
+}
+
+# parse_arm_spec <spec> — splits `--arm`'s value into ARM_NAME (this arm) and
+# ARM_SIBLING (the other arm, or "" if none was named). Both halves are
+# validated with the SAME closed charset as a slug (see validate_arm above).
+ARM_NAME=""
+ARM_SIBLING=""
+parse_arm_spec() {
+  local spec="$1"
+  case "$spec" in
+    *:*)
+      ARM_NAME="${spec%%:*}"
+      ARM_SIBLING="${spec#*:}"
+      ;;
+    *)
+      ARM_NAME="$spec"
+      ARM_SIBLING=""
+      ;;
+  esac
+  validate_arm "$ARM_NAME"
+  [ -z "$ARM_SIBLING" ] || validate_arm "$ARM_SIBLING"
+  [ "$ARM_NAME" != "$ARM_SIBLING" ] || die "arm '$ARM_NAME' cannot be its own sibling"
+}
+
+# arm_wt_path / arm_branch — the arm-disambiguated path/branch pair for
+# <repo-root>.wt/<slug> / build/<slug>, given a (possibly empty) arm name. An
+# empty arm reproduces TODAY's plain path/branch byte-for-byte — this is the
+# single seam every arm-aware call site (create_core) routes through, so
+# "no --arm given is byte-identical to today" is a property of this function
+# rather than something each caller has to remember to preserve.
+arm_wt_path() {
+  local repo="$1" slug="$2" arm="$3"
+  if [ -n "$arm" ]; then
+    printf '%s.wt/%s@%s\n' "$repo" "$slug" "$arm"
+  else
+    printf '%s.wt/%s\n' "$repo" "$slug"
+  fi
+}
+arm_branch() {
+  local slug="$1" arm="$2"
+  if [ -n "$arm" ]; then
+    printf 'build/%s@%s\n' "$slug" "$arm"
+  else
+    printf 'build/%s\n' "$slug"
+  fi
 }
 
 # The repo's default branch, from origin's HEAD (falling back to main/master).
@@ -220,15 +321,17 @@ freshen_default_ref() {
 # Append the build tooling markers to the shared info/exclude (idempotent)
 # so they never show up as untracked files in any worktree's `git status` — a
 # worker's `git add -A` must not be able to commit them. Covers the write-jail
-# marker (`.build-guard`, #171/#212) and the verification-surface artifact
+# marker (`.build-guard`, #171/#212), the verification-surface artifact
 # (`.build-verification.md`, #418 — the worker writes its PR verification
-# surface there and returns only the path; pr.sh reads it directly).
+# surface there and returns only the path; pr.sh reads it directly), and the
+# dual-build arm marker (`.dual-build-arm`, temperloop#2065 — same reasoning
+# as `.build-guard`: orchestrator machinery, never worker work).
 exclude_marker() {
   local repo="$1" common f
   common="$(git -C "$repo" rev-parse --git-common-dir)"
   case "$common" in /*) ;; *) common="$repo/$common" ;; esac
   mkdir -p "$common/info"
-  for f in .build-guard .build-verification.md; do
+  for f in .build-guard .build-verification.md .dual-build-arm; do
     grep -qxF "$f" "$common/info/exclude" 2>/dev/null \
       || echo "$f" >> "$common/info/exclude"
   done
@@ -649,7 +752,7 @@ preserve_capture() {
     return 1
   fi
   GIT_INDEX_FILE="$idx" git -C "$wt" add -A -- \
-    ':(exclude).build-guard' ':(exclude).build-verification.md' 2>/dev/null || true
+    ':(exclude).build-guard' ':(exclude).build-verification.md' ':(exclude).dual-build-arm' 2>/dev/null || true
   tree="$(GIT_INDEX_FILE="$idx" git -C "$wt" write-tree 2>/dev/null)" || tree=""
   rm -f "$idx"
   [ -n "$tree" ] || return 1
@@ -792,7 +895,7 @@ preserve_unlanded() {
     esac
   elif [ "$have_wt" -eq 1 ]; then
     if [ -n "$(git -C "$wt_path" status --porcelain \
-                 -- ':(exclude).build-guard' ':(exclude).build-verification.md' 2>/dev/null)" ]; then
+                 -- ':(exclude).build-guard' ':(exclude).build-verification.md' ':(exclude).dual-build-arm' 2>/dev/null)" ]; then
       dirty=1
     fi
   fi
@@ -1360,21 +1463,46 @@ create_rollback() {
   return 0
 }
 
-# create_core <repo-root> <slug> — everything `create` does EXCEPT emit its
-# outcome line, so `restore` can stand a fresh worktree up on the same
-# deterministic path/branch/base without a second CREATED line on stdout
-# (the orchestrator branches on one JSON line per invocation). Sets
+# create_core <repo-root> <slug> [<arm>] — everything `create` does EXCEPT
+# emit its outcome line, so `restore` can stand a fresh worktree up on the
+# same deterministic path/branch/base without a second CREATED line on
+# stdout (the orchestrator branches on one JSON line per invocation). Sets
 # CREATE_PATH / CREATE_BRANCH / CREATE_BASE for whichever command emits.
+#
+# <arm> (temperloop#2065, § Dual-build arm naming above) is OPTIONAL and,
+# omitted, changes NOTHING: arm_wt_path/arm_branch with an empty arm
+# reproduce the plain `<repo>.wt/<slug>` / `build/<slug>` pair exactly as
+# before, so `restore` (which never passes an arm) is untouched by this
+# item. A non-empty arm additionally sets CREATE_ARM / CREATE_SIBLING_WT /
+# CREATE_SIBLING_BRANCH (read off the ARM_NAME/ARM_SIBLING parse_arm_spec
+# left behind — cmd_create is the only caller that ever passes a non-empty
+# arm, and it always calls parse_arm_spec first) for cmd_create to fold into
+# its CREATED line and the `.dual-build-arm` marker.
 CREATE_PATH=""
 CREATE_BRANCH=""
 CREATE_BASE=""
+CREATE_ARM=""
+CREATE_SIBLING_WT=""
+CREATE_SIBLING_BRANCH=""
 create_core() {
-  local repo slug wt_path branch default out
+  local repo slug arm wt_path branch default out
   repo="$(resolve_repo "$1")"
   slug="$2"
+  arm="${3:-}"
   validate_slug "$slug"
-  wt_path="${repo}.wt/${slug}"
-  branch="build/${slug}"
+  CREATE_ARM=""
+  CREATE_SIBLING_WT=""
+  CREATE_SIBLING_BRANCH=""
+  if [ -n "$arm" ]; then
+    validate_arm "$arm"
+    CREATE_ARM="$arm"
+    if [ -n "$ARM_SIBLING" ]; then
+      CREATE_SIBLING_WT="$(arm_wt_path "$repo" "$slug" "$ARM_SIBLING")"
+      CREATE_SIBLING_BRANCH="$(arm_branch "$slug" "$ARM_SIBLING")"
+    fi
+  fi
+  wt_path="$(arm_wt_path "$repo" "$slug" "$arm")"
+  branch="$(arm_branch "$slug" "$arm")"
   default="$(default_branch "$repo")" || die "cannot resolve origin's default branch in '$repo'"
   CREATE_PATH="$wt_path"
   CREATE_BRANCH="$branch"
@@ -1453,6 +1581,18 @@ create_core() {
   # any worker running in this worktree (per-worktree, concurrency-safe).
   jq -cn --arg slug "$slug" --arg branch "$branch" --arg created "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
     '{slug:$slug, branch:$branch, created:$created}' > "$wt_path/.build-guard"
+
+  # Drop the dual-build arm marker (temperloop#2065) — ONLY when an arm was
+  # given, so a plain (arm-less) create writes nothing new here, matching
+  # "no --arm given is byte-identical to today". `sibling_worktree` /
+  # `sibling_branch` are the COMPUTED sibling pair (§ Dual-build arm naming
+  # above) — empty strings when `--arm` named no sibling, never a guess.
+  if [ -n "$CREATE_ARM" ]; then
+    jq -cn --arg arm "$CREATE_ARM" --arg sibling_worktree "$CREATE_SIBLING_WT" \
+           --arg sibling_branch "$CREATE_SIBLING_BRANCH" \
+      '{arm:$arm, sibling_worktree:$sibling_worktree, sibling_branch:$sibling_branch}' \
+      > "$wt_path/.dual-build-arm"
+  fi
   exclude_marker "$repo"
 
   # End of the shared-state region. Everything below touches only THIS
@@ -1496,20 +1636,35 @@ create_core() {
 
 }
 
+# cmd_create <repo-root> <slug> [<arm-spec>] — <arm-spec> is `--arm`'s raw
+# value (`<name>` or `<name>:<sibling>`), OPTIONAL. Omitted (the plain,
+# today's-behavior call every existing caller makes), the CREATED line below
+# is BYTE-IDENTICAL to before this item: the `+ (if $arm != "" then … else
+# {} end)` merge adds nothing when CREATE_ARM is empty, so no new key ever
+# appears on an arm-less create (temperloop#2065 acceptance: "no --arm given
+# produces byte-identical behavior to today").
 cmd_create() {
-  create_core "$1" "$2"
+  local repo="$1" slug="$2" arm_spec="${3:-}" arm=""
+  if [ -n "$arm_spec" ]; then
+    parse_arm_spec "$arm_spec"
+    arm="$ARM_NAME"
+  fi
+  create_core "$repo" "$slug" "$arm"
   jq -cn --arg path "$CREATE_PATH" --arg branch "$CREATE_BRANCH" --arg base "$CREATE_BASE" \
          --arg guard "$GUARD_STATUS" --arg guard_detail "$GUARD_DETAIL" \
          --argjson preserved "$PRESERVED" --arg preserved_ref "$PRESERVED_REF" \
          --arg preserved_detail "$PRESERVED_DETAIL" \
          --argjson sidelined "$SIDELINED" --arg sidelined_path "$SIDELINED_PATH" \
          --arg sidelined_branch "$SIDELINED_BRANCH" \
+         --arg arm "$CREATE_ARM" --arg sibling_worktree "$CREATE_SIBLING_WT" \
+         --arg sibling_branch "$CREATE_SIBLING_BRANCH" \
     '{outcome:"CREATED", path:$path, branch:$branch, base:$base,
       guard:$guard, guard_detail:$guard_detail,
       preserved:$preserved, preserved_ref:$preserved_ref,
       preserved_detail:$preserved_detail,
       sidelined:$sidelined, sidelined_path:$sidelined_path,
-      sidelined_branch:$sidelined_branch}'
+      sidelined_branch:$sidelined_branch}
+     + (if $arm != "" then {arm:$arm, sibling_worktree:$sibling_worktree, sibling_branch:$sibling_branch} else {} end)'
 }
 
 # --- restore: re-apply a preservation ref into a fresh worktree (#1699) -------
@@ -1983,8 +2138,20 @@ cmd_deps_merged() {
 cmd="$1"; shift
 case "$cmd" in
   create)
-    [ $# -eq 2 ] || usage
-    cmd_create "$1" "$2"
+    [ $# -ge 2 ] || usage
+    repo_arg="$1"; slug_arg="$2"; shift 2
+    arm_spec=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --arm)
+          [ $# -ge 2 ] || usage
+          arm_spec="$2"
+          shift 2
+          ;;
+        *) usage ;;
+      esac
+    done
+    cmd_create "$repo_arg" "$slug_arg" "$arm_spec"
     ;;
   restore)
     [ $# -ge 2 ] || usage

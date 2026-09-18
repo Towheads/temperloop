@@ -1001,3 +1001,171 @@ case "$(jq -r .preserved_detail <<<"$out")" in
   *) fail "#2030: a preservation over an unrefreshed basis must SAY so (got: $out)" ;;
 esac
 echo "PASS: an unreachable origin fails SAFE — preserve unchanged, basis=unrefreshed recorded, remove still completes (#2030)"
+
+# --- dual-build arm naming (temperloop#2065) ----------------------------------
+#
+# `--arm <name>[:<sibling>]` disambiguates the deterministic path/branch pair
+# with `@<arm>` so two arms of ONE slug can coexist, create and prune without
+# colliding. See worktree.sh's own "§ Dual-build arm naming" header comment
+# for the contract this exercises.
+
+R20="$(mkfix arms)"
+
+# Hermetic guard registration for the per-arm `guard` verdict asserted below.
+# Same fixture idiom — and the same reason — as test_guard_arming_probe.sh's
+# own header note: the two arm creates below run under a THROWAWAY $HOME
+# carrying a registration for the REAL hook, so the verdict is a pure function
+# of THIS fixture rather than of whatever ~/.claude/settings.json the
+# developer's workstation or the CI runner happens to carry. Read against the
+# ambient HOME the assertion said ARMED on a workstation that registers the
+# hook and UNARMED (registration=missing) on a clean ubuntu-latest runner — an
+# assertion about the HOST, not about arm naming.
+ARM_HOME="$TMP/arm_home"
+mkdir -p "$ARM_HOME/.claude"
+ARM_HOOK="$(cd "$(dirname "$SCRIPT")/../../.." && pwd)/claude/hooks/build-worktree-guard.sh"
+[ -f "$ARM_HOOK" ] || fail "#2065: real guard hook not found at $ARM_HOOK"
+jq -cn --arg c "bash $ARM_HOOK" \
+  '{hooks:{PreToolUse:[{matcher:"Bash|Edit|Write|MultiEdit",
+                        hooks:[{type:"command", command:$c}]}]}}' \
+  > "$ARM_HOME/.claude/settings.json"
+
+# arm_create <tag> <slug> <arm-spec> — one create under the pinned HOME, with
+# stderr captured at $TMP/arm_<tag>.err so each arm's own guard BANNER (which
+# names the worktree it judged) can be asserted, not just the JSON field.
+arm_create() { HOME="$ARM_HOME" bash "$SCRIPT" create "$R20" "$2" --arm "$3" 2>"$TMP/arm_$1.err"; }
+
+# --- create --arm produces the arm-disambiguated path/branch, and the
+#     .dual-build-arm marker carries the DECLARED sibling pair -----------------
+outA="$(arm_create A dualslug control:candidate)"
+[ "$(jq -r .outcome <<<"$outA")" = "CREATED" ] || fail "#2065: arm create outcome (got: $outA)"
+[ "$(jq -r .path <<<"$outA")" = "$R20.wt/dualslug@control" ] \
+  || fail "#2065: arm-disambiguated path (got: $outA)"
+[ "$(jq -r .branch <<<"$outA")" = "build/dualslug@control" ] \
+  || fail "#2065: arm-disambiguated branch (got: $outA)"
+[ "$(jq -r .arm <<<"$outA")" = "control" ] || fail "#2065: CREATED.arm (got: $outA)"
+[ "$(jq -r .sibling_worktree <<<"$outA")" = "$R20.wt/dualslug@candidate" ] \
+  || fail "#2065: CREATED.sibling_worktree (got: $outA)"
+[ "$(jq -r .sibling_branch <<<"$outA")" = "build/dualslug@candidate" ] \
+  || fail "#2065: CREATED.sibling_branch (got: $outA)"
+[ -d "$R20.wt/dualslug@control" ] || fail "#2065: arm worktree dir not created"
+[ -f "$R20.wt/dualslug@control/.build-guard" ] || fail "#2065: .build-guard missing on an arm worktree"
+[ -f "$R20.wt/dualslug@control/.dual-build-arm" ] || fail "#2065: .dual-build-arm marker not dropped"
+marker="$(cat "$R20.wt/dualslug@control/.dual-build-arm")"
+[ "$(jq -r .arm <<<"$marker")" = "control" ] || fail "#2065: marker .arm (got: $marker)"
+[ "$(jq -r .sibling_worktree <<<"$marker")" = "$R20.wt/dualslug@candidate" ] \
+  || fail "#2065: marker .sibling_worktree (got: $marker)"
+[ "$(jq -r .sibling_branch <<<"$marker")" = "build/dualslug@candidate" ] \
+  || fail "#2065: marker .sibling_branch (got: $marker)"
+# The marker is orchestrator machinery, same as .build-guard — never worker dirt.
+[ -z "$(git -C "$R20.wt/dualslug@control" status --porcelain)" ] \
+  || fail "#2065: .dual-build-arm leaked into git status — not excluded"
+# create's own guard-probe verdict is recorded per arm (it is just the
+# ordinary per-invocation guard_probe call — no separate mechanism needed).
+# ARMED here is a REAL end-to-end probe against the shipped hook body, not a
+# host artefact: the registration above is the fixture's own, so this goes RED
+# if the hook stops denying inside an arm-suffixed worktree — e.g. if the
+# guard's `case "$(dirname "$wt")" in *.wt)` arming gate ever stopped
+# tolerating an `@<arm>` basename.
+[ "$(jq -r .guard <<<"$outA")" = "ARMED" ] \
+  || fail "#2065: create's guard-probe verdict missing/not ARMED for an arm worktree (got: $outA)"
+detailA="$(jq -r .guard_detail <<<"$outA")"
+case "$detailA" in
+  *"registration=ok"*"bash_arm=deny"*"write_arm=deny"*) ;;
+  *) fail "#2065: arm A's ARMED verdict is not a real deny-on-both-arms probe (got: $detailA)" ;;
+esac
+grep -qF "build-worktree-guard: ARMED for $R20.wt/dualslug@control (" "$TMP/arm_A.err" \
+  || fail "#2065: arm A's guard banner does not name arm A's OWN worktree (see $TMP/arm_A.err)"
+echo "PASS: create --arm <name>:<sibling> produces <slug>@<arm> path/branch + .dual-build-arm marker with the declared sibling pair, and its own per-arm guard verdict (#2065)"
+
+# --- two arms of ONE slug create without collision, sit alongside each other,
+#     and prune without collision (both independently mergeable) -------------
+outB="$(arm_create B dualslug candidate:control)"
+[ "$(jq -r .outcome <<<"$outB")" = "CREATED" ] || fail "#2065: second arm create outcome (got: $outB)"
+[ "$(jq -r .path <<<"$outB")" = "$R20.wt/dualslug@candidate" ] \
+  || fail "#2065: second arm path (got: $outB)"
+[ "$(jq -r .branch <<<"$outB")" = "build/dualslug@candidate" ] \
+  || fail "#2065: second arm branch (got: $outB)"
+# PER ARM, not per slug: the second arm carries its OWN guard verdict, and its
+# banner names ITS OWN worktree — two distinct probes, one per arm worktree.
+[ "$(jq -r .guard <<<"$outB")" = "ARMED" ] \
+  || fail "#2065: the second arm's own guard-probe verdict missing/not ARMED (got: $outB)"
+grep -qF "build-worktree-guard: ARMED for $R20.wt/dualslug@candidate (" "$TMP/arm_B.err" \
+  || fail "#2065: arm B's guard banner does not name arm B's OWN worktree (see $TMP/arm_B.err)"
+# Both worktrees AND both branches coexist — no collision.
+[ -d "$R20.wt/dualslug@control" ] || fail "#2065: arm A worktree vanished after arm B create"
+[ -d "$R20.wt/dualslug@candidate" ] || fail "#2065: arm B worktree missing"
+git -C "$R20" show-ref --verify --quiet refs/heads/build/dualslug@control \
+  || fail "#2065: arm A branch vanished after arm B create"
+git -C "$R20" show-ref --verify --quiet refs/heads/build/dualslug@candidate \
+  || fail "#2065: arm B branch missing"
+# Distinct scratch: a file written in one arm's worktree never appears in the
+# other's — they sit under DISTINCT parent dirs (each arm's own worktree
+# root), so nothing an arm writes can collide with its sibling's.
+printf 'control-only scratch\n' > "$R20.wt/dualslug@control/scratch.txt"
+[ ! -e "$R20.wt/dualslug@candidate/scratch.txt" ] \
+  || fail "#2065: an arm's scratch leaked into its sibling's worktree"
+git -C "$R20.wt/dualslug@control" add scratch.txt
+git -C "$R20.wt/dualslug@control" commit -q -m "control arm work"
+
+# Land BOTH arms' work on upstream main (as a real merge would), then prune —
+# both must PRUNE independently, with no collision on the shared .wt/ parent
+# or the shared repo mutation lock.
+git -C "$TMP/up_arms" commit -q --allow-empty -m "control arm lands"
+git -C "$TMP/up_arms" commit -q --allow-empty -m "candidate arm lands"
+landed="$(git -C "$TMP/up_arms" rev-parse HEAD)"
+git -C "$TMP/up_arms" commit -q --allow-empty -m "main advances after both land"
+git -C "$R20" fetch -q origin main
+git -C "$R20.wt/dualslug@control" reset -q --hard "$landed"
+git -C "$R20.wt/dualslug@candidate" reset -q --hard "$landed"
+
+pruneout="$(bash "$SCRIPT" prune "$R20")"
+poc() { jq -r --arg p "$R20.wt/$1" 'select(.path==$p).outcome' <<<"$pruneout"; }
+[ "$(poc "dualslug@control")" = "PRUNED" ] || fail "#2065: arm A not PRUNED (got: $pruneout)"
+[ "$(poc "dualslug@candidate")" = "PRUNED" ] || fail "#2065: arm B not PRUNED (got: $pruneout)"
+[ ! -e "$R20.wt/dualslug@control" ] || fail "#2065: arm A dir survived prune"
+[ ! -e "$R20.wt/dualslug@candidate" ] || fail "#2065: arm B dir survived prune"
+git -C "$R20" show-ref --verify --quiet refs/heads/build/dualslug@control \
+  && fail "#2065: arm A branch survived prune"
+git -C "$R20" show-ref --verify --quiet refs/heads/build/dualslug@candidate \
+  && fail "#2065: arm B branch survived prune"
+echo "PASS: two arms of one slug create and prune independently without collision, with per-arm scratch under distinct parent dirs (#2065)"
+
+# --- no --arm given is BYTE-IDENTICAL to plain create's output ---------------
+# (discrimination evidence lives in the item's verification-surface file —
+# this asserts the positive: the two arm-less lines, one from before this
+# item and one after, carry the exact same key set/values shape.)
+outPlain="$(bash "$SCRIPT" create "$R20" plainslug)"
+[ "$(jq -r .outcome <<<"$outPlain")" = "CREATED" ] || fail "#2065: plain create outcome regressed (got: $outPlain)"
+[ "$(jq -r .path <<<"$outPlain")" = "$R20.wt/plainslug" ] || fail "#2065: plain create path regressed (got: $outPlain)"
+[ "$(jq -r .branch <<<"$outPlain")" = "build/plainslug" ] || fail "#2065: plain create branch regressed (got: $outPlain)"
+[ "$(jq -r 'has("arm")' <<<"$outPlain")" = "false" ] \
+  || fail "#2065: an arm-less CREATED line must carry NO arm key at all (got: $outPlain)"
+[ "$(jq -r 'has("sibling_worktree")' <<<"$outPlain")" = "false" ] \
+  || fail "#2065: an arm-less CREATED line must carry NO sibling_worktree key at all (got: $outPlain)"
+[ "$(jq -r 'has("sibling_branch")' <<<"$outPlain")" = "false" ] \
+  || fail "#2065: an arm-less CREATED line must carry NO sibling_branch key at all (got: $outPlain)"
+[ ! -f "$R20.wt/plainslug/.dual-build-arm" ] \
+  || fail "#2065: an arm-less create must never drop the .dual-build-arm marker"
+echo "PASS: no --arm given is byte-identical to today — same path/branch, no arm/sibling_* keys, no .dual-build-arm marker (#2065)"
+
+# --- arm name validation mirrors slug validation (closed charset) ------------
+rc=0; out="$(bash "$SCRIPT" create "$R20" dualslug2 --arm 'Bad Arm!' 2>/dev/null)" || rc=$?
+[ "$rc" -ne 0 ] || fail "#2065: invalid arm name did not exit non-zero"
+[ "$(jq -r .outcome <<<"$out")" = "ERROR" ] || fail "#2065: invalid arm name not ERROR (got: $out)"
+[ ! -e "$R20.wt/dualslug2@Bad Arm!" ] || fail "#2065: an invalid arm must never reach worktree add"
+rc=0; out="$(bash "$SCRIPT" create "$R20" dualslug2 --arm 'same:same' 2>/dev/null)" || rc=$?
+[ "$rc" -ne 0 ] || fail "#2065: an arm naming itself as its own sibling did not exit non-zero"
+[ "$(jq -r .outcome <<<"$out")" = "ERROR" ] || fail "#2065: self-sibling arm not ERROR (got: $out)"
+echo "PASS: an invalid arm name, or an arm naming itself as its own sibling, is a structured ERROR (#2065)"
+
+# --- --arm <name> with NO :<sibling> is valid — empty sibling fields ---------
+outSolo="$(bash "$SCRIPT" create "$R20" soloslug --arm onlyone)"
+[ "$(jq -r .outcome <<<"$outSolo")" = "CREATED" ] || fail "#2065: solo-arm create outcome (got: $outSolo)"
+[ "$(jq -r .path <<<"$outSolo")" = "$R20.wt/soloslug@onlyone" ] || fail "#2065: solo-arm path (got: $outSolo)"
+[ "$(jq -r .arm <<<"$outSolo")" = "onlyone" ] || fail "#2065: solo-arm .arm (got: $outSolo)"
+[ "$(jq -r .sibling_worktree <<<"$outSolo")" = "" ] || fail "#2065: solo-arm sibling_worktree must be empty (got: $outSolo)"
+[ "$(jq -r .sibling_branch <<<"$outSolo")" = "" ] || fail "#2065: solo-arm sibling_branch must be empty (got: $outSolo)"
+soloMarker="$(cat "$R20.wt/soloslug@onlyone/.dual-build-arm")"
+[ "$(jq -r .sibling_worktree <<<"$soloMarker")" = "" ] \
+  || fail "#2065: solo-arm marker sibling_worktree must be empty (got: $soloMarker)"
+echo "PASS: --arm <name> with no :<sibling> is valid and carries empty sibling fields (#2065)"
