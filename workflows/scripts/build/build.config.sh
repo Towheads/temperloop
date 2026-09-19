@@ -318,6 +318,56 @@ fi
 : "${ASSESS_POLL_CADENCE:=1200}"      # every wake thereafter (s)
 : "${ASSESS_POLL_BUDGET:=7200}"       # give up this long (s) after arming
 
+# assess.md Step 3 — the REVIEW-SUBAGENT fanout's wall-clock LIVENESS ceiling
+# (temperloop#866). Step 3 spawns `requirements-auditor` (always) and
+# `architecture-reviewer` (conditionally) over the draft item list, and had no
+# time or cost bound at all. Its existing graceful skip covers an UNAVAILABLE
+# agent; it does NOT cover a NON-TERMINATING one, so a reviewer that was
+# resolved, spawned, and is still actively working is invisible to that probe.
+# THE INCIDENT (/assess --epic 856): architecture-reviewer returned in 336s over
+# 20 tool uses; requirements-auditor ran more than THREE HOURS and 235KB of
+# transcript on comparable scope before the operator killed it by hand — not
+# hung, just working, at ~32x its sibling's cost for a bounded read-only review.
+# On an attended run that costs an operator-noticed interrupt; on an unattended
+# or cron run nobody is there to interrupt, the pass stalls forever, and /assess
+# never reaches Step 4 to write the plan note at all — the worse case, and the
+# reason this is a structural bound rather than a warning.
+#
+# WHAT IT BOUNDS: the whole Step-3 fanout's wall clock, measured from the moment
+# the reviewers are spawned (they run CONCURRENTLY, so one runaway can no longer
+# keep the other from launching). A reviewer still unreturned at the ceiling is
+# ABANDONED — the bound is on the WAIT, not on the agent — and Step 3 continues
+# to Step 3.5 with whatever DID return, emitting the
+# `skipped — <agent> timed out after <actual>s` degradation notice
+# (claude/message-schema.md § Degradation notice, the ceiling-timeout shape) so
+# an incomplete review can never read as a clean one.
+#
+# WHY ITS OWN SETTING, not a reuse of BUILD_REVIEW_AGENT_CEILING_SECS: that pair
+# is resolved by build.md/sweep.md/fix.md and handed to build-level.mjs's §3e
+# fanout as input.reviewAgentCeilingSecs — a workflow-input seam /assess never
+# touches — and its breach arm can escalate `review-agent-timeout` and refuse to
+# push, a disposition Step 3 has no analogue for (every Step-3 reviewer is
+# ADVISORY). The two also bound different workloads: §3e reviews one item's diff,
+# Step 3 reviews a whole epic's draft decomposition, so tuning one to fit the
+# other would loosen the pre-push gate — the safety-critical of the two — to suit
+# a planning pass. Same per-command prefix convention as ASSESS_POLL_* above.
+#
+# CEILING, NOT A DEADLINE — it must never fire on healthy work. The observed
+# healthy review finished in 336s; this sits well clear of that and far below the
+# runaway it exists to cut off.
+: "${ASSESS_REVIEW_AGENT_CEILING_SECS:=900}"
+
+# assess.md Step 3 — the OBSERVABILITY half of the pair: a Step-3 review fanout
+# still outstanding after this many seconds emits a one-line progress notice
+# naming which reviewers are still running, so a long-but-alive review is VISIBLE
+# well before ASSESS_REVIEW_AGENT_CEILING_SECS gives up on it, instead of the
+# silence the incident above was. A slow reviewer is NOT abandoned and NOT
+# dispositioned. It also sets the bounded wait's FIRST slice, so a review that
+# finishes inside this threshold costs exactly one backgrounded `sleep`. Seeded
+# above the observed healthy review (336s) so a healthy run stays quiet. Set to 0
+# to disable the notice. Kept below the ceiling, where it could never fire.
+: "${ASSESS_REVIEW_AGENT_SLOW_SECS:=420}"
+
 # triage.md Step 1 Adapter A — the PROCESS-RECORD label exclusion: the third
 # naturally-excluded intake bucket, alongside the inactive-milestone filter
 # (foundation #208) and the open-`blocked_by` skip (foundation #137).
@@ -1896,6 +1946,7 @@ export BUILD_QUOTA_PAUSE_PCT BUILD_QUOTA_CACHE BUILD_QUOTA_WAIT_BUFFER \
        PIPELINE_DRIVE_CONCURRENCY EPIC_MIN_SUBUNITS DISPLAY_TZ \
        STATE_GRAPH_MAX_AGE_S STATE_GRAPH_QUERY_SLOW_MS STATE_GRAPH_SOAK_DAYS STATE_GRAPH_SOAK_STALE_DAYS \
        ASSESS_POLL_FIRST_WAKE ASSESS_POLL_CADENCE ASSESS_POLL_BUDGET \
+       ASSESS_REVIEW_AGENT_CEILING_SECS ASSESS_REVIEW_AGENT_SLOW_SECS \
        TRIAGE_INTAKE_EXCLUDE_LABELS \
        NEXT_SEQ_STALE_AFTER TIDY_SYNC_WAIT TIDY_LOCK_STALE_AFTER CHECKIN_PRUNE_DAYS \
        SWEEP_FANOUT_WIDTH SWEEP_DETECT_MODEL SWEEP_WORKER_MODEL SWEEP_BG_POLL_ATTEMPTS SWEEP_BG_POLL_INTERVAL \
