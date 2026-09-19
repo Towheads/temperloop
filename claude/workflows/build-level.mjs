@@ -397,6 +397,13 @@ export const meta = {
 const inputCapabilities = [
   'board',
   'claimCmd',
+  // temperloop#2080 — the dual-build descriptor { tier, baseline, candidate,
+  // inScope: [slug…] }. ADDITIVE like every key here: absent means the
+  // single-arm path, unchanged. Its staleness cost is the sharpest on this
+  // list, which is exactly why it is declared: an engine without it ignores
+  // the key and builds the level ONCE while the orchestrator reports a
+  // two-model comparison that never happened.
+  'dualBuild',
   'gateSliceSecs',
   'items',
   'machineryAgentType',
@@ -5682,9 +5689,911 @@ async function runActivationGate(item, wt) {
   return null;
 }
 
+// =============================================================================
+// THE DUAL-BUILD HARNESS (temperloop#2080, epic #2065) — arms + level barrier
+// =============================================================================
+// WHAT THIS ITEM DOES, AND DELIBERATELY DOES NOT DO. Given a `dualBuild`
+// workflow input, every IN-SCOPE item of the level is built TWICE — once per
+// arm, each arm on its own model, in its own `@<arm>`-suffixed worktree and
+// branch — locally gated per arm, then pairwise-judged. It records one ledger
+// row per item per arm and STOPS: the level pick, the winner's route to PR, the
+// two operator levers and the losing arm's archive/delete are
+// `level-pick-and-operator-levers` (temperloop#2083). The barrier is exactly
+// that stopping point, and it is the whole reason driveItem was split above:
+// ADR 0038 fixes the unit of JUDGEMENT at the item and the unit of CHOICE at
+// the level, so no PR may open for an in-scope item until every in-scope arm in
+// the level has a gate result and every in-scope item has a judge disposition.
+//
+// A NOT-IN-SCOPE item of the same level is untouched by all of this: one build,
+// the ordinary single-arm driveItem (PR, CI, park), plus one ledger row marking
+// it out of scope so the level's ledger accounts for every item rather than
+// only the compared ones.
+//
+// NOTHING BELOW RUNS WITHOUT `input.dualBuild`. dualBuildInput() returns null
+// for every ordinary invocation, buildLevel() takes its pre-#2080 fan-out, and
+// the only trace this code leaves on a flag-less run is the residue guard
+// folded into the existing worktree-create step (which prints nothing of its
+// own on a clean tree — see its comment at 3b).
+// =============================================================================
+
+// The two arm names, in START ORDER. `baseline` is arm A / `--record-a` for the
+// pairwise judge and `candidate` is arm B / `--record-b`, fixed here once so the
+// ledger's `start_order`, the judge's A/B mapping and the worktree suffixes
+// cannot drift apart across the three sites that read them.
+const DUAL_BUILD_ARMS = ['baseline', 'candidate'];
+
+// The marker the arm-read-isolation guard (temperloop#2077) appends a line to
+// on every DENIED cross-arm read, beside the `.dual-build-arm` marker in the
+// arm's own worktree. Its mere presence is the ledger's `cross_read_attempted`.
+const DUAL_BUILD_ATTEMPTS_FILE = '.dual-build-cross-read-attempts.jsonl';
+
+// dualBuildInput — normalize and VALIDATE `input.dualBuild`.
+// Returns null (no dual build — every existing invocation), a normalized
+// descriptor, or `{ invalid: <reason> }`. There is deliberately no third,
+// silent arm: a `dualBuild` key that is present but unusable REFUSES the level
+// rather than degrading to a single-arm build, because a level that was asked
+// to compare two models and quietly compared none is exactly the result nobody
+// can tell from a successful one after the fact.
+function dualBuildInput() {
+  const d = input.dualBuild;
+  if (d == null) return null;
+  if (typeof d !== 'object' || Array.isArray(d)) {
+    return { invalid: 'dualBuild must be an object { tier, baseline, candidate, inScope: [slug…] }' };
+  }
+  const str = (v) => (typeof v === 'string' && v.trim() ? v.trim() : '');
+  const tier = str(d.tier);
+  const baseline = str(d.baseline);
+  const candidate = str(d.candidate);
+  const inScope = Array.isArray(d.inScope) ? d.inScope.map(str).filter(Boolean) : null;
+  const missing = [];
+  if (!tier) missing.push('tier');
+  if (!baseline) missing.push('baseline');
+  if (!candidate) missing.push('candidate');
+  // An EMPTY inScope is as unusable as an absent one, and `![]` is false, so a
+  // truthiness check alone lets it through (temperloop#2080 review round 3). A
+  // present-but-empty array reaches here two ways: the caller passed `inScope: []`,
+  // or every entry was blank/non-string and `.map(str).filter(Boolean)` scrubbed it.
+  // Either way `dual.inScope` becomes an empty Set, EVERY item then misses
+  // `inScope.has(slug)` and takes the single-arm path, and the level reports a
+  // dualBuild summary having compared nothing — precisely the outcome this function
+  // refuses rather than degrades into.
+  if (!inScope || inScope.length === 0) missing.push('inScope');
+  if (missing.length > 0) {
+    return { invalid: `dualBuild is missing or empty: ${missing.join(', ')}` };
+  }
+  if (baseline === candidate) {
+    // Not refused — an A/A instrument check (both arms the same model, the
+    // epic's own first-live-run shape) is a legitimate and deliberate use. It
+    // is LOGGED so a reader never mistakes it for a real comparison.
+    log(
+      `dual-build: baseline and candidate are the SAME model (${baseline}) — this is an A/A instrument ` +
+        'check, not a candidate-vs-baseline comparison. No arm difference it reports is a model difference.',
+    );
+  }
+  return { tier, baseline, candidate, inScope: new Set(inScope), inScopeList: inScope };
+}
+
+// dualBuildResidueGuard — wrap the worktree-create command in the flag-less
+// resume refusal (see the 3b comment for WHY it lives inside this step rather
+// than in a probe of its own). On a clean tree the emitted script runs the
+// create command verbatim and prints its CREATED line and nothing else, so a
+// flag-less run's output is byte-identical to the pre-#2080 one.
+function dualBuildResidueGuard(repoRoot, slug, createCmd) {
+  const armGlobPrefix = sq(`${repoRoot}.wt/${slug}@`);
+  return [
+    // The matched paths are interpolated into a JSON string field below, so the
+    // two characters that would make that object unparseable are deleted first
+    // (temperloop#2080 round-2 review [LOW], the same filter
+    // ACTIVATION_DETAIL_FILTER applies for the identical reason). The `-n` test
+    // is unaffected: a path is never made empty by dropping a quote.
+    `__dbres=$(ls -d ${armGlobPrefix}* 2>/dev/null | tr '\\n' ' ' | tr -d '\\\\"')`,
+    'if [ -n "$__dbres" ]; then',
+    `printf '{"outcome":"DUAL_BUILD_RESIDUE","arms":"%s"}\\n' "$__dbres"`,
+    'else',
+    createCmd,
+    'fi',
+  ].join('\n');
+}
+
+// armItem — the per-arm view of a plan item. Three fields move and nothing else
+// does, which is what lets the ENTIRE phase-1 body run unmodified for an arm:
+//   slug   → `<slug>@<arm>`  … every label, every /tmp/qg-<…> path and every
+//            deterministic worktree path in phase 1 is derived from item.slug,
+//            so suffixing it here is what stops two arms of one item colliding
+//            on a gate log, a selection pin or a worktree — without threading an
+//            "arm key" parameter through forty call sites.
+//   branch → `build/<slug>@<arm>` … matches what `worktree.sh create --arm`
+//            actually creates, so the recover-probe and any later push address
+//            the arm's own ref rather than the item's shared one.
+//   model  → that arm's model … and because callWorker() reads item.model on
+//            BOTH the first spawn and the #1219 foreground-cure retry, the
+//            retry stays on the arm's own model by construction. There is no
+//            tier-escalation path here to opt out of: nothing in this driver
+//            ever substitutes a stronger model for a failed worker.
+function armItem(item, armName, model) {
+  return {
+    ...item,
+    slug: `${item.slug}@${armName}`,
+    branch: `build/${item.slug}@${armName}`,
+    model,
+  };
+}
+
+// dualBuildSplitModel — "<provider>/<model>" → { provider, model }; a bare model
+// id means the host's default provider (candidate-session.sh's own
+// `_CS_DEFAULT_PROVIDER`), which is also what an omitted `--provider` means to
+// that script.
+function dualBuildSplitModel(spec) {
+  const i = String(spec).indexOf('/');
+  return i > 0
+    ? { provider: String(spec).slice(0, i), model: String(spec).slice(i + 1) }
+    : { provider: '', model: String(spec) };
+}
+
+// -----------------------------------------------------------------------------
+// candidateArmGate — the candidate arm's host-supply + containment seam.
+// -----------------------------------------------------------------------------
+// Every candidate arm passes through `candidate-session.sh` BEFORE it builds:
+// `resolve` proves the containment overlay is present, readable and well-formed
+// (the same fail-closed check judge.sh's own pairwise mode runs), and
+// `preflight` proves the candidate provider's credential is actually SET rather
+// than merely named. A refusal is an INFRA loss for that arm, recorded as such —
+// never a silent single-arm level.
+//
+// WHY THE WORKER ITSELF IS NOT SPAWNED BY `candidate-session.sh spawn`, AND WHY
+// A NON-DEFAULT PROVIDER IS THEREFORE REFUSED HERE. `spawn` runs a `claude` CLI
+// child inside whatever shell invokes it. In this driver the only shell is an
+// executor agent's Bash tool, hard-capped at AGENT_BASH_CAP_MS (~10 minutes) —
+// DESIGN NOTE 1/2. A build worker is an hour-scale process, so routing it
+// through `spawn` would not produce a contained candidate session; it would
+// produce a worker killed mid-build on every non-trivial item. The reachable
+// spawn seam with no such cap is the runtime's own `agent({ model })`, which
+// addresses the host session's provider only.
+//
+// So the seam is honest about its edge rather than silently exceeding it: a
+// candidate naming the DEFAULT provider builds through `agent({ model })` (the
+// A/A instrument check and every same-provider tier comparison — the epic's own
+// first live run), and a candidate naming a NON-DEFAULT provider is REFUSED by
+// name with an `infra` row. It is never spawned uncontained, which is the one
+// outcome that would defeat candidate-session.sh's whole purpose. Lifting that
+// edge needs an uncapped spawn seam, which is its own piece of work, not a
+// silent widening here.
+async function candidateArmGate(ai, dual) {
+  const { provider } = dualBuildSplitModel(dual.candidate);
+  const csBin = sq(`${input.repoRoot}/workflows/scripts/model-comparison/candidate-session.sh`);
+  const providerFlag = provider ? ` --provider ${sq(provider)}` : '';
+  const cmd = [
+    `__cs=${csBin}`,
+    'if [ ! -f "$__cs" ]; then',
+    `printf '{"outcome":"CANDIDATE_REFUSED","reason":"seam-absent","detail":"candidate-session.sh not found at %s"}\\n' "$__cs"`,
+    'elif ! bash "$__cs" resolve Read >/dev/null 2>&1; then',
+    `printf '{"outcome":"CANDIDATE_REFUSED","reason":"containment-unusable","detail":"candidate-session.sh resolve refused: the containment overlay is absent, unreadable or malformed"}\\n'`,
+    `elif ! bash "$__cs" preflight${providerFlag} --execution live >/dev/null 2>&1; then`,
+    `printf '{"outcome":"CANDIDATE_REFUSED","reason":"preflight-failed","detail":"candidate-session.sh preflight refused provider %s — its credential is unset or the provider is unregistered"}\\n' ${sq(provider || '(default)')}`,
+    provider ? 'elif [ -n "x" ]; then' : 'else',
+    ...(provider
+      ? [
+          `printf '{"outcome":"CANDIDATE_REFUSED","reason":"non-default-provider-unspawnable","detail":"candidate provider %s needs candidate-session.sh spawn, which cannot host an hour-scale build worker under the executor Bash cap — refusing rather than spawning it uncontained"}\\n' ${sq(provider)}`,
+          'else',
+          `printf '{"outcome":"CANDIDATE_READY"}\\n'`,
+        ]
+      : [`printf '{"outcome":"CANDIDATE_READY"}\\n'`]),
+    'fi',
+  ].join('\n');
+  const out = await runMachinery(cmd, {
+    label: `candidate-session:${ai.slug}`,
+    slug: ai.slug,
+    phase: enterStage(STAGE_CLAIM),
+  });
+  if (machineryDenied(out) || out.outcome !== 'CANDIDATE_READY') {
+    return {
+      ok: false,
+      reason: (out && out.reason) || 'seam-unreachable',
+      detail: (out && out.detail) || `candidate-session.sh gate returned ${JSON.stringify(out && out.outcome)}`,
+    };
+  }
+  return { ok: true };
+}
+
+// -----------------------------------------------------------------------------
+// dualBuildLossReason — the ONE mapping from a phase-1 terminal record to the
+// ledger's closed `loss_reason` vocabulary (gate | judge | infra | incomplete).
+// -----------------------------------------------------------------------------
+// Kept as one function rather than inline at the two call sites so the ledger's
+// vocabulary has a single author: a row that says `infra` when the branch was
+// actually red is a comparison result nobody can trust afterwards.
+//   gate        — the acceptance gate itself reported RED, or could not finish
+//                 (a timeout is not evidence about the tree, but it IS the gate
+//                 failing to produce a verdict for this arm, which is a loss).
+//   incomplete  — the WORKER did not reach a gate-passing state: it escalated a
+//                 verdict (blocked / design-fork / failed), left acceptance
+//                 bullets failing, or its review round never converged. The arm
+//                 built something; it just is not finishable without a human.
+//   infra       — everything else: machinery, claim, worktree, quota, denial,
+//                 dependency ordering, a lost return. Nothing was learned about
+//                 the model from these, which is precisely why they are named
+//                 apart from the two above.
+const DUAL_BUILD_GATE_KINDS = new Set(['acceptance-gate-failed', 'acceptance-gate-timeout']);
+const DUAL_BUILD_INCOMPLETE_KINDS = new Set([
+  'blocked', 'design-fork', 'failed', 'acceptance-incomplete', 'review-blocking',
+]);
+function dualBuildLossReason(kind) {
+  if (DUAL_BUILD_GATE_KINDS.has(kind)) return 'gate';
+  if (DUAL_BUILD_INCOMPLETE_KINDS.has(kind)) return 'incomplete';
+  return 'infra';
+}
+
+// driveArm — build ONE arm of ONE in-scope item through phase 1 only.
+// Returns a normalized arm result; it NEVER returns a parked/escalation record
+// to the level, because a per-arm failure is not an item failure (the epic's
+// sequencing note: "No per-arm failure ever escalates across the driveItem
+// boundary — it degrades to a ledger row with a loss_reason instead").
+async function driveArm(item, dual, armName, order) {
+  const model = armName === 'baseline' ? dual.baseline : dual.candidate;
+  const sibling = armName === 'baseline' ? 'candidate' : 'baseline';
+  const ai = armItem(item, armName, model);
+  const base = {
+    arm: armName,
+    order,
+    model,
+    key: ai.slug,
+    wt: `${input.repoRoot}.wt/${ai.slug}`,
+    branch: ai.branch,
+    wtBase: '',
+    guardArmed: 'UNKNOWN',
+    ctx: null,
+    cost: null,
+    acceptanceResults: [],
+  };
+
+  if (armName === 'candidate') {
+    const gate = await candidateArmGate(ai, dual);
+    if (!gate.ok) {
+      log(`[${ai.slug}] dual-build candidate arm REFUSED at the candidate-session seam (${gate.reason}): ${gate.detail}`);
+      return { ...base, gate: 'fail', lossReason: 'infra', failure: { kind: `candidate-session:${gate.reason}`, detail: gate.detail } };
+    }
+  }
+
+  const built = await driveItemBuild(ai, { name: armName, sibling, slug: item.slug, order });
+  // temperloop#2080 round-1 review [MEDIUM]. driveItemBuildPhase returns a
+  // TERMINAL record on two paths that mean OPPOSITE things: escalate() (a real
+  // failure) and — for kind:spike alone — park() (the read-only verdict marker,
+  // that item's NORMAL completion, and the only park() the build phase returns
+  // at all). Folding "any terminal record" into the loss path recorded a
+  // successful spike arm as `gate:'fail' loss_reason:'infra'`, corrupting
+  // exactly the ledger this feature exists to produce and making judgeArms
+  // report `one-arm-only` for a pair where BOTH arms finished. A spike creates
+  // no worktree and runs no gate, so this arm honestly carries no
+  // base_sha/guard/cost — but it completed, so it is a passing arm.
+  if (built.result && built.result._kind === 'parked') {
+    log(`[${ai.slug}] dual-build arm completed as a read-only spike verdict (no worktree, no gate) — a passing arm, not a loss`);
+    return {
+      ...base,
+      gate: 'pass',
+      lossReason: null,
+      spike: true,
+      acceptanceResults: built.result.parked?.acceptance_results ?? [],
+    };
+  }
+  if (built.result) {
+    const kind = built.result.escalation.kind;
+    const lossReason = dualBuildLossReason(kind);
+    log(`[${ai.slug}] dual-build arm did not reach a gate-passing branch (${kind}) — recorded as a ${lossReason} loss`);
+    return {
+      ...base,
+      gate: 'fail',
+      lossReason,
+      failure: { kind, payload: built.result.escalation.payload },
+    };
+  }
+  const ctx = built.ctx;
+  return {
+    ...base,
+    gate: 'pass',
+    lossReason: null,
+    ctx,
+    wtBase: ctx.wtBase || '',
+    guardArmed: ctx.wtGuard || 'UNKNOWN',
+    acceptanceResults: ctx.verdict?.acceptance_results ?? [],
+    cost: {
+      tokens_in: ctx.mainCost?.tokensIn ?? null,
+      tokens_out: ctx.mainCost?.tokensOut ?? null,
+      wall_clock_ms: ctx.mainCost?.wallClockMs ?? null,
+      retry_tokens: null,
+      retry_count: 0,
+      recovery: !!ctx.recovery,
+    },
+  };
+}
+
+// dualBuildCost — a row's cost object, always all six keys, honest nulls for an
+// arm that never returned a worker verdict (same posture park()'s own cost
+// block takes: a ledger with silently-missing rows is worse than one with
+// honest nulls).
+function dualBuildCost(armResult) {
+  return armResult.cost ?? {
+    tokens_in: null, tokens_out: null, wall_clock_ms: null,
+    retry_tokens: null, retry_count: 0, recovery: false,
+  };
+}
+
+// -----------------------------------------------------------------------------
+// judgeArms — the pairwise judge call, run AT the barrier (temperloop#2073).
+// -----------------------------------------------------------------------------
+// One `judge.sh pairwise` per in-scope item whose TWO arms both gate-passed:
+// record-a is the baseline arm, record-b is the candidate arm, and the script
+// sends the same prompt twice in both position orders and reports
+// { preference, margin, order_agreement }. The two record files are assembled
+// in the executor's own shell from this driver's item metadata plus each arm's
+// diff against its recorded base, because that diff exists only on disk.
+//
+// A judged item ALWAYS gets a DISPOSITION, never silence: a real verdict, or a
+// named reason there is none (one arm never gated, the seam is absent, the
+// judge refused or was unavailable). That is what makes "every in-scope item has
+// a judge result" checkable at the barrier rather than a hope.
+async function judgeArms(item, dual, arms) {
+  const a = arms.find((x) => x.arm === 'baseline');
+  const b = arms.find((x) => x.arm === 'candidate');
+  if (!a || !b || a.gate !== 'pass' || b.gate !== 'pass') {
+    const lost = [a, b].filter((x) => x && x.gate !== 'pass').map((x) => x.arm);
+    return {
+      judged: false,
+      reason: 'one-arm-only',
+      detail: `no pairwise comparison is possible: ${lost.join(' and ')} produced no gate-passing branch`,
+      judge: null,
+    };
+  }
+  // temperloop#2080 round-1 review [MEDIUM], the companion to driveArm's
+  // spike-park branch: a spike arm produces a VERDICT NOTE, not a diff, and its
+  // worktree does not exist — so `judge.sh pairwise`, which compares the two
+  // arms' diffs against their recorded bases, would compare two empty excerpts
+  // and return a verdict about nothing. That is a named DISPOSITION (this
+  // function's own contract: never silence), not a judgement.
+  if (a.spike || b.spike) {
+    return {
+      judged: false,
+      reason: 'spike-arm',
+      detail: `${item.slug} is a read-only spike: its arms produce a verdict note rather than a diff, so a pairwise code judge has nothing to compare`,
+      judge: null,
+    };
+  }
+  const mcDir = `${input.repoRoot}/workflows/scripts/model-comparison`;
+  // The item half of both records, identical by construction — judge.sh's own
+  // same-item precondition refuses two records that disagree on
+  // issue/title/scope/acceptance, so building both from ONE literal here is
+  // what makes that precondition pass for a legitimate pair.
+  const itemBlock = {
+    issue: item.ghIssue ? Number(item.ghIssue) : null,
+    title: item.title ?? item.slug,
+    scope: item.scope ?? '',
+    acceptance: acceptanceList(item),
+  };
+  const recordFor = (arm) => JSON.stringify({
+    ...itemBlock,
+    candidate: { provider: dualBuildSplitModel(arm.model).provider || 'anthropic', model: dualBuildSplitModel(arm.model).model },
+    score: { diff: { text_excerpt: '' } },
+  });
+  const diffCmd = (arm) =>
+    `git -C ${sq(arm.wt)} diff ${sq(arm.wtBase || 'HEAD')}..HEAD 2>/dev/null | head -c 200000`;
+  const cmd = [
+    `__mc=${sq(mcDir)}`,
+    'if [ ! -f "$__mc/judge.sh" ]; then',
+    `printf '{"outcome":"JUDGE_UNAVAILABLE","reason":"seam-absent"}\\n'`,
+    'else',
+    '__jd=$(mktemp -d) || __jd=""',
+    'if [ -z "$__jd" ]; then',
+    `printf '{"outcome":"JUDGE_UNAVAILABLE","reason":"scratch-dir-failed"}\\n'`,
+    'else',
+    `printf %s ${sq(recordFor(a))} | jq -c --arg d "$(${diffCmd(a)})" '.score.diff.text_excerpt=$d' > "$__jd/a.json"`,
+    `printf %s ${sq(recordFor(b))} | jq -c --arg d "$(${diffCmd(b)})" '.score.diff.text_excerpt=$d' > "$__jd/b.json"`,
+    // THE VERDICT IS READ UN-PIPED (temperloop#2080 round-2 review [HIGH]), the
+    // same shape activationProofCmd uses and for the same reason: `$?` after a
+    // pipeline is the LAST command's status, so `… | tail -1; __jr=$?` reads
+    // tail's status — effectively always 0 — and judge.sh's own exit never
+    // reaches the branch below. That mis-reads BOTH ways: a judge.sh that dies
+    // AFTER writing a line would have its garbage recorded as a real pairwise
+    // verdict, and the refusal's `rc` field — whose whole job is to report that
+    // status — would be structurally 0. So: capture whole, read `$?`, THEN trim
+    // to the last line in a separate step. Deliberately no PIPESTATUS (zsh
+    // spells it `$pipestatus` and 1-indexes it) and no `set -o pipefail` (see
+    // activationProofCmd's comment for why that is worse, not safer).
+    `__jo=$(bash "$__mc/judge.sh" pairwise --record-a "$__jd/a.json" --record-b "$__jd/b.json" --live --repo ${sq(input.ownerRepo ?? '')} 2>/dev/null); __jr=$?`,
+    `__jo=$(printf '%s\\n' "$__jo" | tail -1)`,
+    'rm -rf "$__jd"',
+    // A non-JSON last line is a NAMED refusal, never interpolated: this printf
+    // splices "$__jo" raw into a JSON object the driver parses as one line, so
+    // an unparseable line would turn a legible refusal into malformed
+    // machinery output the caller reports as a bare parse failure.
+    'if [ "$__jr" -eq 0 ] && [ -n "$__jo" ] && printf %s "$__jo" | jq -e . >/dev/null 2>&1; then',
+    `printf '{"outcome":"JUDGED","judge":%s}\\n' "$__jo"`,
+    'elif [ "$__jr" -eq 0 ] && [ -n "$__jo" ]; then',
+    `printf '{"outcome":"JUDGE_UNAVAILABLE","reason":"judge-unparseable","rc":0}\\n'`,
+    'else',
+    `printf '{"outcome":"JUDGE_UNAVAILABLE","reason":"judge-refused","rc":%s}\\n' "$__jr"`,
+    'fi',
+    'fi',
+    'fi',
+  ].join('\n');
+  const out = await runMachinery(cmd, {
+    label: `judge:${item.slug}`,
+    slug: item.slug,
+    phase: enterStage(STAGE_GATE),
+  });
+  if (machineryDenied(out) || out.outcome !== 'JUDGED' || !out.judge || typeof out.judge !== 'object') {
+    return {
+      judged: false,
+      reason: (out && out.reason) || 'judge-unavailable',
+      detail: `judge.sh pairwise produced no verdict for ${item.slug} (${JSON.stringify(out && out.outcome)})`,
+      judge: null,
+    };
+  }
+  // preference "A" is the BASELINE arm and "B" the CANDIDATE arm — the
+  // record-a/record-b binding above, restated here once so the mapping lives
+  // beside the call that creates it rather than at the row writer.
+  const pref = String(out.judge.preference ?? '');
+  const prefersArm = pref === 'A' ? 'baseline' : pref === 'B' ? 'candidate' : null;
+  return {
+    judged: true,
+    reason: null,
+    judge: {
+      preference: out.judge.preference ?? null,
+      margin: out.judge.margin ?? null,
+      order_agreement: out.judge.order_agreement ?? null,
+    },
+    prefersArm,
+  };
+}
+
+// -----------------------------------------------------------------------------
+// appendDualBuildRows — the ledger write (temperloop#2072).
+// -----------------------------------------------------------------------------
+// One `dual-build-ledger.sh append` per row, batched into ONE executor for the
+// item (two rows in scope, one row out of scope). Three of the row's fields
+// cannot be known in this runtime and are filled by the executor's own shell
+// from the arm's worktree:
+//   cross_read_attempted — whether the arm-read guard recorded a DENIED
+//                          cross-arm read beside the `.dual-build-arm` marker;
+//   head_sha             — the arm branch's tip, which exists only on disk;
+//   machinery_version    — the checkout's VERSION, the join key K#1924's own
+//                          per-step resume ledger uses.
+// Everything else is composed here, in legible .mjs, and handed over as a JSON
+// literal — the same division of labour every other machinery call in this file
+// uses (DESIGN NOTE 1: the branching stays here, the shell only executes).
+async function appendDualBuildRows(item, dual, rows) {
+  if (rows.length === 0) return { appended: 0, rejected: 0, unavailable: false };
+  const ledgerBin = sq(`${input.repoRoot}/workflows/scripts/model-comparison/dual-build-ledger.sh`);
+  const versionFile = sq(`${input.repoRoot}/VERSION`);
+  const steps = rows.map(({ row, wt, arm }) => ({
+    kind: `row-${arm}`,
+    cmd: [
+      `__led=${ledgerBin}`,
+      'if [ ! -f "$__led" ]; then',
+      `printf '{"outcome":"ROW_UNAVAILABLE","arm":"%s","reason":"dual-build-ledger.sh not found"}\\n' ${sq(arm)}`,
+      'else',
+      `__ca=false; [ -s ${sq(`${wt}/${DUAL_BUILD_ATTEMPTS_FILE}`)} ] && __ca=true`,
+      `__hs=$(git -C ${sq(wt)} rev-parse HEAD 2>/dev/null); [ -n "$__hs" ] || __hs=unknown`,
+      `__mv=$(head -1 ${versionFile} 2>/dev/null | tr -d '[:space:]'); [ -n "$__mv" ] || __mv=unknown`,
+      `__row=$(printf %s ${sq(row)} | jq -c --argjson ca "$__ca" --arg hs "$__hs" --arg mv "$__mv" '.cross_read_attempted=$ca | .head_sha=$hs | .machinery_version=$mv')`,
+      'if [ -z "$__row" ]; then',
+      `printf '{"outcome":"ROW_REJECTED","arm":"%s","reason":"row could not be assembled"}\\n' ${sq(arm)}`,
+      'elif bash "$__led" append --row "$__row" >/dev/null 2>&1; then',
+      `printf '{"outcome":"ROW_APPENDED","arm":"%s"}\\n' ${sq(arm)}`,
+      'else',
+      `printf '{"outcome":"ROW_REJECTED","arm":"%s","reason":"dual-build-ledger.sh append refused the row"}\\n' ${sq(arm)}`,
+      'fi',
+      'fi',
+    ].join('\n'),
+  }));
+  const batch = await runMachineryBatch(steps, {
+    label: `dual-build-rows:${item.slug}`,
+    slug: item.slug,
+    bashTimeoutMs: BATCH_BASH_TIMEOUT_MS,
+    phase: enterStage(STAGE_GATE),
+  });
+  if (batch.denied) {
+    log(`[${item.slug}] dual-build ledger write DENIED — no rows recorded for this item; the arms' builds stand, the comparison record does not`);
+    return { appended: 0, rejected: 0, unavailable: true };
+  }
+  let appended = 0;
+  let rejected = 0;
+  batch.results.forEach((r) => {
+    if (r && r.outcome === 'ROW_APPENDED') appended += 1;
+    else rejected += 1;
+  });
+  if (rejected > 0) {
+    log(
+      `[${item.slug}] dual-build ledger: ${appended} row(s) appended, ${rejected} NOT recorded ` +
+        `(${batch.results.filter((r) => r && r.outcome !== 'ROW_APPENDED').map((r) => `${r.arm ?? '?'}: ${r.reason ?? r.outcome}`).join('; ')}) ` +
+        '— the comparison is incomplete for this item and the level pick must not treat it as judged',
+    );
+  }
+  return { appended, rejected, unavailable: false };
+}
+
+// dualBuildRow — compose ONE ledger row. `cross_read_attempted`, `head_sha` and
+// `machinery_version` are placeholders here; the executor overwrites all three
+// (see appendDualBuildRows). Every other field is authored here.
+function dualBuildRow(item, dual, armResult, judgeOutcome, extra) {
+  return JSON.stringify({
+    tier: dual.tier,
+    model: armResult.model,
+    slug: item.slug,
+    arm: armResult.arm,
+    base_sha: armResult.wtBase || 'unknown',
+    head_sha: 'unknown',
+    start_order: armResult.order,
+    gate: armResult.gate,
+    cost: dualBuildCost(armResult),
+    judge: judgeOutcome && judgeOutcome.judged ? judgeOutcome.judge : null,
+    // The LEVEL pick is `level-pick-and-operator-levers` (temperloop#2083), by
+    // construction of the barrier: this row is written before any pick exists,
+    // so it says so rather than guessing one.
+    pick: null,
+    override: { applied: false },
+    loss_reason: armResult.lossReason ?? null,
+    cross_read_attempted: false,
+    guard_armed: armResult.guardArmed,
+    machinery_version: 'unknown',
+    ...(extra ?? {}),
+  });
+}
+
+// -----------------------------------------------------------------------------
+// driveInScopeItem — one in-scope item: two arms, the barrier's local half.
+// -----------------------------------------------------------------------------
+// Returns the arm results; the judge, the rows and the item's record are the
+// caller's post-barrier job, because a judge that ran here would judge one item
+// while a sibling item's arms were still building — which is a per-item barrier,
+// not the level barrier ADR 0038 requires.
+async function driveInScopeItem(item, dual, boardWrites) {
+  // The BUFFERED board write (see 3a's own comment). Recorded once per ITEM,
+  // never per arm, and carrying the exact command the pick will run.
+  if (input.board && item.ghIssue) {
+    const claimBin = input.claimCmd ?? 'claim.sh';
+    boardWrites.push({
+      slug: item.slug,
+      issue: item.ghIssue,
+      board: input.board,
+      cmd: `${claimBin} ${item.ghIssue} --board ${input.board}`,
+      buffered_until: 'level-pick',
+      reason:
+        'an in-scope item is built under two arms; the claim is a statement about the ITEM and the ' +
+        'Done/close cascade must follow the arm that WON, so the board write is held until the pick',
+    });
+  }
+  // START ORDER. parallel() invokes its thunks in array order, synchronously up
+  // to each one's first await, so the counter below assigns baseline=1 and
+  // candidate=2 deterministically — a recorded fact about which arm started
+  // first, not a guess re-derived later from timestamps that this runtime
+  // cannot read anyway.
+  let order = 0;
+  const arms = await parallel(
+    DUAL_BUILD_ARMS.map((name) => () => {
+      order += 1;
+      return driveArm(item, dual, name, order).catch((err) => ({
+        arm: name,
+        order,
+        model: name === 'baseline' ? dual.baseline : dual.candidate,
+        key: `${item.slug}@${name}`,
+        wt: `${input.repoRoot}.wt/${item.slug}@${name}`,
+        branch: `build/${item.slug}@${name}`,
+        wtBase: '',
+        guardArmed: 'UNKNOWN',
+        ctx: null,
+        cost: null,
+        acceptanceResults: [],
+        gate: 'fail',
+        lossReason: 'infra',
+        failure: { kind: 'arm-throw', detail: String((err && err.stack) || err) },
+      }));
+    }),
+  );
+  return { item, inScope: true, arms };
+}
+
+// dualBuildArmSummary — the per-arm shape that rides the item's returned record
+// (and, through it, the orchestrator's Step 6 summary and the eventual pick).
+// Deliberately NOT the raw arm result: `ctx` holds the whole phase-1 context
+// including the worker verdict, and shipping that back would put every arm's
+// full acceptance prose into the orchestrator's context — the one cost this
+// whole workflow exists to bound.
+function dualBuildArmSummary(a) {
+  return {
+    arm: a.arm,
+    model: a.model,
+    start_order: a.order,
+    worktree: a.wt,
+    branch: a.branch,
+    base_sha: a.wtBase || null,
+    guard_armed: a.guardArmed,
+    gate: a.gate,
+    loss_reason: a.lossReason ?? null,
+    acceptance_results: a.acceptanceResults ?? [],
+    cost: dualBuildCost(a),
+    ...(a.failure ? { failure: a.failure } : {}),
+    ...(SIDELINE_NOTICES.get(a.key) ? { sidelined: SIDELINE_NOTICES.get(a.key) } : {}),
+  };
+}
+
+// -----------------------------------------------------------------------------
+// dualBuildGuarded — the #437 silent-loss guard, applied BY CONSTRUCTION.
+// -----------------------------------------------------------------------------
+// `parallel()` is not `Promise.all`: a REJECTED thunk is dropped to `null`
+// rather than failing the batch, and buildLevel's consuming loop
+// (`for (const r of results) { if (!r) continue; }`) then skips that slot in
+// silence — leaving the item in NEITHER `parked` NOR `escalations`. That is
+// temperloop#437 exactly (a real run hit `item.acceptance.map` on a string and
+// the item vanished), and the single-arm fan-out was hardened against it with a
+// per-item `.catch()`.
+//
+// temperloop#2080 round-1 review [HIGH]: that guard is a CONVENTION every
+// fan-out site has to remember, and the dual-build fan-outs remembered it for
+// the not-in-scope branch only — so an in-scope item whose drive threw was
+// silently lost again. Wrapping the thunk here makes the guard structural
+// instead: every dual-build fan-out builds its thunks through this, so a future
+// edit that adds an un-caught `await` inside one cannot reintroduce the drop.
+// The returned thunk is `async` deliberately — that converts a SYNCHRONOUS
+// throw in `fn`'s body (not just a rejected promise) into a rejection this
+// function itself catches, which a bare `fn().catch()` would let escape.
+function dualBuildGuarded(fn, onError) {
+  return async () => {
+    try {
+      return await fn();
+    } catch (err) {
+      return await onError(err);
+    }
+  };
+}
+
+// -----------------------------------------------------------------------------
+// driveLevelDualBuild — the level driver, and the BARRIER itself.
+// -----------------------------------------------------------------------------
+// Three phases, in this order, and the order IS the contract:
+//   1. BUILD. Every item in parallel. An in-scope item fans out two arms and
+//      stops at the end of phase 1; a not-in-scope item takes the ordinary
+//      single-arm driveItem, PR and all.
+//   2. THE BARRIER. The `await` on phase 1 is the barrier — past it, EVERY
+//      in-scope arm in the level has a gate result. Only now does any judging
+//      happen, and no PR has opened for any in-scope item.
+//   3. JUDGE + RECORD. Per item: the pairwise judge, then the ledger rows, then
+//      the item's own record. Still no PR for an in-scope item — routing the
+//      winner to PR is `level-pick-and-operator-levers`.
+async function driveLevelDualBuild(activeItems, dual) {
+  const boardWrites = [];
+  log(
+    `dual-build: tier=${dual.tier} baseline=${dual.baseline} candidate=${dual.candidate} ` +
+      `in-scope=${activeItems.filter((it) => dual.inScope.has(it.slug)).length}/${activeItems.length} ` +
+      '— building in-scope items under two arms; NO PR opens for an in-scope item until the level barrier clears',
+  );
+
+  // --- Phase 1 + the barrier ----------------------------------------------
+  const runs = await parallel(
+    activeItems.map((item) =>
+      dualBuildGuarded(
+        () => {
+          if (!dual.inScope.has(item.slug)) {
+            // Not in scope: the unchanged single-arm drive, including its PR.
+            return driveItem(item)
+              .catch((err) => escalate(item.slug, 'worker-error', { error: String((err && err.stack) || err) }))
+              .then((r) => preserveOnEscalation(item, r))
+              .then((r) => stampSideline(item, r))
+              .then((record) => ({ item, inScope: false, record }));
+          }
+          return driveInScopeItem(item, dual, boardWrites);
+        },
+        // The IN-SCOPE throw (the not-in-scope branch carries its own catch
+        // above, so this is what it adds). `escaped` marks a run that produced
+        // NO arms: phase 3 hands its record straight to the level's disposition
+        // rather than judging arms that do not exist or inventing a
+        // not-in-scope ledger row for an item that IS in scope. No
+        // preserveOnEscalation here on purpose — an in-scope item's commits
+        // live in `<slug>@baseline` / `<slug>@candidate`, not the `<slug>`
+        // worktree that helper pushes from, so calling it would push the wrong
+        // (or an absent) tree.
+        (err) => ({
+          item,
+          inScope: false,
+          escaped: true,
+          record: escalate(item.slug, 'worker-error', {
+            error: String((err && err.stack) || err),
+            phase: 'dual-build build phase',
+          }),
+        }),
+      ),
+    ),
+  );
+  log(
+    `dual-build: LEVEL BARRIER reached — every in-scope arm has a gate result ` +
+      `(${runs.filter((r) => r.inScope).reduce((n, r) => n + r.arms.filter((a) => a.gate === 'pass').length, 0)} passing arm(s) ` +
+      `of ${runs.filter((r) => r.inScope).length * DUAL_BUILD_ARMS.length}). Judging before any PR opens.`,
+  );
+
+  // --- Phase 3: judge, record, dispose -------------------------------------
+  const ledger = { appended: 0, rejected: 0, unavailable: 0 };
+  const disposed = await parallel(
+    runs.map((run) =>
+      dualBuildGuarded(async () => {
+      if (run.escaped) {
+        // Phase 1's guard already converted this item's throw into an
+        // escalation and it produced no arms — nothing to judge, no row to
+        // write. Straight to the level's disposition.
+        return run.record;
+      }
+      if (!run.inScope) {
+        // One row for the item that was built ONCE, so the level's ledger
+        // accounts for every item rather than only the compared ones. `arm` is
+        // a closed two-value field in the ledger schema, so an uncompared build
+        // is recorded on the BASELINE arm with an explicit `in_scope:false` —
+        // never a third arm value the reader's schema does not know.
+        const single = {
+          arm: 'baseline',
+          order: 1,
+          model: run.item.model ?? dual.baseline,
+          wt: `${input.repoRoot}.wt/${run.item.slug}`,
+          wtBase: '',
+          guardArmed: 'UNKNOWN',
+          gate: run.record && run.record._kind === 'parked' ? 'pass' : 'fail',
+          lossReason: run.record && run.record._kind === 'parked' ? null : 'infra',
+          cost: null,
+        };
+        const r = await appendDualBuildRows(run.item, dual, [{
+          row: dualBuildRow(run.item, dual, single, null, {
+            in_scope: false,
+            not_in_scope_reason: 'this item is not in the dual-build tier for this run — built once, on its own model',
+          }),
+          wt: single.wt,
+          arm: 'not-in-scope',
+        }]);
+        ledger.appended += r.appended;
+        ledger.rejected += r.rejected;
+        if (r.unavailable) ledger.unavailable += 1;
+        return run.record;
+      }
+
+      const judgeOutcome = await judgeArms(run.item, dual, run.arms);
+      if (judgeOutcome.judged) {
+        log(
+          `[${run.item.slug}] dual-build judge: preference=${judgeOutcome.judge.preference} ` +
+            `margin=${judgeOutcome.judge.margin} order_agreement=${judgeOutcome.judge.order_agreement}` +
+            (judgeOutcome.prefersArm ? ` (prefers the ${judgeOutcome.prefersArm} arm)` : ' (tie — counts for neither arm)'),
+        );
+      } else {
+        log(`[${run.item.slug}] dual-build judge: NO verdict (${judgeOutcome.reason}) — ${judgeOutcome.detail}`);
+      }
+      // A judged preference is a per-ITEM loss for the arm it did not prefer.
+      // The LEVEL pick tallies these; it is not made here.
+      const armRows = run.arms.map((a) => {
+        const lossReason = a.lossReason
+          ?? (judgeOutcome.judged && judgeOutcome.prefersArm && judgeOutcome.prefersArm !== a.arm ? 'judge' : null);
+        const withLoss = { ...a, lossReason };
+        return { row: dualBuildRow(run.item, dual, withLoss, judgeOutcome, {}), wt: a.wt, arm: a.arm };
+      });
+      const r = await appendDualBuildRows(run.item, dual, armRows);
+      ledger.appended += r.appended;
+      ledger.rejected += r.rejected;
+      if (r.unavailable) ledger.unavailable += 1;
+
+      const armSummaries = run.arms.map(dualBuildArmSummary);
+      const passing = run.arms.filter((a) => a.gate === 'pass');
+      const dualBuildRecord = {
+        tier: dual.tier,
+        baseline: dual.baseline,
+        candidate: dual.candidate,
+        arms: armSummaries,
+        judge: judgeOutcome.judged ? judgeOutcome.judge : null,
+        judge_unavailable_reason: judgeOutcome.judged ? null : judgeOutcome.reason,
+        prefers_arm: judgeOutcome.prefersArm ?? null,
+        barrier: 'held',
+        awaiting: 'level-pick',
+        rows_appended: r.appended,
+        rows_rejected: r.rejected,
+      };
+      if (passing.length === 0) {
+        // Nothing to pick from for this item. This ESCALATES rather than parks:
+        // a level pick over an item with no gate-passing arm is not a choice,
+        // and the two builds' worktrees are intact for a human to read.
+        return escalate(run.item.slug, 'dual-build-arms-failed', {
+          reason:
+            `both arms of ${run.item.slug} failed to reach a gate-passing branch ` +
+            `(${run.arms.map((a) => `${a.arm}: ${a.lossReason}`).join(', ')}) — there is nothing for the level pick to choose between`,
+          dual_build: dualBuildRecord,
+        });
+      }
+      // PARKED WITH NO PR. This is the barrier's visible form on the return
+      // object: the item is disposed of (so the zero-disposition guard is
+      // satisfied — it was, and the guard is right that a level disposing of
+      // NOTHING is a contradiction), it carries every arm's result, and it
+      // carries `pr: null` because opening one is precisely what the barrier
+      // forbids until the pick. `acceptance_results` is EMPTY on purpose: the
+      // arms' results are per-arm and live in `dual_build.arms[]`, and hoisting
+      // one arm's to the top level would read as a pick nobody made.
+      const record = park(run.item.slug, null, null, []);
+      record.parked.dual_build = dualBuildRecord;
+      record.parked.awaiting_pick = true;
+      return record;
+      },
+      // A throw in the JUDGE/LEDGER/RECORD phase is the same silent-loss risk
+      // as one in the build phase — the item would be dropped to `null` after
+      // its arms had already been built. Surface it instead.
+      (err) => escalate(run.item.slug, 'worker-error', {
+        error: String((err && err.stack) || err),
+        phase: 'dual-build judge/record phase',
+      })),
+    ),
+  );
+
+  return {
+    results: disposed,
+    summary: {
+      tier: dual.tier,
+      baseline: dual.baseline,
+      candidate: dual.candidate,
+      in_scope: activeItems.filter((it) => dual.inScope.has(it.slug)).map((it) => it.slug),
+      not_in_scope: activeItems.filter((it) => !dual.inScope.has(it.slug)).map((it) => it.slug),
+      barrier: 'held',
+      awaiting: 'level-pick',
+      rows_appended: ledger.appended,
+      rows_rejected: ledger.rejected,
+      ledger_unavailable_items: ledger.unavailable,
+      board_writes: boardWrites,
+    },
+  };
+}
+
+// =============================================================================
+// THE TWO PHASES OF driveItem (temperloop#2080, epic #2065 "dual-build")
+// =============================================================================
+// driveItem used to be ONE function that interleaved build → local gate → PR →
+// CI per item. The dual-build harness cannot: ADR 0038 fixes the PICK at the
+// LEVEL, so every in-scope item's build, local gate and pairwise judge must be
+// known BEFORE any PR opens for the level (the "level barrier"). That is a
+// phase split, not a flag — so the split is made STRUCTURAL here rather than
+// left as an `if (dualBuild)` branch threaded through 700 lines:
+//
+//   driveItemBuildPhase()  3a claim → 3b worktree → 3c worker → 3d verdict →
+//                          3e review → 3e.5 gate → 3e.6 activation gate.
+//                          Returns a TERMINAL record (parked/escalation), or
+//                          null having filled `box.ctx` with everything the
+//                          second phase needs. NOTHING here pushes, opens a
+//                          PR, or merges — that property is what makes the
+//                          barrier expressible at all.
+//   driveItemPr()          3f push+PR → 3g CI → 3g.5 re-render → 3h park.
+//
+// THE SINGLE-ARM PATH IS UNCHANGED BY CONSTRUCTION: driveItem() below calls
+// both phases back to back, in the same order, with nothing between them — so
+// the stage transcript, the agent-spawn sequence and the machinery step
+// ordering a flag-less run produces are byte-for-byte what they were before
+// the split (workflows/scripts/build/tests/test_workflow.sh pins the ORDERING
+// explicitly, not merely the return object).
+//
+// WHY A `box` RATHER THAN A RETURNED CONTEXT. The build phase has ~25 early
+// `return escalate(...)` / `return park(...)` sites. Rewriting every one of
+// them into `{ result: … }` would be 25 chances to typo a control-flow edge
+// that only one specific failure fixture exercises. Instead the phase function
+// keeps EVERY existing return statement byte-identical (a terminal record, or
+// null on the fall-through) and hands its context out through the one
+// out-parameter — so the diff touches the fall-through alone.
+// =============================================================================
 async function driveItem(item) {
-  const { repoRoot, board, planLink } = input;
-  const ownerRepo = input.ownerRepo; // "owner/repo" — passed by the orchestrator
+  const built = await driveItemBuild(item, null);
+  if (built.result) return built.result;
+  return await driveItemPr(built.ctx);
+}
+
+// driveItemBuild — the phase-1 wrapper. `arm` is null on the single-arm path
+// (every /build, /fix and /sweep invocation that passes no `dualBuild` input)
+// and a `{ name, sibling, slug, order }` descriptor on a dual-build arm, where
+// `item` has ALREADY been arm-shaped by armItem() below (slug → `<slug>@<arm>`,
+// branch → `build/<slug>@<arm>`, model → that arm's own model). Returns exactly
+// one of `{ result }` (terminal) or `{ ctx }` (ready for phase 2).
+async function driveItemBuild(item, arm) {
+  const box = {};
+  const terminal = await driveItemBuildPhase(item, arm ?? null, box);
+  return terminal ? { result: terminal } : { ctx: box.ctx };
+}
+
+async function driveItemBuildPhase(item, arm, box) {
+  const { repoRoot, board } = input;
   const worktreePath = `${repoRoot}.wt/${item.slug}`;
 
   // --- Continuation detection (escalation-resume loop, 3d-esc) --------------
@@ -5729,7 +6638,18 @@ async function driveItem(item) {
   // Skipped on a continuation: the issue is already claimed by this run (the
   // escalation never released it), and a re-claim is at best a self-owned
   // no-op (spec 3d-esc step 4: "does NOT re-run 3a").
-  if (board && item.ghIssue && !isContinuation) {
+  //
+  // ALSO skipped for a dual-build ARM (temperloop#2080). An in-scope item is
+  // built TWICE, and a board write is a statement about the ITEM, not about one
+  // arm of it: claiming per arm would write the same issue twice (the second
+  // claim reading as a self-conflict), and the Done/close cascade must reflect
+  // the arm that WON, which is not known until the level pick. So every board
+  // write for an in-scope item is BUFFERED — bufferBoardWrite() below records
+  // one entry per item, returned on the level's `dualBuild.board_writes` for
+  // the pick to flush. The cross-session lock this costs is real and is the
+  // declared trade of the barrier: the level's claims land in one batch after
+  // the pick rather than at first touch.
+  if (board && item.ghIssue && !isContinuation && !arm) {
     // The CLAIM entrypoint + --board are resolved by the orchestrator's Step 0
     // probe and passed in input.claimCmd (an absolute path to claim.sh).
     const claimBin = input.claimCmd ?? 'claim.sh';
@@ -5784,9 +6704,46 @@ async function driveItem(item) {
   // against the deterministic path. The injected verdict (3c) makes resuming on
   // the existing worktree correct — the worker builds on its own prior work
   // plus the human's decision, exactly the escalation-resume contract.
+  //
+  // temperloop#2080 adds TWO things to this one step, both of which leave a
+  // flag-less, residue-free run's OUTPUT byte-identical:
+  //
+  //  (a) THE ARM FLAG. A dual-build arm creates `<repoRoot>.wt/<slug>@<arm>` on
+  //      `build/<slug>@<arm>` via `create --arm <name>[:<sibling>]`
+  //      (temperloop#2076). `item.slug` is already the ARM KEY here, so the
+  //      command is built from `arm.slug` — the real plan slug — and the
+  //      deterministic path worktree.sh returns equals `worktreePath` above by
+  //      construction, exactly as it does on the arm-less path.
+  //
+  //  (b) THE FLAG-LESS-RESUME REFUSAL (ADR 0038's "Consequences"). A `/build`
+  //      re-run over a level a dual build left half-finished must refuse
+  //      LEGIBLY — never silently complete it single-arm, and never pick a side
+  //      by accident. The signal is the arm worktrees themselves:
+  //      `<repoRoot>.wt/<slug>@*` exists only while an arm of THIS slug is
+  //      mid-flight (the pick deletes the losing arm's tree and `worktree.sh
+  //      prune` reaps the rest), so it is precisely "partially dual-built" and
+  //      nothing else. The ledger is deliberately NOT consulted: its rows
+  //      outlive the run by `DUAL_BUILD_ARCHIVE_RETENTION_DAYS`, so a slug
+  //      dual-built last week would refuse every ordinary build since.
+  //
+  //      The check is emitted INSIDE this step's own command rather than as a
+  //      new probe step, and that is the load-bearing choice: a level-wide
+  //      probe agent would add a spawn to every flag-less run, changing the
+  //      very transcript this item's acceptance pins as unchanged. Here the
+  //      clean path runs `worktree.sh create` and prints its CREATED line with
+  //      nothing added — same step count, same agent count, same JSON.
   if (item.kind !== 'spike' && !isContinuation) {
     const wtBin = machineryBin(repoRoot, 'worktree.sh');
-    addPrelude('worktree', `${wtBin} create ${sq(repoRoot)} ${sq(item.slug)}`, ['CREATED']);
+    const realSlug = arm ? arm.slug : item.slug;
+    const armFlag = arm
+      ? ` --arm ${sq(arm.sibling ? `${arm.name}:${arm.sibling}` : arm.name)}`
+      : '';
+    const createCmd = `${wtBin} create ${sq(repoRoot)} ${sq(realSlug)}${armFlag}`;
+    addPrelude(
+      'worktree',
+      arm ? createCmd : dualBuildResidueGuard(repoRoot, item.slug, createCmd),
+      ['CREATED'],
+    );
   }
 
   const prelude = await runMachineryBatch(preludeSteps, {
@@ -5896,11 +6853,42 @@ async function driveItem(item) {
 
   // --- 3b branch. The deterministic worktree (worktree.sh create) ----------
   let wt = worktreePath;
+  // temperloop#2080 — the two fields a dual-build ledger row reads off the
+  // CREATED line: the base the arm branched from, and worktree.sh's OWN
+  // write-jail arming verdict (ARMED/UNARMED/UNKNOWN, its § Write-jail arming
+  // self-test). Captured here because this is the only place they exist;
+  // defaulted so a continuation (which skips create) still produces a
+  // well-formed row rather than one the ledger validator rejects.
+  let wtBase = '';
+  let wtGuard = 'UNKNOWN';
   if (preludeAt.worktree !== undefined) {
     const wtOut = batchStep(prelude, preludeAt.worktree);
+    if (wtOut.outcome === 'DUAL_BUILD_RESIDUE') {
+      // The flag-less-resume refusal (see the guard's own comment at 3b). This
+      // is NOT a worktree failure: nothing was attempted, nothing was
+      // destroyed, and the arm worktrees still hold their builds. It refuses
+      // under its own kind so the disposition is "re-run with --dual-build, or
+      // finish the pick", never "retry the create".
+      return escalate(item.slug, 'dual-build-residue', {
+        slug: item.slug,
+        arms: wtOut.arms ?? null,
+        reason:
+          `REFUSING to build ${item.slug} single-arm: this level was left PARTIALLY DUAL-BUILT — ` +
+          `arm worktree(s) for this slug still stand at ${repoRoot}.wt/${item.slug}@*. A flag-less /build ` +
+          'would either rebuild the item a third time on the session model or silently adopt one arm, ' +
+          'and neither is a level pick (ADR 0038). Re-run /build with --dual-build to finish the pick, or ' +
+          'dispose the arms deliberately first.',
+        remedy:
+          `ls -d ${repoRoot}.wt/${item.slug}@*   # then either: /build --dual-build <tier>=<candidate> ` +
+          `(resume the comparison), or: worktree.sh remove ${repoRoot} '${item.slug}@<arm>' for each arm ` +
+          'once you have archived what you want to keep',
+      });
+    }
     if (wtOut.outcome !== 'CREATED') {
       return escalate(item.slug, 'worktree-failed', { wtOut });
     }
+    wtBase = typeof wtOut.base === 'string' ? wtOut.base : '';
+    wtGuard = wtOut.guard === 'ARMED' || wtOut.guard === 'UNARMED' ? wtOut.guard : 'UNKNOWN';
     // worktree.sh's CREATED.path is the authoritative deterministic path; it
     // equals worktreePath by construction, but trust the script's value.
     wt = wtOut.path ?? worktreePath;
@@ -6438,6 +7426,51 @@ async function driveItem(item) {
   // from its first line: no agent spawn, no log, path unchanged.
   const activationEscalation = await runActivationGate(item, wt);
   if (activationEscalation) return activationEscalation;
+
+  // ===== END OF PHASE 1 (temperloop#2080) ==================================
+  // Everything above is build + local verification; NOTHING above pushes,
+  // opens a PR or merges. The context handed to phase 2 is assembled here and
+  // the function returns null — the fall-through that says "no terminal record,
+  // proceed". On the single-arm path driveItem() calls phase 2 immediately, so
+  // the two halves are indistinguishable from the pre-split one. On a
+  // dual-build arm the caller STOPS here and holds the level barrier.
+  box.ctx = {
+    item,
+    arm,
+    wt,
+    verdict,
+    recovery,
+    review,
+    reviewSummarySuffix,
+    discGaps,
+    mainCost,
+    // Read by the dual-build ledger row only; the PR phase ignores them.
+    wtBase,
+    wtGuard,
+    gateReport,
+    gateElapsedSecs: gateElapsed,
+  };
+  return null;
+}
+
+// =============================================================================
+// driveItemPr — PHASE 2 (temperloop#2080): 3f push + PR → 3g CI → 3g.5 →  3h.
+// =============================================================================
+// The callable boundary ADR 0038's level barrier needs. Takes the context
+// phase 1 produced and returns the item's terminal record. Every line below is
+// the pre-split 3f–3h body, re-homed verbatim; the only edit is the
+// destructuring header that replaces the closure it used to read from.
+//
+// On a dual-build level this is NOT called for an in-scope item's arms — that
+// is the barrier. It is called (by driveItem, unchanged) for a not-in-scope
+// item, and it is what `level-pick-and-operator-levers` will call for the
+// winning arm once the pick is made.
+async function driveItemPr(ctx) {
+  const {
+    item, wt, verdict, recovery, review, reviewSummarySuffix, discGaps, mainCost,
+  } = ctx;
+  const { repoRoot, planLink } = input;
+  const ownerRepo = input.ownerRepo; // "owner/repo" — passed by the orchestrator
 
   // --- 3f. Push and open the PR (ONE batched executor — temperloop#942) -----
   // rebase → scan → push → pr-open are four adjacent, seconds-scale machinery
@@ -7581,7 +8614,33 @@ async function buildLevel() {
   // is the single choke point for "an escalation is about to leave this
   // driver"; see preserveOnEscalation's own comment for why it lives here and
   // not at the ~30 individual escalate() call sites.
-  const results = await parallel(
+  //
+  // temperloop#2080 — the DUAL-BUILD fan-out is an alternative to this one, not
+  // a flag inside it. A `dualBuild` input restructures the level into build →
+  // barrier → judge → record (driveLevelDualBuild), which is a different
+  // control flow, not a different parameter; keeping the two apart is what
+  // makes "no dualBuild input → this exact fan-out, unchanged" true by reading
+  // the code rather than by tracing a branch through it.
+  let dualSummary = null;
+  let results;
+  const dual = dualBuildInput();
+  if (dual && dual.invalid) {
+    // REFUSE, never degrade. A level asked to compare two models that quietly
+    // compared none is indistinguishable, after the fact, from one that did.
+    log(`dual-build INPUT INVALID — refusing the level: ${dual.invalid}`);
+    results = activeItems.map((item) =>
+      escalate(item.slug, 'dual-build-input-invalid', {
+        reason: dual.invalid,
+        received: input.dualBuild,
+        remedy: 'pass dualBuild as { tier, baseline, candidate, inScope: [slug…] } (build.md Step 0/1 builds it from --dual-build via dual-build-preflight.sh), or drop the input entirely to build single-arm',
+      }),
+    );
+  } else if (dual) {
+    const driven = await driveLevelDualBuild(activeItems, dual);
+    results = driven.results;
+    dualSummary = driven.summary;
+  } else {
+  results = await parallel(
     activeItems.map((item) => () =>
       driveItem(item).catch((err) => {
         // temperloop#1819: a throw whose message carries the harness's
@@ -7599,6 +8658,7 @@ async function buildLevel() {
       }).then((r) => preserveOnEscalation(item, r)).then((r) => stampSideline(item, r)),
     ),
   );
+  }
 
   // Partition the per-item results into the small return object. NEVER write
   // the plan note here — only RETURN what to write (orchestrator serializes
@@ -7617,12 +8677,27 @@ async function buildLevel() {
   // object so the orchestrator's Step 6 summary and the merge gate see it
   // without re-walking two arrays. Omitted entirely when nothing sidelined, so
   // an ordinary level's return is byte-identical to before this item.
-  const sidelined = activeItems
-    .map((it) => {
-      const n = SIDELINE_NOTICES.get(it.slug);
-      return n ? { slug: it.slug, ...n } : null;
-    })
-    .filter(Boolean);
+  //
+  // temperloop#2080 — the map is keyed by the RECORD key, which for a
+  // dual-build arm is `<slug>@<arm>` (that is what phase 1 sees as item.slug).
+  // Walking `activeItems` alone would therefore find NEITHER arm's notice and
+  // the level would report zero sideline notices while two builds sat shelved.
+  // So the rollup walks the map's own keys and splits the arm back out: a
+  // two-arm item that sidelined both arms produces TWO entries, one per arm,
+  // and a single-arm level produces exactly the pre-#2080 list (same entries,
+  // same order, no `arm` key) because the arm lookups simply miss. The walk
+  // stays over `activeItems` rather than over the map's own insertion order so
+  // the list is deterministic — insertion order is parallel-completion order,
+  // which would reshuffle the rollup run to run.
+  const sidelined = [];
+  for (const it of activeItems) {
+    const plain = SIDELINE_NOTICES.get(it.slug);
+    if (plain) sidelined.push({ slug: it.slug, ...plain });
+    for (const armName of DUAL_BUILD_ARMS) {
+      const armNotice = SIDELINE_NOTICES.get(`${it.slug}@${armName}`);
+      if (armNotice) sidelined.push({ slug: it.slug, arm: armName, ...armNotice });
+    }
+  }
   if (sidelined.length > 0) {
     log(
       `level SIDELINED BUILD summary — ${sidelined.length} resumable build(s) shelved by worktree.sh create: ` +
@@ -7654,6 +8729,12 @@ async function buildLevel() {
   const ret = { parked, escalations };
   if (sidelined.length > 0) ret.sidelined = sidelined;
   if (zeroDisposition) ret.zeroDisposition = zeroDisposition;
+  // temperloop#2080 — the level's dual-build summary: which items were compared,
+  // where the barrier stands, how many ledger rows landed, and the board writes
+  // held back for the pick. Present ONLY on a dual-build run (same
+  // omitted-unless-it-holds shape as `sidelined`/`zeroDisposition` above), so a
+  // flag-less level's returned object is byte-identical to before this item.
+  if (dualSummary) ret.dualBuild = dualSummary;
   return ret;
 }
 
