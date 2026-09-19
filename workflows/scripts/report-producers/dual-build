@@ -91,7 +91,31 @@
 # only ever references them symbolically (per CLAUDE.kernel.md § Named-
 # setting convention) and carries layer-6 non-vendoring-caller fallbacks
 # that match the registry exactly (same idiom as report-producers/
-# model-comparison and stats.sh itself).
+# model-comparison and stats.sh itself). The two calibration-bar fallbacks
+# are EXPORTED (not just shell-local) because their only consumer,
+# `calibrate-status`, runs in a separate `bash "$LEDGER_SH"` subprocess —
+# an unexported `:=` never reaches it (review round 1 finding, MEDIUM).
+#
+# ── LEDGER-DIR SCOPING BOUNDARY (review round 1, temperloop#2065) ─────────
+# LEDGER_DIR/REPO_LABEL are resolved from the INVOKING repo — `git
+# rev-parse --show-toplevel` run at cwd, per report.contract.md:64-65's
+# "invoked with cwd = the target repo" invariant — never from this
+# producer's own $0 location. Contrast the settings/sibling-script
+# resolution just above (BUILD_CONFIG, LEDGER_SH, STATS_SH), which climbs
+# from $0 on purpose: that is the temperloop#980 kernel-vs-adopter boundary,
+# where settings and the ledger/stats LIBRARIES always come from the kernel
+# checkout so an adopter cannot fork them. DATA (the ledger rows
+# themselves) must never follow that same climb, or once the kernel
+# checkout dogfoods `/build --dual-build` and grows its own ledger, every
+# adopter's `temperloop report` would silently render the KERNEL's win
+# rate, cost totals and verdict under the adopter's own heading — exactly
+# the "wrong corpus" class report.contract.md warns against. The sibling
+# `tokens` producer solves the analogous problem with the same
+# `git rev-parse --show-toplevel` idiom. `dual-build-ledger.sh`'s own
+# LEDGER_DIR still climbs from $0 (filed separately as temperloop#2119) —
+# this file's fix is READ-side only; a caller wanting a specific repo's
+# ledger regardless of cwd still passes DUAL_BUILD_LEDGER_DIR explicitly,
+# exactly as `/build --dual-build` already does.
 #
 # ── EGRESS: none. Local file reads (the ledger) plus subprocess calls to
 # sibling scripts in this same checkout (dual-build-ledger.sh, stats.sh).
@@ -113,6 +137,7 @@ skip() { printf 'skipped -- %s: %s\n' "$PRODUCER_NAME" "$1"; exit 0; }
 [ "$#" -eq 0 ] || skip "invoked with $# argument(s); the .temperloop/report.d/ contract invokes a producer with none"
 
 command -v jq >/dev/null 2>&1 || skip "jq not found on PATH"
+command -v git >/dev/null 2>&1 || skip "git not found on PATH"
 
 self_dir="$(cd "$(dirname "$0")" 2>/dev/null && pwd)" || skip "could not resolve this producer's own directory"
 LEDGER_SH="$self_dir/../model-comparison/dual-build-ledger.sh"
@@ -132,10 +157,35 @@ fi
 : "${DUAL_BUILD_UNRESOLVED_THRESHOLD_PCT:=20}"
 : "${DUAL_BUILD_CALIBRATION_BAR_PCT:=70}"
 : "${DUAL_BUILD_CALIBRATION_BAR_N:=20}"
+# Exported so the separate `bash "$LEDGER_SH" calibrate-status` subprocess
+# below actually sees a non-vendoring caller's fallback (review round 1,
+# MEDIUM) -- a plain `:=` sets a shell variable only, invisible to a child
+# process.
+export DUAL_BUILD_CALIBRATION_BAR_PCT DUAL_BUILD_CALIBRATION_BAR_N
 
-REPO_ROOT="$(cd "$self_dir/../../.." && pwd)" || skip "could not resolve repo root"
-LEDGER_DIR="${DUAL_BUILD_LEDGER_DIR:-$REPO_ROOT/.temperloop/model-comparison/dual-build}"
-REPO_LABEL="$(basename "$REPO_ROOT")"
+# Validate BEFORE use: both feed bash arithmetic (`-gt` below) and an
+# unguarded --argjson in the terminal jq call, and a non-numeric value in
+# either place would otherwise surface as a bash arithmetic error or a
+# jq exit 2 with empty stdout -- against this file's own "exit 0 always"
+# contract (review round 1, MEDIUM). Same `case ''|*[!0-9]*)` idiom as
+# dual-build-ledger.sh's own bar validation.
+case "$MODEL_COMPARISON_MIN_SAMPLE_N" in
+  ''|*[!0-9]*) skip "MODEL_COMPARISON_MIN_SAMPLE_N is not a valid non-negative integer (\"$MODEL_COMPARISON_MIN_SAMPLE_N\") -- refusing to report with a misconfigured sample floor" ;;
+esac
+case "$DUAL_BUILD_UNRESOLVED_THRESHOLD_PCT" in
+  ''|*[!0-9]*) skip "DUAL_BUILD_UNRESOLVED_THRESHOLD_PCT is not a valid non-negative integer (\"$DUAL_BUILD_UNRESOLVED_THRESHOLD_PCT\") -- refusing to report with a misconfigured unresolved-rate threshold" ;;
+esac
+
+# LEDGER_DIR/REPO_LABEL are scoped to the INVOKING repo (cwd), never to
+# this producer's own $0 location -- see the header's "LEDGER-DIR SCOPING
+# BOUNDARY" note. `git -C "$PWD"` rather than a bare `git` so this reads
+# explicitly off the invocation cwd regardless of any later `cd` in this
+# file (there is none today, but the explicit form makes the invariant
+# self-evident at the call site rather than incidental).
+INVOKING_REPO_ROOT="$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null)" || INVOKING_REPO_ROOT=""
+[ -n "$INVOKING_REPO_ROOT" ] || skip "could not resolve the invoking repo's root via git rev-parse --show-toplevel (not inside a git checkout, or git unavailable) -- refusing to guess which repo's ledger to report on"
+LEDGER_DIR="${DUAL_BUILD_LEDGER_DIR:-$INVOKING_REPO_ROOT/.temperloop/model-comparison/dual-build}"
+REPO_LABEL="$(basename "$INVOKING_REPO_ROOT")"
 
 # ── read the ledger ─────────────────────────────────────────────────────
 # `read`'s own contract: `[]` (exit 0) when no ledger exists yet — that IS
@@ -152,9 +202,18 @@ row_count="$(jq 'length' <<<"$rows_json")"
 
 # ── calibration status (the ledger's own read path — recompute+write is
 # its documented no-side-effect-beyond-the-write behavior) ─────────────
+# Distinguish "calibrate-status genuinely ran and reports n=0" (a real
+# statistical finding: `status` reads its own pinned "NEVER CALIBRATED"
+# literal) from "the call itself failed" (a misconfiguration -- e.g. the
+# calibration-bar settings above did not reach the child, or the ledger
+# dir could not be read/written) -- collapsing the two previously rendered
+# a misconfiguration as a substantive statistical finding (review round 1,
+# MEDIUM).
 calibration_json="$(bash "$LEDGER_SH" calibrate-status --dir "$LEDGER_DIR" 2>/dev/null)"
-[ $? -eq 0 ] && jq -e . >/dev/null 2>&1 <<<"$calibration_json" \
-  || calibration_json='{"n":0,"agreement_pct":null,"status":"NEVER CALIBRATED","bar_pct":null,"bar_n":null}'
+calibration_rc=$?
+if [ "$calibration_rc" -ne 0 ] || ! jq -e . >/dev/null 2>&1 <<<"$calibration_json"; then
+  calibration_json='{"n":0,"agreement_pct":null,"status":"CALIBRATION STATUS UNAVAILABLE","bar_pct":null,"bar_n":null}'
+fi
 
 # ── per-tier item classification (bash+jq; the numeric floor/CI math is
 # stats.sh's job, never re-derived here) ────────────────────────────────
@@ -324,7 +383,11 @@ while IFS= read -r tier; do
   tier_reports="$(jq -c --argjson r "$tier_report" '. + [$r]' <<<"$tier_reports")"
 done <<<"$tiers"
 
-jq -n \
+# The one exit path formerly left unguarded (review round 1, MEDIUM): every
+# other failure funnels through `skip` (exit 0, one line); this final
+# emission now does too, rather than letting a bad jq invocation exit 2
+# with empty stdout -- against this file's own "exit 0 always" contract.
+final="$(jq -n \
   --arg repo "$REPO_LABEL" \
   --argjson tiers "$tier_reports" \
   --argjson calibration "$calibration_json" \
@@ -336,4 +399,5 @@ jq -n \
     calibration: $calibration,
     settings: {min_sample_n: $min_sample_n, unresolved_threshold_pct: $unresolved_threshold_pct},
     tiers: $tiers
-  }'
+  }')" || skip "could not assemble the final report object"
+printf '%s\n' "$final"

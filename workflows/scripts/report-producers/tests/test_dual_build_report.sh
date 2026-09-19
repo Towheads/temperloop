@@ -31,6 +31,9 @@
 #  10   splits.task_type / splits.seat report {available:false,...} rather
 #       than a fabricated number
 #  11   exit code is always 0, success or skip alike
+#  12   ledger-dir scoping: default-path resolution reads the INVOKING
+#       repo's own ledger (cwd-scoped via `git rev-parse --show-toplevel`),
+#       and a DIFFERENT repo's cwd never reads it (review round 1 [HIGH])
 #
 # Usage: bash workflows/scripts/report-producers/tests/test_dual_build_report.sh
 set -uo pipefail
@@ -270,6 +273,35 @@ for d in "$WORK/nope" "$D4" "$D5" "$D6" "$D7" "$D8" "$D9"; do
   sut "$d" >/dev/null 2>&1 || rc_ok=0
 done
 [ "$rc_ok" -eq 1 ] && ok "11: every scenario above exits 0 (skip and success alike)" || fail "11: a scenario exited non-zero"
+
+# ── 12. ledger-dir scoping: read from the INVOKING repo, not $0 ────────────
+# review round 1 [HIGH]: the producer used to resolve LEDGER_DIR/REPO_LABEL
+# by climbing from its own $0 location -- always the KERNEL checkout under
+# the .temperloop/report.d shim -- so every adopter repo silently read (or,
+# once the kernel dogfoods --dual-build, would silently RENDER) the
+# kernel's own ledger under its own heading, regardless of invocation cwd.
+# Two throwaway git repos, each with its OWN default-location ledger,
+# discriminate the fix directly: repo A's rows must be visible only from
+# repo A's cwd, never leaking to repo B's.
+REPO_A="$WORK/repoA"; REPO_B="$WORK/repoB"
+mkdir -p "$REPO_A" "$REPO_B"
+( cd "$REPO_A" && git init -q )
+( cd "$REPO_B" && git init -q )
+append "$REPO_A/.temperloop/model-comparison/dual-build" only1 baseline pass candidate candidate
+append "$REPO_A/.temperloop/model-comparison/dual-build" only1 candidate pass candidate candidate
+
+count
+outA="$(cd "$REPO_A" && env -u DUAL_BUILD_LEDGER_DIR bash "$SUT" 2>&1)"; rc=$?
+[ "$rc" -eq 0 ] && [ "$(jq -r '.repo' <<<"$outA" 2>/dev/null)" = "repoA" ] \
+  && [ "$(jq -r '.tiers[0].honesty.total_dual_built_items' <<<"$outA" 2>/dev/null)" = "1" ] \
+  && ok "12a: default-path resolution reads repo A's OWN ledger when cwd=repo A" \
+  || fail "12a: rc=$rc outA=$outA"
+
+count
+outB="$(cd "$REPO_B" && env -u DUAL_BUILD_LEDGER_DIR bash "$SUT" 2>&1)"; rc=$?
+[ "$rc" -eq 0 ] && [[ "$outB" == "skipped -- dual-build: no ledger rows found"* ]] \
+  && ok "12b: default-path resolution from a DIFFERENT repo's cwd (repo B) does not read repo A's ledger" \
+  || fail "12b: rc=$rc outB=$outB"
 
 echo
 echo "== $pass/$total passed =="
