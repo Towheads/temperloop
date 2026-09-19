@@ -10950,18 +10950,201 @@ else if (!reason && (result2.parked ?? []).length !== 1)
 console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
 "
 
+# ============================================================================
+# TEST (K2127-truthful): a continuation whose PRIOR round was CLEAN must not be
+#   told it found blocking findings.
+#
+#   Round 2, HIGH B1 — the state this covers had NO coverage at all, so the
+#   suite passed with the defect fully present. `round` is the shared
+#   per-worktree §3e invocation counter, bumped by EVERY bumping reviewDiffCmd
+#   call — not a count of review-blocking escalations. build.md's 3d-esc loop
+#   resumes through 3c -> 3e for ANY escalation kind (rebase-conflict,
+#   push-rejected, dirty-worktree, ci-failed, pr-open-failed…), each of which
+#   bumps it while the review itself was CLEAN the round before — that is why
+#   the item got as far as 3f/3g in the first place. Gating the continuation
+#   section on `round > 1` alone therefore opened with the flatly false "Round N
+#   found blocking finding(s), reproduced below" and then, because the 3e call
+#   site correctly withholds a non-`review-blocking` verdict block, followed it
+#   with "(no findings text was recorded for the prior round)" — a
+#   self-contradiction handed to the reviewer AS ITS PREMISE.
+#
+#   Delta-awareness is still wanted here (that is the whole item); only the
+#   premise changes. So this case asserts the positive (continuation heading,
+#   the real <prior-sha>..HEAD range) AND the negatives (no false blocking
+#   claim, no contradictory placeholder, no leaked unrelated verdict text).
+# ============================================================================
+run_node_case "K2127-truthful: a round>1 continuation resuming from a NON-review-blocking escalation is told the prior round was CLEAN, never that it found blocking findings" "
+$PREAMBLE
+
+// The verdict block for a rebase-conflict escalation is about an unrelated
+// human/mechanical decision, NOT review output — driveItemBuildPhase gates the
+// third runReviewers() argument on kind === 'review-blocking' precisely so this
+// text can never reach the reviewer dressed up as prior review findings.
+const UNRELATED_VERDICT = 'REBASE CONFLICT in workflows/scripts/build/gate.sh — resolved by taking ours.';
+setMachinery('rp-clean',
+  { outcome: 'REVIEW_DIFF', files: ['claude/commands/build.md'], tsv: '', tsv_rows: 0, tsv_checksum: 0, review_rounds: 1, review_prior_sha: 'cafe1234abcd' },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'c0ffee03' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'c0ffee03', branch: 'build/rp-clean' },
+  { outcome: 'PR_OPENED', pr_number: 2103 },
+  { outcome: 'CI_GREEN' },
+);
+setWorker('rp-clean', { status: 'done', summary: 'rebase resolved', acceptance_results: [{ criterion: 'c', passed: true, evidence: 'e' }], commits: [] });
+setReview('rp-clean', '## Summary\\nClean.\\n\\n## Findings\\nNone.\\n');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'rp-clean', branch: 'build/rp-clean', title: 'Clean continuation', kind: 'impl', acceptance: ['c'] },
+], onlySlugs: ['rp-clean'], verdicts: { 'rp-clean': { kind: 'rebase-conflict', verdict_section: UNRELATED_VERDICT } } };
+
+const mod = await loadLevel();
+const result = await mod.default();
+const call = callLog.find(c => (c.opts.label||'').startsWith('review:rp-clean#'));
+let reason = null;
+if (!call) reason = 'no reviewer call captured: ' + JSON.stringify(result);
+else {
+  const p = call.promptFull;
+  if (p.indexOf('## Continuation') === -1)
+    reason = 'a round>1 pass must still get the delta-aware continuation section: ' + p.slice(0,600);
+  else if (p.indexOf('cafe1234abcd..HEAD') === -1)
+    reason = 'the continuation must still carry the real <prior-sha>..HEAD range (delta-awareness is the point of the item): ' + p.slice(0,900);
+  else if (p.indexOf('found blocking finding(s)') !== -1)
+    reason = 'FALSE PREMISE: the prior round was CLEAN (no findings text supplied), so the prompt must NOT claim it found blocking findings: ' + p.slice(0,900);
+  else if (p.indexOf('recorded NO blocking findings') === -1)
+    reason = 'the prompt must state the TRUTHFUL clean-prior-round premise: ' + p.slice(0,900);
+  else if (p.indexOf('no findings text was recorded') !== -1)
+    reason = 'the self-contradictory placeholder must be gone — a clean prior round has no findings SECTION at all, not an empty one: ' + p.slice(0,900);
+  else if (p.indexOf('## Prior round') !== -1)
+    reason = 'a clean prior round must not emit a Prior-round-findings heading at all: ' + p.slice(0,900);
+  else if (p.indexOf('Verify each prior-round finding') !== -1)
+    reason = 'there is nothing to re-verify on a clean prior round — that step must be dropped, not left dangling: ' + p.slice(0,900);
+  else if (p.indexOf(UNRELATED_VERDICT) !== -1)
+    reason = 'a NON-review-blocking verdict block must never leak into the reviewer prompt as if it were prior review findings: ' + p.slice(0,900);
+  else if (p.indexOf('Do BOTH of the following') === -1)
+    reason = 'the step list must renumber to two steps on the clean-prior arm, not leave a 1./3. gap: ' + p.slice(0,900);
+}
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+# ============================================================================
+# TEST (K2127-cifix): the §3g CI-fix re-review call site — runReviewers(item,
+#   wt) with NO third argument — is the single most frequent producer of a
+#   `round > 1` continuation whose prior round was clean, and it too had no
+#   coverage of the prompt it generates (round 2, MEDIUM 5). It bumps the SAME
+#   shared per-worktree counter, so before the fix EVERY CI-fix retry opened its
+#   re-review prompt with the false blocking-findings premise.
+#
+#   Built on the K1450 ci-fix-clean fixture, with the re-review's OWN diff fetch
+#   now reporting review_rounds:1 + a prior sha (which is what the real marker
+#   does on that path).
+# ============================================================================
+run_node_case "K2127-cifix: the CI-fix re-review (runReviewers with no prior-findings argument) gets a delta-aware but TRUTHFUL clean-prior-round prompt" "
+$PREAMBLE
+
+setMachinery('cifix-truth',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/cifix-truth' },
+  { outcome: 'REVIEW_DIFF', files: ['claude/commands/build.md'], tsv: '', tsv_rows: 0, tsv_checksum: 0 },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'a15e' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'a15e', branch: 'build/cifix-truth' },
+  { outcome: 'PR_OPENED', pr_number: 701 },
+  { outcome: 'CI_FAILED', failed_run_ids: [1] },
+  // The re-review's OWN diff fetch — a SEPARATE machinery call, and on the real
+  // path it reads the marker §3e stamped before the push, hence round 1 + a sha.
+  { outcome: 'REVIEW_DIFF', files: ['claude/commands/build.md'], tsv: '', tsv_rows: 0, tsv_checksum: 0, review_rounds: 1, review_prior_sha: 'beef5678cdef' },
+  { outcome: 'PUSHED', sha: 'a25f', branch: 'build/cifix-truth' },
+  { outcome: 'CI_GREEN' },
+  { outcome: 'BODY_UPDATED', pr_number: 701 },
+);
+setWorker('cifix-truth',
+  { status: 'done', summary: 'initial', acceptance_results: [{ criterion: 'c', passed: true, evidence: 'e' }], commits: [] },
+  { status: 'done', summary: 'ci fixed', acceptance_results: [], commits: [] },
+);
+setReview('cifix-truth',
+  '## Summary\\nclean on the original push.\\n\\n## Findings\\n(none)\\n',
+  '## Summary\\nclean on the CI-fix commit too.\\n\\n## Findings\\n(none)\\n',
+);
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'cifix-truth', branch: 'build/cifix-truth', title: 'CI-fix truthful re-review', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+let reason = null;
+const reviewCalls = callLog.filter(c => isReviewCall(c.opts));
+if (reviewCalls.length !== 2)
+  reason = 'expected TWO review agent() calls (original push + CI-fix commit), got ' + reviewCalls.length + ': ' + JSON.stringify(reviewCalls.map(c => c.opts.label));
+else {
+  const first = reviewCalls[0].promptFull;
+  const second = reviewCalls[1].promptFull;
+  if (first.indexOf('## Continuation') !== -1)
+    reason = 'the ORIGINAL round-1 review must carry no continuation section: ' + first.slice(0,400);
+  else if (second.indexOf('## Continuation') === -1)
+    reason = 'the CI-fix re-review is round 2 and must carry the delta-aware continuation section: ' + second.slice(0,600);
+  else if (second.indexOf('beef5678cdef..HEAD') === -1)
+    reason = 'the CI-fix re-review must carry the <prior-sha>..HEAD range so it can see what the fix changed: ' + second.slice(0,900);
+  else if (second.indexOf('found blocking finding(s)') !== -1)
+    reason = 'FALSE PREMISE on the CI-fix path: a round-1 pass that reached CI-fix had ZERO blocking findings (that is why it was pushed), so the re-review must not be told otherwise: ' + second.slice(0,900);
+  else if (second.indexOf('recorded NO blocking findings') === -1)
+    reason = 'the CI-fix re-review must state the truthful clean-prior-round premise: ' + second.slice(0,900);
+  else if (second.indexOf('no findings text was recorded') !== -1)
+    reason = 'the self-contradictory placeholder must be gone from the CI-fix path too: ' + second.slice(0,900);
+}
+if (!reason && (result.escalations ?? []).length !== 0)
+  reason = 'expected 0 escalations: ' + JSON.stringify(result.escalations);
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
 # --- K2127 static lockstep guards --------------------------------------------
-grep -qE 'reviewPrompt\([^)]*prior' "$MJS" \
-  || fail "#2127: the reviewPrompt() call site must carry a prior-round context argument (Class-A activation proof)"
+# ACTIVATION, ANCHORED AT THE CALL SITE (round 2, MEDIUM 4). The round-1 guard
+# here was `reviewPrompt\([^)]*prior`, which matches TWO lines in build-level.mjs
+# — the function DEFINITION (`function reviewPrompt(item, wt, route, files,
+# priorContext)`) as well as the spawning call site. Deleting the 5th argument at
+# the call site would have fully DE-ACTIVATED the feature while leaving this
+# guard green off the definition alone: a guard that cannot go red reads as
+# coverage while providing none. `agent(reviewPrompt(` picks out the one spawning
+# call site (a definition can never carry that prefix), and is the same predicate
+# the plan note's Class-A activation criterion now names. Sibling precedent: the
+# #2046 structural prong later in this file, which defends its own scan pattern
+# against exactly this drift.
+grep -qE 'agent\(reviewPrompt\([^)]*priorContext' "$MJS" \
+  || fail "#2127: the reviewPrompt() CALL SITE — agent(reviewPrompt(…)) — must pass priorContext; that is the Class-A activation proof, and a match on the function DEFINITION alone does not prove the feature is wired"
+# Two-step belt, #2046's shape: EVERY reviewPrompt invocation that is not the
+# definition must carry the argument, so a second, unwired call site cannot be
+# added later without going red. `\([^)]` excludes bare prose mentions
+# (`reviewPrompt()`), which carry no argument by construction.
+_k2127_uses="$(grep -nE 'reviewPrompt\([^)]' "$MJS" | grep -v 'function reviewPrompt' || true)"
+[ -n "$_k2127_uses" ] \
+  || fail "#2127: the activation scan found NO reviewPrompt invocation at all — the pattern has drifted away from the shape it is meant to catch and can no longer go red; fix the pattern rather than deleting the guard"
+_k2127_bare="$(printf '%s\n' "$_k2127_uses" | grep -v 'priorContext' || true)"
+[ -z "$_k2127_bare" ] \
+  || fail "#2127: a reviewPrompt() invocation does not pass priorContext, so the continuation context is silently dropped at that call site. Offending line(s):
+$_k2127_bare"
+unset _k2127_uses _k2127_bare
 grep -q 'function reviewContinuationSection(priorContext)' "$MJS" \
   || fail "#2127: build-level.mjs must define reviewContinuationSection(), the delta-aware instructions block spliced into a continuation prompt"
 grep -q 'build-review-rounds-sha' "$MJS" \
   || fail "#2127: the prior-reviewed-SHA marker must be persisted BESIDE build-review-rounds so it survives the same escalate -> re-invoke loop"
 grep -q 'review_prior_sha' "$MJS" \
   || fail "#2127: reviewDiffCmd must emit review_prior_sha for the continuation prompt to read"
-grep -q 'round > 1 ?' "$MJS" \
-  || fail "#2127: priorContext must be gated on round > 1 — round 1 must never carry a prior-round argument (the byte-identical-output invariant)"
-echo "PASS: #2127 static lockstep guards — reviewPrompt() carries a prior-round context argument, reviewContinuationSection() exists, and the prior-reviewed-SHA marker/field are wired end to end"
+# The continuation gate, pinned by NAME rather than by exact formatting (round 2,
+# LOW 2 — the round-1 pin was the literal `round > 1 ?`, which a reflow would
+# break for a no-op change). The invariant is that the gate exists and is a named
+# predicate, never that it is spelled on one line; the behavioural round-1
+# negative arm in the K2127 node case above is what actually proves round 1 stays
+# byte-identical.
+grep -qE 'const isContinuationRound = round[[:space:]]*>[[:space:]]*1' "$MJS" \
+  || fail "#2127: priorContext must stay gated on the named continuation predicate (isContinuationRound = round > 1) — round 1 must never carry a prior-round argument (the byte-identical-output invariant)"
+# The gate establishes only that a prior round RAN; whether it BLOCKED is decided
+# solely by the presence of findings text. reviewContinuationSection() must
+# therefore carry BOTH premises (round 2, HIGH B1) — a single hard-coded "found
+# blocking finding(s)" opening is false on every CI-fix and non-review-blocking
+# resume.
+grep -q 'const hasFindings = ' "$MJS" \
+  || fail "#2127: reviewContinuationSection() must branch its premise on whether prior findings are ACTUALLY present (hasFindings) — a fixed 'round N found blocking finding(s)' opening is FALSE on a CI-fix or non-review-blocking continuation"
+echo "PASS: #2127 static lockstep guards — the reviewPrompt() CALL SITE carries priorContext (no definition-only match), reviewContinuationSection() exists and branches on findings presence, and the prior-reviewed-SHA marker/field are wired end to end"
 
 # ============================================================================
 # TEST (K1970-e2e): the round counter's GENERATED SHELL, executed for real
@@ -11033,36 +11216,82 @@ K2127_HEAD="$(git -C "$K1970_E2E/repo.wt/rounds" rev-parse HEAD)"
 # generated script BUMPS on every call, so grep'ing review_rounds and
 # review_prior_sha from two SEPARATE invocations would read two DIFFERENT
 # rounds' output and desync the two assertions below from each other.
-K1970_OUT1="$(bash "$K1970_E2E/review-diff.sh" 2>/dev/null)"
-K1970_R1="$(printf '%s' "$K1970_OUT1" | grep -o '\"review_rounds\":[0-9]*' | head -1)"
+# CAPTURE FAILURES MUST NOT KILL THE SUITE (round 2, MEDIUM 3). This file runs
+# under `set -euo pipefail`, so without the trailing `|| true` a `grep -o` that
+# matches NOTHING — i.e. the single most likely regression, the field being
+# dropped from the JSON line by the relay or by an edit to reviewDiffCmd — exits
+# 1, pipefail propagates it, and `set -e` terminates the run AT THE ASSIGNMENT,
+# before the `|| fail "… got '…'"` on the very next line can name what went
+# wrong. The result was a bare non-zero exit with no clue which of ~13,000 lines
+# died. `|| true` lets the capture yield the empty string so the diagnostic
+# assertion below actually runs. Same treatment for the three K1970_Rn captures,
+# which carried the identical latent bug. (Precedent: the K1970-octal captures
+# further down already do this.)
+#
+# THE STRAY `\"` IS ALSO GONE (round 2, LOW 1). These patterns are SINGLE-quoted,
+# so a `\"` reaches grep as an undefined BRE escape. BSD grep is silent about it;
+# GNU grep warns `stray \ before "` twice per call, and GNU 3.8 promoted several
+# sibling stray-escape warnings to hard errors. A bare `"` inside single quotes
+# needs no escaping at all.
+K1970_OUT1="$(bash "$K1970_E2E/review-diff.sh" 2>/dev/null || true)"
+K1970_R1="$(printf '%s' "$K1970_OUT1" | grep -o '"review_rounds":[0-9]*' | head -1 || true)"
 [ "$K1970_R1" = '"review_rounds":0' ] \
   || fail "#1970-e2e: a fresh worktree's FIRST review round must report 0 prior rounds; got '$K1970_R1'"
-K2127_SHA1="$(printf '%s' "$K1970_OUT1" | grep -o '\"review_prior_sha\":\"[0-9a-f]*\"' | head -1)"
+K2127_SHA1="$(printf '%s' "$K1970_OUT1" | grep -o '"review_prior_sha":"[0-9a-f]*"' | head -1 || true)"
 [ "$K2127_SHA1" = '"review_prior_sha":""' ] \
   || fail "#2127-e2e: a fresh worktree's FIRST review round has nothing to carry yet and must report an EMPTY prior sha, never a bogus value; got '$K2127_SHA1'"
 
-K1970_OUT2="$(bash "$K1970_E2E/review-diff.sh" 2>/dev/null)"
-K1970_R2="$(printf '%s' "$K1970_OUT2" | grep -o '\"review_rounds\":[0-9]*' | head -1)"
+K1970_OUT2="$(bash "$K1970_E2E/review-diff.sh" 2>/dev/null || true)"
+K1970_R2="$(printf '%s' "$K1970_OUT2" | grep -o '"review_rounds":[0-9]*' | head -1 || true)"
 [ "$K1970_R2" = '"review_rounds":1' ] \
   || fail "#1970-e2e: the round counter must be DURABLE across separate invocations (that is the escalate -> re-invoke loop it bounds); got '$K1970_R2'"
-K2127_SHA2="$(printf '%s' "$K1970_OUT2" | grep -o '\"review_prior_sha\":\"[0-9a-f]*\"' | head -1)"
+K2127_SHA2="$(printf '%s' "$K1970_OUT2" | grep -o '"review_prior_sha":"[0-9a-f]*"' | head -1 || true)"
 [ "$K2127_SHA2" = "\"review_prior_sha\":\"$K2127_HEAD\"" ] \
   || fail "#2127-e2e: round 2 must report the SHA round 1 actually reviewed (this fixture's one commit); got '$K2127_SHA2' (want review_prior_sha:\"$K2127_HEAD\")"
 
-K1970_OUT3="$(bash "$K1970_E2E/review-diff.sh" 2>/dev/null)"
-K1970_R3="$(printf '%s' "$K1970_OUT3" | grep -o '\"review_rounds\":[0-9]*' | head -1)"
+# THE DISCRIMINATING COMMIT (round 2, MEDIUM 2). Up to this point the fixture has
+# exactly ONE commit, so `$K2127_HEAD` is simultaneously what round 1 reviewed,
+# what round 2 reviewed, and current HEAD — which means an implementation that
+# read the marker AFTER the bump (reporting CURRENT HEAD as the prior SHA, which
+# destroys the entire point of this item: the delta range would always be empty)
+# would satisfy every assertion above. Read-before-bump is the load-bearing
+# property, and it is only observable once HEAD MOVES BETWEEN ROUNDS. Adding a
+# second commit here splits the two values apart: round 3 must report the round-2
+# HEAD (the OLD commit), and round 4 the new one. A read-after-bump build reports
+# the new commit on round 3 and goes red.
+K2127_HEAD2_PRE="$(git -C "$K1970_E2E/repo.wt/rounds" rev-parse HEAD)"
+[ "$K2127_HEAD2_PRE" = "$K2127_HEAD" ] \
+  || fail "#2127-e2e: fixture self-check failed — HEAD moved before the discriminating commit was made, so the round-3 assertion below would not measure what it claims"
+printf 'second\n' >> "$K1970_E2E/repo.wt/rounds/f.txt"
+git -C "$K1970_E2E/repo.wt/rounds" add -A >/dev/null 2>&1 \
+  && git -C "$K1970_E2E/repo.wt/rounds" commit --quiet -m 'round-3 delta' \
+  || fail "#2127-e2e: could not add the discriminating second commit to the fixture worktree"
+K2127_HEAD2="$(git -C "$K1970_E2E/repo.wt/rounds" rev-parse HEAD)"
+[ "$K2127_HEAD2" != "$K2127_HEAD" ] \
+  || fail "#2127-e2e: fixture self-check failed — the second commit did not move HEAD, so rounds 3 and 4 cannot discriminate read-before-bump from read-after-bump"
+
+K1970_OUT3="$(bash "$K1970_E2E/review-diff.sh" 2>/dev/null || true)"
+K1970_R3="$(printf '%s' "$K1970_OUT3" | grep -o '"review_rounds":[0-9]*' | head -1 || true)"
 [ "$K1970_R3" = '"review_rounds":2' ] \
   || fail "#1970-e2e: the round counter must keep advancing; got '$K1970_R3'"
-K2127_SHA3="$(printf '%s' "$K1970_OUT3" | grep -o '\"review_prior_sha\":\"[0-9a-f]*\"' | head -1)"
+K2127_SHA3="$(printf '%s' "$K1970_OUT3" | grep -o '"review_prior_sha":"[0-9a-f]*"' | head -1 || true)"
 [ "$K2127_SHA3" = "\"review_prior_sha\":\"$K2127_HEAD\"" ] \
-  || fail "#2127-e2e: round 3 must keep reporting the SHA the PRIOR round reviewed (unchanged — this fixture adds no commits between rounds); got '$K2127_SHA3'"
+  || fail "#2127-e2e: round 3 must report the SHA round 2 actually reviewed ($K2127_HEAD), NOT current HEAD ($K2127_HEAD2) — reporting current HEAD is the read-AFTER-bump defect that would make every continuation diff range empty; got '$K2127_SHA3'"
+
+K1970_OUT4="$(bash "$K1970_E2E/review-diff.sh" 2>/dev/null || true)"
+K1970_R4="$(printf '%s' "$K1970_OUT4" | grep -o '"review_rounds":[0-9]*' | head -1 || true)"
+[ "$K1970_R4" = '"review_rounds":3' ] \
+  || fail "#1970-e2e: the round counter must keep advancing; got '$K1970_R4'"
+K2127_SHA4="$(printf '%s' "$K1970_OUT4" | grep -o '"review_prior_sha":"[0-9a-f]*"' | head -1 || true)"
+[ "$K2127_SHA4" = "\"review_prior_sha\":\"$K2127_HEAD2\"" ] \
+  || fail "#2127-e2e: round 4 must report the NEW commit round 3 reviewed ($K2127_HEAD2) — the marker must ADVANCE with HEAD, not stay pinned to the first commit; got '$K2127_SHA4'"
 
 [ -f "$K1970_GD/build-review-rounds" ] \
   || fail "#1970-e2e: the round marker must live in the worktree's private GIT DIR"
 [ -f "$K1970_GD/build-review-rounds-sha" ] \
   || fail "#2127-e2e: the prior-reviewed-SHA marker must live BESIDE build-review-rounds, in the same private GIT DIR"
-[ "$(cat "$K1970_GD/build-review-rounds-sha")" = "$K2127_HEAD" ] \
-  || fail "#2127-e2e: the on-disk sha marker must hold the reviewed HEAD verbatim; got '$(cat "$K1970_GD/build-review-rounds-sha")'"
+[ "$(cat "$K1970_GD/build-review-rounds-sha")" = "$K2127_HEAD2" ] \
+  || fail "#2127-e2e: the on-disk sha marker must hold the most recently reviewed HEAD verbatim; got '$(cat "$K1970_GD/build-review-rounds-sha")'"
 git -C "$K1970_E2E/repo.wt/rounds" status --porcelain | grep . >/dev/null \
   && fail "#1970-e2e/#2127-e2e: neither marker may appear in the worktree's working tree (git status must stay clean — a stray untracked file would reach the --scoped gate and the coverage manifests)"
 echo "PASS: #1970-e2e round counter — the real generated review-diff shell reads and advances a DURABLE per-worktree counter kept in the private git dir, leaving the working tree clean"
@@ -11105,6 +11334,93 @@ K1970_ZEROS="$(sh "$K1970_E2E/review-diff.sh" 2>/dev/null | grep -o '"review_rou
 [ "$K1970_ZEROS" = '"review_rounds":0' ] \
   || fail "#1970-octal: an all-zeros marker must fall back to 0 (the empty result of stripping leading zeros), never emit an empty field; got '$K1970_ZEROS'"
 echo "PASS: #1970-octal corrupted marker — a leading-zero count reads as decimal and an all-zeros one degrades to 0, so a hand-edited marker never aborts the step with an octal arithmetic error"
+
+# ============================================================================
+# TEST (K2127-corrupt): a CORRUPTED prior-SHA marker must degrade to EMPTY,
+#   never to a plausible-but-bogus hex string.
+#
+#   The sibling of K1970-octal above, for the sibling marker, and the round-2
+#   HIGH A this case exists to keep closed. `tr -cd '0-9a-fA-F'` is a FILTER,
+#   not a validator: it DELETES the bytes it dislikes and hands back whatever
+#   survives, and the survivors are frequently well-shaped hex. Measured
+#   against this very generated shell before the fix:
+#
+#     marker content              emitted        looks like a sha?
+#     `not a sha at all`       -> `aaaa`         yes
+#     `ref: refs/heads/main`   -> `efefeada`     yes
+#     `deadbeefcafe deadb…`    -> `deadbeefcafedeadbeefcafe`  yes
+#
+#   Every one of those reaches the reviewer as `git diff <bogus>..HEAD`, which
+#   dies `fatal: ambiguous argument` in the REVIEWER's shell — somewhere §3e
+#   never looks. The fix resolves the filtered value against the repo
+#   (`git rev-parse --verify --quiet '<sha>^{commit}'`) and additionally
+#   requires it to still be an ANCESTOR of HEAD, so a real-but-orphaned
+#   pre-rebase commit degrades too (round 2, HIGH B2).
+#
+#   Asserted under BOTH shells, exactly as K1970-octal is, since the marker
+#   block is `sh`-portable by contract.
+# ============================================================================
+# A plain function, NOT a `while read` over a pipe: `fail` exits, and an exit
+# inside a pipeline's subshell would only kill the subshell, turning a genuine
+# regression into a silently-passing case.
+_k2127_expect_empty() {
+  printf '%s\n' "$1" > "$K1970_GD/build-review-rounds-sha"
+  _k2127_got="$(sh "$K1970_E2E/review-diff.sh" 2>/dev/null | grep -o '"review_prior_sha":"[0-9a-fA-F]*"' | head -1 || true)"
+  [ "$_k2127_got" = '"review_prior_sha":""' ] \
+    || fail "#2127-corrupt: a marker holding '$1' must degrade to an EMPTY prior sha — tr -cd is a sanitiser, not a validator, and its surviving bytes are frequently well-shaped hex that would pass straight through to a 'git diff <bogus>..HEAD' the reviewer cannot run; got '$_k2127_got'"
+  # Under bash too — the marker block is sh-portable by contract, and the
+  # K1970-octal sibling asserts under both shells for the same reason.
+  printf '%s\n' "$1" > "$K1970_GD/build-review-rounds-sha"
+  _k2127_got="$(bash "$K1970_E2E/review-diff.sh" 2>/dev/null | grep -o '"review_prior_sha":"[0-9a-fA-F]*"' | head -1 || true)"
+  [ "$_k2127_got" = '"review_prior_sha":""' ] \
+    || fail "#2127-corrupt (bash): a marker holding '$1' must degrade to an EMPTY prior sha; got '$_k2127_got'"
+}
+_k2127_expect_empty 'not a sha at all'
+_k2127_expect_empty 'ref: refs/heads/main'
+_k2127_expect_empty 'deadbeefcafe deadbeefcafe'
+_k2127_expect_empty 'zzzz not hex zzzz'
+_k2127_expect_empty '0000000000000000000000000000000000000000'
+# A REAL commit object that is NOT an ancestor of HEAD must also degrade — this
+# is the pre-rebase-orphan shape (HIGH B2): §3e stamps the marker BEFORE
+# 3e.5-pre's gate-freshness rebase, so on the §3g CI-fix re-review path the
+# recorded commit can have been rewritten off the branch. `<orphan>..HEAD` would
+# then span the whole upstream delta plus the rebase rewrite plus the fix.
+K2127_ORPHAN="$(git -C "$K1970_E2E/repo.wt/rounds" commit-tree "$(git -C "$K1970_E2E/repo.wt/rounds" rev-parse 'HEAD^{tree}')" -m 'orphan, not on this branch' 2>/dev/null || true)"
+[ -n "$K2127_ORPHAN" ] \
+  || fail "#2127-corrupt: fixture self-check failed — could not mint a real-but-unreachable commit object to exercise the ancestry rejection"
+git -C "$K1970_E2E/repo.wt/rounds" rev-parse --verify --quiet "$K2127_ORPHAN^{commit}" >/dev/null \
+  || fail "#2127-corrupt: fixture self-check failed — the minted orphan is not a resolvable commit, so this case would pass for the WRONG reason (it would be rejected as unresolvable, not as non-ancestor)"
+printf '%s\n' "$K2127_ORPHAN" > "$K1970_GD/build-review-rounds-sha"
+K2127_ORPHAN_GOT="$(sh "$K1970_E2E/review-diff.sh" 2>/dev/null | grep -o '"review_prior_sha":"[0-9a-fA-F]*"' | head -1 || true)"
+[ "$K2127_ORPHAN_GOT" = '"review_prior_sha":""' ] \
+  || fail "#2127-corrupt: a REAL commit that is no longer an ancestor of HEAD (the pre-rebase orphan a gate-freshness rebase leaves behind) must degrade to an EMPTY prior sha so the prompt falls back to its commit-range-free wording; got '$K2127_ORPHAN_GOT'"
+# Positive control: the SAME machinery must still pass a genuine ancestor
+# through. Without this the four negatives above would also be satisfied by an
+# implementation that simply never emits a sha at all.
+K2127_GOODSHA="$(git -C "$K1970_E2E/repo.wt/rounds" rev-parse HEAD)"
+printf '%s\n' "$K2127_GOODSHA" > "$K1970_GD/build-review-rounds-sha"
+K2127_GOOD_GOT="$(sh "$K1970_E2E/review-diff.sh" 2>/dev/null | grep -o '"review_prior_sha":"[0-9a-fA-F]*"' | head -1 || true)"
+[ "$K2127_GOOD_GOT" = "\"review_prior_sha\":\"$K2127_GOODSHA\"" ] \
+  || fail "#2127-corrupt: positive control failed — a genuine, resolvable, ancestor SHA must still be emitted verbatim; got '$K2127_GOOD_GOT'"
+# An UNBORN HEAD must not write the literal string 'HEAD' into the marker
+# (round 2, HIGH A, second path): a bare `git rev-parse HEAD` prints `HEAD` on
+# STDOUT and exits 128 there, which `|| true` swallows and `[ -n … ]` accepts.
+# `--verify --quiet` yields the empty string instead, so nothing is written.
+K2127_UNBORN="$WF_TEST_TMPDIR/k2127-unborn"
+mkdir -p "$K2127_UNBORN"
+git -C "$K2127_UNBORN" init --quiet .
+git -C "$K2127_UNBORN" symbolic-ref HEAD refs/heads/main
+[ "$(git -C "$K2127_UNBORN" rev-parse HEAD 2>/dev/null || true)" = "HEAD" ] \
+  || fail "#2127-corrupt: fixture self-check failed — this git does NOT print the literal 'HEAD' for a bare rev-parse on an unborn branch, so the unborn-HEAD case below cannot discriminate the defect it targets"
+MJS_PATH="$MJS" AGENT_DEF_PATH="$AGENT_DEF" \
+K1970_ROOT="$K1970_E2E" K1970_WT="$K2127_UNBORN" K1970_OUT="$K1970_E2E/review-diff-unborn.sh" \
+  node "$K1970_CASE" >/dev/null || fail "#2127-corrupt: could not emit a review-diff command for the unborn-HEAD fixture (node failed)"
+bash "$K1970_E2E/review-diff-unborn.sh" >/dev/null 2>&1 || true
+K2127_UNBORN_GD="$(git -C "$K2127_UNBORN" rev-parse --absolute-git-dir)"
+if [ -f "$K2127_UNBORN_GD/build-review-rounds-sha" ]; then
+  fail "#2127-corrupt: on an UNBORN HEAD nothing may be written to the prior-sha marker — a bare 'git rev-parse HEAD' prints the literal string HEAD there (exit 128), which a later round's tr -cd filters to 'EAD'; marker holds '$(cat "$K2127_UNBORN_GD/build-review-rounds-sha")'"
+fi
+echo "PASS: #2127-corrupt prior-sha marker — a corrupted marker, a real-but-orphaned (pre-rebase) commit, and an unborn HEAD each degrade to an EMPTY prior sha, while a genuine ancestor still passes through verbatim"
 
 # ============================================================================
 # temperloop#2014: the push -> ci-poll SHA hand-off
