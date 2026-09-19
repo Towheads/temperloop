@@ -5749,7 +5749,15 @@ function dualBuildInput() {
   if (!tier) missing.push('tier');
   if (!baseline) missing.push('baseline');
   if (!candidate) missing.push('candidate');
-  if (!inScope) missing.push('inScope');
+  // An EMPTY inScope is as unusable as an absent one, and `![]` is false, so a
+  // truthiness check alone lets it through (temperloop#2080 review round 3). A
+  // present-but-empty array reaches here two ways: the caller passed `inScope: []`,
+  // or every entry was blank/non-string and `.map(str).filter(Boolean)` scrubbed it.
+  // Either way `dual.inScope` becomes an empty Set, EVERY item then misses
+  // `inScope.has(slug)` and takes the single-arm path, and the level reports a
+  // dualBuild summary having compared nothing — precisely the outcome this function
+  // refuses rather than degrades into.
+  if (!inScope || inScope.length === 0) missing.push('inScope');
   if (missing.length > 0) {
     return { invalid: `dualBuild is missing or empty: ${missing.join(', ')}` };
   }

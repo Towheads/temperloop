@@ -12360,6 +12360,48 @@ if (callLog.length !== 0)
 console.log(JSON.stringify({ ok: true }));
 "
 
+run_node_case "K2080 input: a PRESENT-BUT-EMPTY inScope REFUSES the level (an empty array is not a valid comparison set)" "
+$PREAMBLE
+
+// Two shapes reach the same state: an explicitly empty array, and an array whose
+// every entry is scrubbed away by the map(str).filter(Boolean) normalisation.
+globalThis.args = { ...baseArgs, dualBuild: { tier: 'sonnet', baseline: 'b', candidate: 'c', inScope: [] }, items: [
+  { slug: 'e1', branch: 'build/e1', title: 'Empty', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+
+const esc = (result.escalations ?? []).find(e => e.slug === 'e1');
+if (!esc || esc.kind !== 'dual-build-input-invalid')
+  { console.log(JSON.stringify({ ok: false, reason: 'an empty inScope must REFUSE, not silently run single-arm: ' + JSON.stringify(result) })); process.exit(0); }
+if (!/inScope/.test(String(esc.payload.reason)))
+  { console.log(JSON.stringify({ ok: false, reason: 'the refusal must name inScope: ' + JSON.stringify(esc.payload) })); process.exit(0); }
+if (callLog.length !== 0)
+  { console.log(JSON.stringify({ ok: false, reason: 'a refused level must spawn nothing: ' + JSON.stringify(callLog.map(c => c.opts.label)) })); process.exit(0); }
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+run_node_case "K2080 input: an inScope whose every entry scrubs to empty REFUSES the level" "
+$PREAMBLE
+
+globalThis.args = { ...baseArgs, dualBuild: { tier: 'sonnet', baseline: 'b', candidate: 'c', inScope: ['  ', '', 42] }, items: [
+  { slug: 'e2', branch: 'build/e2', title: 'Scrubbed', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+
+const esc = (result.escalations ?? []).find(e => e.slug === 'e2');
+if (!esc || esc.kind !== 'dual-build-input-invalid')
+  { console.log(JSON.stringify({ ok: false, reason: 'an all-blank inScope must REFUSE: ' + JSON.stringify(result) })); process.exit(0); }
+if (callLog.length !== 0)
+  { console.log(JSON.stringify({ ok: false, reason: 'a refused level must spawn nothing: ' + JSON.stringify(callLog.map(c => c.opts.label)) })); process.exit(0); }
+
+console.log(JSON.stringify({ ok: true }));
+"
+
 # --- temperloop#2080 static guards ------------------------------------------
 # The runtime cases above prove the behaviour. These pin the two STRUCTURAL
 # facts a future edit could undo while every case above still passed: that the
