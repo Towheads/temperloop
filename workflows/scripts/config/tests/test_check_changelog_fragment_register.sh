@@ -9,6 +9,15 @@
 # (an empty, but present and readable, directory is not a violation — the
 # legitimate post-release-cut state).
 #
+# Round-2 review additions (§3e round 2): the "could-not-run" state (cases
+# 9-10) — a checker that cannot load its lib, or whose fragment directory
+# is readable-but-unsearchable, must fail loudly rather than report a
+# false "0 violations" OK; the per-bullet title-hook scoping fix (cases
+# 11-11b) — a bold lead-in on one bullet must not satisfy the hook
+# requirement for a DIFFERENT bullet's own first issue mention; and a
+# mixed-directory case (case 12) pinning the checked-count and per-file
+# attribution when more than one fragment is present at once.
+#
 # Mirrors the sibling test_check_setting_prose.sh's plain mktemp-fixture
 # style: no git repo needed, the checker is pointed at a scratch directory
 # via its one documented seam (CHANGELOG_FRAGMENT_DIR).
@@ -19,14 +28,23 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_DIR="$(cd "$HERE/.." && pwd)"
 CHECKER="$CONFIG_DIR/check-changelog-fragment-register.sh"
 
+# Case 9 moves the real changelog.sh aside and back. Both paths are hoisted
+# here and the restore is folded into the trap below, so an aborted or
+# interrupted run can never strand the repo without its lib.
+LIBFILE="$CONFIG_DIR/../lib/changelog.sh"
+LIBBAK=""
+
 fail() { echo "FAIL: $1" >&2; exit 1; }
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/changelog-fragment-register-test-XXXXXX")"
 cleanup() {
+  if [ -n "$LIBBAK" ] && [ -e "$LIBBAK" ] && [ ! -e "$LIBFILE" ]; then
+    mv "$LIBBAK" "$LIBFILE"
+  fi
   chmod -R u+rwX "$WORK" 2>/dev/null || true
   rm -rf "$WORK"
 }
-trap cleanup EXIT
+trap cleanup EXIT INT TERM
 
 FRAGDIR="$WORK/changelog.d"
 mkdir -p "$FRAGDIR"
@@ -159,6 +177,137 @@ if [ "$rc" -eq 0 ]; then
   fail "8: unreadable fragment directory should fail, never a silent OK"
 fi
 echo "PASS: 8 unreadable fragment directory fails, never a silent OK (RED)"
+
+# --- 9. RED (could-not-run, HIGH 1 belts 1/2): changelog.sh unsourceable ---
+# A checker that cannot load its own lib (renamed, missing, or defines
+# nothing) must fail loudly, never fall through the unchecked `source` +
+# process-substitution loop to a green "0 violations" (the reported bug:
+# `command not found` on stderr, exit 0, printed alongside a fixture that
+# violates all three checks).
+clear_frags
+write_frag "9-good.fixed.md" \
+  "- **A hard-killed test run no longer strands its sandbox** (#1667)."
+LIBBAK="$WORK/changelog.sh.bak"
+mv "$LIBFILE" "$LIBBAK"
+rc=0
+run_checker >"$WORK/out9" 2>&1 || rc=$?
+mv "$LIBBAK" "$LIBFILE"
+out="$(cat "$WORK/out9")"
+if [ "$rc" -eq 0 ]; then
+  fail "9: an unsourceable changelog.sh must fail loudly, never report a false OK:
+$out"
+fi
+case "$out" in
+  *"cannot load"*) : ;;
+  *) fail "9: expected a 'cannot load changelog.sh' message, got:
+$out" ;;
+esac
+echo "PASS: 9 unsourceable changelog.sh fails loudly, never a false OK (RED — could-not-run)"
+
+# --- 10. RED (could-not-run, HIGH 1 belt 3): dir readable but not
+# searchable (chmod 444) ------------------------------------------------
+# This is the SECOND arm of the reported bug: the `-r` degenerate-input
+# guard passes (the directory IS readable), but every entry is then
+# invisible to changelog.sh's own `-e`/`-L` tests (which need the
+# directory's execute/search bit), so the main loop silently processes
+# zero fragments while a real one sits on disk. The independent raw-glob
+# cross-check (belt 3) must catch this and fail loudly rather than print
+# "OK — 0 ... checked".
+clear_frags
+write_frag "10-good.fixed.md" \
+  "- **A hard-killed test run no longer strands its sandbox** (#1667)."
+chmod 444 "$FRAGDIR"
+rc=0
+run_checker >"$WORK/out10" 2>&1 || rc=$?
+chmod u+rwx "$FRAGDIR"
+out="$(cat "$WORK/out10")"
+if [ "$rc" -eq 0 ]; then
+  fail "10: a readable-but-unsearchable fragment dir (with a real fragment inside) must fail loudly, never report a false OK:
+$out"
+fi
+case "$out" in
+  *"OK — 0"*) fail "10: got the exact reads-green-while-inert shape (a silent 0-fragment OK) this belt exists to catch:
+$out" ;;
+esac
+case "$out" in
+  *"sanity mismatch"*) : ;;
+  *) fail "10: expected a sanity-mismatch message naming the raw vs. processed count, got:
+$out" ;;
+esac
+echo "PASS: 10 readable-but-unsearchable dir with a real fragment fails loudly, never a false OK (RED — could-not-run)"
+
+# --- 11. RED: multi-bullet fragment, only bullet 1 hooked (MEDIUM 2) -------
+# Reproduces the reported false-pass: a bold lead-in on bullet 1 must NOT
+# satisfy the hook requirement for bullet 2's own, separate first `#N`.
+clear_frags
+write_frag "11-multibullet.fixed.md" \
+  "- **Hooked** thing.
+- Another thing (temperloop#2136)."
+out="$(run_checker 2>&1)" && fail "11: bullet 2's un-hooked first mention should fail even though bullet 1 is hooked:
+$out"
+case "$out" in
+  *"11-multibullet.fixed.md"*"no title hook"*) : ;;
+  *) fail "11: expected a no-title-hook REGISTER finding naming the file, got:
+$out" ;;
+esac
+echo "PASS: 11 multi-bullet fragment with an un-hooked second bullet fails (RED — per-bullet scoping)"
+
+# --- 11b. GREEN twin: same fragment, both bullets individually hooked -----
+clear_frags
+write_frag "11-multibullet.fixed.md" \
+  "- **Hooked** thing.
+- **Another hooked thing** (temperloop#2136)."
+out="$(run_checker 2>&1)" || fail "11b: a multi-bullet fragment with every bullet individually hooked should pass:
+$out"
+echo "PASS: 11b every-bullet-hooked twin of 11 passes (GREEN — per-bullet scoping confirmed)"
+
+# --- 12. RED: mixed directory — one clean fragment, one dirty ---------------
+# No prior case exercised more than one fragment at once; this pins both
+# the counter (checked = 2) and per-file attribution (the finding names
+# only the dirty file, never the clean one).
+clear_frags
+write_frag "12a-clean.fixed.md" \
+  "- **A hard-killed test run no longer strands its sandbox** (#1667)."
+write_frag "12b-dirty.fixed.md" \
+  "- (#1667). The reaper now cleans up orphaned sandboxes on every run."
+out="$(run_checker 2>&1)" && fail "12: a directory with one dirty fragment among clean ones should fail:
+$out"
+case "$out" in
+  *"across 2 fragment"*) : ;;
+  *) fail "12: expected the sanity-checked, per-run 'checked' counter to read 2, got:
+$out" ;;
+esac
+case "$out" in
+  *"12b-dirty.fixed.md"*"no title hook"*) : ;;
+  *) fail "12: expected the finding to name the dirty file, got:
+$out" ;;
+esac
+case "$out" in
+  *"12a-clean.fixed.md"*) fail "12: the clean file must not be named in any finding, got:
+$out" ;;
+  *) : ;;
+esac
+echo "PASS: 12 mixed directory (1 clean + 1 dirty) fails, checked=2, names only the dirty file (RED — mixed-directory)"
+
+# --- 13. RED (LOW 2): explicitly-empty CHANGELOG_FRAGMENT_DIR must not
+# silently redirect at the real tree -----------------------------------
+# `${VAR-default}` (not `${VAR:=default}`) means an explicitly-empty value
+# stays empty rather than being treated as unset; the empty path then fails
+# the `-e` degenerate-input guard loudly instead of falling through to scan
+# whatever changelog.d/ the checker happens to sit next to.
+rc=0
+CHANGELOG_FRAGMENT_DIR="" bash "$CHECKER" >"$WORK/out13" 2>&1 || rc=$?
+out="$(cat "$WORK/out13")"
+if [ "$rc" -eq 0 ]; then
+  fail "13: an explicitly-empty CHANGELOG_FRAGMENT_DIR must fail, never silently scan the real tree:
+$out"
+fi
+case "$out" in
+  *"not found"*) : ;;
+  *) fail "13: expected a 'fragment directory not found' message for the empty path, got:
+$out" ;;
+esac
+echo "PASS: 13 explicitly-empty CHANGELOG_FRAGMENT_DIR fails loudly, never silently redirects (RED)"
 
 echo
 echo "test_check_changelog_fragment_register: OK — all checks passed"

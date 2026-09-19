@@ -10,8 +10,9 @@
 - **A new mechanical lint catches the register defects `changelog.d/`
   fragments kept losing to a one-round-late review finding** (#2136).
   `workflows/scripts/config/check-changelog-fragment-register.sh`, wired
-  into `scripts/quality-gates.sh`'s `checks` gate, fails a fragment whose
-  first issue mention has no bold title hook, that carries bare
+  into `scripts/quality-gates.sh`, backing `checks` in
+  `.github/workflows/ci.yml`, fails a fragment whose first issue mention
+  has no bold title hook, that carries bare
   `K<N>`/`S<N>`/`F<N>`/`M<N>`/`W<N>`-style cross-repo shorthand, or that
   names one of two internal-jargon phrases `docs-reviewer` itself lists as
   unexplained-shorthand examples. Deliberately narrower than

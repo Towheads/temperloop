@@ -205,9 +205,9 @@ judged likely low-precision, and deliberately did not reach for first.
 ### Mechanical check
 
 `workflows/scripts/config/check-changelog-fragment-register.sh` (wired into
-`scripts/quality-gates.sh`'s `checks` gate, temperloop#2136) now enforces a
-narrow, high-precision slice of the rule above on every fragment in this
-directory:
+`scripts/quality-gates.sh`'s `checks` gate, temperloop#2136 (severity-grading
+coin flip)) now enforces a narrow, high-precision slice of the rule above on
+every fragment in this directory:
 
 - the fragment's first issue mention (`#N`, in any form) carries a bold
   lead-in before it — the convention every fragment above already follows,
@@ -216,9 +216,14 @@ directory:
   own cross-repo reference shorthand, `claude/CLAUDE.kernel.md` §
   Communication conventions) — write the full form (`temperloop#N`)
   instead;
-- none of `docs-reviewer.md`'s own named unexplained-shorthand examples
-  that this directory's fragments have never needed: `WIP cap`, `checks
-  gate`.
+- none of `docs-reviewer.md`'s own named unexplained-shorthand examples,
+  verbatim: `WIP cap`, `checks gate`. A fragment can always name the
+  underlying mechanism instead — the `checks` CI status check
+  (`.github/workflows/ci.yml`), not "the checks gate" — so this ban costs
+  nothing a fragment actually needs to say. (This directory's own
+  temperloop#2136 fragment above needed a reword to clear this exact
+  check on its first pass — see that fragment's own text for the
+  resolved phrasing.)
 
 Deliberately NOT the step-letter/section-index rule above (`Step 4a`,
 `§3e`, `round 1`, `dimension 4`) — this corpus already carries pre-existing,
