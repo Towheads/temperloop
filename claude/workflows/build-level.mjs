@@ -707,7 +707,21 @@ const SPINE_OUTCOME_SCHEMA = {
     // suite growth observable on every run, not only when it blows a budget.
     resumeAt: { type: ['number', 'string'] },
     failed: { type: ['number', 'string'] },
-    elapsedSecs: { type: ['number', 'string'] },
+    // `'null'` IS LOAD-BEARING HERE, not defensive padding (temperloop#1698,
+    // review round 2). The gate emitter below deliberately prints a bareword
+    // `null` when the elapsed figure is unreadable — that IS the fix: an
+    // unknown duration must degrade to "I don't know", never to a plausible
+    // `0`. This object is what `agent({schema})` validates the executor's
+    // returned line against, so leaving `null` out of the type array would
+    // reject (or silently coerce) the ONE shape the fix exists to produce —
+    // reintroducing the same degrade-to-a-believable-value defect one layer
+    // up, on the path that only fires when the figure is already unknown.
+    // Same precedent as `input_tokens` / `output_tokens` above, declared
+    // `['number', 'null']` for exactly this reason. Kept honest by the K1698
+    // producer↔schema case in test_workflow.sh, which runs the REAL emitted
+    // shell fragment and validates the REAL line it prints against THIS object
+    // rather than against an injected outcome object.
+    elapsedSecs: { type: ['number', 'string', 'null'] },
     budgetSecs: { type: ['number', 'string'] },
     // temperloop#2094: the gate slice's own exit status. It is a FACT the
     // ledger carries, never the classifier's input — a slice that printed a
@@ -720,9 +734,24 @@ const SPINE_OUTCOME_SCHEMA = {
     // `step` is the batch step's own `kind` (or 'solo'), so an escalation payload
     // names WHICH machinery call the ceiling bounded without any correlation work.
     step: { type: 'string' },
+    // temperloop#1698 — these three are the NON-canonical (wire) spelling: the
+    // emitted `__lb` shell prints them, so the schema must keep admitting them
+    // or the bound's own STEP_TIMEOUT would fail validation. They are
+    // canonicalized to `ceilingSecs` / `elapsedSecs` / `slowSecs` by
+    // canonicalizeOutcome() at the transport boundary, and NO consumer in this
+    // file reads a snake_case duration key any more. The camelCase twins are
+    // declared alongside so an emitter that already speaks canonical (the 3e.5
+    // gate does, for `elapsedSecs`/`budgetSecs` above) validates unchanged.
     ceiling_secs: { type: ['number', 'string'] },
     elapsed_secs: { type: ['number', 'string'] },
     slow_secs: { type: ['number', 'string'] },
+    ceilingSecs: { type: ['number', 'string'] },
+    slowSecs: { type: ['number', 'string'] },
+    // temperloop#865 — the WORKER's own scoped-gate sentinel, classified by the
+    // 3e.5 gate command inside the worktree it is about: 'finished' | 'running'
+    // | 'absent' | 'unknown'. Parent-side evidence that the worker's gate
+    // reached a RESULT rather than being backgrounded and abandoned.
+    workerGate: { type: 'string' },
   },
 };
 
@@ -1452,13 +1481,44 @@ function resolvePrinciplesSummary(item) {
 // Command-building helpers — EVERY interpolated value goes through sq().
 // -----------------------------------------------------------------------------
 
-// sq — POSIX single-quote a value for safe shell interpolation. A spaced path
-// MUST be quoted or the one-shot executor runs the wrong command (the live-probe
-// finding). Wraps in single quotes and escapes any embedded single quote via the
-// '\'' idiom. Numbers are coerced to string.
+// sq — POSIX-quote a value for safe shell interpolation. A spaced path MUST be
+// quoted or the one-shot executor runs the wrong command (the live-probe
+// finding). Numbers are coerced to string.
+//
+// TWO FORMS, CHOSEN BY CONTENT (temperloop#1806). The classic single-quote form
+// escapes an embedded `'` via the `'\''` idiom, which is correct POSIX — and is
+// exactly what killed a live item. The command text this file builds is not
+// executed by this process: it is handed to an executor AGENT, whose Bash tool
+// parses it first. A payload carrying escaped single quotes nests `'\''` inside
+// a shell function inside a batch script, and that parser refused the whole
+// command at PARSE time, before touching git:
+//
+//   {"outcome":"ERROR","step":"parse","error":"Shell parsing failed due to
+//    deeply nested quotes. … multiple instances of '\'' embedded within a bash
+//    function, creating an unresolvable quotation context …"}
+//
+// It is deterministic for a given item — a re-drive can never clear it, because
+// the trigger is the item's own text — and it fires most readily on re-driven
+// items whose notes quote reviewer findings or shell snippets, i.e. the items
+// that have already cost the most work. sq() is the ONE definition behind all
+// ~86 call sites, so the fix belongs here and nowhere else.
+//
+// So: a value with NO single quote keeps the single-quoted form, byte-identical
+// to before (the overwhelming majority of call sites — paths, slugs, outcome
+// globs). A value that DOES contain one is emitted DOUBLE-quoted instead, with
+// the four characters that stay special inside double quotes (`"`, `\`, `$`,
+// backtick) backslash-escaped. A double-quoted string may contain `'` verbatim,
+// so no nesting is produced at any depth, and the round-trip is exact:
+// everything else — newlines, `!` (history expansion is interactive-only),
+// glob punctuation — is literal inside double quotes exactly as it is inside
+// single ones. The two forms are interchangeable at every call site: each is a
+// single self-contained shell word, including inside a `case` pattern (both
+// quoting forms suppress glob expansion) and inside a `"$( … )"` substitution
+// (which opens a fresh quoting context).
 function sq(value) {
   const s = String(value);
-  return `'${s.split("'").join(`'\\''`)}'`;
+  if (!s.includes("'")) return `'${s}'`;
+  return `"${s.replace(/(["\\$`])/g, '\\$1')}"`;
 }
 
 // -----------------------------------------------------------------------------
@@ -1659,6 +1719,51 @@ async function machineryAgent(promptFor, opts) {
 }
 
 // -----------------------------------------------------------------------------
+// ONE MEANING, ONE NAME — the machinery-outcome key canonicalizer (temperloop#1698).
+// -----------------------------------------------------------------------------
+// The closed outcome set carries TWO names for one concept. The step-liveness
+// bound (temperloop#1071) emits `elapsed_secs` / `ceiling_secs` / `slow_secs`;
+// the 3e.5 gate emits `elapsedSecs` / `budgetSecs`; and the permissive
+// passthrough schema admits BOTH on ANY outcome. An executor that normalizes a
+// GATE_PASS toward the sibling spelling therefore produces a structurally VALID
+// object that the consumer — `Number(gateOut.elapsedSecs) || 0` — reads as
+// `Number(undefined) || 0` → **0**. Observed live (run wf_9ce4bd0c-58b): a gate
+// whose own log said "passed in 215s" was reported as "0s of gate wall time".
+//
+// That figure is the DECAY SIGNAL — the instrument whose whole job is to make
+// suite growth visible on GREEN runs, before it blows a budget (the failure
+// #1021 and #1663 both exist because of). An instrument that reads zero when it
+// does not know is worse than one that reads nothing.
+//
+// The fix is a single normalization at the TRANSPORT boundary rather than a
+// `??` chain at each read site (which re-opens the defect for the next field):
+// CANONICAL = camelCase, everywhere downstream of here. The snake_case key is
+// left in place on the object — it is what the emitted shell actually prints and
+// what escalation payloads echo verbatim — but no CONSUMER in this file reads it
+// any more, so the two spellings can no longer disagree about one value.
+const OUTCOME_KEY_ALIASES = {
+  elapsed_secs: 'elapsedSecs',
+  ceiling_secs: 'ceilingSecs',
+  slow_secs: 'slowSecs',
+  budget_secs: 'budgetSecs',
+};
+function canonicalizeOutcome(o) {
+  if (o == null || typeof o !== 'object') return o;
+  for (const snake of Object.keys(OUTCOME_KEY_ALIASES)) {
+    const camel = OUTCOME_KEY_ALIASES[snake];
+    if (o[camel] === undefined && o[snake] !== undefined) o[camel] = o[snake];
+  }
+  return o;
+}
+
+// The STRICT numeric read this canonicalization needs — "the value, or null when
+// it is absent, empty or unparseable" — already exists as numOrNull() (defined
+// with the cost-ledger helpers below, hoisted, and written for exactly this
+// class of defect: "a machinery field that is genuinely absent must degrade to
+// null, never a false zero"). #1698's gate read below calls it rather than
+// declaring a second one, so the two can never drift apart.
+
+// -----------------------------------------------------------------------------
 // runMachinery — the sh() replacement (spike §1).
 // -----------------------------------------------------------------------------
 // Spawns a one-shot executor agent that runs EXACTLY one machinery command via Bash
@@ -1763,7 +1868,9 @@ async function runMachinery(cmd, { label, slug, bashTimeoutMs, timeoutOutcome, p
   // SPINE_DENIED sentinel — a well-formed outcome object every call site can
   // detect (via machineryDenied()) and turn into a parkable `machinery-denied`
   // escalation instead of a TypeError.
-  return out == null ? { outcome: 'SPINE_DENIED', denied: true } : out;
+  // temperloop#1698 — canonicalize the duration keys ONCE, here at the
+  // transport boundary, so every consumer below reads exactly one spelling.
+  return out == null ? { outcome: 'SPINE_DENIED', denied: true } : canonicalizeOutcome(out);
 }
 
 // -----------------------------------------------------------------------------
@@ -1900,6 +2007,10 @@ async function runMachineryBatch(steps, { label, slug, bashTimeoutMs, phase: pha
   // index by one and silently mis-branch the whole batch. Filtering here (once,
   // at the transport) is what lets every `batchStep(batch, i)` call site below
   // stay exactly as it was.
+  // temperloop#1698 — canonicalize every step's duration keys at this same
+  // transport boundary (the batch twin of runMachinery's call above), BEFORE
+  // the partition below and before any `batchStep(batch, i)` consumer.
+  out.results.forEach(canonicalizeOutcome);
   const notices = out.results.filter((r) => r && r.outcome === 'STEP_SLOW');
   const results = out.results.filter((r) => !(r && r.outcome === 'STEP_SLOW'));
   // …and LOG them. This is the observable-progress half of the bound: a step
@@ -1908,9 +2019,12 @@ async function runMachineryBatch(steps, { label, slug, bashTimeoutMs, phase: pha
   // 9h49m stall never was.
   for (const n of notices) {
     log(
-      `[${slug ?? label ?? 'level'}] machinery step '${n.step ?? '?'}' took ${n.elapsed_secs ?? '?'}s ` +
-      `— over the ${n.slow_secs ?? STEP_SLOW_SECS}s expected-duration mark, still under the ` +
-      `${n.ceiling_secs ?? STEP_CEILING_SECS}s liveness ceiling (temperloop#1071). Not lost, not retried — ` +
+      // temperloop#1698: canonical camelCase reads, fed by canonicalizeOutcome
+      // above — the `?? '?'` fallback is now the ONLY zero-free way an unknown
+      // figure can render here, never a silent 0.
+      `[${slug ?? label ?? 'level'}] machinery step '${n.step ?? '?'}' took ${n.elapsedSecs ?? '?'}s ` +
+      `— over the ${n.slowSecs ?? STEP_SLOW_SECS}s expected-duration mark, still under the ` +
+      `${n.ceilingSecs ?? STEP_CEILING_SECS}s liveness ceiling (temperloop#1071). Not lost, not retried — ` +
       `raise BUILD_MACHINERY_STEP_SLOW_SECS if this step is legitimately this slow.`,
     );
   }
@@ -2247,6 +2361,180 @@ function parentSummarySection(item) {
   ];
 }
 
+// -----------------------------------------------------------------------------
+// THE WORKER GATE SENTINEL — a RESULT artifact, not a process (temperloop#865).
+// -----------------------------------------------------------------------------
+// Both Level-1 workers of epic #810 backgrounded `scripts/quality-gates.sh`,
+// then polled for a PID to exit instead of reading the run's result, and ended
+// their turn with no verdict. 2/2 — AGAINST A PROMPT THAT NAMED THE EXACT
+// FAILURE AND PRESCRIBED THE FIX, and one of them re-stalled after being told in
+// so many words to go read the output file. The issue's own acceptance forbids
+// the obvious response: "demonstrated by whatever mechanism is chosen, not by a
+// re-worded warning". A third wording is not a fix; this is kernel principle 5
+// (counter AI failure modes STRUCTURALLY) applied to the engine's own seam.
+//
+// So THREE structural changes replace the warning:
+//
+//  1. THE WORKER NO LONGER COMPOSES ITS OWN GATE INVOCATION. workerGateCmd()
+//     below is built by the orchestrator and handed over verbatim, so the shape
+//     of the run is not a choice the worker makes turn by turn.
+//  2. THAT INVOCATION ALWAYS LEAVES A RESULT. It writes `{"state":"running"}`
+//     before the suite starts and overwrites it with
+//     `{"state":"finished","rc":N,"elapsedSecs":S}` when the suite ends, then
+//     prints the sentinel as its final line. A worker that loses the tool output
+//     — backgrounded, reaped, timed out — polls the FILE and gets a verdict. A
+//     PID poll cannot ever succeed (the exit status is gone with the process,
+//     and a subagent receives no background-task notification at all); an
+//     ARTIFACT poll can. That is the issue's candidate 2, and candidate 1's
+//     "hand the worker an invocation" half.
+//  3. THE RESIDUAL FAILURE IS LOUD. The parent-side 3e.5 gate command classifies
+//     this same file from the same worktree and reports `workerGate` on its own
+//     outcome, so the driver logs a NAMED notice when the sentinel still reads
+//     `running`. Today "waiting for the gate" is indistinguishable from a
+//     healthy long gate until the budget is gone; after this, a stalled worker
+//     reads differently from a slow one in the run log and in the gate payload.
+//
+// NOT IN SCOPE (recorded, deliberately not implemented): the issue's candidate 3
+// — move the gate out of the worker entirely. It is an architectural subtraction
+// touching every worker on every run and must not ride a five-defect PR.
+//
+// WHY /tmp, NOT THE WORKTREE. It mirrors the 3e.5 gate's own `/tmp/qg-<slug>.log`
+// convention, and it keeps a machine-written file out of the tree `pr.sh rebase`
+// and the leak guard inspect — an untracked artifact inside the worktree would
+// need a matching `info/exclude` entry in worktree.sh, which is outside this
+// item's scope and would make the fix a cross-script change.
+function workerGateSentinel(slug) {
+  return `/tmp/qg-${slug}.worker-gate.json`;
+}
+
+// workerGateLog — where the handed invocation tees the suite's own output, so a
+// worker that must explain a red gate has the text as well as the exit code.
+function workerGateLog(slug) {
+  return `/tmp/qg-${slug}.worker-gate.log`;
+}
+
+// workerGateState — the sentinel classification the 3e.5 gate reported, or
+// 'absent'. An older vendored path, a spike, or a worker that legitimately ran
+// no gate all read 'absent', which is deliberately NOT a warning: the prompt
+// itself permits "if you cannot cheaply tell which gates apply, run none and
+// say so". Only `running` (started, never finished) and `unknown` (a sentinel
+// with no state) mean something went wrong.
+const WORKER_GATE_STATES = ['finished', 'running', 'absent', 'unknown'];
+function workerGateState(out) {
+  const s = out && typeof out.workerGate === 'string' ? out.workerGate : '';
+  return WORKER_GATE_STATES.includes(s) ? s : 'absent';
+}
+
+// workerGateCmd — the ONE invocation the worker is handed. Foreground by
+// construction (it ends by printing its own result), always-sentinel-writing by
+// construction (both the `running` and the `finished` writes are unconditional
+// steps of the same command line), and it exits with the gate's own status so a
+// worker that only reads the exit code still gets the truth.
+//
+// `set -o pipefail` is load-bearing for the same reason it is in gateCmd
+// (temperloop#68): the suite is piped through `tee`, and without it `$?` would
+// be tee's 0 and a RED gate would write `"rc":0` into the sentinel — a silent
+// green, which is the single worst thing this artifact could do. The exit status
+// is read as a bare `$?`, never PIPESTATUS[0], which expands empty under the zsh
+// this harness's Bash tool actually runs (temperloop#801).
+//
+// EVERY PROLOGUE STEP HARD-REFUSES; NONE OF THEM IS `&&`-CHAINED INTO THE RUN
+// (review round 2, the HIGH). `A && B && C; D` is NOT a guard: it skips `B..C`
+// on `A`'s failure and then runs `D` anyway. That shape — which this function
+// shipped in its first cut — meant a failed `cd` (worktree pruned, moved, or an
+// unresolvable path) skipped both the `running` sentinel AND `set -o pipefail`
+// and then ran `./scripts/quality-gates.sh` in whatever directory the worker's
+// shell happened to start in, recording a RED suite in the WRONG repo as
+// `{"state":"finished","rc":0}` with a nonsense `elapsedSecs` (`__t0` unset, so
+// the arithmetic read it as 0). That is precisely the silent green the comment
+// above calls the worst thing this artifact could do, reintroduced by the fix
+// for it. So each prologue step is now its own statement ending in an explicit
+// `|| exit`, and `set -o pipefail` comes FIRST — before anything it protects —
+// rather than being `&&`-chained after work that has already happened:
+//
+//   - `set -o pipefail || exit 1` — a shell without pipefail refuses here. A
+//     POSIX special builtin's failure exits a non-interactive shell outright
+//     (dash), and the `|| exit 1` catches the lenient shells that merely return
+//     non-zero. Either way nothing downstream runs unprotected.
+//   - `[ -x ./scripts/quality-gates.sh ] || exit 127` — "this repo has no gate"
+//     refuses BEFORE any sentinel is written, so `absent` (never `finished`)
+//     is what both the worker and §3e.5 see. Before this, a missing script ran
+//     as an ENOENT through the pipe and the NEXT statement wrote
+//     `{"state":"finished","rc":127}` unconditionally — which the handed prompt
+//     then told the worker to report as "a real FAIL", turning a repo with no
+//     gate into a gate failure (review round 2, the MEDIUM).
+//   - `cd … || exit 1` and the `running` write's own `|| exit 1` — the suite
+//     can never run outside the worktree, and can never run with no artifact to
+//     poll.
+//
+// The invariant to preserve on any future edit: a `finished` sentinel is
+// reachable ONLY after the suite actually ran, in the worktree, under pipefail.
+function workerGateCmd(slug, worktreePath) {
+  const sent = sq(workerGateSentinel(slug));
+  const glog = sq(workerGateLog(slug));
+  return (
+    `set -o pipefail || exit 1; ` +
+    `cd ${sq(worktreePath)} || exit 1; ` +
+    `[ -x ./scripts/quality-gates.sh ] || { echo 'no executable ./scripts/quality-gates.sh in this repo — no gate to run' >&2; exit 127; }; ` +
+    `__t0=$(date +%s) || exit 1; ` +
+    `printf '{"state":"running","startedAt":%s}\\n' "$__t0" > ${sent} || exit 1; ` +
+    `./scripts/quality-gates.sh --scoped 2>&1 | tee ${glog}; __rc=$?; ` +
+    `printf '{"state":"finished","rc":%s,"elapsedSecs":%s}\\n' "$__rc" "$(( $(date +%s) - __t0 ))" > ${sent}; ` +
+    `cat ${sent}; exit $__rc`
+  );
+}
+
+// workerGateSection — the prompt half, a SELF-CONTAINED section spliced into
+// workerPrompt()'s array (the same shape principlesSection() /
+// changelogFragmentSection() use) so a sibling edit to workerPrompt rebases
+// cleanly on this one. It does not re-warn: it hands over the command and names
+// the artifact to poll.
+function workerGateSection(slug, worktreePath) {
+  const sent = workerGateSentinel(slug);
+  return [
+    '',
+    '## Your scoped gate — run THIS EXACT command (temperloop#865)',
+    'Do NOT compose your own gate invocation. Run this one, verbatim, in the',
+    'FOREGROUND (one blocking Bash call, with the tool `timeout` parameter raised):',
+    '',
+    '```sh',
+    workerGateCmd(slug, worktreePath),
+    '```',
+    '',
+    `Once the suite actually STARTS it always writes a RESULT SENTINEL to \`${sent}\` —`,
+    '`{"state":"running",…}` first, then `{"state":"finished","rc":<exit>,"elapsedSecs":<n>}`',
+    'when it ends — and prints that sentinel as its last line. It refuses outright rather than',
+    'starting the suite in the wrong place or without `pipefail` (the exit-code table below), and',
+    'a refusal writes NO sentinel at all, so the sentinel never describes a run that did not happen.',
+    '- **Poll the RESULT FILE, never a PID.** Waiting on a process id, a `kill -0`, or a',
+    '  background-task notification is the stall this replaces: the exit status dies with',
+    '  the process, and a subagent receives no background-task notification at all, so that',
+    '  poll can never succeed. Reading the sentinel always can.',
+    `- If your Bash call came back without the sentinel line, \`cat ${sent}\`.`,
+    '  `state:"finished"` + `rc:0` is a PASS; `state:"finished"` + non-zero `rc` is a real',
+    '  FAIL you can report; `state:"running"` means it is still going; no file at all means',
+    '  it never started.',
+    '- NEVER report a gate pass without a `state:"finished"` sentinel. If you cannot get one,',
+    '  return `blocked` and quote the sentinel (or its absence). The orchestrator reads this',
+    '  SAME file at §3e.5 and reports what it finds either way, so an unfinished gate is',
+    '  visible whether you mention it or not.',
+    '- **A missing sentinel is a REFUSAL, never a pass.** The command hard-refuses instead of',
+    '  guessing, and every refusal happens BEFORE any sentinel is written, so `no file at all`',
+    '  + a non-zero exit always means the suite never ran. The three refusals, by exit code:',
+    `    - **127** — this repo has no executable \`scripts/quality-gates.sh\`. It prints`,
+    '      `no executable ./scripts/quality-gates.sh` on stderr and leaves NO sentinel. Say so',
+    '      and move on: that is not a gate failure, and it is the one case where a missing',
+    '      sentinel is expected rather than a stall.',
+    `    - **1, with a \`cd\` error on stderr** — the worktree moved or was pruned. The suite is`,
+    '      NOT run somewhere else and passed off as this item\'s gate. Report it as blocked.',
+    `    - **1–2, with a \`pipefail\` error on stderr** — it needs **bash** (it opens with`,
+    '      `set -o pipefail`, which POSIX `sh` does not have). The Bash tool gives you one; if',
+    '      some wrapper hands it to a plain `sh`, it aborts on that first line. Report it as',
+    '      blocked.',
+    '  In all three, never infer a green gate from the missing sentinel.',
+  ];
+}
+
 function workerPrompt(item, worktreePath, extraSection) {
   const accList = acceptanceList(item);
   const accBullets = accList
@@ -2357,6 +2645,11 @@ function workerPrompt(item, worktreePath, extraSection) {
     '- If a single command would exceed the ~10-min Bash foreground cap — or the tighter',
     '  ~5-min cache-TTL budget above — NARROW or split it, or return `blocked` / `failed`',
     '  and let the orchestrator run it parent-side — never background-and-wait.',
+    // temperloop#865 — the STRUCTURAL half of the same contract. The block above
+    // is the warning that failed 2/2; this hands over a pre-composed invocation
+    // and a result ARTIFACT to poll, so the failure it names is no longer the
+    // worker's to make. See workerGateSection()'s own header.
+    ...workerGateSection(item.slug, worktreePath),
     // temperloop#1182 — the OTHER thing a worker structurally cannot verify.
     // Deliberately its own section, not a bullet inside the block above: that
     // block is about the COST of a check (minutes-scale, cache-TTL); this one
@@ -2457,11 +2750,35 @@ function dirtyResumeCure(dirtyFiles) {
   ].join('\n');
 }
 
+// GATE_SENTINEL_CURE (temperloop#865) — the re-spawn's RECOVERY half, and the
+// reason the cure is no longer prose alone. The #865 incident's second worker
+// re-stalled after being told, in words, to go read the output file; there was
+// no machine-readable file to read. Now there is, at a known path, so the cure
+// hands over the path and the three states rather than repeating the
+// instruction. If the previous attempt's gate in fact FINISHED, the re-spawn
+// reads its verdict off the sentinel instead of paying for the suite twice.
+function gateSentinelCure(slug) {
+  const sent = workerGateSentinel(slug);
+  return [
+    '## Your previous gate run may already have a RESULT (temperloop#865)',
+    `Before re-running anything, \`cat ${sent}\`.`,
+    '- `{"state":"finished","rc":0,…}` — your previous gate PASSED. Do not re-run it;',
+    '  report it and quote the sentinel.',
+    '- `{"state":"finished","rc":<non-zero>,…}` — it FAILED for real. Read',
+    `  \`${workerGateLog(slug)}\` for the output, fix, then re-run the handed command.`,
+    '- `{"state":"running",…}` — the previous turn ended while the gate was still going.',
+    '  That is the stall. Re-run the handed command in the FOREGROUND and wait for it.',
+    '- No such file — it never started. Run the handed command.',
+  ].join('\n');
+}
+
 // Compose the retry `extraSection` = the original section (if any) + the cure,
-// plus the dirty-resume note when the probe saw uncommitted work (#993).
-function withCure(section, dirtyFiles) {
+// plus the dirty-resume note when the probe saw uncommitted work (#993), plus
+// the #865 sentinel-recovery note when a slug is known.
+function withCure(section, dirtyFiles, slug) {
   const dirty = Number(dirtyFiles) > 0 ? dirtyResumeCure(Number(dirtyFiles)) : null;
-  return [section, FOREGROUND_CURE, dirty].filter(Boolean).join('\n\n');
+  const sentinel = slug ? gateSentinelCure(slug) : null;
+  return [section, FOREGROUND_CURE, sentinel, dirty].filter(Boolean).join('\n\n');
 }
 
 // -----------------------------------------------------------------------------
@@ -2780,8 +3097,8 @@ function timedOutStep(results) {
 // is not, and must never become, evidence that CI passed.
 async function disposeStepTimeout(item, wt, to, where, { adoptable = true } = {}) {
   log(
-    `[${item.slug}] ${where} step '${to.step ?? '?'}' exceeded the ${to.ceiling_secs ?? STEP_CEILING_SECS}s ` +
-    `liveness ceiling after ${to.elapsed_secs ?? '?'}s and was killed (temperloop#1071). Treating it as LOST — ` +
+    `[${item.slug}] ${where} step '${to.step ?? '?'}' exceeded the ${to.ceilingSecs ?? STEP_CEILING_SECS}s ` +
+    `liveness ceiling after ${to.elapsedSecs ?? '?'}s and was killed (temperloop#1071). Treating it as LOST — ` +
     `probing for side effects before disposing; it is NEVER blind-retried.`,
   );
   const payload = { step: to.step ?? null, where, timeoutOut: to, adoptable };
@@ -2821,7 +3138,7 @@ async function disposeStepTimeout(item, wt, to, where, { adoptable = true } = {}
     escalation: escalate(item.slug, 'machinery-step-timeout', {
       ...probed,
       reason:
-        `the '${to.step ?? '?'}' machinery step outlived the ${to.ceiling_secs ?? STEP_CEILING_SECS}s workflow ` +
+        `the '${to.step ?? '?'}' machinery step outlived the ${to.ceilingSecs ?? STEP_CEILING_SECS}s workflow ` +
         `liveness ceiling and was killed. Its result is UNKNOWN, not failed — recover-probe reports ` +
         `${probe.stage ?? 'no usable answer'}. Nothing was re-issued, so no double-push/double-open is possible.`,
       remedy:
@@ -2848,6 +3165,24 @@ function isLostReturn(stepOut) {
       stepOut.outcome === 'ERROR' &&
       typeof stepOut.error === 'string' &&
       stepOut.error.includes('produced no result'),
+  );
+}
+
+// isVerdictUnparseable — the pr-open outcome temperloop#1805 is about: pr.sh's
+// own `die` when the verdict file it was handed is not usable JSON. It is
+// deliberately NARROW — three literal messages pr.sh emits about the VERDICT
+// (`open`'s `jq -e .` guard, and assemble_body's two field checks) — because the
+// tolerance path below re-issues the PR-open command, and a blind re-issue of a
+// non-idempotent machinery step on any broader class is exactly the double-open
+// hazard the rest of this file is built to avoid. Anything else — a `gh` failure,
+// a push race, a missing surface file — keeps the unchanged escalation.
+const VERDICT_UNPARSEABLE_ERR = /verdict (?:is not valid JSON|JSON missing|JSON has malformed)/i;
+function isVerdictUnparseable(stepOut) {
+  return Boolean(
+    stepOut &&
+      stepOut.outcome === 'ERROR' &&
+      typeof stepOut.error === 'string' &&
+      VERDICT_UNPARSEABLE_ERR.test(stepOut.error),
   );
 }
 
@@ -6955,7 +7290,7 @@ async function driveItemBuildPhase(item, arm, box) {
       } else {
         log(`[${item.slug}] worker returned no verdict, no side-effects — retrying once (foreground cure #1219)`);
       }
-      w = await callWorker(item, wt, withCure(verdictSection, probe.dirtyFiles), `worker:${item.slug}#retry`, enterStage(STAGE_BUILD));
+      w = await callWorker(item, wt, withCure(verdictSection, probe.dirtyFiles, item.slug), `worker:${item.slug}#retry`, enterStage(STAGE_BUILD));
       mainCost = mergeWorkerCost(mainCost, w);
       verdict = w.verdict;
       if (verdict == null) {
@@ -7257,6 +7592,27 @@ async function driveItemBuildPhase(item, arm, box) {
     // already drops it downstream.)
     `case "$__r" in ''|*[!0-9]*) __r='' ;; esac; ` +
     `__s=$(sed -n 's/^QUALITY_GATES_SELECTION=//p' ${sq(gateSliceLog)} | tail -1); ` +
+    // AN UNKNOWN ELAPSED IS `null`, NEVER `0` (temperloop#1698). `__el` is a
+    // best-effort sed over the slice log: a vendored gate whose summary line
+    // this pattern does not match, or a slice killed before printing one,
+    // leaves it EMPTY. The old `${__el:-0}` turned that straight into a
+    // confident `"elapsedSecs":0` — a plausible-looking number in place of an
+    // admission that the figure is unknown, on the one instrument built to make
+    // suite growth visible. Emitting JSON `null` instead makes the consumer's
+    // strict read (numOrNull) return null and render `?`.
+    `case "$__el" in ''|*[!0-9]*) __elj=null ;; *) __elj=$__el ;; esac; ` +
+    // temperloop#865 — CLASSIFY THE WORKER'S OWN GATE SENTINEL, parent-side.
+    // The worker is handed a gate invocation that always writes a result
+    // sentinel (workerGateCmd below); this reads that artifact from the very
+    // worktree the acceptance gate is about and reports one of four words. It
+    // is how a worker that BACKGROUNDED its gate and abandoned it becomes
+    // distinguishable, in the driver's own log and in the gate payload, from a
+    // worker whose gate was merely slow — the #865 acceptance criterion that a
+    // re-worded warning cannot meet. Read-only, fail-open: a repo whose workers
+    // predate the sentinel reports 'absent' and nothing changes.
+    `__wg=absent; if [ -f ${sq(workerGateSentinel(item.slug))} ]; then ` +
+    `case "$(cat ${sq(workerGateSentinel(item.slug))} 2>/dev/null)" in ` +
+    `*'"state":"finished"'*) __wg=finished ;; *'"state":"running"'*) __wg=running ;; *) __wg=unknown ;; esac; fi; ` +
     // A RESUME POINT THIS SLICE PRINTED IS THE VERDICT (temperloop#2094).
     // quality-gates.sh emits `QUALITY_GATES_RESUME_AT=` on exactly one path:
     // it spent its budget, stopped CLEANLY BETWEEN GATES, and is telling the
@@ -7276,10 +7632,10 @@ async function driveItemBuildPhase(item, arm, box) {
     // Safe against a stale trailer because ${gateSliceLog} holds THIS slice's
     // output alone — see its declaration above.
     `if [ -n "$__r" ]; then ` +
-    `printf '{"outcome":"GATE_SLICE","resumeAt":%s,"failed":%s,"elapsedSecs":%s,"selection":"%s","rc":%s,"budgetSecs":${GATE_SLICE_SECS}}\\n' "$__r" "\${__f:-0}" "\${__el:-0}" "$__s" "$__rc"; ` +
+    `printf '{"outcome":"GATE_SLICE","resumeAt":%s,"failed":%s,"elapsedSecs":%s,"selection":"%s","rc":%s,"workerGate":"%s","budgetSecs":${GATE_SLICE_SECS}}\\n' "$__r" "\${__f:-0}" "$__elj" "$__s" "$__rc" "$__wg"; ` +
     `elif [ "$__rc" = 0 ]; then ` +
-    `printf '{"outcome":"GATE_PASS","failed":0,"elapsedSecs":%s,"budgetSecs":${GATE_SLICE_SECS}}\\n' "\${__el:-0}"; ` +
-    `else printf '{"outcome":"GATE_FAIL","failed":%s,"elapsedSecs":%s,"rc":%s,"budgetSecs":${GATE_SLICE_SECS}}\\n' "\${__f:-1}" "\${__el:-0}" "$__rc"; fi; fi`;
+    `printf '{"outcome":"GATE_PASS","failed":0,"elapsedSecs":%s,"workerGate":"%s","budgetSecs":${GATE_SLICE_SECS}}\\n' "$__elj" "$__wg"; ` +
+    `else printf '{"outcome":"GATE_FAIL","failed":%s,"elapsedSecs":%s,"rc":%s,"workerGate":"%s","budgetSecs":${GATE_SLICE_SECS}}\\n' "\${__f:-1}" "$__elj" "$__rc" "$__wg"; fi; fi`;
 
   // Drive slices until the suite finishes. GATE_SLICE is the ONLY outcome that
   // continues the loop; everything else is terminal on the first pass, so a
@@ -7288,6 +7644,11 @@ async function driveItemBuildPhase(item, arm, box) {
   let gateOut = null;
   let gateStartAt = 0;
   let gateElapsed = 0;
+  // temperloop#1698 — sticky once ANY slice reported no usable elapsed figure.
+  // The total is then UNKNOWN, not a partial sum presented as the whole: a run
+  // that summed 140s of three slices because the other two reported nothing is
+  // the same confident-wrong-number defect one level up.
+  let gateElapsedUnknown = false;
   let gateSlices = 0;
   // The selection fingerprint the PREVIOUS slice reported (temperloop#1663).
   // Empty on the first slice — there is nothing to compare a fresh start against,
@@ -7332,8 +7693,24 @@ async function driveItemBuildPhase(item, arm, box) {
     if (gateOut.outcome === 'STEP_TIMEOUT') {
       return (await disposeStepTimeout(item, wt, gateOut, 'gate', { adoptable: false })).escalation;
     }
-    const sliceElapsed = Number(gateOut.elapsedSecs) || 0;
-    gateElapsed += sliceElapsed;
+    // temperloop#1698 — STRICT read of the canonical key. `Number(x) || 0` was
+    // the defect: against a slice that reported the sibling snake_case spelling
+    // (or none at all) it produced `0`, and a gate whose own log said "passed in
+    // 215s" was logged as "0s of gate wall time". canonicalizeOutcome() has
+    // already folded `elapsed_secs` into `elapsedSecs` at the transport
+    // boundary, so an unreadable figure here is genuinely unknown — and is
+    // carried as `null` through the ledger and payload, never as a zero.
+    const sliceElapsed = numOrNull(gateOut.elapsedSecs);
+    if (sliceElapsed === null) {
+      gateElapsedUnknown = true;
+      log(
+        `[${item.slug}] 3e.5 gate slice ${gateSlices + 1} reported NO usable elapsedSecs — the gate DECAY SIGNAL ` +
+        `is blind for this slice and the run's wall time renders '?', never 0 (temperloop#1698). The verdict itself ` +
+        `is unaffected; the authoritative elapsed figure is in ${gateLog}.`,
+      );
+    } else {
+      gateElapsed += sliceElapsed;
+    }
     gateSliceLedger.push({
       slice: gateSlices + 1,
       startAt: gateStartAt,
@@ -7383,11 +7760,41 @@ async function driveItemBuildPhase(item, arm, box) {
     // contained — a second, smaller field-vs-field contradiction in the same
     // payload (temperloop#1587).
     slices: gateSliceLedger.length,
-    elapsedSecs: gateElapsed,
+    // temperloop#1698 — `null`, not a partial sum, when any slice's figure was
+    // unreadable. A payload that reports a multi-minute run as having taken no
+    // time is the exact shape this item removes.
+    elapsedSecs: gateElapsedUnknown ? null : gateElapsed,
     sliceBudgetSecs: GATE_SLICE_SECS,
     sliceLedger: gateSliceLedger,
     log: gateLog,
+    // temperloop#865 — what the WORKER's own scoped gate left behind in this
+    // worktree: 'finished' | 'running' | 'absent' | 'unknown'.
+    workerGate: workerGateState(gateOut),
   };
+  // temperloop#865 — THE LOUD HALF. A worker that backgrounded its gate and
+  // yielded leaves a sentinel still reading `running` (or, if it never issued
+  // the handed invocation at all, none). Today "waiting for the gate" is
+  // indistinguishable from a healthy long gate until the budget is gone; this
+  // is the one place in the run that can tell them apart, because it reads the
+  // artifact from the same worktree the acceptance gate just ran in. It is a
+  // NOTICE, never a block: 3e.5 is the acceptance authority and its verdict
+  // stands on its own, so a stale sentinel must not fail an otherwise-green
+  // item — it must be impossible to miss.
+  const wgState = gatePayload.workerGate;
+  if (wgState === 'running') {
+    log(
+      `[${item.slug}] WORKER GATE NEVER FINISHED (temperloop#865) — the worker's own scoped-gate sentinel at ` +
+      `${workerGateSentinel(item.slug)} still reads state:"running", so the worker most likely BACKGROUNDED ` +
+      `\`scripts/quality-gates.sh --scoped\` and yielded rather than reading its result. Its self-check is ` +
+      `UNVERIFIED; the parent-side 3e.5 verdict above is the authority. A stalled worker now reads differently ` +
+      `from a slow one — that distinction is this signal's whole job.`,
+    );
+  } else if (wgState === 'unknown') {
+    log(
+      `[${item.slug}] worker gate sentinel UNREADABLE (temperloop#865) — ${workerGateSentinel(item.slug)} exists but ` +
+      `carries no state; treat the worker's own gate self-check as unverified.`,
+    );
+  }
   // A TIMEOUT is NOT a gate failure — its own escalation kind, so an operator
   // (or the pipeline's escalation router) can tell "the budget ran out" from
   // "this branch is broken" without reading a log. Same for exhausting the
@@ -7412,10 +7819,15 @@ async function driveItemBuildPhase(item, arm, box) {
   // most of its slice budget, or needed several slices, says so on a GREEN run —
   // before it becomes the next false failure.
   if (gateOut.outcome === 'GATE_PASS') {
-    const marginNote = gateSlices > 0 || gateElapsed >= GATE_SLICE_SECS * GATE_MARGIN_WARN_RATIO
+    // temperloop#1698 — render an unknown total as `?`, never as a number. The
+    // margin warning is likewise suppressed on an unknown figure: a warning
+    // computed from a number nobody measured is the same confident-wrong
+    // instrument in the other direction.
+    const marginNote = gateSlices > 0 || (!gateElapsedUnknown && gateElapsed >= GATE_SLICE_SECS * GATE_MARGIN_WARN_RATIO)
       ? ` — NOTE: approaching the per-slice budget; raise BUILD_GATE_SLICE_SECS or split the gate list before it costs a re-slice`
       : '';
-    log(`[${item.slug}] 3e.5 gate PASS — ${gateSlices + 1} slice(s), ${gateElapsed}s of gate wall time (slice budget ${GATE_SLICE_SECS}s, cap ${GATE_MAX_SLICES} slices)${marginNote}`);
+    const elapsedNote = gateElapsedUnknown ? '?' : String(gateElapsed);
+    log(`[${item.slug}] 3e.5 gate PASS — ${gateSlices + 1} slice(s), ${elapsedNote}s of gate wall time (slice budget ${GATE_SLICE_SECS}s, cap ${GATE_MAX_SLICES} slices)${marginNote}`);
   }
 
   // --- 3e.6. Class-A activation gate (temperloop#1219) ----------------------
@@ -7448,7 +7860,7 @@ async function driveItemBuildPhase(item, arm, box) {
     wtBase,
     wtGuard,
     gateReport,
-    gateElapsedSecs: gateElapsed,
+    gateElapsedSecs: gateElapsedUnknown ? null : gateElapsed,
   };
   return null;
 }
@@ -7609,6 +8021,53 @@ async function driveItemPr(ctx) {
     `rc=$?; rm -f "$vf"; exit $rc`;
   addPrStep('pr-open', openCmd); // terminal step — nothing gates after it
 
+  // --- 3f-2 FALLBACK: a PR-ready tree must not be stranded by a bad verdict --
+  // temperloop#1805, disposition (a). `pr.sh open` REQUIRES a parseable
+  // `--verdict` and dies `verdict is not valid JSON` when it does not get one.
+  // That is a REPORTING-layer failure, and it was terminal for the item:
+  //
+  //   {"slug":"disclosure-watermark-tracked-1316","kind":"pr-open-failed",
+  //    "payload":{"openOut":{"step":"pr-open","outcome":"ERROR",
+  //                          "error":"verdict is not valid JSON"}}}
+  //
+  // …against ONE clean commit, a zero-dirty tree, a full `.build-verification.md`
+  // and that item's own suite green 39/39. The orchestrator recovered it BY HAND
+  // — push, `gh pr create`, verification file as the body — and it became PR
+  // #1803. Every piece of information the PR needed was already on disk; only
+  // the hand-off failed. The preservation machinery means the commit survives,
+  // so this is not data loss — it is PROGRESS loss: the item parks, re-enters
+  // the next run, and a fresh worker redoes finished, correct work.
+  //
+  // So the fallback re-issues `open` with a MINIMAL, structurally-safe verdict:
+  // the title is the item's own (what `--title` already carried) and the body
+  // comes from `.build-verification.md` via the surface flag — exactly the shape
+  // the manual recovery used. Everything variable about the rich verdict —
+  // `acceptance_results`, the worker's own prose — is dropped, because that is
+  // precisely the content that failed to survive the hand-off; the §3e review
+  // evidence line is kept, since it is assembled by this file and must stay
+  // visible on the PR (temperloop#1430).
+  //
+  // A body-less fallback would be worse than the escalation, so it is attempted
+  // ONLY when there is a real surface to fall back ON — either the worktree file
+  // or the synthesized inline surface.
+  const fallbackVerdictJson = JSON.stringify({
+    status: 'done',
+    summary:
+      'The worker completed this item, but its verdict JSON did not survive the hand-off to `pr.sh open` ' +
+      '(temperloop#1805). This body was assembled from the commit on the branch and the verification ' +
+      'surface the worker wrote to disk; the per-criterion acceptance table is NOT reproduced here — ' +
+      'read the verification surface below.' + reviewSummarySuffix,
+    acceptance_results: [],
+    ...(verdict.verification_surface ? { verification_surface: verdict.verification_surface } : {}),
+  });
+  const fallbackOpenCmd =
+    `vf=$(mktemp) && printf %s ${sq(fallbackVerdictJson)} > "$vf" && ` +
+    `${prBin} open --repo ${sq(repoRoot)} --branch ${sq(item.branch)} ` +
+    `--title ${sq(item.title)} --verdict "$vf"${ghIssueFlag}${alsoClosesFlag}${surfaceFlag} ` +
+    `--plan-link ${sq(planLink)} --source ${sq(item.source ?? '')}; ` +
+    `rc=$?; rm -f "$vf"; exit $rc`;
+  const fallbackHasSurface = Boolean(surfaceFlag) || Boolean(verdict.verification_surface);
+
   const prb = await runMachineryBatch(prSteps, {
     label: `pr-batch:${item.slug}`,
     slug: item.slug,
@@ -7725,7 +8184,40 @@ async function driveItemPr(ctx) {
     // probed for the same lost-return sentinel (temperloop#1067) before it
     // escalates as a genuine pr-open-failed.
     if (pr == null) {
-      const openOut = batchStep(prb, prAt['pr-open']);
+      let openOut = batchStep(prb, prAt['pr-open']);
+      // temperloop#1805 — TOLERATE an unparseable verdict over a PR-ready tree.
+      // Checked BEFORE the lost-return probe: this outcome says something
+      // specific (pr.sh's own `die`), so it is not a dropped result line, and
+      // `recoverLostReturn` would re-issue the SAME command with the SAME bad
+      // verdict and fail identically. Re-issue with the minimal verdict instead.
+      let verdictFallback = null;
+      if (isVerdictUnparseable(openOut)) {
+        if (!fallbackHasSurface) {
+          log(
+            `[${item.slug}] pr-open rejected the verdict (${openOut.error ?? '?'}) and there is NO verification ` +
+            `surface to fall back on — escalating rather than opening a PR with an empty body (temperloop#1805).`,
+          );
+        } else {
+          log(
+            `[${item.slug}] pr-open rejected the verdict (${openOut.error ?? '?'}) — the tree is PR-READY, so this ` +
+            `is a REPORTING failure, not a failed item (temperloop#1805). Re-opening with the commit's own title ` +
+            `and .build-verification.md as the body, exactly as the manual recovery of #1803 did.`,
+          );
+          verdictFallback = await runMachinery(fallbackOpenCmd, {
+            label: `pr-open-verdict-fallback:${item.slug}`,
+            slug: item.slug,
+            phase: stagePhase(STAGE_RECOVER),
+          });
+          if (verdictFallback.outcome === 'PR_OPENED' || verdictFallback.outcome === 'EXISTS') {
+            log(
+              `[${item.slug}] PR #${verdictFallback.pr_number} opened from the fallback body — the acceptance ` +
+              `table is not reproduced on it (the verdict that carried it did not survive); the verification ` +
+              `surface is (temperloop#1805).`,
+            );
+            openOut = verdictFallback;
+          }
+        }
+      }
       if (openOut.outcome !== 'PR_OPENED' && openOut.outcome !== 'EXISTS') {
         const rec = isLostReturn(openOut) ? await recoverLostReturn(item, wt, openCmd) : { kind: 'none' };
         if (rec.kind === 'adopted') {
@@ -7733,8 +8225,40 @@ async function driveItemPr(ctx) {
           pushedSha = rec.pushedSha ?? pushedSha;
         } else if (rec.kind === 'escalate') {
           return escalate(item.slug, rec.escKind, rec.payload);
+        } else if (isVerdictUnparseable(openOut)) {
+          // temperloop#1805, the OBSERVABLE half. Even when the fallback cannot
+          // land the PR, the escalation must let its reader tell "no work" from
+          // "work done, reporting broke". A payload naming only the parse error
+          // is what made a finished item look terminal — and on an unattended run
+          // with no operator reading it, that is how landed-quality work gets
+          // parked, pruned and redone. The three facts that settle it come from
+          // the recover-probe, the same staged ladder every other disposal uses.
+          const probe = await probeSideEffects(item, wt);
+          return escalate(item.slug, 'verdict-unparseable', {
+            openOut,
+            fallbackOut: verdictFallback,
+            committed_sha: pushedSha ?? probe.sha ?? null,
+            dirty: probe.stage === 'RECOVER_DIRTY' || (probe.dirtyFiles ?? 0) > 0,
+            verification_present: probe.surfacePresent === true || Boolean(surfaceFlag),
+            probeStage: probe.stage ?? null,
+            pushed: probe.pushed === true,
+            reason:
+              'the work is COMMITTED and the branch is pushed; only the worker verdict failed to parse, so ' +
+              'pr.sh open refused to assemble a body. This is a reporting-layer failure, NOT a failed item — ' +
+              'read committed_sha / dirty / verification_present before disposing of it.',
+            remedy:
+              'open the PR by hand from the committed branch with .build-verification.md as the body (the ' +
+              'temperloop#1803 recovery), or re-drive ONLY the verdict — never rebuild the work.',
+          });
         } else {
-          return escalate(item.slug, 'pr-open-failed', { openOut });
+          return escalate(item.slug, 'pr-open-failed', {
+            openOut,
+            // The same three facts, best-effort and free (no extra probe): every
+            // pr-open failure deserves to be readable as "work done, reporting
+            // broke" rather than as "nothing landed".
+            committed_sha: pushedSha ?? null,
+            verification_present: Boolean(surfaceFlag) || Boolean(verdict.verification_surface),
+          });
         }
       } else {
         pr = openOut.pr_number;
@@ -8558,10 +9082,106 @@ function zeroDispositionContradiction(activeItems, parked, escalations) {
 }
 
 // =============================================================================
+// ITEM-KEY NORMALIZATION AT THE ORCHESTRATOR→WORKFLOW SEAM (temperloop#1700).
+// =============================================================================
+// This file reads the item's issue number as `item.ghIssue`. `claude/plan-schema.md`
+// DOCUMENTS the field as `gh_issue:`, and `also_closes:` / `depends-on:` likewise.
+// A caller that constructs items from the documented schema — a legitimate
+// calling pattern, since the schema is what documents it — therefore gets:
+//
+//   no `--gh-issue` flag on `pr.sh open` → no `Closes #N` in the body →
+//   a PR that merges green and leaves its issue OPEN → and no warning anywhere.
+//
+// Observed on PR #1697 (`closingIssuesReferences` empty); three PRs from one
+// level merged closing nothing. The SILENCE is the defect: "this item has no
+// tracked issue" is a legal state (`gh_issue:` is optional), so an unread key is
+// indistinguishable from an absent one, and the merged-with-no-linkage PR leaves
+// a stranded `fnd:status:in-progress` item wearing a live claim stamp.
+//
+// Same family as #1698 above — one meaning wearing two names across a seam, with
+// the consumer's absent-key path producing a plausible-looking result instead of
+// an error. Both halves the issue asks for are implemented, because each catches
+// what the other cannot:
+//   (1) ACCEPT the documented spelling, normalizing once here. Fixes the three
+//       aliases we know about.
+//   (2) WARN on a key nothing reads. Catches the NEXT one — the class, not the
+//       instance.
+const ITEM_KEY_ALIASES = {
+  gh_issue: 'ghIssue',
+  also_closes: 'alsoCloses',
+  'depends-on': 'dependsOn',
+  depends_on: 'dependsOn',
+  parent_epic: 'parentEpic',
+  parent_summary: 'parentSummary',
+};
+// Every key this file actually READS off an item. This list is not a
+// hand-maintained copy that drifts: the K1700 lockstep guard in
+// test_workflow.sh greps THIS file for `item.<key>` dereferences and
+// reconciles the resulting set against this array in BOTH directions — a read
+// missing from the list, or a listed key nothing reads any more, fails the
+// suite. (Round 2: the comment used to claim that guard before it existed,
+// which is the same "a backstop that is only asserted in prose" defect this PR
+// removes elsewhere. The guard is real now.)
+const ITEM_KEYS_READ = [
+  'slug', 'branch', 'title', 'kind', 'ghIssue', 'alsoCloses', 'repo', 'model',
+  'acceptance', 'source', 'scope', 'notes', 'dependsOn', 'activation',
+  'parentEpic', 'parentSummary', 'review',
+];
+// Documented plan-schema (and orchestrator bookkeeping) fields this file
+// deliberately does NOT read — the plan note carries them for its own use, and
+// warning on them would drown the signal the warning exists to carry.
+const ITEM_KEYS_IGNORED = [
+  'after', 'epic', 'gate_check', 'gateCheck', 'size', 'files', 'seq',
+  'status', 'pr', 'pushed_sha', 'pushedSha', 'no_ci', 'noCi', 'arm', 'id',
+];
+function normalizeItem(raw) {
+  if (raw == null || typeof raw !== 'object') return raw;
+  const item = { ...raw };
+  const known = new Set([...ITEM_KEYS_READ, ...ITEM_KEYS_IGNORED, ...Object.keys(ITEM_KEY_ALIASES)]);
+  const unknown = [];
+  for (const key of Object.keys(raw)) {
+    const canonical = ITEM_KEY_ALIASES[key];
+    if (canonical) {
+      // The camelCase spelling WINS when both are present — it is what this file
+      // has always read, so a caller passing both cannot be silently retargeted.
+      if (item[canonical] === undefined) {
+        item[canonical] = raw[key];
+        log(
+          `[${raw.slug ?? '?'}] item key '${key}' accepted as '${canonical}' (temperloop#1700) — ` +
+          `the documented plan-schema spelling; it used to be read by nothing and dropped in silence.`,
+        );
+      } else if (JSON.stringify(item[canonical]) !== JSON.stringify(raw[key])) {
+        log(
+          `[${raw.slug ?? '?'}] item carries BOTH '${key}' and '${canonical}' with DIFFERENT values ` +
+          `(temperloop#1700) — using '${canonical}'; drop one in the caller.`,
+        );
+      }
+      continue;
+    }
+    if (!known.has(key)) unknown.push(key);
+  }
+  if (unknown.length > 0) {
+    // The generalization of the fix: a key nothing reads is named, once, rather
+    // than absorbed. An item with NEITHER spelling of a known field stays legal
+    // and silent — a genuinely untracked item is a normal state, not a warning.
+    log(
+      `[${raw.slug ?? '?'}] item carries key(s) this workflow does not read: ${unknown.join(', ')} ` +
+      `(temperloop#1700). If one of them is meant to drive behaviour, it is being IGNORED.`,
+    );
+  }
+  return item;
+}
+
+// =============================================================================
 // Entry point — drive the level, return {parked, escalations}.
 // =============================================================================
 async function buildLevel() {
-  const items = input.items ?? [];
+  // temperloop#1700 — normalize the DOCUMENTED plan-schema spellings into the
+  // camelCase keys this file reads, ONCE, at the single point items enter. Every
+  // later `item.ghIssue` / `item.alsoCloses` / `item.dependsOn` read — including
+  // the 3f `--gh-issue` / `--also-closes` flags whose absence merged three PRs
+  // closing nothing — is fed from here.
+  const items = (input.items ?? []).map(normalizeItem);
   log(`repoRoot=${input.repoRoot} board=${input.board ?? 'OFF'} plan=${input.planLink}`);
 
   // onlySlugs — optional continuation filter (escalation-resume loop).
