@@ -27,7 +27,7 @@
 #
 # ── The failure class this must not reintroduce ──────────────────────────
 # A path→gate map that misses a dependency silently runs a NARROWER set and
-# reports green — the silent-green class. Four structural defenses:
+# reports green — the silent-green class. Five structural defenses:
 #
 #   1. DEFAULT TO FULL on an unrecognised path. A changed path that matches no
 #      glob in ANY row escalates the whole run to the full set. Narrowing is
@@ -75,14 +75,6 @@
 #      is not a registration, an added literal that is not a gate in the caller's
 #      list, a comment-only diff, a diff the probe cannot read at all — keeps the
 #      full escalation. The exception fails CLOSED.
-#   KNOWN, BOUNDED GAP (temperloop#1695): git reports a RENAME as a single line
-#      carrying the DESTINATION path, so moving a file OUT of a gated tree does
-#      not put the source tree in the changed set and that tree's gates are not
-#      selected. Equally true of the `pull_request` path since #1024; the
-#      unscoped merge_group run still catches it before the default branch. It is
-#      a latency gap, not a hole in what gates `main` — tracked, not silently
-#      inherited. `--no-renames` would list both paths and is the likely fix.
-#
 #   4. AN UNMAPPED GATE ALWAYS RUNS. A gate with no row in the map is selected
 #      unconditionally rather than skipped, so a map that has fallen behind the
 #      gate list over-runs instead of under-running. The companion validator
@@ -91,6 +83,23 @@
 #      and additionally proves every row's globs match at least one tracked
 #      path — a gate orphaned behind a glob that can never match fails the
 #      build rather than being silently skipped forever.
+#   5. A RENAME LISTS BOTH PATHS (temperloop#1695). Every changed-set diff runs
+#      with `--no-renames`. git's rename detection is ON by default and reports
+#      a rename as a SINGLE entry carrying the DESTINATION path only, so moving
+#      a file OUT of a gated tree put only the destination in the changed set:
+#      the source tree lost a file and nothing re-ran its gates. `--no-renames`
+#      renders the same change as a delete PLUS an add, so BOTH paths enter the
+#      changed set and BOTH trees' gates are pulled in.
+#      WHY WIDENING IS THE SAFE DIRECTION: it is the same bet defenses 1, 2 and
+#      4 already make — every unknown resolves toward MORE coverage, because
+#      an over-run costs gate minutes while an under-run reports green on a
+#      suite that never ran. Reconstructing the source path from a `R100 old
+#      new` status line instead would narrow on a second parse of the same
+#      diff and buy nothing the wider set does not already cover; the cost here
+#      is one extra changed path per renamed file. Before this, the miss was a
+#      LATENCY gap rather than a hole in what gates `main` — the unscoped
+#      merge_group run still caught it before the default branch — but it made
+#      a scoped `pull_request` run narrower than its own diff.
 #
 # ── Map format (workflows/scripts/config/gate-paths.tsv) ─────────────────
 #   <key><TAB><glob>[ <glob> ...]
@@ -226,11 +235,13 @@ _gs_load_map() {
 # --- changed-path resolution -------------------------------------------------
 # `git diff --name-only <base>...HEAD` — the same three-dot form the PR leak
 # guard uses, so both diff-scoped consumers see the same file set.
+# `--no-renames` is defense 5 in the header: without it a rename lists only the
+# DESTINATION path and the source tree's gates go unselected.
 _gs_changed_paths() {
   local root="$1" base="$2"
   [[ -n "$base" ]] || return 1
   git -C "$root" rev-parse --verify --quiet "${base}^{commit}" >/dev/null 2>&1 || return 1
-  git -C "$root" diff --name-only "${base}...HEAD" 2>/dev/null || return 1
+  git -C "$root" diff --no-renames --name-only "${base}...HEAD" 2>/dev/null || return 1
 }
 
 # --- LOCAL working-tree changed set (temperloop#957) --------------------------
@@ -243,6 +254,10 @@ _gs_changed_paths() {
 #   1. <merge-base(origin/<default>, HEAD)>...HEAD   the worker's commits
 #   2. `git diff --name-only HEAD`                   staged + unstaged edits
 #   3. `git ls-files --others --exclude-standard`    new, not-yet-added files
+#
+# (1) and (2) both carry `--no-renames` (defense 5): a worker who `git mv`s a
+# file out of a gated tree — committed OR merely staged — must still select the
+# SOURCE tree's gates, and rename detection would hide that path from both.
 #
 # (2) and (3) are what make this usable MID-work rather than only after a
 # commit, and (3) is why a brand-new source file cannot hide from the selector.
@@ -292,8 +307,8 @@ gate_selection_local_changed() {
   fi
   GATE_SELECTION_LOCAL_BASE="$base"
   {
-    git -C "$root" diff --name-only "${base}...HEAD" 2>/dev/null
-    git -C "$root" diff --name-only HEAD 2>/dev/null
+    git -C "$root" diff --no-renames --name-only "${base}...HEAD" 2>/dev/null
+    git -C "$root" diff --no-renames --name-only HEAD 2>/dev/null
     git -C "$root" ls-files --others --exclude-standard 2>/dev/null
   } | sort -u | grep -v '^$'
   return 0
@@ -394,6 +409,14 @@ _GS_REG_ARRAY_CTX_RE='^[A-Za-z_][A-Za-z0-9_]*_GATES(\+)?=\([[:space:]]*$'
 # added non-registration line and the exception silently never fires (it fails
 # CLOSED, so no correctness hole, but a capability that never fires is
 # indistinguishable from one that found nothing).
+#
+# `--no-renames` rides along for the SAME reason the changed-set diffs carry it
+# (defense 5), one step further down: once the changed set lists a renamed-away
+# source path, this probe can be handed a $_GS_QG_PATH that was renamed, and a
+# rename-detected diff would show it as a small same-file delta. Without the
+# flag, a rename INTO scripts/quality-gates.sh could therefore read as
+# registration-only and decline the ALL escalation. Pinned, it renders as a
+# whole-file add (or a delete), whose lines veto — it fails CLOSED like the rest.
 _gs_qg_diff() {
   local root="$1" base="$2" committed="" worktree=""
   if [[ -n "${GATE_SELECTION_DIFF_TEXT+x}" ]]; then
@@ -403,8 +426,8 @@ _gs_qg_diff() {
   [[ -n "$base" ]] || return 1
   git -C "$root" rev-parse --git-dir >/dev/null 2>&1 || return 1
   git -C "$root" rev-parse --verify --quiet "${base}^{commit}" >/dev/null 2>&1 || return 1
-  committed="$(git -C "$root" diff --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ -U0 "${base}...HEAD" -- "$_GS_QG_PATH" 2>/dev/null)" || return 1
-  worktree="$(git -C "$root" diff --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ -U0 HEAD -- "$_GS_QG_PATH" 2>/dev/null)" || return 1
+  committed="$(git -C "$root" diff --no-color --no-ext-diff --no-textconv --no-renames --src-prefix=a/ --dst-prefix=b/ -U0 "${base}...HEAD" -- "$_GS_QG_PATH" 2>/dev/null)" || return 1
+  worktree="$(git -C "$root" diff --no-color --no-ext-diff --no-textconv --no-renames --src-prefix=a/ --dst-prefix=b/ -U0 HEAD -- "$_GS_QG_PATH" 2>/dev/null)" || return 1
   printf '%s\n%s\n' "$committed" "$worktree"
   return 0
 }
