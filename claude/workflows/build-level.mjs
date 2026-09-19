@@ -707,7 +707,21 @@ const SPINE_OUTCOME_SCHEMA = {
     // suite growth observable on every run, not only when it blows a budget.
     resumeAt: { type: ['number', 'string'] },
     failed: { type: ['number', 'string'] },
-    elapsedSecs: { type: ['number', 'string'] },
+    // `'null'` IS LOAD-BEARING HERE, not defensive padding (temperloop#1698,
+    // review round 2). The gate emitter below deliberately prints a bareword
+    // `null` when the elapsed figure is unreadable — that IS the fix: an
+    // unknown duration must degrade to "I don't know", never to a plausible
+    // `0`. This object is what `agent({schema})` validates the executor's
+    // returned line against, so leaving `null` out of the type array would
+    // reject (or silently coerce) the ONE shape the fix exists to produce —
+    // reintroducing the same degrade-to-a-believable-value defect one layer
+    // up, on the path that only fires when the figure is already unknown.
+    // Same precedent as `input_tokens` / `output_tokens` above, declared
+    // `['number', 'null']` for exactly this reason. Kept honest by the K1698
+    // producer↔schema case in test_workflow.sh, which runs the REAL emitted
+    // shell fragment and validates the REAL line it prints against THIS object
+    // rather than against an injected outcome object.
+    elapsedSecs: { type: ['number', 'string', 'null'] },
     budgetSecs: { type: ['number', 'string'] },
     // temperloop#2094: the gate slice's own exit status. It is a FACT the
     // ledger carries, never the classifier's input — a slice that printed a
@@ -2469,6 +2483,11 @@ function workerGateSection(slug, worktreePath) {
     '  visible whether you mention it or not.',
     '- If this repo has no `scripts/quality-gates.sh`, the command exits non-zero without a',
     '  `finished` sentinel — say so and move on; that is not a gate failure.',
+    '- It needs **bash** (it opens with `set -o pipefail`, which POSIX `sh` does not have).',
+    '  The Bash tool gives you one; if some wrapper hands it to a plain `sh` instead, the',
+    '  command aborts at that line and writes NO `finished` sentinel — which is a refusal to',
+    '  guess, not a pass. Report it as blocked per the rule above; never infer a green gate',
+    '  from a missing sentinel.',
   ];
 }
 
@@ -9051,8 +9070,14 @@ const ITEM_KEY_ALIASES = {
   parent_epic: 'parentEpic',
   parent_summary: 'parentSummary',
 };
-// Every key this file actually READS off an item (grep `item.` — kept in
-// lockstep by the K1700 static guard in test_workflow.sh).
+// Every key this file actually READS off an item. This list is not a
+// hand-maintained copy that drifts: the K1700 lockstep guard in
+// test_workflow.sh greps THIS file for `item.<key>` dereferences and
+// reconciles the resulting set against this array in BOTH directions — a read
+// missing from the list, or a listed key nothing reads any more, fails the
+// suite. (Round 2: the comment used to claim that guard before it existed,
+// which is the same "a backstop that is only asserted in prose" defect this PR
+// removes elsewhere. The guard is real now.)
 const ITEM_KEYS_READ = [
   'slug', 'branch', 'title', 'kind', 'ghIssue', 'alsoCloses', 'repo', 'model',
   'acceptance', 'source', 'scope', 'notes', 'dependsOn', 'activation',
