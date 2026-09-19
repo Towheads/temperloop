@@ -165,6 +165,8 @@ control() {
 degenerate env:DOCS_FOOTER_ROOT dir absent workflows/scripts/validate-docs-footer.sh "validate-docs-footer.sh [absent]: exits non-zero, never a silent OK"
 degenerate env:DOCS_FOOTER_ROOT dir unreadable workflows/scripts/validate-docs-footer.sh "validate-docs-footer.sh [unreadable]: exits non-zero, never a silent OK"
 degenerate env:DOCS_FOOTER_ROOT dir empty workflows/scripts/validate-docs-footer.sh "validate-docs-footer.sh [empty]: exits non-zero, never a silent OK"
+degenerate env:CHANGELOG_FRAGMENT_DIR dir absent workflows/scripts/config/check-changelog-fragment-register.sh "check-changelog-fragment-register.sh [absent]: exits non-zero, never a silent OK"
+degenerate env:CHANGELOG_FRAGMENT_DIR dir unreadable workflows/scripts/config/check-changelog-fragment-register.sh "check-changelog-fragment-register.sh [unreadable]: exits non-zero, never a silent OK"
 degenerate env:FEATURE_DOCS_ROOT dir absent workflows/scripts/validate-feature-docs.sh "validate-feature-docs.sh [absent]: exits non-zero, never a silent OK"
 degenerate env:FEATURE_DOCS_ROOT dir unreadable workflows/scripts/validate-feature-docs.sh "validate-feature-docs.sh [unreadable]: exits non-zero, never a silent OK"
 degenerate env:FEATURE_DOCS_ROOT dir empty workflows/scripts/validate-feature-docs.sh "validate-feature-docs.sh [empty]: exits non-zero, never a silent OK"

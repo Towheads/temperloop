@@ -961,6 +961,20 @@ KERNEL_GATES=(
   # form, same check-setting-prose.sh shape, as the two gates above.
   "bash workflows/scripts/config/check-reviewer-routing.sh"
   "bash workflows/scripts/config/tests/test_check_reviewer_routing.sh"
+  # changelog-fragment register lint (temperloop#2136): a narrow, mechanical
+  # check of changelog.d/README.md's § "Who reads a fragment, and the
+  # register that follows" — a title hook on a fragment's first issue
+  # mention, no bare K<N>/S<N>/F<N>/M<N>/W<N> cross-repo shorthand, and none
+  # of docs-reviewer.md's own named unexplained-shorthand tokens (`WIP cap`,
+  # `checks gate`). Deliberately does NOT attempt README's step-letter/
+  # section-index rule (`Step 4a`, `§3e`) or its source-file-field-name /
+  # invented-mechanism-name rules — see the checker's own header for why
+  # those stay a `docs-reviewer` judgment call (capped at MEDIUM, never
+  # HIGH, per that agent's own § Severity criteria) rather than a mechanical
+  # ban. Same direct-`bash` form, same check-setting-prose.sh shape, as the
+  # two gates above.
+  "bash workflows/scripts/config/check-changelog-fragment-register.sh"
+  "bash workflows/scripts/config/tests/test_check_changelog_fragment_register.sh"
   # Ontology-registry checker (ADR 0032, epic temperloop#1910 L0-b):
   # workflows/scripts/config/ontology-registry.tsv is the single source of
   # truth for the tracker + plan vocabularies (node/edge types, the four state

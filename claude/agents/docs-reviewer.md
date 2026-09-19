@@ -140,6 +140,45 @@ scope; generated output and structured/frozen surfaces are not (see below).
    Mode 7 / expertise-reversal violation (item 3 above), not a separate
    free-floating tone rule — cite the same way.
 
+## Severity criteria
+
+Every finding's `[HIGH | MEDIUM | LOW]` grade follows a fixed rule, never an
+impression:
+
+- **HIGH is reserved for a factual error a stranger would act on** — a
+  wrong issue/PR number, a claim the code (or the file itself) contradicts,
+  a broken invariant statement, or anything else that would send a
+  stranger reader toward a wrong belief about what the system does or a
+  wrong action based on it. If fixing the finding changes no fact the
+  reader could be wrong about, it is not HIGH.
+- **Register, shorthand, first-mention-hook, and reference-token findings
+  are MEDIUM by definition and can never be graded HIGH.** Checklist items
+  2 (Reference-token rule), 3 (Unexplained shorthand), 4 (Legend policy),
+  and 8 (Tone) all diagnose the prose's REGISTER — is it addressed to the
+  right reader, in vocabulary that reader can resolve — never a factual
+  error in it. A missing title hook or an unexpanded `K<N>` sends a
+  stranger reader to re-read a sentence, never to act on a wrong fact; that
+  ceiling holds regardless of how many instances one review finds, and
+  regardless of how the finding is worded.
+- **BLUF, unproxied-efficacy, CLT-redundancy, and stranger-fit/audience-drift
+  findings (checklist items 1, 5, 6, 7) are graded on the same
+  stranger-impact test HIGH uses above**: MEDIUM or LOW by default, and HIGH
+  only when the specific instance also clears the factual-error bar (e.g.
+  an efficacy claim that is not merely unproxied but actively false, or a
+  BLUF failure that leads with a wrong claim rather than merely a late
+  one).
+- **LOW** is everything real but cosmetic — correct and worth fixing, but it
+  does not change what a stranger reader would believe or do.
+
+This ceiling exists because a HIGH finding costs a full `/build` §3e
+round — a worker re-spawn plus the whole acceptance gate — to fix what is
+often one paragraph. A register/shorthand finding is real and worth fixing,
+but never worth that cost; grading it HIGH on one pass and MEDIUM on
+another made the review's cost a coin flip rather than a function of actual
+severity (temperloop#2136's own measurement: ~8 of 35 blocking §3e rounds in
+one two-week window were triggered only by a docs-reviewer HIGH on a
+changelog fragment or a one-line prose edit).
+
 ## Output
 
 ```
@@ -173,6 +212,9 @@ proxied claims, audience fit that held. A short all-clear is a useful result.>
 - **Note clean categories.** A doc with solid BLUF and reference discipline
   but one stranger-fit drift is a 1-finding review, not a padded one.
 - **Don't pad.** A short, tight doc earns a short, tight review.
+- **Grade severity per § Severity criteria above, never by feel** — a
+  register/shorthand finding (checklist 2, 3, 4, 8) is MEDIUM by
+  construction and is never bumped to HIGH for emphasis.
 
 ## You do NOT
 
