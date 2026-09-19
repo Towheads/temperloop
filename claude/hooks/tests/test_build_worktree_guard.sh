@@ -150,6 +150,12 @@ touch "$PLAIN/.build-guard"
 
 NONREPO="$TMP/nonrepo"; mkdir -p "$NONREPO"    # not a git working tree at all
 
+# A FIXTURE $HOME for the plans allow-list (temperloop#1975). The guard resolves
+# $HOME/.claude/plans at runtime, so the case is pinned against a fixture HOME
+# rather than the operator`s real one — exact on any machine, and the real
+# ~/.claude is never read, written, or depended on for its symlink shape.
+FAKEHOME="$TMP/home"; mkdir -p "$FAKEHOME/.claude/plans" "$FAKEHOME/.claude/hooks"
+
 WT_RP=$(cd "$WT" && pwd -P)
 
 # Multi-line commands. The guard's awk walker is LINE-oriented and carries no
@@ -201,15 +207,20 @@ run_json() { # <cwd> <raw json> — for shapes the helpers above don't build
 
 # Corpus helpers. Each isolates the log, runs from the ARMED worktree, and
 # asserts both the stdout verdict and (for ALLOW) that a judgment was made.
-deny_bash() { # <desc> <command>
-  local desc="$1" out; log_reset; out=$(run_bash "$WT" "$2")
+# Every corpus helper forwards any TRAILING `NAME=VAL` arguments to the hook`s
+# own environment (run_bash/run_file already accept them). Only the $HOME cases
+# use it: the plans allow-list is resolved from $HOME at guard runtime, so the
+# test pins a FIXTURE $HOME rather than judging against the real one, whose
+# .claude/ contents and symlink shape vary per machine.
+deny_bash() { # <desc> <command> [NAME=VAL ...]
+  local desc="$1" cmd="$2" out; shift 2; log_reset; out=$(run_bash "$WT" "$cmd" "$@")
   if [ "$(verdict "$out")" = deny ]; then ok "DENY  $desc"
-  else bad "DENY  $desc" "want=deny got=silent  cmd=[$2]"; fi
+  else bad "DENY  $desc" "want=deny got=silent  cmd=[$cmd]"; fi
 }
-allow_bash() { # <desc> <command>
-  local desc="$1" out inert; log_reset; out=$(run_bash "$WT" "$2")
+allow_bash() { # <desc> <command> [NAME=VAL ...]
+  local desc="$1" cmd="$2" out inert; shift 2; log_reset; out=$(run_bash "$WT" "$cmd" "$@")
   if [ "$(verdict "$out")" != silent ]; then
-    bad "ALLOW $desc" "FALSE DENY — cmd=[$2] out=$out"; return
+    bad "ALLOW $desc" "FALSE DENY — cmd=[$cmd] out=$out"; return
   fi
   inert=$(log_inert)
   if [ -n "$inert" ]; then
@@ -217,15 +228,15 @@ allow_bash() { # <desc> <command>
   fi
   ok "ALLOW $desc"
 }
-deny_file() { # <desc> <tool> <file_path>
-  local desc="$1" out; log_reset; out=$(run_file "$WT" "$2" "$3")
+deny_file() { # <desc> <tool> <file_path> [NAME=VAL ...]
+  local desc="$1" tool="$2" fp="$3" out; shift 3; log_reset; out=$(run_file "$WT" "$tool" "$fp" "$@")
   if [ "$(verdict "$out")" = deny ]; then ok "DENY  $desc"
-  else bad "DENY  $desc" "want=deny got=silent  tool=$2 path=[$3]"; fi
+  else bad "DENY  $desc" "want=deny got=silent  tool=$tool path=[$fp]"; fi
 }
-allow_file() { # <desc> <tool> <file_path>
-  local desc="$1" out inert; log_reset; out=$(run_file "$WT" "$2" "$3")
+allow_file() { # <desc> <tool> <file_path> [NAME=VAL ...]
+  local desc="$1" tool="$2" fp="$3" out inert; shift 3; log_reset; out=$(run_file "$WT" "$tool" "$fp" "$@")
   if [ "$(verdict "$out")" != silent ]; then
-    bad "ALLOW $desc" "FALSE DENY — tool=$2 path=[$3] out=$out"; return
+    bad "ALLOW $desc" "FALSE DENY — tool=$tool path=[$fp] out=$out"; return
   fi
   inert=$(log_inert)
   if [ -n "$inert" ]; then
@@ -616,6 +627,20 @@ allow_bash "redirect > /dev/stderr (device sink)"        'echo x > /dev/stderr'
 allow_bash "device-sink redirect survives an OUTSIDE cd" "cd $REPO && ls 2>/dev/null"
 allow_bash "device-sink redirect survives an outside cd (git log)" \
   "cd $REPO && git log 2>/dev/null"
+# A shell separator GLUED to the end of a redirect target is punctuation, not
+# path (temperloop#1974). The tokenizer splits on whitespace and knows `;` only
+# as a standalone token, so `cmd 2>/dev/null; next` arrives as ONE word and the
+# sink check saw `/dev/null;` — missing its exact match and denying the single
+# most routine idiom in a worker command line, observed live in session 8d69445e.
+allow_bash "device sink with a glued trailing ';' (the #1974 live shape)" \
+  'make test 2>/dev/null; echo done'
+allow_bash "device sink with a glued trailing ';' at end of command" \
+  'make test 2>/dev/null;'
+allow_bash "device sink with a glued trailing '|'"       'make test 2>/dev/null| grep -c x'
+allow_bash "device sink with a glued trailing '&'"       'make test 2>/dev/null& wait'
+allow_bash "device sink with a glued ';' after an OUTSIDE cd" \
+  "cd $REPO && ls 2>/dev/null; echo done"
+allow_bash "in-worktree redirect with a glued trailing ';'" 'echo x > out.txt; echo done'
 # NON-LITERAL redirect targets judged by their literal directory PREFIX. `>
 # "$VAR"` is an everyday idiom (~1,480 in this repo alone); denying all of them
 # is the false-positive class that gets a guard disarmed. The DENY twins below
@@ -660,6 +685,24 @@ deny_bash "literal prefix climbing out via .."             'echo x > ../../$X/f'
 # /proc/self/fd), so it is excluded by design rather than matched unreliably.
 deny_bash "/dev/fd/N is not an allow-listed sink (platform-divergent)" \
   'echo x > /dev/fd/3'
+# The trailing-separator strip is PUNCTUATION-ONLY and provably cannot move a
+# path: a trailing `;`/`&`/`|` never changes a target`s DIRECTORY, so an escaping
+# target still resolves outside and still denies. That is what makes the fix a
+# narrowing of the false-positive set rather than a widening of the allow set.
+deny_bash "escaping redirect with a glued trailing ';' still denies" \
+  "echo x > $REPO/leak.txt; echo done"
+deny_bash "escaping top-level redirect with a trailing ';' still denies" \
+  'echo x > /etc/passwd;'
+deny_bash "a NON-LITERAL target with a trailing ';' still denies" \
+  'echo x > "$HOME/leak";'
+# DISCLOSED RESIDUE, pinned so a future change cannot flip it silently: only a
+# TRAILING separator is punctuation. Written with NO space at all
+# (`2>/dev/null|grep x`) the target word carries the next command with it, and
+# the guard still denies. Reaching INTO the word would be a tokenizer change with
+# a far wider blast radius (it would re-split destructive operand runs too), so
+# it is deliberately out of scope here. Fails CLOSED.
+deny_bash "DISCLOSED: a fully glued '2>/dev/null|grep' still denies" \
+  'make test 2>/dev/null|grep -c x'
 # Word-glued redirects, the escaping half — the bypass this pairing closes.
 deny_bash "word-glued redirect to a path outside"        "date>$REPO/passwd"
 deny_bash "word-glued redirect, arg then operator, outside" "echo x>$REPO/leak"
@@ -687,6 +730,48 @@ allow_file "Write a relative in-worktree path"       Write "newdir/new.txt"
 allow_file "Edit  an existing in-worktree file"      Edit  "$WT_RP/src/a.ts"
 allow_file "Write under /tmp (allow-listed)"         Write "/tmp/build-worktree-guard-scratch.txt"
 allow_file "Write under \$TMPDIR (allow-listed)"     Write "$TMPDIR/scratch.txt"
+
+# --- THE HARNESS'S OWN PLAN PATH (temperloop#1975) ---------------------------
+# ~/.claude/plans is Claude Code's plan-persistence directory: harness-owned
+# state, outside every repo, structurally unable to contaminate a worktree diff
+# or another checkout. It had no allow-list entry, so a plan-mode or reviewer
+# agent inside a guarded worktree could not persist a plan at all — six reviewer
+# sessions were denied in one night (7 blocks across 6 stubs, 2026-09-12/13) and
+# every one of them worked around the guard, which is how a guard gets disarmed.
+allow_file "Write the harness's own plan file under \$HOME/.claude/plans" \
+  Write "$FAKEHOME/.claude/plans/review-the-new-workflow-recursive-volcano.md" HOME="$FAKEHOME"
+allow_file "Edit an existing harness plan file" \
+  Edit "$FAKEHOME/.claude/plans/read-only-review-return-findings-hidden-sloth.md" HOME="$FAKEHOME"
+allow_bash "redirect writing the harness's own plan file (the #1975 live shape)" \
+  "echo x > $FAKEHOME/.claude/plans/confirmation-pass-review-happy-barto.md" HOME="$FAKEHOME"
+allow_bash "redirect into a nested dir under the plans root" \
+  "echo x > $FAKEHOME/.claude/plans/sub/deep.md" HOME="$FAKEHOME"
+# DISCLOSED, pinned as a decision: this is a full allow-list ROOT, on the same
+# terms as /tmp and $TMPDIR — so a destructive verb aimed INSIDE it is permitted
+# too. That is the cost of reusing one allow-list idiom instead of hand-rolling a
+# second, write-only one; the directory is harness scratch the agent owns.
+allow_bash "DISCLOSED: the plans root is a full allow-list root (rm inside it)" \
+  "rm -f $FAKEHOME/.claude/plans/stale.md" HOME="$FAKEHOME"
+
+# ...and the relief stops AT `plans/`. $HOME/.claude also holds settings, hooks
+# and commands — the installed kit — so allow-listing the parent would let a
+# jailed worker rewrite the machine's own configuration from inside the jail,
+# re-opening the write-leak class the guard exists to catch. These are the DENY
+# twins that make the scoping a pinned property rather than a claim.
+deny_file "sibling under \$HOME/.claude is NOT allow-listed (settings.json)" \
+  Write "$FAKEHOME/.claude/settings.json" HOME="$FAKEHOME"
+deny_file "a hook under \$HOME/.claude/hooks is NOT allow-listed" \
+  Write "$FAKEHOME/.claude/hooks/evil.sh" HOME="$FAKEHOME"
+deny_file "\$HOME itself is NOT allow-listed"        Write "$FAKEHOME/notes.md" HOME="$FAKEHOME"
+deny_bash "rm -rf of the \$HOME/.claude parent is still denied" \
+  "rm -rf $FAKEHOME/.claude" HOME="$FAKEHOME"
+deny_bash "redirect to \$HOME/.claude/settings.json is still denied" \
+  "echo x > $FAKEHOME/.claude/settings.json" HOME="$FAKEHOME"
+# With HOME UNSET the entry must not degenerate into a bare "/.claude/plans"
+# allow-list — that is what the `${HOME:+...}` form in allow_roots buys, and a
+# plain `$HOME/.claude/plans` would silently allow-list a real top-level path.
+deny_file "HOME unset does NOT allow-list a bare /.claude/plans" \
+  Write "/.claude/plans/x.md" -u HOME
 
 log_reset
 out=$(run_json "$WT" "$(jq -cn --arg cwd "$WT" --arg fp "$WT_RP/src/a.ts" \

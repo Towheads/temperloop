@@ -332,21 +332,47 @@ probe "heredoc body, markdown blockquote"            "$HEREDOC_MARKDOWN"
 
 echo
 echo "-- deliberate relaxations (declared, not discovered) --"
-# NONE currently apply against origin/main. The `{}` placeholder relaxation this
-# list was built for (foundation#1354) has since MERGED to origin/main, so it is
-# no longer a difference between the working copy and the ref — `probe_ratified`
-# correctly reported it as a STALE RATIFICATION, and per its own contract the
-# entry is retired rather than left asserting a delta that no longer exists. The
-# behavior itself is still pinned, in both polarities, by the ALLOW/DENY corpus
-# in test_build_worktree_guard.sh; only the working-copy-vs-ref claim is gone.
-# `probe_ratified` stays defined: it is the declared home for the NEXT deliberate
-# relaxation, and the redirect work below introduced none.
+# The `{}` placeholder relaxation this list was built for (foundation#1354) has
+# since MERGED to origin/main, so it is no longer a difference between the
+# working copy and the ref — `probe_ratified` correctly reported it as a STALE
+# RATIFICATION, and per its own contract the entry was retired rather than left
+# asserting a delta that no longer exists. The behavior itself is still pinned,
+# in both polarities, by the ALLOW/DENY corpus in test_build_worktree_guard.sh;
+# only the working-copy-vs-ref claim is gone. The two live entries below
+# (temperloop#1974/#1975) are the current declared relaxations.
 probe "find -exec rm {} (placeholder exemption, now shipped)" \
   'find . -name core -exec rm {} \;'
 # ...and that exemption is scoped to find's own placeholder, not to the cd
 # context it runs in — pin that it still escapes nothing.
 probe "cd outside && find -exec rm {} (exemption stays scoped)" \
   "cd $REPO && find . -name core -exec rm {} \\;"
+
+# TWO DECLARED RELAXATIONS (temperloop#1974, #1975). Both are FALSE DENIES the
+# old guard emitted on writes it never meant to judge — a redirect target whose
+# trailing `;` the tokenizer glued on, and the harness`s own plan-persistence
+# directory. Declared here rather than discovered: this list is the written claim
+# that the DENY->allow delta was intended.
+probe_ratified "device sink with a glued trailing ';' (#1974)" \
+  "the tokenizer knows ; only as a standalone token, so 2>/dev/null; reached the sink check as /dev/null; and denied the most routine idiom in a worker command line; the strip is punctuation-only and cannot change a target directory" \
+  'make test 2>/dev/null; echo done'
+# ...and the strip cannot move a path, so an escaping target with the same
+# trailing punctuation must still DENY. Pinned as a plain probe (DENY=DENY).
+probe "escaping redirect with a trailing ';' still denies" \
+  "echo x > $REPO/leak.txt; echo done"
+
+# The plans relaxation is resolved from $HOME at guard runtime, so both hooks run
+# against a FIXTURE $HOME — exact on any machine, and the operator`s real
+# ~/.claude is never read or written. Restored immediately after.
+DIFF_SAVED_HOME="$HOME"
+DIFF_FAKEHOME="$TMP/home"; mkdir -p "$DIFF_FAKEHOME/.claude/plans"
+export HOME="$DIFF_FAKEHOME"
+probe_ratified "write to the harness's own \$HOME/.claude/plans (#1975)" \
+  "the .claude/plans directory under HOME is Claude Code's own plan-persistence directory, outside every repo and unable to contaminate a worktree diff; with no entry for it, six reviewer sessions in one night were denied on their own plan writes and worked around the guard" \
+  "echo x > $DIFF_FAKEHOME/.claude/plans/some-slug.md"
+# ...scoped to plans/, never to the installed kit beside it.
+probe "a sibling under \$HOME/.claude still denies (settings.json)" \
+  "echo x > $DIFF_FAKEHOME/.claude/settings.json"
+export HOME="$DIFF_SAVED_HOME"
 
 echo
 printf 'differential vs %s: %d same, %d tightened, %d ratified, %d REGRESSIONS\n' \
