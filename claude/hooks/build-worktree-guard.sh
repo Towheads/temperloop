@@ -57,7 +57,11 @@
 #     or denying `cd <outside> && ls 2>/dev/null`, would have made the guard the
 #     thing operators disarm. `rm -rf /dev/null` is still judged as an ordinary
 #     destructive operand. `/dev/fd/*` is deliberately excluded — see
-#     is_device_sink for the platform-divergence reason.
+#     is_device_sink for the platform-divergence reason. A redirect target also
+#     has any TRAILING `;`/`&`/`|` stripped before it is judged, because the
+#     tokenizer sees a separator only as a standalone token and `2>/dev/null;`
+#     (no space) would otherwise reach the sink check as `/dev/null;` and deny —
+#     temperloop#1974, see strip_trailing_seps for why stripping and not a split.
 #
 # BASH ARM — REDIRECTS, THE COSTS THIS BUYS (stated, not discovered later):
 #   - A NON-LITERAL redirect target is judged by its literal directory PREFIX
@@ -201,8 +205,10 @@
 # worktree roots). The marker is per-worktree state: each worktree carries its
 # own guard arming, so concurrent sessions are isolated by construction.
 #
-# Allow-list: writes under /tmp (and $TMPDIR) and gitignored source copies
-# (e.g. a `.env` copied in from the parent checkout) are always permitted.
+# Allow-list: writes under /tmp (and $TMPDIR), under $HOME/.claude/plans (the
+# HARNESS's own plan-persistence directory — see allow_roots), and gitignored
+# source copies (e.g. a `.env` copied in from the parent checkout) are always
+# permitted.
 #
 # Fails OPEN: any internal error (missing jq, unparseable input, git failure)
 # never blocks a write — the guard must never wedge a legitimate session.
@@ -507,8 +513,28 @@ abspath() {
 # Allow-listed scratch roots: /tmp and $TMPDIR (macOS hands out per-user temp
 # dirs under /var/folders via $TMPDIR; honor both, with their -P realpaths so a
 # /tmp -> /private/tmp symlink still matches a pwd -P'd target).
+#
+# $HOME/.claude/plans is the third root (temperloop#1975). It is NOT scratch: it
+# is Claude Code's OWN plan-persistence directory, written by the harness when an
+# agent enters plan mode. A build worker or a nested review subagent that plans
+# inside a guarded worktree therefore emits a write the guard had no entry for,
+# and the deny read as a containment violation of a path that is not repo content
+# at all — it cannot contaminate the worktree's diff or any other checkout. Six
+# reviewer sessions were blocked on it in one night (7 blocks across 6 stubs,
+# 2026-09-12/13), each of which had to work around the guard; the guard's own
+# header names that outcome ("a guard that falsely denies is a guard that gets
+# disarmed", kernel principle 5/7) as the thing to avoid. Disposition (b) from
+# #1975 — "fix the caller" — is not available: the caller is the closed-source
+# harness's plan-mode persistence, which this repo does not control.
+#
+# Scoped to `plans/` ON PURPOSE, never to all of $HOME/.claude: that directory
+# also holds settings, hooks and commands — the installed kit — and allow-listing
+# it would let a worker rewrite the machine's own configuration from inside the
+# jail, re-opening the write-leak class this guard exists to catch. `${HOME:+…}`
+# yields the empty string when HOME is unset, which the `-n` test below drops, so
+# an unset HOME can never allow-list a bare "/.claude/plans".
 allow_roots=()
-for r in "/tmp" "${TMPDIR:-}"; do
+for r in "/tmp" "${TMPDIR:-}" "${HOME:+${HOME%/}/.claude/plans}"; do
   [ -n "$r" ] || continue
   allow_roots+=("${r%/}")
   if rp=$(cd "$r" 2>/dev/null && pwd -P); then
@@ -603,6 +629,37 @@ is_nonliteral() {
   return 1
 }
 
+# Strip TRAILING shell separators (`;`, `&`, `|`) from a REDIRECT target
+# (temperloop#1974). The awk tokenizer splits on whitespace, and isSep() knows a
+# separator only as a STANDALONE token — so `cmd 2>/dev/null; next`, written with
+# no space before the `;`, yields the single token `2>/dev/null;`, redirOpLen()
+# strips the `2>`, and the target arrives here as `/dev/null;`. That missed
+# is_device_sink's exact match, resolved to an absolute path outside the
+# worktree, and DENIED the single most routine idiom in a worker command line —
+# the documented allow-list silently not holding, which is precisely the
+# false-positive class that gets a guard disarmed (kernel principle 5/7).
+#
+# WHY STRIPPING, NOT A TOKENIZER SPLIT. Both were available; stripping is the one
+# that cannot widen the allow set. Trailing punctuation never changes a path's
+# DIRECTORY — `/dev/null;` and `/dev/null` share a dirname, `../../x;` and
+# `../../x` share a dirname — so the containment verdict is provably identical
+# before and after, and the only judgment that changes is the device-sink exact
+# match this was blocking. Teaching the awk walker to split at `;`/`&`/`|` inside
+# a word would instead re-tokenize EVERY command, including destructive-verb
+# operand runs, and could silently un-deny a shape the corpus does not name.
+# Redirect-only, punctuation-only: a narrowing of the false-positive set.
+strip_trailing_seps() {
+  local s="$1" last
+  while [ -n "$s" ]; do
+    last=${s#"${s%?}"}
+    case "$last" in
+      ';'|'&'|'|') s=${s%?} ;;
+      *) break ;;
+    esac
+  done
+  printf '%s' "$s"
+}
+
 # Strip one layer of surrounding single/double quotes from a whitespace-split
 # shell token, so a quoted literal path (`"/tmp/x"`) compares as a bare path.
 strip_quotes() {
@@ -641,6 +698,16 @@ if [ "$tool" = "Bash" ]; then
     esac
 
     tgt=$(strip_quotes "$op")
+
+    # A shell separator glued to the END of a redirect target is punctuation
+    # belonging to the command line, not part of the path (temperloop#1974:
+    # `cmd 2>/dev/null; next` arrives here as `/dev/null;`). Redirect-only, and
+    # it cannot change a containment verdict — see strip_trailing_seps.
+    if [ "$is_redirect" = 1 ]; then
+      tgt=$(strip_trailing_seps "$tgt")
+      # Nothing but punctuation (`>;`) — a malformed redirect naming no file.
+      [ -n "$tgt" ] || continue
+    fi
 
     # $TMPDIR is an ALLOW-LISTED root whose value this guard knows exactly, so
     # resolve it rather than refusing it — denying a write to a root we
@@ -702,9 +769,9 @@ if [ "$tool" = "Bash" ]; then
     [ "$is_redirect" = 1 ] && is_device_sink "$ap" && continue
 
     if [ "$is_redirect" = 1 ]; then
-      deny "build worktree guard (Bash): $what writes '$ap', which is OUTSIDE the active worktree root '$wt'. The shell performs a redirect itself — it truncates/creates that file whatever the command is — so it is contained on the same terms as a destructive operand. Re-issue with a path under '$wt'. Allowed exceptions: /tmp, \$TMPDIR, gitignored source copies, and character-device sinks such as /dev/null. (foundation #1355; #1087/#932.)"
+      deny "build worktree guard (Bash): $what writes '$ap', which is OUTSIDE the active worktree root '$wt'. The shell performs a redirect itself — it truncates/creates that file whatever the command is — so it is contained on the same terms as a destructive operand. Re-issue with a path under '$wt'. Allowed exceptions: /tmp, \$TMPDIR, \$HOME/.claude/plans (the harness's own plan files), gitignored source copies, and character-device sinks such as /dev/null. (foundation #1355; #1087/#932.)"
     fi
-    deny "build worktree guard (Bash): $what targets '$ap', which is OUTSIDE the active worktree root '$wt'. A build worker must delete/move only inside its own pre-created worktree (foundation #1087/#932 — worker Bash wiped ~/dev by escaping the write-jail). Re-issue with a path under '$wt'. Allowed exceptions: /tmp, \$TMPDIR, and gitignored source copies."
+    deny "build worktree guard (Bash): $what targets '$ap', which is OUTSIDE the active worktree root '$wt'. A build worker must delete/move only inside its own pre-created worktree (foundation #1087/#932 — worker Bash wiped ~/dev by escaping the write-jail). Re-issue with a path under '$wt'. Allowed exceptions: /tmp, \$TMPDIR, \$HOME/.claude/plans (the harness's own plan files), and gitignored source copies."
   done < <(printf '%s' "$cmd" | awk '
     # --- the verb -> operand-model table (see the hook header for the schema).
     # "<select>|<arm>|<base>|<words>". A new destructive shape reusing an
@@ -1077,7 +1144,7 @@ for t in "${targets[@]}"; do
   is_gitignored "$ap" && continue
 
   # Outside the worktree and not allow-listed → DENY.
-  deny "build worktree guard: write to '$ap' is OUTSIDE the active worktree root '$wt'. A build worker must write only inside its own pre-created worktree (foundation #17/#10 — a bare parent-root path leaks an uncommitted edit into the orchestrator's tree). Re-issue the write with a path under '$wt' (relative paths from your Bash cwd are safest). Allowed exceptions: /tmp, \$TMPDIR, and gitignored source copies."
+  deny "build worktree guard: write to '$ap' is OUTSIDE the active worktree root '$wt'. A build worker must write only inside its own pre-created worktree (foundation #17/#10 — a bare parent-root path leaks an uncommitted edit into the orchestrator's tree). Re-issue the write with a path under '$wt' (relative paths from your Bash cwd are safest). Allowed exceptions: /tmp, \$TMPDIR, \$HOME/.claude/plans (the harness's own plan files), and gitignored source copies."
 done
 
 exit 0
