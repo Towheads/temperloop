@@ -1,5 +1,6 @@
-- **A `/build` worker's own quality-gate run is now time-bounded, so it can no
-  longer stall the item it is working on** (#2145, worker gate budget). The
+- **A `/build` worker's own quality-gate run is now time-bounded on the
+  `--no-workflow` path, so it can no longer stall the item it is working on**
+  (#2145, worker gate budget). The
   worker instructions in `claude/commands/build.md` told every worker to verify
   its change with `scripts/quality-gates.sh --scoped` and, in the same breath,
   to keep each check to seconds. Those two instructions disagreed whenever the
@@ -15,3 +16,12 @@
   open-ended. A budgeted run that stops early reports which gates it ran and
   hands the remainder to the orchestrator's check; it is not treated as a
   failure.
+
+  **Scope — read this before assuming the bug is closed.** The budget reaches
+  workers spawned by the conversational `--no-workflow` path, and any worker
+  prompt you write by hand. Runs that take `/build`'s default path, driven by
+  `claude/workflows/build-level.mjs`, still spawn their workers with an
+  unbudgeted gate and remain exposed to the stall described above. That
+  remaining half is tracked as #2147 (the same budget on the default path) and
+  ships separately, because it has to wait for an in-flight rewrite of that
+  file.
