@@ -972,6 +972,10 @@ if (result.escalations[0].kind !== 'ci-failed')
   { console.log(JSON.stringify({ ok: false, reason: 'escalation kind wrong: ' + result.escalations[0].kind })); process.exit(0); }
 if ((result.parked ?? []).length !== 0)
   { console.log(JSON.stringify({ ok: false, reason: 'expected 0 parked: ' + JSON.stringify(result) })); process.exit(0); }
+// temperloop#2135: 'ci-failed' is one of 'the CI-failure kinds' the round_kind
+// mapping rule buckets into 'ci' (every kind starting 'ci-').
+if (result.escalations[0].round_kind !== 'ci')
+  { console.log(JSON.stringify({ ok: false, reason: 'ci-failed round_kind must be ci, got: ' + result.escalations[0].round_kind })); process.exit(0); }
 
 console.log(JSON.stringify({ ok: true }));
 "
@@ -1082,6 +1086,12 @@ if (result.escalations[0].kind !== 'claim-conflict')
   { console.log(JSON.stringify({ ok: false, reason: 'escalation kind wrong: ' + result.escalations[0].kind })); process.exit(0); }
 if ((result.parked ?? []).length !== 0)
   { console.log(JSON.stringify({ ok: false, reason: 'expected 0 parked: ' + JSON.stringify(result) })); process.exit(0); }
+// temperloop#2135: 'claim-conflict' is one of the ~25 singleton kinds the
+// round_kind mapping deliberately does NOT enumerate — it must fall through
+// to the catch-all 'other', proving the catch-all actually fires rather than
+// every kind silently landing in a named bucket.
+if (result.escalations[0].round_kind !== 'other')
+  { console.log(JSON.stringify({ ok: false, reason: 'claim-conflict round_kind must be the other catch-all, got: ' + result.escalations[0].round_kind })); process.exit(0); }
 
 console.log(JSON.stringify({ ok: true }));
 "
@@ -2049,11 +2059,17 @@ console.log(JSON.stringify({ ok: true }));
 "
 
 # ============================================================================
-# TEST 11g (temperloop#1021): the slice loop is BOUNDED. A suite that never
-#   finishes escalates as a TIMEOUT (honestly named) rather than looping
-#   forever — and still never as a gate failure.
+# TEST 11g (temperloop#1021, disposition changed by #2135): the slice loop is
+#   still BOUNDED — a suite that TRULY never finishes still escalates as a
+#   TIMEOUT (honestly named) rather than looping forever, and still never as a
+#   gate failure. What #2135 changes: a ZERO-FAILURE exhaustion of the
+#   ORIGINAL GATE_MAX_SLICES ceiling (8) no longer escalates on its own — the
+#   loop grants itself GATE_RESUME_EXTENSIONS (2) more full allotments of that
+#   SAME ceiling before finally giving up, so this suite (30 clean slices
+#   offered, none of them the last one) only escalates once ALL 3 allotments
+#   (3 * 8 = 24 slices) are spent.
 # ============================================================================
-run_node_case "1021 slice: exhausting the slice cap escalates acceptance-gate-timeout, not -failed" "
+run_node_case "2135 slice: exhausting the EXTENDED slice cap (3x GATE_MAX_SLICES) still escalates acceptance-gate-timeout, not -failed" "
 $PREAMBLE
 
 const slices = [];
@@ -2081,8 +2097,106 @@ const result = await mod.default();
 
 if ((result.escalations ?? []).length !== 1 || result.escalations[0].kind !== 'acceptance-gate-timeout')
   { console.log(JSON.stringify({ ok: false, reason: 'expected one acceptance-gate-timeout: ' + JSON.stringify(result) })); process.exit(0); }
+if (gateCalls.length !== 24)
+  { console.log(JSON.stringify({ ok: false, reason: 'slice loop must resume through 2 extensions before escalating at 24 (8 * 3): ran ' + gateCalls.length })); process.exit(0); }
+if (result.escalations[0].payload.resumeExtensionsUsed !== 2)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected both GATE_RESUME_EXTENSIONS spent: ' + JSON.stringify(result.escalations[0].payload) })); process.exit(0); }
+if (result.escalations[0].round_kind !== 'gate-timeout')
+  { console.log(JSON.stringify({ ok: false, reason: 'acceptance-gate-timeout round_kind must be gate-timeout, got: ' + result.escalations[0].round_kind })); process.exit(0); }
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+# ============================================================================
+# TEST 11g2 (temperloop#2135): the POSITIVE case — a suite that exhausts the
+#   ORIGINAL GATE_MAX_SLICES ceiling (8 slices) with zero failures, then
+#   finishes on the very next (extended) slice, resumes and parks GREEN with
+#   NO escalation at all. This is bullet 1's core claim made concrete: the
+#   run costs one extra cheap machinery call, never a worker re-spawn.
+# ============================================================================
+run_node_case "2135 slice: zero-fail cap exhaustion RESUMES past GATE_MAX_SLICES and parks green (no escalation)" "
+$PREAMBLE
+
+const slices = [];
+for (let i = 0; i < 8; i++) slices.push({ outcome: 'GATE_SLICE', resumeAt: i + 1, failed: 0, elapsedSecs: 300 });
+slices.push({ outcome: 'GATE_PASS', failed: 0, elapsedSecs: 60 });
+setMachinery('item-gsr2135',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/item-gsr2135' },
+  { outcome: 'REVIEW_DIFF' },
+  ...slices,
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'b29' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'b29', branch: 'build/item-gsr2135' },
+  { outcome: 'PR_OPENED', pr_number: 2135 },
+  { outcome: 'CI_GREEN' },
+);
+happyWorker('item-gsr2135');
+
+const gateCalls = [];
+const origAgent = globalThis.agent;
+globalThis.agent = async function(prompt, opts = {}) {
+  if ((opts.label || '').startsWith('gate:item-gsr2135')) gateCalls.push(1);
+  return origAgent(prompt, opts);
+};
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'item-gsr2135', branch: 'build/item-gsr2135', title: 'Gate Slice Resume', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+
+if ((result.escalations ?? []).length !== 0)
+  { console.log(JSON.stringify({ ok: false, reason: 'a zero-fail cap exhaustion that later finishes must NOT escalate: ' + JSON.stringify(result) })); process.exit(0); }
+if ((result.parked ?? []).length !== 1)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected 1 parked: ' + JSON.stringify(result) })); process.exit(0); }
+if (gateCalls.length !== 9)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected exactly 9 gate slices (8 to exhaust GATE_MAX_SLICES + 1 resumed), saw ' + gateCalls.length })); process.exit(0); }
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+# ============================================================================
+# TEST 11g3 (temperloop#2135, acceptance bullet 2): a FAILED gate at the
+#   ORIGINAL GATE_MAX_SLICES cap is UNCHANGED — no extension is granted once
+#   any failure is on the ledger, so it still escalates acceptance-gate-failed
+#   at exactly 8 slices, never resuming further to chase a verdict that is
+#   already known RED.
+# ============================================================================
+run_node_case "2135 slice: a failed gate at the cap is unchanged — still escalates acceptance-gate-failed at exactly 8 slices" "
+$PREAMBLE
+
+const slices = [];
+for (let i = 0; i < 30; i++) slices.push({ outcome: 'GATE_SLICE', resumeAt: i + 1, failed: 1, elapsedSecs: 300 });
+setMachinery('item-gscf2135',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/item-gscf2135' },
+  { outcome: 'REVIEW_DIFF' },
+  ...slices,
+);
+happyWorker('item-gscf2135');
+
+const gateCalls = [];
+const origAgent = globalThis.agent;
+globalThis.agent = async function(prompt, opts = {}) {
+  if ((opts.label || '').startsWith('gate:item-gscf2135')) gateCalls.push(1);
+  return origAgent(prompt, opts);
+};
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'item-gscf2135', branch: 'build/item-gscf2135', title: 'Gate Slice Cap Fail', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+
+if ((result.escalations ?? []).length !== 1 || result.escalations[0].kind !== 'acceptance-gate-failed')
+  { console.log(JSON.stringify({ ok: false, reason: 'expected one acceptance-gate-failed: ' + JSON.stringify(result) })); process.exit(0); }
 if (gateCalls.length !== 8)
-  { console.log(JSON.stringify({ ok: false, reason: 'slice loop is not bounded at 8: ran ' + gateCalls.length })); process.exit(0); }
+  { console.log(JSON.stringify({ ok: false, reason: 'a RED suite must never be granted a resume extension — expected exactly 8 slices, ran ' + gateCalls.length })); process.exit(0); }
+if (result.escalations[0].payload.resumeExtensionsUsed !== 0)
+  { console.log(JSON.stringify({ ok: false, reason: 'a RED suite must spend 0 resume extensions: ' + JSON.stringify(result.escalations[0].payload) })); process.exit(0); }
+if (result.escalations[0].round_kind !== 'gate-fail')
+  { console.log(JSON.stringify({ ok: false, reason: 'acceptance-gate-failed round_kind must be gate-fail, got: ' + result.escalations[0].round_kind })); process.exit(0); }
 
 console.log(JSON.stringify({ ok: true }));
 "
@@ -2222,6 +2336,13 @@ for (const e of escalations) {
     bad(e.slug + ': escalated FAILED with verdict ' + p.verdict);
   if (e.kind === 'acceptance-gate-timeout' && p.verdict !== 'UNKNOWN')
     bad(e.slug + ': escalated TIMEOUT with verdict ' + p.verdict);
+  // (3b) temperloop#2135 — round_kind is present on every escalation and
+  //      agrees with the mapping rule for both gate kinds.
+  if (!e.round_kind) bad(e.slug + ': escalation carries no round_kind: ' + JSON.stringify(e));
+  if (e.kind === 'acceptance-gate-failed' && e.round_kind !== 'gate-fail')
+    bad(e.slug + ': acceptance-gate-failed round_kind must be gate-fail, got ' + e.round_kind);
+  if (e.kind === 'acceptance-gate-timeout' && e.round_kind !== 'gate-timeout')
+    bad(e.slug + ': acceptance-gate-timeout round_kind must be gate-timeout, got ' + e.round_kind);
   if (p.verdict === 'RED' && p.failedGates < 1)
     bad(e.slug + ': verdict RED with ' + p.failedGates + ' failed gates — a failure with no failures');
   if (p.verdict === 'UNKNOWN' && p.failedGates !== 0)
@@ -2243,10 +2364,14 @@ if (f.payload.failedGates !== 1) bad('GATE_FAIL with an unparseable count must f
 
 // GATE_SLICE (cap): UNKNOWN, named as a BUDGET fact, and the slice count is the
 // ledger's own length — not the loop index, which ran one PAST the last slice.
+// temperloop#2135: a zero-fail exhaustion resumes through GATE_RESUME_EXTENSIONS
+// (2) extra allotments before escalating, so the 30 clean slices this fixture
+// offers only escalate once all 3 allotments (24 slices) are spent.
 const s = by['g1587-slice'];
 if (!s || s.kind !== 'acceptance-gate-timeout') bad('slice-cap did not escalate acceptance-gate-timeout: ' + JSON.stringify(s));
 if (!/BUDGET/.test(s.payload.reason)) bad('slice-cap reason does not name the budget cause: ' + s.payload.reason);
-if (s.payload.slices !== 8) bad('slice-cap must report the 8 slices it actually ran, got ' + s.payload.slices);
+if (s.payload.slices !== 24) bad('slice-cap must report the 24 slices it actually ran (3 * GATE_MAX_SLICES), got ' + s.payload.slices);
+if (s.payload.resumeExtensionsUsed !== 2) bad('slice-cap must spend both resume extensions, got ' + JSON.stringify(s.payload.resumeExtensionsUsed));
 
 // GATE_TIMEOUT: UNKNOWN, and still clearly NOT a gate failure (temperloop#1021).
 const t = by['g1587-timeout'];
@@ -7572,6 +7697,9 @@ let reason = null;
 if ((result.parked ?? []).length !== 0) reason = 'a BLOCKING review finding must never park the item: ' + JSON.stringify(result);
 else if ((result.escalations ?? []).length !== 1) reason = 'expected exactly 1 escalation: ' + JSON.stringify(result.escalations);
 else if (result.escalations[0].kind !== 'review-blocking') reason = 'wrong escalation kind: ' + result.escalations[0].kind;
+// temperloop#2135: the ONE named-by-string mapping entry — review-blocking is
+// the sole kind that buckets to round_kind 'review'.
+else if (result.escalations[0].round_kind !== 'review') reason = 'review-blocking round_kind must be review, got: ' + result.escalations[0].round_kind;
 else {
   const prBatch = callLog.find(c => (c.opts.label||'').startsWith('pr-batch:blocking-item'));
   if (prBatch) reason = 'a blocking review must stop BEFORE 3f (push/PR) — pr-batch must never spawn: ' + JSON.stringify(prBatch.opts.label);
@@ -9506,6 +9634,8 @@ const bad = (r) => { console.log(JSON.stringify({ ok: false, reason: r })); proc
 if ((result.escalations ?? []).length !== 1) bad('expected 1 escalation: ' + JSON.stringify(result));
 const e = result.escalations[0];
 if (e.kind !== 'activation-failed') bad('escalation kind wrong: ' + e.kind);
+// temperloop#2135: every 'activation-*' kind buckets to round_kind 'activation'.
+if (e.round_kind !== 'activation') bad('activation-failed round_kind must be activation, got: ' + e.round_kind);
 if (e.payload.class !== 'A') bad('payload must name the class it gated: ' + JSON.stringify(e.payload));
 if (e.payload.absenceAsserting !== false) bad('a presence proof must NOT be flagged absence-asserting');
 if ((result.parked ?? []).length !== 0) bad('a dormant item must not park: ' + JSON.stringify(result.parked));
