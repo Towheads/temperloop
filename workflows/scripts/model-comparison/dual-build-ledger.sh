@@ -45,6 +45,86 @@
 # `schema_version` and `seq` are ASSIGNED BY THIS SCRIPT, never accepted from
 # a caller — `append`'s caller payload must not (and need not) supply them.
 #
+# ── CALIBRATE MODE (temperloop#2082, epic #2065 Contract item #7; ADR 0041) ─
+# `calibrate-sample` / `calibrate-record` / `calibrate-status` are the blind
+# judge-calibration surface: they answer "does this repo's pairwise judge
+# (judge.sh's `pairwise` mode) agree with a human?" from evidence a human
+# labelled WITHOUT ever seeing the judge's own verdict first (ADR 0041's
+# whole reason this is a separate mode rather than reading overrides alone —
+# an override-only corpus is a disagreement by construction and would
+# measure 100% disagreement no matter how good the judge is).
+#
+#   calibrate-sample   picks up to N not-yet-labelled, already-judged
+#                       (slug,arm) pairs — a slug counts as eligible once
+#                       BOTH arms have a saved patch archive AND at least one
+#                       of its two rows carries a non-null `.judge` — and
+#                       prints each as `{slug, baseline_diff, candidate_diff}`
+#                       (the archived patch TEXT for both arms). The judge's
+#                       `.preference`/`.margin` are NEVER included in this
+#                       output — that is the entire "blind" property this
+#                       mode exists to hold. SCOPE, stated precisely so this
+#                       is never overclaimed: "blind" here means the JUDGE'S
+#                       OWN VERDICT is withheld, per ADR 0041's own wording
+#                       ("both diffs shown, the judge's own preference and
+#                       margin withheld") — it does NOT mean arm IDENTITY is
+#                       hidden (diffs are labelled `baseline_diff`/
+#                       `candidate_diff`, not "Diff 1"/"Diff 2"). A second,
+#                       identity-blinding layer is a legitimate future
+#                       hardening, never something a caller may assume this
+#                       mode already does.
+#   calibrate-record    records ONE human preference against a slug this
+#                       script itself looks up the judge verdict for (the
+#                       caller never supplies the judge's side — agreement is
+#                       COMPUTED here, never self-reported by the caller, so
+#                       a human/override answer cannot fake an agreement).
+#                       `--source blind` (default) is a calibrate-sample
+#                       label; `--source override` is the operator-override
+#                       path (level-pick-and-operator-levers, #2083, not yet
+#                       built) — ADR 0041: "override-derived pairs are
+#                       recorded ... but excluded from the agreement
+#                       statistic." Every call re-derives and rewrites
+#                       calibration.json (see below), so the pinned file is
+#                       always current with no separate refresh step.
+#   calibrate-status    (re)computes and writes the pinned `calibration.json`
+#                       from every recorded pair, with no side effect beyond
+#                       that write — the read path for "is the judge
+#                       calibrated" (e.g. a future level-pick gate).
+#
+# STORAGE: a second append-only file, `calibration-pairs.jsonl`, sibling to
+# `rows.jsonl` under the SAME ledger dir (one lock guards mutations to
+# either file — see `_lock_acquire`'s single `.append.lock`). Row shape:
+#   schema_version, seq, created_at, slug, source ∈ {blind,override},
+#   judge_preference, judge_margin, human_preference, human_reason,
+#   agreement (bool), operator, host
+# `judge_preference`/`human_preference` are this module's own vocabulary —
+# {baseline,candidate,tie} — chosen to match the ledger row's own `arm`
+# enum directly (rather than judge.sh pairwise's raw "A"/"B"/"tie", which is
+# swap-order-relative and meaningless outside a single pairwise call); a
+# future caller writing `.judge.preference` onto a ledger row is expected to
+# normalize into this same vocabulary before it reaches here.
+#
+# THE PINNED PATH: `calibration.json`, sibling to `rows.jsonl`/`archives/`
+# under the ledger dir (i.e. `<ledger-dir>/calibration.json` — no separate
+# override flag; it moves only when `--dir`/`DUAL_BUILD_LEDGER_DIR` moves the
+# whole ledger). Shape: `{n, agreement_pct, status, bar_pct, bar_n}`.
+#   n              count of `source:"blind"` pairs (override pairs are
+#                  recorded in calibration-pairs.jsonl but EXCLUDED from n
+#                  and from the agreement count — ADR 0041's exclusion,
+#                  restated at dimension 4 #7/#8 of the epic Contract).
+#   agreement_pct  round(100 * blind agreements / n), or `null` when n=0.
+#   status         "NEVER CALIBRATED" (n=0, this item's own pinned literal,
+#                  temperloop#2082 acceptance) | "uncalibrated" (n>0 but
+#                  below either bar) | "calibrated" (n>=bar_n AND
+#                  agreement_pct>=bar_pct). "uncalibrated" is this file's own
+#                  choice of literal for the middle state — NOT pinned by any
+#                  acceptance bullet — the report layer (dual-build-report,
+#                  #2084, not yet built) renders its own reader-facing prose
+#                  ("judge uncalibrated — verdict withheld" / "below floor —
+#                  keep accumulating") from these NUMBERS, not by string-
+#                  matching this field.
+#   bar_pct/bar_n  DUAL_BUILD_CALIBRATION_BAR_PCT / _BAR_N, read symbolically
+#                  (§ NAMED-SETTING CONVENTION below) — never re-valued here.
+#
 # ── EXPECTED-COUNT CHECK (temperloop#2072 acceptance) ───────────────────────
 # `read` always self-checks: every seq in 1..max(seq) must appear exactly
 # once, and every line must parse. A caller that additionally knows how many
@@ -70,6 +150,18 @@
 #   dual-build-ledger.sh archive-check <slug> <arm> [--base SHA] [--repo PATH] [--dir DIR]
 #   dual-build-ledger.sh purge [--dir DIR] [--yes]
 #   dual-build-ledger.sh prune [--dir DIR] [--retention-days N] [--apply]
+#   dual-build-ledger.sh calibrate-sample [--dir DIR] [--count N]
+#       Prints up to N (default DUAL_BUILD_CALIBRATE_PAIRS_PER_LEVEL) BLIND
+#       pairs — `[{slug, baseline_diff, candidate_diff}, ...]` — for slugs
+#       that are judged, fully archived, and not already recorded. See
+#       § CALIBRATE MODE above for the exact "blind" scope.
+#   dual-build-ledger.sh calibrate-record --slug S --preference baseline|candidate|tie
+#       [--reason TEXT] [--source blind|override] [--dir DIR]
+#       Records one human preference against slug S's own judge verdict
+#       (looked up here, never caller-supplied), rewrites calibration.json,
+#       and prints the recorded calibration-pairs.jsonl row.
+#   dual-build-ledger.sh calibrate-status [--dir DIR]
+#       (Re)computes and writes the pinned calibration.json, and prints it.
 #
 # `--dir` (or env `DUAL_BUILD_LEDGER_DIR`) overrides the ledger root; default
 # is `<repo-root>/.temperloop/model-comparison/dual-build`, `<repo-root>`
@@ -97,6 +189,10 @@ BUILD_CONFIG="${BUILD_CONFIG:-$REPO_ROOT/workflows/scripts/build/build.config.sh
 SCHEMA_VERSION=1
 ROWS_FILE_NAME="rows.jsonl"
 ARCHIVES_SUBDIR="archives"
+# § CALIBRATE MODE above owns both of these — the calibration-pairs store
+# and the PINNED calibration.json path this item's acceptance names.
+CALIBRATION_PAIRS_FILE_NAME="calibration-pairs.jsonl"
+CALIBRATION_STATUS_FILE_NAME="calibration.json"
 LEDGER_DIR="${DUAL_BUILD_LEDGER_DIR:-$REPO_ROOT/.temperloop/model-comparison/dual-build}"
 
 die() { echo "dual-build-ledger.sh: $1" >&2; exit 1; }
@@ -475,6 +571,260 @@ cmd_archive_check() {
   exit 1
 }
 
+# ── CALIBRATE MODE (temperloop#2082) — see § CALIBRATE MODE at the top of
+# this file for the full contract these five helpers/commands implement.
+
+# _cal_judge_for_slug <rows-file> <slug>
+#   Prints the FIRST non-null `.judge` object found among slug's rows (there
+#   should be at most one distinct verdict per slug — both arm rows of the
+#   same item carry the same pairwise result), or the bare string "null" if
+#   the slug has no judged row at all. `jq -s` parses the whole JSONL stream
+#   as a sequence of values directly — no manual array-wrapping needed.
+_cal_judge_for_slug() {
+  local rows_file="$1" slug="$2"
+  jq -cs --arg slug "$slug" \
+    '[.[] | select(.slug == $slug and .judge != null)] | (.[0].judge // null)' \
+    "$rows_file" 2>/dev/null || return 1
+}
+
+# _cal_labelled_slugs <pairs-file>
+#   Newline list of every slug already present in calibration-pairs.jsonl
+#   (any source) — calibrate-sample's dedupe set, so a slug is never
+#   presented blind twice and a labelled pair is never silently re-sampled.
+_cal_labelled_slugs() {
+  local pairs_file="$1"
+  [ -f "$pairs_file" ] || return 0
+  jq -r '.slug' "$pairs_file"
+}
+
+# _cal_write_status <dir>
+#   Recomputes calibration.json from calibration-pairs.jsonl and writes it
+#   to the PINNED path (<dir>/calibration.json), atomically (write-then-mv),
+#   then prints what it wrote. Called by both calibrate-status directly and
+#   calibrate-record (so the pinned file is always current with no separate
+#   refresh step — see § CALIBRATE MODE's "THE PINNED PATH").
+_cal_write_status() {
+  local dir="$1"
+  local pairs_file="$dir/$CALIBRATION_PAIRS_FILE_NAME"
+  # No local default (§ NAMED-SETTING CONVENTION, same discipline as
+  # cmd_prune's DUAL_BUILD_ARCHIVE_RETENTION_DAYS read above) — both bars
+  # are declared/owned by the sibling `dual-build-settings` item (#2071).
+  local bar_pct="${DUAL_BUILD_CALIBRATION_BAR_PCT:-}"  # setting:exempt — see comment above
+  local bar_n="${DUAL_BUILD_CALIBRATION_BAR_N:-}"  # setting:exempt — see comment above
+  case "$bar_pct" in
+    ''|*[!0-9]*) die "calibrate-status: no calibration bar percentage configured — set DUAL_BUILD_CALIBRATION_BAR_PCT (workflows/scripts/build/build.config.sh)" ;;
+  esac
+  case "$bar_n" in
+    ''|*[!0-9]*) die "calibrate-status: no calibration bar pair-count configured — set DUAL_BUILD_CALIBRATION_BAR_N (workflows/scripts/build/build.config.sh)" ;;
+  esac
+
+  local n=0 agreements=0
+  if [ -f "$pairs_file" ]; then
+    n="$(jq -cs '[.[] | select(.source == "blind")] | length' "$pairs_file")" || die "calibrate-status: could not read $pairs_file"
+    agreements="$(jq -cs '[.[] | select(.source == "blind" and .agreement == true)] | length' "$pairs_file")" || die "calibrate-status: could not read $pairs_file"
+  fi
+
+  local status agreement_pct_json
+  if [ "$n" -eq 0 ]; then
+    # This EXACT string is the temperloop#2082 acceptance-pinned literal for
+    # the zero-pairs-recorded case — never re-word it without updating that
+    # acceptance bullet and its consumers.
+    status="NEVER CALIBRATED"
+    agreement_pct_json="null"
+  else
+    agreement_pct_json="$(jq -n --argjson a "$agreements" --argjson n "$n" '(($a / $n * 100) | round)')" \
+      || die "calibrate-status: could not compute agreement_pct"
+    if [ "$n" -ge "$bar_n" ] && [ "$agreement_pct_json" -ge "$bar_pct" ]; then
+      status="calibrated"
+    else
+      # This module's own choice of literal for "n>0 but below either bar" —
+      # NOT pinned by any acceptance bullet (see § CALIBRATE MODE's "status"
+      # entry). The report layer renders its own reader-facing prose from
+      # the NUMBERS, not by matching this string.
+      status="uncalibrated"
+    fi
+  fi
+
+  mkdir -p "$dir" || die "calibrate-status: cannot create ledger dir $dir"
+  local out tmp
+  out="$(jq -cn --argjson n "$n" --argjson agreement_pct "$agreement_pct_json" \
+    --arg status "$status" --argjson bar_pct "$bar_pct" --argjson bar_n "$bar_n" \
+    '{n:$n, agreement_pct:$agreement_pct, status:$status, bar_pct:$bar_pct, bar_n:$bar_n}')" \
+    || die "calibrate-status: could not build status object"
+  tmp="$dir/.${CALIBRATION_STATUS_FILE_NAME}.tmp.$$"
+  # Explicit if/then, not `A && B || C` (SC2015 — C can run when A is true;
+  # same convention as env-hygiene-report.sh's file_mtime and doctor.sh's
+  # marker write elsewhere in this repo).
+  if printf '%s\n' "$out" >"$tmp" && mv "$tmp" "$dir/$CALIBRATION_STATUS_FILE_NAME"; then
+    :
+  else
+    rm -f "$tmp"
+    die "calibrate-status: failed writing $dir/$CALIBRATION_STATUS_FILE_NAME"
+  fi
+  printf '%s\n' "$out"
+}
+
+cmd_calibrate_sample() {
+  local dir="$LEDGER_DIR" count=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --dir) [ $# -ge 2 ] || die "calibrate-sample: --dir requires a path"; dir="$2"; shift 2 ;;
+      --count) [ $# -ge 2 ] || die "calibrate-sample: --count requires a number"; count="$2"; shift 2 ;;
+      -h|--help) usage; exit 0 ;;
+      *) die "calibrate-sample: unknown argument $1" ;;
+    esac
+  done
+  [ -n "$count" ] || count="${DUAL_BUILD_CALIBRATE_PAIRS_PER_LEVEL:-}"  # setting:exempt — declared/owned by the sibling dual-build-settings item (#2071); a defensive, no-default read (§ NAMED-SETTING CONVENTION)
+  case "$count" in
+    ''|*[!0-9]*) die "calibrate-sample: no sample count configured — pass --count N or set DUAL_BUILD_CALIBRATE_PAIRS_PER_LEVEL (workflows/scripts/build/build.config.sh)" ;;
+  esac
+
+  local rows_file="$dir/$ROWS_FILE_NAME" pairs_file="$dir/$CALIBRATION_PAIRS_FILE_NAME" archdir="$dir/$ARCHIVES_SUBDIR"
+  if [ ! -f "$rows_file" ]; then
+    echo "[]"
+    exit 0
+  fi
+
+  local labelled
+  labelled="$(_cal_labelled_slugs "$pairs_file")" \
+    || die "calibrate-sample: could not read $pairs_file"
+
+  # Unique slugs in first-seen (ascending seq) order — a plain `unique`
+  # would re-sort alphabetically and break the "oldest judged pair first"
+  # sampling order this command intends.
+  local slugs
+  slugs="$(jq -rs 'sort_by(.seq) | .[].slug' "$rows_file" 2>/dev/null | awk '!seen[$0]++')" \
+    || die "calibrate-sample: could not read $rows_file"
+
+  local out="[]" n=0 slug bpatch cpatch judge
+  while IFS= read -r slug; do
+    [ -n "$slug" ] || continue
+    [ "$n" -lt "$count" ] || break
+    printf '%s\n' "$labelled" | grep -Fx -- "$slug" >/dev/null && continue
+    bpatch="$archdir/${slug}@baseline.patch"
+    cpatch="$archdir/${slug}@candidate.patch"
+    [ -f "$bpatch" ] && [ -f "$cpatch" ] || continue
+    judge="$(_cal_judge_for_slug "$rows_file" "$slug")"
+    [ "$judge" != "null" ] && [ -n "$judge" ] || continue
+    out="$(jq -c --arg slug "$slug" --rawfile bd "$bpatch" --rawfile cd "$cpatch" \
+      '. + [{slug:$slug, baseline_diff:$bd, candidate_diff:$cd}]' <<<"$out")" \
+      || die "calibrate-sample: could not build sample for $slug"
+    n=$((n + 1))
+  done <<<"$slugs"
+  printf '%s\n' "$out"
+}
+
+cmd_calibrate_record() {
+  local dir="$LEDGER_DIR" slug="" preference="" reason="" source="blind"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --dir) [ $# -ge 2 ] || die "calibrate-record: --dir requires a path"; dir="$2"; shift 2 ;;
+      --slug) [ $# -ge 2 ] || die "calibrate-record: --slug requires a value"; slug="$2"; shift 2 ;;
+      --preference) [ $# -ge 2 ] || die "calibrate-record: --preference requires a value"; preference="$2"; shift 2 ;;
+      --reason) [ $# -ge 2 ] || die "calibrate-record: --reason requires a value"; reason="$2"; shift 2 ;;
+      --source) [ $# -ge 2 ] || die "calibrate-record: --source requires a value"; source="$2"; shift 2 ;;
+      -h|--help) usage; exit 0 ;;
+      *) die "calibrate-record: unknown argument $1" ;;
+    esac
+  done
+  [ -n "$slug" ] || die "calibrate-record: --slug is required"
+  case "$preference" in
+    baseline|candidate|tie) : ;;
+    *) die "calibrate-record: --preference must be baseline, candidate or tie" ;;
+  esac
+  case "$source" in
+    blind|override) : ;;
+    *) die "calibrate-record: --source must be blind or override" ;;
+  esac
+
+  local rows_file="$dir/$ROWS_FILE_NAME"
+  [ -f "$rows_file" ] || die "calibrate-record: no ledger at $rows_file — nothing judged for slug $slug"
+  local judge judge_pref judge_margin
+  judge="$(_cal_judge_for_slug "$rows_file" "$slug")" || die "calibrate-record: could not read $rows_file"
+  [ "$judge" != "null" ] && [ -n "$judge" ] \
+    || die "calibrate-record: no judged row found for slug $slug — cannot record a calibration pair against an unjudged item"
+  judge_pref="$(jq -r '.preference // "null"' <<<"$judge")"
+  judge_margin="$(jq -c '.margin // null' <<<"$judge")"
+
+  local agreement=false
+  [ "$judge_pref" = "$preference" ] && agreement=true
+
+  mkdir -p "$dir" || die "calibrate-record: cannot create ledger dir $dir"
+  local pairs_file="$dir/$CALIBRATION_PAIRS_FILE_NAME"
+
+  _lock_acquire "$dir" || die "calibrate-record: lock failed"
+  # Unlike cmd_append's INT/TERM-only trap, this one ALSO covers EXIT —
+  # round-3 review [HIGH]: `_cal_write_status` below calls `die` (bare
+  # `exit 1`) on several internal failure paths (unconfigured bars, a
+  # corrupt pairs_file read, a failed status write), and since it runs as
+  # a plain command (not a subshell) that `exit` was terminating the whole
+  # script WHILE this function still held `.append.lock` — the `||
+  # { _lock_release …; die …; }` guards below can only fire on a
+  # *returning* failure, never on a callee that exits outright, so they
+  # never actually ran and the lock leaked permanently (100x0.05s spin,
+  # then a hard failure, for every later writer including plain `append`).
+  # The EXIT trap catches exactly that: `die`'s `exit 1` fires it WHILE
+  # cmd_calibrate_record is still on the call stack, so `$dir` is still a
+  # valid local — this is the opposite case from cmd_append's own comment
+  # (which is about a trap outliving the function's NORMAL return, once
+  # $dir has gone out of scope). We avoid that failure mode here the same
+  # way cmd_append avoids it for INT/TERM: explicitly clearing the trap
+  # (`trap - EXIT INT TERM` below) before falling through to a normal,
+  # successful return, so a stale EXIT trap is never left armed once $dir
+  # is gone.
+  trap '_lock_release "$dir"; exit 1' EXIT INT TERM
+  local max next_seq
+  max="$(_ledger_max_seq "$pairs_file")"
+  next_seq=$((max + 1))
+
+  local created_at op host row
+  created_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  op="$(_operator_default)"
+  host="$(_host_default)"
+  row="$(jq -cn --argjson seq "$next_seq" --arg created_at "$created_at" \
+    --arg slug "$slug" --arg source "$source" --arg judge_pref "$judge_pref" \
+    --argjson judge_margin "$judge_margin" --arg preference "$preference" \
+    --arg reason "$reason" --argjson agreement "$agreement" --arg op "$op" --arg host "$host" '
+    {
+      schema_version: 1,
+      seq: $seq,
+      created_at: $created_at,
+      slug: $slug,
+      source: $source,
+      judge_preference: $judge_pref,
+      judge_margin: $judge_margin,
+      human_preference: $preference,
+      human_reason: (if $reason == "" then null else $reason end),
+      agreement: $agreement,
+      operator: $op,
+      host: $host
+    }')" || { _lock_release "$dir"; die "calibrate-record: could not build row"; }
+
+  printf '%s\n' "$row" >>"$pairs_file" || { _lock_release "$dir"; die "calibrate-record: write failed to $pairs_file"; }
+  # The derived-state rewrite is inside the same critical section as the
+  # append (both guarded by the same lock) so two concurrent
+  # calibrate-record calls can never interleave read-compute-write on
+  # calibration.json — see § CALIBRATE MODE's "one lock guards mutations to
+  # either file".
+  _cal_write_status "$dir" >/dev/null || { _lock_release "$dir"; die "calibrate-record: recorded the pair but failed rewriting calibration.json"; }
+  _lock_release "$dir"
+  trap - EXIT INT TERM
+
+  printf '%s\n' "$row"
+}
+
+cmd_calibrate_status() {
+  local dir="$LEDGER_DIR"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --dir) [ $# -ge 2 ] || die "calibrate-status: --dir requires a path"; dir="$2"; shift 2 ;;
+      -h|--help) usage; exit 0 ;;
+      *) die "calibrate-status: unknown argument $1" ;;
+    esac
+  done
+  _cal_write_status "$dir"
+}
+
 cmd_purge() {
   local dir="$LEDGER_DIR" apply=0
   while [ $# -gt 0 ]; do
@@ -557,6 +907,9 @@ case "$cmd" in
   archive-check) cmd_archive_check "$@" ;;
   purge) cmd_purge "$@" ;;
   prune) cmd_prune "$@" ;;
+  calibrate-sample) cmd_calibrate_sample "$@" ;;
+  calibrate-record) cmd_calibrate_record "$@" ;;
+  calibrate-status) cmd_calibrate_status "$@" ;;
   -h|--help) usage; exit 0 ;;
   "") usage >&2; exit 1 ;;
   *) echo "dual-build-ledger.sh: unknown subcommand '$cmd'" >&2; usage >&2; exit 1 ;;
