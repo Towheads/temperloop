@@ -1302,6 +1302,26 @@ const STEP_SLOW_SECS = Math.min(
 // forever. At the default slice budget this is ~40 minutes of gate wall time,
 // several times today's suite.
 const GATE_MAX_SLICES = 8;
+// GATE_RESUME_EXTENSIONS (temperloop#2135, split from #2130) — how many
+// EXTRA allotments of the SAME GATE_MAX_SLICES ceiling the loop below grants
+// itself before it finally gives up, but ONLY while the suite has produced
+// ZERO observed failures. A clean slice-budget exhaustion with `failed: 0`
+// is not a stuck gate — quality-gates.sh is still reporting real forward
+// progress (a fresh resume index every slice); it is a suite that outgrew
+// ONE allotment of the existing per-loop ceiling. #2130's own evidence is
+// what a full worker re-spawn costs to merely re-verify nothing broke
+// (~0.5M subagent tokens, 30-50 minutes) against what ANOTHER allotment of
+// pure machinery-only slicing costs (no agent spawn at all) — so extending
+// is cheap where escalating is not. The multiplier is not invented: the
+// #1663 scoping comment above (§3e.5, "WHY") already measured contention
+// inflating the gate tail 200-300% on a 3-item concurrent level, i.e. up to
+// ~3x a clean run's slice count — two extensions gives a total of 3x
+// GATE_MAX_SLICES, matching that already-observed worst case exactly. A
+// suite that STILL has not finished after 3x the original ceiling, with
+// zero failures the whole way, is genuinely the "looped on forever" case
+// GATE_MAX_SLICES's own comment above warns about, and escalates exactly as
+// before — see the dynamic ceiling in the 3e.5 slice loop below.
+const GATE_RESUME_EXTENSIONS = 2;
 // Warn when a completed run used at least this fraction of the slice budget —
 // the DECAY SIGNAL. Growth becomes visible as a margin warning on green runs,
 // long before it becomes a blown budget (the thing #115 had no way to see).
@@ -3336,9 +3356,53 @@ function recoveredVerdict(item, probe, reason) {
 // `escalation` record — NEVER both. The pipeline collects these.
 // -----------------------------------------------------------------------------
 
+// escalationRoundKind(kind) — the ROUND_KIND VOCABULARY (temperloop#2135,
+// split from #2130). Every escalation starts a build ROUND that will be
+// revisited — by a human at the merge gate, by the orchestrator's own
+// continuation logic, or by a re-spawned worker — and a retrospective needs
+// to tell a MACHINERY round (the gate ran out of budget, CI failed,
+// activation's own proof checks failed) from a REVIEW round (a reviewer
+// found something) without reading every PR body by hand (the motivating
+// evidence in #2130: 4 of 9 same-epic PRs' `-r2`/`-r3` rounds were machinery
+// continuations that changed nothing).
+//
+// THIS IS THE ONE PLACE THE MAPPING IS STATED. Every one of this file's
+// escalate() call sites — ~51 of them, spanning ~30 distinct kind strings —
+// funnels through escalate() below, so no call site classifies its own kind
+// by hand and none can drift from this table. The closed set is deliberately
+// SMALL: `review | gate-timeout | gate-fail | activation | ci | other`. The
+// ~25 singleton kinds (`rebase-conflict`, `push-rejected`, `dual-build-*`,
+// `claim-conflict`, `dep-not-merged`, `verdict-unparseable`, `worker-error`,
+// `stale-worktree`, `quota-exhausted`, a worker's own returned `.status`, …)
+// are DELIBERATELY not enumerated one by one — they fall through to `other`
+// by construction, which is what keeps this classifier bounded: a NEW
+// escalate() kind added later needs no edit here to stay correctly (if
+// coarsely) classified, and the catch-all never silently mis-labels a new
+// machinery kind as `review` or vice versa.
+function escalationRoundKind(kind) {
+  if (typeof kind !== 'string' || kind === '') return 'other';
+  if (kind === 'review-blocking') return 'review';
+  if (kind === 'acceptance-gate-timeout') return 'gate-timeout';
+  if (kind === 'acceptance-gate-failed' || kind === 'acceptance-incomplete') return 'gate-fail';
+  if (kind.startsWith('activation-')) return 'activation';
+  // "the CI-failure kinds" (temperloop#2135's own acceptance language) are
+  // every kind ciPollLoop/the 3g CI-poll seam emits: ci-failed and the
+  // argument-validation refusal ci-poll-bad-argument both start with `ci-`.
+  // `merge-conflict` (also from ciPollLoop) is deliberately EXCLUDED — it is
+  // a PR mergeability fact, not a CI verdict, so it falls to `other`.
+  if (kind.startsWith('ci-')) return 'ci';
+  return 'other';
+}
+
 // A small helper to build an escalation result (worktree stays intact).
+// `round_kind` rides alongside `kind` on every escalation record — see
+// escalationRoundKind() above for the one place that mapping is computed.
 function escalate(slug, kind, payload) {
-  return { _kind: 'escalation', slug, escalation: { slug, kind, payload } };
+  return {
+    _kind: 'escalation',
+    slug,
+    escalation: { slug, kind, payload, round_kind: escalationRoundKind(kind) },
+  };
 }
 
 // -----------------------------------------------------------------------------
@@ -3843,7 +3907,11 @@ function gateVerdict(terminalOutcome, ledger) {
   if (terminalOutcome === 'GATE_TIMEOUT') {
     unfinished = `the quality-gates slice was killed by the executor's ${GATE_BASH_TIMEOUT_MS}ms Bash-tool timeout before it could report — a BUDGET exhaustion, NOT a gate failure`;
   } else if (terminalOutcome === 'GATE_SLICE') {
-    unfinished = `the suite did not finish within ${GATE_MAX_SLICES} slices of ${GATE_SLICE_SECS}s (~${Math.round(GATE_MAX_SLICES * GATE_SLICE_SECS / 60)} min of gate wall time) — a BUDGET exhaustion, NOT a gate failure`;
+    // temperloop#2135: the LEDGER's own length, not the static GATE_MAX_SLICES
+    // constant — a zero-failure run can run past GATE_MAX_SLICES on the
+    // GATE_RESUME_EXTENSIONS allotments the 3e.5 loop grants itself, and this
+    // message must say how many slices actually ran, not the base ceiling.
+    unfinished = `the suite did not finish within ${ledger.length} slice(s) of ${GATE_SLICE_SECS}s (~${Math.round(ledger.length * GATE_SLICE_SECS / 60)} min of gate wall time) — a BUDGET exhaustion, NOT a gate failure`;
   } else if (lastSliceResumeAt !== undefined) {
     // temperloop#2094: a terminal outcome whose NAME says "done" over a final
     // slice that printed a resume point. Say which one is being believed, and
@@ -7663,7 +7731,14 @@ async function driveItemBuildPhase(item, arm, box) {
   // gateVerdict(); no independent running counter is maintained alongside it,
   // because two counters that can disagree is exactly the defect #1587 filed.
   const gateSliceLedger = [];
-  for (; gateSlices < GATE_MAX_SLICES; gateSlices++) {
+  // gateSliceCeiling — the EFFECTIVE loop bound, starting at GATE_MAX_SLICES
+  // and grantable up to GATE_RESUME_EXTENSIONS extra allotments of that SAME
+  // ceiling (temperloop#2135) — see GATE_RESUME_EXTENSIONS above for why. The
+  // loop's shape is unchanged; only its upper bound can grow, and only while
+  // zero failures have been observed (checked at the extension site below).
+  let gateSliceCeiling = GATE_MAX_SLICES;
+  let gateExtensionsUsed = 0;
+  for (; gateSlices < gateSliceCeiling; gateSlices++) {
     gateOut = await runMachinery(gateCmd(gateStartAt, gateSelection), {
       label: `gate:${item.slug}`,
       slug: item.slug,
@@ -7734,7 +7809,30 @@ async function driveItemBuildPhase(item, arm, box) {
     // reports no fingerprint (an older vendored gate script) leaves this empty,
     // which disarms the check rather than tripping it.
     gateSelection = typeof gateOut.selection === 'string' ? gateOut.selection : '';
-    log(`[${item.slug}] 3e.5 gate slice ${gateSlices + 1}/${GATE_MAX_SLICES} spent its ${GATE_SLICE_SECS}s budget — resuming at gate ${gateStartAt}`);
+    // temperloop#2135 — RESUME instead of escalating. A slice that is about to
+    // exhaust the CURRENT ceiling, with ZERO failures recorded anywhere in the
+    // ledger so far, gets one more allotment of GATE_MAX_SLICES rather than a
+    // manufactured acceptance-gate-timeout escalation — see
+    // GATE_RESUME_EXTENSIONS above for the sizing rationale. A failure
+    // anywhere in the ledger disarms this: that run is already headed for
+    // acceptance-gate-failed regardless of how many more slices it gets, so
+    // extending would only spend more wall time on a branch that is already
+    // known-RED — this is exactly what keeps bullet 2 (the failed-gate arm)
+    // UNCHANGED: it still escalates at the ORIGINAL GATE_MAX_SLICES ceiling.
+    if (
+      gateSlices + 1 === gateSliceCeiling
+      && gateExtensionsUsed < GATE_RESUME_EXTENSIONS
+      && gateSliceLedger.every((s) => (Number(s.failed) || 0) === 0)
+    ) {
+      gateSliceCeiling += GATE_MAX_SLICES;
+      gateExtensionsUsed++;
+      log(
+        `[${item.slug}] 3e.5 gate slice budget (${GATE_MAX_SLICES} slices) exhausted with 0 failures — ` +
+        `resuming with another ${GATE_MAX_SLICES}-slice allotment (extension ${gateExtensionsUsed}/${GATE_RESUME_EXTENSIONS}) ` +
+        `instead of escalating (temperloop#2135)`,
+      );
+    }
+    log(`[${item.slug}] 3e.5 gate slice ${gateSlices + 1}/${gateSliceCeiling} spent its ${GATE_SLICE_SECS}s budget — resuming at gate ${gateStartAt}`);
   }
 
   // ONE verdict, derived once from the ledger (temperloop#1587), and ONE
@@ -7760,6 +7858,10 @@ async function driveItemBuildPhase(item, arm, box) {
     // contained — a second, smaller field-vs-field contradiction in the same
     // payload (temperloop#1587).
     slices: gateSliceLedger.length,
+    // temperloop#2135 — how many extra GATE_MAX_SLICES allotments the RESUME
+    // path (above) already spent before this verdict was reached. 0 on every
+    // run that fit inside the original ceiling, exactly like today.
+    resumeExtensionsUsed: gateExtensionsUsed,
     // temperloop#1698 — `null`, not a partial sum, when any slice's figure was
     // unreadable. A payload that reports a multi-minute run as having taken no
     // time is the exact shape this item removes.
@@ -7827,7 +7929,7 @@ async function driveItemBuildPhase(item, arm, box) {
       ? ` — NOTE: approaching the per-slice budget; raise BUILD_GATE_SLICE_SECS or split the gate list before it costs a re-slice`
       : '';
     const elapsedNote = gateElapsedUnknown ? '?' : String(gateElapsed);
-    log(`[${item.slug}] 3e.5 gate PASS — ${gateSlices + 1} slice(s), ${elapsedNote}s of gate wall time (slice budget ${GATE_SLICE_SECS}s, cap ${GATE_MAX_SLICES} slices)${marginNote}`);
+    log(`[${item.slug}] 3e.5 gate PASS — ${gateSlices + 1} slice(s), ${elapsedNote}s of gate wall time (slice budget ${GATE_SLICE_SECS}s, cap ${gateSliceCeiling} slices${gateExtensionsUsed > 0 ? `, ${gateExtensionsUsed} resume extension(s) used` : ''})${marginNote}`);
   }
 
   // --- 3e.6. Class-A activation gate (temperloop#1219) ----------------------
