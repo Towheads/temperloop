@@ -4013,7 +4013,11 @@ grep -q "'RECOVER_DIRTY'" "$MJS" \
   || fail "#993: SPINE_OUTCOME_SCHEMA must admit RECOVER_DIRTY (the probe's stall rung)"
 grep -q 'function dirtyResumeCure' "$MJS" \
   || fail "#993: dirtyResumeCure() missing — the auto-resume must tell the worker its uncommitted work is still on disk"
-grep -q 'withCure(verdictSection, probe.dirtyFiles)' "$MJS" \
+# NB the trailing `)` is deliberately NOT part of this pattern: temperloop#865
+# added a third `item.slug` argument (the gate-sentinel cure). What #993 pins is
+# that the probe's dirty-file count is THREADED into the cure as argument 2 —
+# not the arity of the call.
+grep -q 'withCure(verdictSection, probe.dirtyFiles' "$MJS" \
   || fail "#993: the auto-resume must thread the probe's dirty-file count into the cure"
 grep -q "shape: 'foreground-stall'" "$MJS" \
   || fail "#993: an uncured stall must escalate with shape:foreground-stall so the worktree's uncommitted work is not silently pruned"
@@ -4835,7 +4839,11 @@ else {
     [prb, \"'/mb dir/pr.sh'\"],
     [prb, \"'\" + WT + \"'\"],
     [prb, \"'feat/spaced branch'\"],
-    [prb, \"'It'\\\\''s a spaced title'\"],
+    // temperloop#1806: a value CONTAINING a single quote is now emitted
+    // DOUBLE-quoted (\"It's a spaced title\") rather than via the '\\'' idiom,
+    // whose nesting the executor's own shell parser refused outright. Still
+    // exactly ONE quoted shell word — which is what this case pins.
+    [prb, '\\\"' + \"It's a spaced title\" + '\\\"'],
     [prb, \"'Plans/2026-08-01 kernel - batch machinery.md'\"],
   ];
   for (const [call, frag] of need) {
@@ -6883,9 +6891,11 @@ grep -q "phase: phaseName ?? 'worker'" "$MJS" \
   || fail "#1294: callWorker must take an explicit phase with a flat fallback"
 [ "$(grep -c "phase: enterStage(STAGE_" "$MJS")" -ge 7 ] \
   || fail "#1294: every stage-owning spawn site must pass opts.phase via enterStage() (global phase() state races inside parallel())"
-# 3 = recover-probe + pr-batch-resume + the temperloop#1819 quota canary (all
-# off-path diagnostics that must never move the stage cursor).
-[ "$(grep -c "phase: stagePhase(STAGE_RECOVER)" "$MJS")" -eq 3 ] \
+# 4 = recover-probe + pr-batch-resume + the temperloop#1819 quota canary + the
+# temperloop#1805 pr-open verdict fallback (all off-path recoveries that must
+# never move the stage cursor — the fallback re-issues `pr.sh open` from inside
+# the PR stage, so advancing the cursor would misreport the run's progress).
+[ "$(grep -c "phase: stagePhase(STAGE_RECOVER)" "$MJS")" -eq 4 ] \
   || fail "#1294: the off-path recovery spawns must use stagePhase(), which never moves the cursor"
 echo "PASS: #1294 stage-phase guard — one monotonic enterStage() cursor, explicit opts.phase at every spawn, meta.phases deliberately absent"
 
@@ -12659,6 +12669,501 @@ done || fail "#2080-judge-exec: the unparseable path emitted a line that is not 
 rm -rf "$K2080_JUDGE_ROOT"
 echo "PASS: #2080-judge-exec — the judge's generated shell, executed for real: judge.sh's own exit status reaches the rc branch with and without stdout, a clean verdict still passes, and a non-JSON line becomes a named refusal"
 fi
+
+# ============================================================================
+# temperloop#1805 / #865 / #1806 / #1698 / #1700 — THE WORKER HAND-OFF.
+#
+# One failure class, five instances: a hand-off that FAILS SILENTLY toward a
+# plausible-looking value instead of erroring. An unparseable verdict reads as a
+# failed item; a backgrounded gate reads as a slow one; a missing elapsedSecs
+# reads as 0s; a `gh_issue` key reads as no linkage; and a payload's escaped
+# quotes read as an unparseable command. Kernel principle 5 (counter AI failure
+# modes structurally) applied to the engine's own seams.
+# ============================================================================
+
+# ---------------------------------------------------------------------------
+# TEST (K1806): sq() must not emit the '\'' nesting idiom, and the value must
+#   still survive a REAL shell round-trip. The live failure was the executor's
+#   own shell parser refusing "deeply nested quotes" at PARSE time, before git
+#   was touched — deterministic for the item, so no re-drive could clear it.
+#   Two assertions, because either alone is satisfiable by a broken fix:
+#   ZERO `'\''` in the composed command (the trigger — RED before), AND an
+#   exact byte round-trip through bash (correctness — the control).
+# ---------------------------------------------------------------------------
+run_node_case "K1806: an item payload carrying escaped single quotes composes a command with NO nested-quote idiom, and round-trips exactly" "
+$PREAMBLE
+import { execFileSync, } from 'child_process';
+import { writeFileSync, mkdtempSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+
+// The OBSERVED live shape (temperloop#1806, slug sweep-try-sh-citations-1334):
+// an item payload whose text already carries the '\\'' escape sequence, plus a
+// plain apostrophe. Both must survive.
+const TITLE = \"fix sq() so a payload's '\\\\'' escape can't break the parse\";
+happyMachinery('q1806', 1806, 'a806');
+happyWorker('q1806');
+globalThis.args = { ...baseArgs, machineryBinDir: '/mb', items: [
+  { slug: 'q1806', branch: 'build/q1806', title: TITLE, kind: 'impl', acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+const result = await mod.default();
+const prb = callLog.find(c => (c.opts.label||'') === 'pr-batch:q1806');
+let reason = null;
+if (!prb) reason = 'no pr-batch call logged: ' + JSON.stringify(result);
+else {
+  const body = prb.promptFull.slice(prb.promptFull.indexOf('\\nCommand:\\n'));
+  // (1) THE TRIGGER. The '\\''-style idiom must appear nowhere in the emitted
+  //     command text — that nesting is what the executor's parser refused.
+  const NEST = String.fromCharCode(39) + String.fromCharCode(92) + String.fromCharCode(39) + String.fromCharCode(39);
+  if (body.includes(NEST)) reason = 'the composed command still carries the nested-quote idiom that broke the parse';
+  // (2) THE CONTROL. Extract the --title argument as emitted and execute it.
+  //     A fix that merely stripped quoting would pass (1) and fail here.
+  if (!reason) {
+    const m = body.match(/--title ([\\s\\S]*?) --verdict /);
+    if (!m) reason = 'could not locate the --title argument in the composed command';
+    else {
+      const dir = mkdtempSync(join(tmpdir(), 'k1806-'));
+      const f = join(dir, 'rt.sh');
+      writeFileSync(f, 'printf %s ' + m[1] + '\\n');
+      const got = execFileSync('bash', [f], { encoding: 'utf8' });
+      if (got !== TITLE) reason = 'round-trip mismatch: wanted ' + JSON.stringify(TITLE) + ' got ' + JSON.stringify(got);
+    }
+  }
+}
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+grep -q 'if (!s.includes(\"'\''\")) return' "$MJS" \
+  || fail "#1806: sq() must keep the single-quoted form for values with no single quote (byte-identical to the pre-#1806 emission at ~86 call sites)"
+grep -q 'temperloop#1806' "$MJS" \
+  || fail "#1806: sq() must name the defect it fixes — the nesting the executor's own shell parser refuses"
+echo "PASS: #1806 static guard — sq() keeps the single-quoted form when nothing needs escaping"
+
+# ---------------------------------------------------------------------------
+# TEST (K1698): a GATE_PASS returning the SNAKE_CASE spelling must report the
+#   REAL wall time, and a GATE_PASS returning NEITHER spelling must render '?'
+#   — never 0. The silent zero disabled the gate decay signal on the one
+#   instrument built to make suite growth visible.
+# ---------------------------------------------------------------------------
+run_node_case "K1698: a GATE_PASS bearing elapsed_secs reports the real wall time, not 0s" "
+$PREAMBLE
+const logged = [];
+globalThis.log = (m) => logged.push(String(m));
+setMachinery('el-snake',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/el-snake' },
+  { outcome: 'REVIEW_DIFF' },
+  // The OBSERVED shape (run wf_9ce4bd0c-58b): the gate's own log said 215s.
+  { outcome: 'GATE_PASS', failed: 0, elapsed_secs: 215, ceiling_secs: 300 },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'a69' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'a69', branch: 'build/el-snake' },
+  { outcome: 'PR_OPENED', pr_number: 1698 },
+  { outcome: 'CI_GREEN' },
+);
+happyWorker('el-snake');
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'el-snake', branch: 'build/el-snake', title: 'T', kind: 'impl', acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+const result = await mod.default();
+const passLine = logged.find(m => /3e\\.5 gate PASS/.test(m)) || '';
+let reason = null;
+if ((result.parked ?? []).length !== 1) reason = 'expected the item to park green: ' + JSON.stringify(result);
+else if (!passLine) reason = 'no 3e.5 gate PASS line logged: ' + JSON.stringify(logged);
+else if (/0s of gate wall time/.test(passLine)) reason = 'THE DEFECT: a 215s gate was reported as 0s — ' + passLine;
+else if (!/215s of gate wall time/.test(passLine)) reason = 'the real elapsed figure did not reach the log: ' + passLine;
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+run_node_case "K1698: a GATE_PASS bearing NEITHER spelling renders '?', never a plausible 0 — and says so" "
+$PREAMBLE
+const logged = [];
+globalThis.log = (m) => logged.push(String(m));
+setMachinery('el-none',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/el-none' },
+  { outcome: 'REVIEW_DIFF' },
+  { outcome: 'GATE_PASS', failed: 0 },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'a70' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'a70', branch: 'build/el-none' },
+  { outcome: 'PR_OPENED', pr_number: 1699 },
+  { outcome: 'CI_GREEN' },
+);
+happyWorker('el-none');
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'el-none', branch: 'build/el-none', title: 'T', kind: 'impl', acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+const result = await mod.default();
+const passLine = logged.find(m => /3e\\.5 gate PASS/.test(m)) || '';
+let reason = null;
+if ((result.parked ?? []).length !== 1) reason = 'expected the item to park green: ' + JSON.stringify(result);
+else if (/0s of gate wall time/.test(passLine)) reason = 'THE SILENT ZERO MOVED ONE FIELD OVER: an unknown elapsed rendered as 0s — ' + passLine;
+else if (!/\\?s of gate wall time/.test(passLine)) reason = \"an unknown elapsed must render '?': \" + passLine;
+else if (!logged.some(m => /NO usable elapsedSecs/.test(m))) reason = 'a blind decay signal must say so out loud; logged: ' + JSON.stringify(logged);
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+run_node_case "K1698: the escalation PAYLOAD carries the real elapsed figure, not 0 — a snake_case GATE_FAIL" "
+$PREAMBLE
+setMachinery('el-pay',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/el-pay' },
+  { outcome: 'REVIEW_DIFF' },
+  { outcome: 'GATE_FAIL', failed: 2, elapsed_secs: 188, rc: 1 },
+);
+happyWorker('el-pay');
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'el-pay', branch: 'build/el-pay', title: 'T', kind: 'impl', acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+const result = await mod.default();
+const esc = (result.escalations ?? [])[0];
+let reason = null;
+if (!esc) reason = 'expected an acceptance-gate-failed escalation: ' + JSON.stringify(result);
+else if (esc.kind !== 'acceptance-gate-failed') reason = 'wrong kind: ' + esc.kind;
+else if (esc.payload.elapsedSecs === 0) reason = 'THE DEFECT: a 188s gate run is reported in the payload as 0s';
+else if (esc.payload.elapsedSecs !== 188) reason = 'payload elapsedSecs should be 188, got ' + JSON.stringify(esc.payload.elapsedSecs);
+else if ((esc.payload.sliceLedger ?? [])[0]?.elapsedSecs !== 188) reason = 'the slice ledger must carry the same figure: ' + JSON.stringify(esc.payload.sliceLedger);
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+# --- K1698 static guards: the PRODUCER half. The emitted gate command must not
+# default an unreadable elapsed to 0, and the canonicalizer must exist at the
+# transport boundary rather than as a per-consumer `??` chain. ---------------
+grep -q 'function canonicalizeOutcome' "$MJS" \
+  || fail "#1698: canonicalizeOutcome() missing — one spelling must be established ONCE at the transport boundary, not per read site"
+grep -q '__elj=null' "$MJS" \
+  || fail "#1698: the emitted gate command must report an unreadable elapsed as JSON null, never \${__el:-0} (a plausible zero)"
+grep -q 'elapsedSecs\":%s,\"workerGate' "$MJS" \
+  || fail "#1698/#865: the GATE_SLICE/GATE_PASS/GATE_FAIL emitters must carry the canonical elapsedSecs plus the worker-gate classification"
+# The real invariant is not a count but a CLASS: no JS property READ of a
+# snake_case duration key may remain. The wire spelling lives on in the emitted
+# shell, the schema and the alias table; a `.elapsed_secs` / `.ceiling_secs` /
+# `.slow_secs` dereference is a consumer, and a consumer is the defect.
+grep -nE '\.(elapsed_secs|ceiling_secs|slow_secs)\b' "$MJS" \
+  && fail "#1698: a consumer still READS a snake_case duration key — canonicalizeOutcome() establishes one spelling at the boundary precisely so no read site has to chain \`??\`"
+grep -q "elapsed_secs: 'elapsedSecs'" "$MJS" \
+  || fail "#1698: OUTCOME_KEY_ALIASES must map the wire spelling onto the canonical one"
+echo "PASS: #1698 producer guard — canonicalizeOutcome() at the boundary, JSON null for an unreadable elapsed, no snake_case consumer left"
+
+# ---------------------------------------------------------------------------
+# TEST (K1700): an item carrying the DOCUMENTED plan-schema key `gh_issue:`
+#   must produce a --gh-issue flag. Three PRs from one level merged with no
+#   `Closes` line because the number sat under a key nothing read.
+# ---------------------------------------------------------------------------
+run_node_case "K1700: an item carrying gh_issue (the documented plan-schema spelling) still emits --gh-issue and --also-closes" "
+$PREAMBLE
+happyMachinery('gh-snake', 1700, 'a17');
+happyWorker('gh-snake');
+globalThis.args = { ...baseArgs, machineryBinDir: '/mb', items: [
+  { slug: 'gh-snake', branch: 'build/gh-snake', title: 'T', kind: 'impl', acceptance: ['c'],
+    gh_issue: 1700, also_closes: [1698, 1806] },
+]};
+const mod = await loadLevel();
+const result = await mod.default();
+const prb = callLog.find(c => (c.opts.label||'') === 'pr-batch:gh-snake');
+let reason = null;
+if (!prb) reason = 'no pr-batch call logged: ' + JSON.stringify(result);
+else if (!prb.promptFull.includes(\"--gh-issue '1700'\")) reason = 'THE DEFECT: the documented gh_issue key produced no --gh-issue flag, so the PR closes nothing';
+else if (!prb.promptFull.includes(\"--also-closes '1698,1806'\")) reason = 'the documented also_closes key produced no --also-closes flag';
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+run_node_case "K1700: an unrecognized item key is NAMED, and an item with neither spelling stays legal and silent" "
+$PREAMBLE
+const logged = [];
+globalThis.log = (m) => logged.push(String(m));
+happyMachinery('gh-unk', 1701, 'a18');
+happyWorker('gh-unk');
+happyMachinery('gh-quiet', 1702, 'a19');
+happyWorker('gh-quiet');
+globalThis.args = { ...baseArgs, machineryBinDir: '/mb', items: [
+  { slug: 'gh-unk', branch: 'build/gh-unk', title: 'T', kind: 'impl', acceptance: ['c'], ghIsue: 99 },
+  { slug: 'gh-quiet', branch: 'build/gh-quiet', title: 'T', kind: 'impl', acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+const result = await mod.default();
+const prbQuiet = callLog.find(c => (c.opts.label||'') === 'pr-batch:gh-quiet');
+let reason = null;
+if ((result.parked ?? []).length !== 2) reason = 'expected both items to park: ' + JSON.stringify(result);
+else if (!logged.some(m => /gh-unk.*does not read.*ghIsue/.test(m))) reason = 'a key nothing reads must be NAMED — that is the half that catches the NEXT alias; logged: ' + JSON.stringify(logged);
+else if (logged.some(m => /gh-quiet.*does not read/.test(m))) reason = 'an item with no issue number is a legal, normal state and must stay silent';
+else if (prbQuiet && prbQuiet.promptFull.includes('--gh-issue')) reason = 'an item with neither spelling must emit no --gh-issue flag';
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+grep -q 'function normalizeItem' "$MJS" \
+  || fail "#1700: normalizeItem() missing — the snake/camel reconciliation must happen ONCE where items enter"
+grep -q '(input.items ?? \[\]).map(normalizeItem)' "$MJS" \
+  || fail "#1700: buildLevel() must run every item through normalizeItem() — a defined-but-unapplied normalizer changes nothing"
+for _k1700_alias in 'gh_issue' 'also_closes' 'depends-on'; do
+  grep -q -- "$_k1700_alias: 'gh\|$_k1700_alias'\?: 'also\|$_k1700_alias'\?: 'depends\|'\?$_k1700_alias'\?:" "$MJS" \
+    || fail "#1700: ITEM_KEY_ALIASES must carry the documented plan-schema spelling $_k1700_alias"
+done
+echo "PASS: #1700 static guard — normalizeItem() exists, is applied at the entry point, and carries the documented aliases"
+
+# ---------------------------------------------------------------------------
+# TEST (K1805): an unparseable verdict over a PR-READY tree must not abort the
+#   item. Observed live (slug disclosure-watermark-tracked-1316): one clean
+#   commit, zero-dirty tree, full .build-verification.md, own suite 39/39 — and
+#   the item reported `pr-open-failed`. The orchestrator recovered it by hand
+#   into PR #1803.
+# ---------------------------------------------------------------------------
+run_node_case "K1805: an unparseable verdict falls back to the verification surface and the item PARKS on a real PR" "
+$PREAMBLE
+const logged = [];
+globalThis.log = (m) => logged.push(String(m));
+setMachinery('vu-ok',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/vu-ok' },
+  { outcome: 'REVIEW_DIFF' },
+  { outcome: 'GATE_PASS', elapsedSecs: 12 },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'a1803' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'a1803', branch: 'build/vu-ok' },
+  // pr.sh's own die() over the verdict file it was handed.
+  { outcome: 'ERROR', step: 'pr-open', error: 'verdict is not valid JSON' },
+  // …the fallback re-issue, which is what the manual recovery did by hand.
+  { outcome: 'PR_OPENED', pr_number: 1803 },
+  { outcome: 'CI_GREEN' },
+);
+happyWorker('vu-ok');
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'vu-ok', branch: 'build/vu-ok', title: 'T', kind: 'impl', acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+const result = await mod.default();
+const parked = result.parked ?? [];
+const fb = callLog.find(c => (c.opts.label||'') === 'pr-open-verdict-fallback:vu-ok');
+let reason = null;
+if ((result.escalations ?? []).length !== 0) reason = 'THE DEFECT: complete, committed work was reported as a failed item — ' + JSON.stringify(result.escalations);
+else if (parked.length !== 1) reason = 'expected the item to park: ' + JSON.stringify(result);
+else if (parked[0].pr !== 1803) reason = 'must park on the PR the fallback opened, got ' + parked[0].pr;
+else if (!fb) reason = 'the fallback must RE-ISSUE pr.sh open rather than re-running the same bad verdict';
+else if (!fb.promptFull.includes('--verification-surface-file')) reason = 'the fallback body must come from .build-verification.md, exactly as the manual recovery did';
+else if (!fb.promptFull.includes('temperloop#1805')) reason = 'the fallback PR body must say WHY its acceptance table is missing';
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+run_node_case "K1805: when the fallback cannot land it either, the escalation distinguishes 'no work' from 'work done, reporting broke'" "
+$PREAMBLE
+setMachinery('vu-esc',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/vu-esc' },
+  { outcome: 'REVIEW_DIFF' },
+  { outcome: 'GATE_PASS', elapsedSecs: 12 },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'a81d' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'a81d', branch: 'build/vu-esc' },
+  { outcome: 'ERROR', step: 'pr-open', error: 'verdict is not valid JSON' },
+  { outcome: 'ERROR', step: 'pr-open', error: 'verdict is not valid JSON' },
+  // The recover-probe behind the enriched payload.
+  { outcome: 'RECOVER_COMMITTED', commits_ahead: 1, pushed: true, dirty: false, dirty_files: 0, sha: 'a81d', verification_surface_present: true },
+);
+happyWorker('vu-esc');
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'vu-esc', branch: 'build/vu-esc', title: 'T', kind: 'impl', acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+const result = await mod.default();
+const esc = (result.escalations ?? [])[0];
+let reason = null;
+if (!esc) reason = 'expected an escalation: ' + JSON.stringify(result);
+else if (esc.kind !== 'verdict-unparseable') reason = \"a reporting failure must not wear the generic pr-open-failed kind, got: \" + esc.kind;
+else if (esc.payload.committed_sha !== 'a81d') reason = 'the payload must name the commit that exists, got ' + JSON.stringify(esc.payload.committed_sha);
+else if (esc.payload.dirty !== false) reason = 'the payload must report tree cleanliness, got ' + JSON.stringify(esc.payload.dirty);
+else if (esc.payload.verification_present !== true) reason = 'the payload must report that a verification surface exists, got ' + JSON.stringify(esc.payload.verification_present);
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+run_node_case "K1805 control: a pr-open failure that is NOT about the verdict keeps the unchanged pr-open-failed path (no blind re-issue)" "
+$PREAMBLE
+setMachinery('vu-ctl',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/vu-ctl' },
+  { outcome: 'REVIEW_DIFF' },
+  { outcome: 'GATE_PASS', elapsedSecs: 12 },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'a91d' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'a91d', branch: 'build/vu-ctl' },
+  { outcome: 'ERROR', step: 'pr-open', error: 'gh pr create failed: authentication required' },
+);
+happyWorker('vu-ctl');
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'vu-ctl', branch: 'build/vu-ctl', title: 'T', kind: 'impl', acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+const result = await mod.default();
+const esc = (result.escalations ?? [])[0];
+let reason = null;
+if (!esc) reason = 'expected an escalation: ' + JSON.stringify(result);
+else if (esc.kind !== 'pr-open-failed') reason = 'a non-verdict pr-open failure must keep its own kind, got ' + esc.kind;
+else if (callLog.some(c => /pr-open-verdict-fallback/.test(c.opts.label||''))) reason = 'BLIND RE-ISSUE: a non-idempotent pr-open was re-run for a failure the fallback cannot fix';
+else if (esc.payload.committed_sha !== 'a91d') reason = 'even the unchanged path must say what landed, got ' + JSON.stringify(esc.payload.committed_sha);
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+grep -q 'function isVerdictUnparseable' "$MJS" \
+  || fail "#1805: isVerdictUnparseable() missing — the tolerance arm must key on pr.sh's OWN verdict-parse messages, never a catch-all"
+grep -qF "escalate(item.slug, 'verdict-unparseable'" "$MJS" \
+  || fail "#1805: a reporting-layer failure must escalate under its own kind, not the generic pr-open-failed"
+echo "PASS: #1805 static guard — narrow verdict-parse detection + its own escalation kind"
+
+# ---------------------------------------------------------------------------
+# TEST (K865): the worker is HANDED a gate invocation that always leaves a
+#   RESULT SENTINEL, and polls that artifact rather than a PID — and a sentinel
+#   still reading `running` at §3e.5 produces a LOUD, named notice. Both Level-1
+#   workers of epic #810 stalled 2/2 against a prompt that named the exact
+#   failure, so the issue's acceptance explicitly refuses a third wording.
+# ---------------------------------------------------------------------------
+run_node_case "K865 prevention: the worker prompt HANDS OVER a sentinel-writing gate command and names the artifact to poll" "
+$PREAMBLE
+happyMachinery('gs-item', 865, 'a865');
+happyWorker('gs-item');
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'gs-item', branch: 'build/gs-item', title: 'T', kind: 'impl', acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+await mod.default();
+const w = callLog.find(c => (c.opts.label||'') === 'worker:gs-item');
+let reason = null;
+if (!w) reason = 'no worker call logged';
+else if (!w.promptFull.includes('/tmp/qg-gs-item.worker-gate.json')) reason = 'THE FIX IS ABSENT: the worker is given no result-sentinel path, so its only poll target is still a PROCESS';
+else if (!w.promptFull.includes('run THIS EXACT command (temperloop#865)')) reason = 'the worker must be HANDED the invocation, not asked to compose one';
+else if (!/state\\\\\"?:\\\\\"?running/.test(w.promptFull) && !w.promptFull.includes('\\\"state\\\":\\\"running\\\"')) reason = 'the handed command must write a running sentinel BEFORE the suite starts';
+else if (!w.promptFull.includes('Poll the RESULT FILE, never a PID')) reason = 'the worker must be told to poll the ARTIFACT — a PID poll is the stall this replaces';
+else if (!w.promptFull.includes('set -o pipefail')) reason = 'the handed command tees the suite, so pipefail is load-bearing or a RED gate writes rc:0';
+else if (!w.promptFull.includes('NEVER report a gate pass without a')) reason = 'a missing sentinel must not be reportable as a pass';
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+run_node_case "K865 detection: a sentinel still reading 'running' at 3e.5 is LOUD — a stalled worker reads differently from a slow one" "
+$PREAMBLE
+const logged = [];
+globalThis.log = (m) => logged.push(String(m));
+setMachinery('gs-stall',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/gs-stall' },
+  { outcome: 'REVIEW_DIFF' },
+  { outcome: 'GATE_PASS', elapsedSecs: 40, workerGate: 'running' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'a86' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'a86', branch: 'build/gs-stall' },
+  { outcome: 'PR_OPENED', pr_number: 865 },
+  { outcome: 'CI_GREEN' },
+);
+happyWorker('gs-stall');
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'gs-stall', branch: 'build/gs-stall', title: 'T', kind: 'impl', acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+const result = await mod.default();
+let reason = null;
+if ((result.parked ?? []).length !== 1) reason = 'the notice is advisory — 3e.5 is the acceptance authority and a green item must still park: ' + JSON.stringify(result);
+else if (!logged.some(m => /WORKER GATE NEVER FINISHED \\(temperloop#865\\)/.test(m))) reason = 'SILENT: an abandoned gate is indistinguishable from a slow one; logged: ' + JSON.stringify(logged);
+else if (!logged.some(m => /worker-gate\\.json/.test(m))) reason = 'the notice must name the artifact a human can read';
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+run_node_case "K865 control: a FINISHED (or absent) sentinel is silent — the notice discriminates, it does not fire on every run" "
+$PREAMBLE
+const logged = [];
+globalThis.log = (m) => logged.push(String(m));
+setMachinery('gs-fin',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/gs-fin' },
+  { outcome: 'REVIEW_DIFF' },
+  { outcome: 'GATE_PASS', elapsedSecs: 40, workerGate: 'finished' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'a87' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'a87', branch: 'build/gs-fin' },
+  { outcome: 'PR_OPENED', pr_number: 866 },
+  { outcome: 'CI_GREEN' },
+);
+happyWorker('gs-fin');
+setMachinery('gs-abs',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/gs-abs' },
+  { outcome: 'REVIEW_DIFF' },
+  { outcome: 'GATE_PASS', elapsedSecs: 40 },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'a88' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'a88', branch: 'build/gs-abs' },
+  { outcome: 'PR_OPENED', pr_number: 867 },
+  { outcome: 'CI_GREEN' },
+);
+happyWorker('gs-abs');
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'gs-fin', branch: 'build/gs-fin', title: 'T', kind: 'impl', acceptance: ['c'] },
+  { slug: 'gs-abs', branch: 'build/gs-abs', title: 'T', kind: 'impl', acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+const result = await mod.default();
+let reason = null;
+if ((result.parked ?? []).length !== 2) reason = 'expected both items to park: ' + JSON.stringify(result);
+else if (logged.some(m => /WORKER GATE NEVER FINISHED/.test(m))) reason = 'the notice fired on a finished/absent sentinel — it would be noise on every run, which is how a real signal gets ignored';
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+# --- K865 EXECUTED-SHELL case: the handed invocation is run FOR REAL against a
+# stub gate, in both the green and the red arm. A prompt that merely MENTIONS a
+# sentinel is what #865 forbids; this proves the command actually writes one,
+# and that a RED suite is not recorded as rc:0 through the tee. --------------
+K865_ROOT="$(mktemp -d "$WF_TEST_TMPDIR/k865-XXXXXX")"
+mkdir -p "$K865_ROOT/scripts"
+k865_emit_cmd() {
+  node -e "
+    globalThis.args = JSON.stringify({ repoRoot: '$K865_ROOT', planLink: 'p', board: null, ownerRepo: 'o/r', items: [] });
+    globalThis.agent = async () => null; globalThis.log = () => {}; globalThis.phase = () => {};
+    globalThis.parallel = async (fns) => Promise.all(fns.map(f => f()));
+    const { readFileSync } = require('fs');
+    const src = readFileSync(process.env.MJS_PATH, 'utf8').replace(/^export const meta/m, 'const meta');
+    const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+    // Re-declare the emitted body, then reach the helper by re-evaluating the
+    // file with a trailing expression instead of its own top-level return.
+    const probe = src.replace(/return await buildLevel\(\);\s*$/, 'return workerGateCmd(\"k865\", ' + JSON.stringify('$K865_ROOT') + ');');
+    new AsyncFunction(probe)().then(c => process.stdout.write(c));
+  "
+}
+K865_CMD="$(k865_emit_cmd)" || fail "#865: could not emit the handed worker gate command"
+[ -n "$K865_CMD" ] || fail "#865: the handed worker gate command is empty"
+case "$K865_CMD" in
+  *"/tmp/qg-k865.worker-gate.json"*) : ;;
+  *) fail "#865: the handed command does not write the sentinel path the prompt names: $K865_CMD" ;;
+esac
+
+# (a) GREEN suite → a finished sentinel with rc 0.
+printf '#!/bin/sh\necho "OK — all 3 quality gate(s) passed in 4s"\nexit 0\n' > "$K865_ROOT/scripts/quality-gates.sh"
+chmod +x "$K865_ROOT/scripts/quality-gates.sh"
+rm -f /tmp/qg-k865.worker-gate.json
+bash -c "$K865_CMD" >/dev/null 2>&1 || fail "#865: the handed command exited non-zero on a GREEN gate"
+[ -f /tmp/qg-k865.worker-gate.json ] \
+  || fail "#865: the handed command left NO result sentinel — an artifact poll can only succeed if the artifact exists"
+grep -F '"state":"finished"' /tmp/qg-k865.worker-gate.json >/dev/null \
+  || fail "#865: the sentinel does not report a finished state: $(cat /tmp/qg-k865.worker-gate.json)"
+grep -F '"rc":0' /tmp/qg-k865.worker-gate.json >/dev/null \
+  || fail "#865: a green gate must record rc 0: $(cat /tmp/qg-k865.worker-gate.json)"
+
+# (b) RED suite → a finished sentinel carrying the gate's OWN non-zero status.
+#     Without `set -o pipefail` the tee's 0 would be recorded and a red gate
+#     would read green — the single worst thing this artifact could do.
+printf '#!/bin/sh\necho "FAIL: two gates failed"\nexit 4\n' > "$K865_ROOT/scripts/quality-gates.sh"
+rm -f /tmp/qg-k865.worker-gate.json
+k865_rc=0
+bash -c "$K865_CMD" >/dev/null 2>&1 || k865_rc=$?
+[ "$k865_rc" -eq 4 ] \
+  || fail "#865: the handed command must exit with the gate's own status (wanted 4, got $k865_rc)"
+grep -F '"rc":4' /tmp/qg-k865.worker-gate.json >/dev/null \
+  || fail "#865: a RED gate was recorded as rc $(sed -n 's/.*\"rc\":\([0-9]*\).*/\1/p' /tmp/qg-k865.worker-gate.json) — the piped status swallowed the failure: $(cat /tmp/qg-k865.worker-gate.json)"
+rm -f /tmp/qg-k865.worker-gate.json /tmp/qg-k865.worker-gate.log
+rm -rf "$K865_ROOT"
+echo "PASS: #865 executed shell — the handed gate invocation writes a real result sentinel and records the gate's OWN exit status in both the green and the red arm"
+
+# --- K865 static lockstep guards -------------------------------------------
+grep -q 'function workerGateCmd' "$MJS" \
+  || fail "#865: workerGateCmd() missing — the worker must be handed an invocation, not asked to compose one"
+grep -q '\.\.\.workerGateSection(item.slug, worktreePath)' "$MJS" \
+  || fail "#865: workerPrompt()'s returned array must splice in workerGateSection() — a defined-but-unused section never reaches the worker"
+grep -q 'WORKER GATE NEVER FINISHED' "$MJS" \
+  || fail "#865: the residual failure must be LOUD — a stalled worker has to read differently from a slow one"
+grep -q 'function gateSentinelCure' "$MJS" \
+  || fail "#865: the null-verdict re-spawn must hand over the sentinel PATH, not repeat the instruction that failed 2/2"
+echo "PASS: #865 static guard — handed invocation, spliced prompt section, loud residual, sentinel-aware re-spawn cure"
 
 echo ""
 echo "All test_workflow.sh cases passed."
