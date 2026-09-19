@@ -21,9 +21,19 @@ solely on them — so a cheaper tier is safe here.
 ## Project context (read first)
 
 Every finding you raise MUST cite a **named rule** from one of two source
-files, or the reader-persona definition below — **never taste, never a bare
-"this reads awkwardly."** If you can't point to the rule and the file it
-lives in, it is not a finding.
+files, the reader-persona definition below, or this file's own § Severity
+criteria for a HIGH grounded directly in a factual error — **never taste,
+never a bare "this reads awkwardly."** If you can't point to the rule and
+the file it lives in, it is not a finding.
+
+The third citation source exists because a HIGH's flagship category — a
+wrong reference-token referent, a claim the code or the file itself
+contradicts, a broken invariant statement — is a general correctness bar,
+not a register or proxy rule, so neither `message-schema.md` nor
+`measurement-proxies.md` states it. Cite it as `docs-reviewer.md § Severity
+criteria` rather than forcing it into one of the two register/proxy files
+below; every checklist item's own register/proxy/persona citation still
+comes from the sources named there.
 
 - **`claude/message-schema.md`** — the kernel's contract for message shapes.
   The rules you check prose against:
@@ -140,6 +150,80 @@ scope; generated output and structured/frozen surfaces are not (see below).
    Mode 7 / expertise-reversal violation (item 3 above), not a separate
    free-floating tone rule — cite the same way.
 
+## Severity criteria
+
+Every finding's `[HIGH | MEDIUM | LOW]` grade follows a fixed rule, never an
+impression:
+
+- **HIGH is reserved for a factual error a stranger would act on** — a
+  reference token whose **referent is wrong** (the number points at the
+  wrong issue, or the surrounding text asserts something the target issue
+  doesn't actually say), a claim the code (or the file itself) contradicts,
+  a broken invariant statement, or anything else that would send a
+  stranger reader toward a wrong belief about what the system does or a
+  wrong action based on it. If fixing the finding changes no fact the
+  reader could be wrong about, it is not HIGH.
+- **Register, shorthand, first-mention-hook, and reference-token FORM
+  findings are MEDIUM by definition and can never be graded HIGH.**
+  Checklist items 2 (Reference-token rule), 3 (Unexplained shorthand), 4
+  (Legend policy), and 8 (Tone) all diagnose a token's or the prose's
+  REGISTER — its FORM: is it addressed to the right reader, in vocabulary
+  that reader can resolve, correctly hooked/expanded/named — never whether
+  the fact it carries is correct. A missing title hook or an unexpanded
+  `K<N>` sends a stranger reader to re-read a sentence, never to act on a
+  wrong fact; that ceiling holds regardless of how many instances one
+  review finds, and regardless of how the finding is worded.
+- **Form vs. referent — read this before grading any reference-token
+  finding.** The same token can fail two different ways, and only one of
+  them is checklist item 2's territory:
+  - **Form** (checklist item 2, always MEDIUM): the token is present and
+    points at the right target, but is missing its hook, is bare shorthand
+    (`K1234` instead of `temperloop#1234`), or names a board by number
+    instead of by name. Example: "PR body cites `#95` with no title hook"
+    → MEDIUM.
+  - **Referent** (the HIGH bullet above, never checklist item 2): the token
+    itself is wrong — it points at a different issue than the one the
+    prose is actually describing, or the claim attached to it isn't true
+    of the target it cites. Example: "PR body cites `#94`, but the change
+    it describes is actually `#95`" → HIGH (a reader who opens #94 finds
+    the wrong issue and acts on it).
+  A token can have correct form and a wrong referent (well-hooked, fully
+  spelled out, still pointing at the wrong issue) or correct referent and
+  wrong form (right issue, bare shorthand) — grade each dimension
+  independently rather than picking whichever bullet the finding "feels
+  like."
+- **BLUF, unproxied-efficacy, CLT-redundancy, and stranger-fit/audience-drift
+  findings (checklist items 1, 5, 6, 7) are graded on the same
+  stranger-impact test HIGH uses above**: MEDIUM or LOW by default, and HIGH
+  only when the specific instance also clears the factual-error bar:
+  - item 1 (BLUF) — HIGH when the opening leads with a wrong claim rather
+    than merely a late one (e.g. the first sentence asserts the feature
+    does X when it does Y); MEDIUM when it's merely buried.
+  - item 5 (unproxied efficacy) — HIGH when the claim is not merely
+    unproxied but actively false (e.g. "cuts review time in half" when the
+    linked data shows no measured change); MEDIUM when it's plausible but
+    uncited.
+  - item 6 (CLT-redundancy) — HIGH when the restated passage doesn't just
+    repeat but actively **disagrees** with the original (e.g. a summary
+    paragraph claims a step is optional when the section it restates says
+    required); MEDIUM when it's redundant but consistent.
+  - item 7 (stranger-fit/audience-drift) — HIGH when the drift asserts
+    something false about who the tool supports (e.g. text claims a
+    non-GitHub tracker is supported when `docs/who-its-for.md` names that
+    as explicitly not a fit); MEDIUM when the prose merely reads as
+    written for the wrong persona without asserting a false capability.
+- **LOW** is everything real but cosmetic — correct and worth fixing, but it
+  does not change what a stranger reader would believe or do.
+
+This ceiling exists because a HIGH finding costs a full `/build` §3e
+round — a worker re-spawn plus the whole acceptance gate — to fix what is
+often one paragraph. A register/shorthand finding is real and worth fixing,
+but never worth that cost; grading it HIGH on one pass and MEDIUM on
+another made the review's cost a coin flip rather than a function of actual
+severity (temperloop#2136 (severity-grading coin flip)'s own measurement: ~8
+of 35 blocking §3e rounds in one two-week window were triggered only by a
+docs-reviewer HIGH on a changelog fragment or a one-line prose edit).
+
 ## Output
 
 ```
@@ -173,6 +257,9 @@ proxied claims, audience fit that held. A short all-clear is a useful result.>
 - **Note clean categories.** A doc with solid BLUF and reference discipline
   but one stranger-fit drift is a 1-finding review, not a padded one.
 - **Don't pad.** A short, tight doc earns a short, tight review.
+- **Grade severity per § Severity criteria above, never by feel** — a
+  register/shorthand finding (checklist 2, 3, 4, 8) is MEDIUM by
+  construction and is never bumped to HIGH for emphasis.
 
 ## You do NOT
 

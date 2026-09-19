@@ -202,6 +202,40 @@ Re-check the rate once this section has been in the authoring path for a
 while. If it has not moved, the next lever is a lint — which temperloop#2007
 judged likely low-precision, and deliberately did not reach for first.
 
+### Mechanical check
+
+`workflows/scripts/config/check-changelog-fragment-register.sh` (wired into
+`scripts/quality-gates.sh`'s `checks` gate, temperloop#2136 (severity-grading
+coin flip)) now enforces a narrow, high-precision slice of the rule above on
+every fragment in this directory:
+
+- the fragment's first issue mention (`#N`, in any form) carries a bold
+  lead-in before it — the convention every fragment above already follows,
+  made mechanical;
+- no bare `K<N>`/`S<N>`/`F<N>`/`M<N>`/`W<N>`-style shorthand (this repo's
+  own cross-repo reference shorthand, `claude/CLAUDE.kernel.md` §
+  Communication conventions) — write the full form (`temperloop#N`)
+  instead;
+- none of `docs-reviewer.md`'s own named unexplained-shorthand examples,
+  verbatim: `WIP cap`, `checks gate`. A fragment can always name the
+  underlying mechanism instead — the `checks` CI status check
+  (`.github/workflows/ci.yml`), not "the checks gate" — so this ban costs
+  nothing a fragment actually needs to say. (This directory's own
+  temperloop#2136 fragment above needed a reword to clear this exact
+  check on its first pass — see that fragment's own text for the
+  resolved phrasing.)
+
+Deliberately NOT the step-letter/section-index rule above (`Step 4a`,
+`§3e`, `round 1`, `dimension 4`) — this corpus already carries pre-existing,
+reviewed `§3e` references naming a real, stable, documented gate (e.g.
+`changelog.d/2049-reviewer-latency-in-workflow.fixed.md`), and a bare
+digit-plus-letter pattern is exactly the low-precision match this section
+already declined to reach for first. The mechanical lint's job is the small
+set of zero-judgment cases; the "is this shorthand actually opaque to a
+stranger" call stays with the `docs-reviewer` pass, capped at MEDIUM —
+never HIGH — per that agent's own § Severity criteria
+(`claude/agents/docs-reviewer.md`).
+
 ## `BREAKING`
 
 Breakingness is declared by the `.breaking` marker in the filename, and the

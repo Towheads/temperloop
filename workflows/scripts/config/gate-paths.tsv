@@ -351,6 +351,8 @@ bash workflows/scripts/config/check-setting-prose.sh	claude/** workflows/scripts
 bash workflows/scripts/config/tests/test_check_setting_prose.sh	workflows/scripts/config/**
 bash workflows/scripts/config/check-reviewer-routing.sh	workflows/scripts/config/reviewer-routing.tsv claude/commands/build.md claude/agents/** workflows/scripts/config/check-reviewer-routing.sh
 bash workflows/scripts/config/tests/test_check_reviewer_routing.sh	workflows/scripts/config/**
+bash workflows/scripts/config/check-changelog-fragment-register.sh	changelog.d/** workflows/scripts/lib/changelog.sh claude/agents/docs-reviewer.md workflows/scripts/config/check-changelog-fragment-register.sh
+bash workflows/scripts/config/tests/test_check_changelog_fragment_register.sh	workflows/scripts/config/**
 bash workflows/scripts/config/tests/test_check_ontology_registry.sh	workflows/scripts/config/** workflows/scripts/build/issue-state.sh workflows/scripts/board/ISSUES-ONLY-BACKEND.md claude/plan-schema.md claude/decision-queue-contract.md claude/work-class-policy.md
 bash workflows/scripts/config/check-join-keys.sh	workflows/scripts/config/join-keys.tsv workflows/scripts/config/join-keys-lib.sh workflows/scripts/config/join_keys.py workflows/scripts/config/join-keys-fixtures.json workflows/scripts/config/check-join-keys.sh workflows/scripts/build/lib/pr-linkage.sh
 bash workflows/scripts/config/tests/test_check_join_keys.sh	workflows/scripts/config/**
