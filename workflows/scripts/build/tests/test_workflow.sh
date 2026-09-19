@@ -87,6 +87,17 @@ REVIEW_ROUNDS_BEFORE="ABSENT"
 if [ -n "$REVIEW_ROUNDS_MARKER" ] && [ -f "$REVIEW_ROUNDS_MARKER" ]; then
   REVIEW_ROUNDS_BEFORE="$(cat "$REVIEW_ROUNDS_MARKER" 2>/dev/null || echo UNREADABLE)"
 fi
+# temperloop#2127 — the SAME treatment for the sibling marker: it is written
+# by the identical bumping code path (reviewDiffCmd), beside build-review-
+# rounds, in the SAME worktree git dir, so it needs the SAME before/after
+# production-state snapshot or a test run could inflate/corrupt it silently
+# exactly like #2046 named for the round counter.
+REVIEW_ROUNDS_SHA_MARKER=""
+[ -n "$_rr_gitdir" ] && REVIEW_ROUNDS_SHA_MARKER="$_rr_gitdir/build-review-rounds-sha"
+REVIEW_ROUNDS_SHA_BEFORE="ABSENT"
+if [ -n "$REVIEW_ROUNDS_SHA_MARKER" ] && [ -f "$REVIEW_ROUNDS_SHA_MARKER" ]; then
+  REVIEW_ROUNDS_SHA_BEFORE="$(cat "$REVIEW_ROUNDS_SHA_MARKER" 2>/dev/null || echo UNREADABLE)"
+fi
 
 # temperloop#1014: the machinery executors run as the `machinery-executor` agent,
 # whose definition carries the standing contract the lean prompt no longer
@@ -9436,7 +9447,10 @@ grep -q 'MACHINERY_RESOLUTION_ERR.test(msg)' "$MJS" \
 # rather than removing the exact defect this item fixes — must fail here,
 # unconditionally.
 ANYFAILED_LINE="$(grep -n 'const anyFailed = ' "$MJS" | head -1 | cut -d: -f1)"
-REVIEW_CALL_LINE="$(grep -n 'const review = await runReviewers(item, wt);' "$MJS" | head -1 | cut -d: -f1)"
+# temperloop#2127 widened this call site with an optional 3rd argument
+# (priorReviewFindings) — matched as a PREFIX (no trailing `);`) so the
+# ordering guard survives that widening without caring about its own arity.
+REVIEW_CALL_LINE="$(grep -nE 'const review = await runReviewers\(item, wt' "$MJS" | head -1 | cut -d: -f1)"
 GATE_MARKER_LINE="$(grep -n -- '--- 3e.5. Parent-side acceptance gate' "$MJS" | head -1 | cut -d: -f1)"
 PR_MARKER_LINE="$(grep -n -- '--- 3f. Push and open the PR' "$MJS" | head -1 | cut -d: -f1)"
 [ -n "$ANYFAILED_LINE" ] || fail "#1430: could not locate 3d's anyFailed check in build-level.mjs"
@@ -10849,6 +10863,107 @@ grep -q 'committed_work' "$MJS" \
 echo "PASS: #2020 disposition-surface guards — build.md, sweep.md and fix.md each consult committed_work before removing an escalated worktree"
 
 # ============================================================================
+# TEST (K2127): delta-aware continuation reviewer prompt.
+#
+#   temperloop#2127 — on a `review-blocking` continuation, reviewPrompt() must
+#   carry the prior round's number, the prior reviewed SHA and the prior
+#   findings, so the reviewer (a) verifies each prior finding is resolved,
+#   (b) reviews `git diff <prior-sha>..HEAD` for fix-introduced regressions,
+#   then (c) sweeps the full branch once more. Round 1 must carry none of
+#   this — the regression case (acceptance bullet 3) that keeps today's
+#   prompt byte-identical.
+#
+#   Two drives in one case: ROUND 1 (fresh, no onlySlugs/verdicts) proves the
+#   negative (no continuation section, no `..HEAD` range); ROUND 2 (onlySlugs
+#   + verdicts[slug].kind === 'review-blocking', reviewDiffCmd fixture reports
+#   review_rounds:1 + review_prior_sha) proves the positive.
+# ============================================================================
+run_node_case "K2127: round-2 continuation prompt carries round-1 findings + <prior-sha>..HEAD; round-1 carries neither" "
+$PREAMBLE
+
+// --- ROUND 1: fresh review, no continuation ---------------------------------
+setMachinery('rp-round1',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/rp-round1' },
+  { outcome: 'REVIEW_DIFF', files: ['claude/commands/build.md'], tsv: '', tsv_rows: 0, tsv_checksum: 0 },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'c0ffee01' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'c0ffee01', branch: 'build/rp-round1' },
+  { outcome: 'PR_OPENED', pr_number: 2101 },
+  { outcome: 'CI_GREEN' },
+);
+happyWorker('rp-round1');
+setReview('rp-round1', '## Summary\\nClean.\\n\\n## Findings\\nNone.\\n');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'rp-round1', branch: 'build/rp-round1', title: 'Round1', kind: 'impl', acceptance: ['c'] },
+]};
+const mod1 = await loadLevel();
+const result1 = await mod1.default();
+
+let reason = null;
+const round1Review = callLog.find(c => (c.opts.label||'').startsWith('review:rp-round1#'));
+if (!round1Review) reason = 'round1: no reviewer call captured: ' + JSON.stringify(result1);
+else if (round1Review.promptFull.indexOf('## Continuation') !== -1)
+  reason = 'round1 prompt must NOT carry a continuation section: ' + round1Review.promptFull.slice(0,400);
+else if (round1Review.promptFull.indexOf('..HEAD') !== -1)
+  reason = 'round1 prompt must NOT carry a prior-sha diff range: ' + round1Review.promptFull.slice(0,400);
+else if ((result1.parked ?? []).length !== 1)
+  reason = 'round1: expected exactly one parked item: ' + JSON.stringify(result1);
+
+// --- ROUND 2: a review-blocking continuation --------------------------------
+// input.verdicts[slug].verdict_section is the SAME text the orchestrator
+// captured off the round-1 escalation's findings payload (temperloop#2127 —
+// reused verbatim, never re-derived by driveItemBuildPhase or runReviewers).
+const PRIOR_FINDINGS = '### workflow-reviewer\\n### [HIGH] Silent failure mode in claude/commands/build.md Step 3\\n**Where:** claude/commands/build.md - Step 3\\n';
+setMachinery('rp-round2',
+  { outcome: 'REVIEW_DIFF', files: ['claude/commands/build.md'], tsv: '', tsv_rows: 0, tsv_checksum: 0, review_rounds: 1, review_prior_sha: 'deadbeef01' },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'c0ffee02' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'c0ffee02', branch: 'build/rp-round2' },
+  { outcome: 'PR_OPENED', pr_number: 2102 },
+  { outcome: 'CI_GREEN' },
+);
+setWorker('rp-round2', { status: 'done', summary: 'fix applied', acceptance_results: [{ criterion: 'c', passed: true, evidence: 'e' }], commits: [] });
+setReview('rp-round2', '## Summary\\nClean after fix.\\n\\n## Findings\\nNone.\\n');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'rp-round2', branch: 'build/rp-round2', title: 'Round2', kind: 'impl', acceptance: ['c'] },
+], onlySlugs: ['rp-round2'], verdicts: { 'rp-round2': { kind: 'review-blocking', verdict_section: PRIOR_FINDINGS } } };
+const mod2 = await loadLevel();
+const result2 = await mod2.default();
+
+const round2Review = callLog.find(c => (c.opts.label||'').startsWith('review:rp-round2#'));
+if (!reason && !round2Review) reason = 'round2: no reviewer call captured: ' + JSON.stringify(result2);
+else if (!reason && round2Review.promptFull.indexOf('deadbeef01..HEAD') === -1)
+  reason = 'round2 prompt missing the <prior-sha>..HEAD range: ' + round2Review.promptFull.slice(0,600);
+else if (!reason && round2Review.promptFull.indexOf('Silent failure mode in claude/commands/build.md Step 3') === -1)
+  reason = 'round2 prompt missing the round-1 findings TEXT (must be reused verbatim, never re-derived): ' + round2Review.promptFull.slice(0,900);
+else if (!reason && !/MISS of the earlier round/.test(round2Review.promptFull))
+  reason = 'round2 prompt missing the pre-existing-HIGH-is-a-miss-of-the-earlier-pass instruction';
+else if (!reason && round2Review.promptFull.indexOf('## Continuation') === -1)
+  reason = 'round2 prompt missing the continuation heading';
+else if (!reason && (result2.parked ?? []).length !== 1)
+  reason = 'round2: expected the continuation to park cleanly: ' + JSON.stringify(result2);
+
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+# --- K2127 static lockstep guards --------------------------------------------
+grep -qE 'reviewPrompt\([^)]*prior' "$MJS" \
+  || fail "#2127: the reviewPrompt() call site must carry a prior-round context argument (Class-A activation proof)"
+grep -q 'function reviewContinuationSection(priorContext)' "$MJS" \
+  || fail "#2127: build-level.mjs must define reviewContinuationSection(), the delta-aware instructions block spliced into a continuation prompt"
+grep -q 'build-review-rounds-sha' "$MJS" \
+  || fail "#2127: the prior-reviewed-SHA marker must be persisted BESIDE build-review-rounds so it survives the same escalate -> re-invoke loop"
+grep -q 'review_prior_sha' "$MJS" \
+  || fail "#2127: reviewDiffCmd must emit review_prior_sha for the continuation prompt to read"
+grep -q 'round > 1 ?' "$MJS" \
+  || fail "#2127: priorContext must be gated on round > 1 — round 1 must never carry a prior-round argument (the byte-identical-output invariant)"
+echo "PASS: #2127 static lockstep guards — reviewPrompt() carries a prior-round context argument, reviewContinuationSection() exists, and the prior-reviewed-SHA marker/field are wired end to end"
+
+# ============================================================================
 # TEST (K1970-e2e): the round counter's GENERATED SHELL, executed for real
 #   against a REAL LINKED worktree.
 #
@@ -10910,21 +11025,48 @@ K1970_ROOT="$K1970_E2E" K1970_WT="$K1970_E2E/repo.wt/rounds" K1970_OUT="$K1970_E
 K1970_GD="$(git -C "$K1970_E2E/repo.wt/rounds" rev-parse --git-dir)"
 [ -e "$K1970_GD/build-review-rounds" ] \
   && fail "#1970-e2e: fixture self-check failed — the round marker already exists before any run"
+[ -e "$K1970_GD/build-review-rounds-sha" ] \
+  && fail "#2127-e2e: fixture self-check failed — the prior-sha marker already exists before any run"
+K2127_HEAD="$(git -C "$K1970_E2E/repo.wt/rounds" rev-parse HEAD)"
 
-K1970_R1="$(bash "$K1970_E2E/review-diff.sh" 2>/dev/null | grep -o '\"review_rounds\":[0-9]*' | head -1)"
+# temperloop#2127 — captured ONCE per round (not re-invoked per field): the
+# generated script BUMPS on every call, so grep'ing review_rounds and
+# review_prior_sha from two SEPARATE invocations would read two DIFFERENT
+# rounds' output and desync the two assertions below from each other.
+K1970_OUT1="$(bash "$K1970_E2E/review-diff.sh" 2>/dev/null)"
+K1970_R1="$(printf '%s' "$K1970_OUT1" | grep -o '\"review_rounds\":[0-9]*' | head -1)"
 [ "$K1970_R1" = '"review_rounds":0' ] \
   || fail "#1970-e2e: a fresh worktree's FIRST review round must report 0 prior rounds; got '$K1970_R1'"
-K1970_R2="$(bash "$K1970_E2E/review-diff.sh" 2>/dev/null | grep -o '\"review_rounds\":[0-9]*' | head -1)"
+K2127_SHA1="$(printf '%s' "$K1970_OUT1" | grep -o '\"review_prior_sha\":\"[0-9a-f]*\"' | head -1)"
+[ "$K2127_SHA1" = '"review_prior_sha":""' ] \
+  || fail "#2127-e2e: a fresh worktree's FIRST review round has nothing to carry yet and must report an EMPTY prior sha, never a bogus value; got '$K2127_SHA1'"
+
+K1970_OUT2="$(bash "$K1970_E2E/review-diff.sh" 2>/dev/null)"
+K1970_R2="$(printf '%s' "$K1970_OUT2" | grep -o '\"review_rounds\":[0-9]*' | head -1)"
 [ "$K1970_R2" = '"review_rounds":1' ] \
   || fail "#1970-e2e: the round counter must be DURABLE across separate invocations (that is the escalate -> re-invoke loop it bounds); got '$K1970_R2'"
-K1970_R3="$(bash "$K1970_E2E/review-diff.sh" 2>/dev/null | grep -o '\"review_rounds\":[0-9]*' | head -1)"
+K2127_SHA2="$(printf '%s' "$K1970_OUT2" | grep -o '\"review_prior_sha\":\"[0-9a-f]*\"' | head -1)"
+[ "$K2127_SHA2" = "\"review_prior_sha\":\"$K2127_HEAD\"" ] \
+  || fail "#2127-e2e: round 2 must report the SHA round 1 actually reviewed (this fixture's one commit); got '$K2127_SHA2' (want review_prior_sha:\"$K2127_HEAD\")"
+
+K1970_OUT3="$(bash "$K1970_E2E/review-diff.sh" 2>/dev/null)"
+K1970_R3="$(printf '%s' "$K1970_OUT3" | grep -o '\"review_rounds\":[0-9]*' | head -1)"
 [ "$K1970_R3" = '"review_rounds":2' ] \
   || fail "#1970-e2e: the round counter must keep advancing; got '$K1970_R3'"
+K2127_SHA3="$(printf '%s' "$K1970_OUT3" | grep -o '\"review_prior_sha\":\"[0-9a-f]*\"' | head -1)"
+[ "$K2127_SHA3" = "\"review_prior_sha\":\"$K2127_HEAD\"" ] \
+  || fail "#2127-e2e: round 3 must keep reporting the SHA the PRIOR round reviewed (unchanged — this fixture adds no commits between rounds); got '$K2127_SHA3'"
+
 [ -f "$K1970_GD/build-review-rounds" ] \
   || fail "#1970-e2e: the round marker must live in the worktree's private GIT DIR"
+[ -f "$K1970_GD/build-review-rounds-sha" ] \
+  || fail "#2127-e2e: the prior-reviewed-SHA marker must live BESIDE build-review-rounds, in the same private GIT DIR"
+[ "$(cat "$K1970_GD/build-review-rounds-sha")" = "$K2127_HEAD" ] \
+  || fail "#2127-e2e: the on-disk sha marker must hold the reviewed HEAD verbatim; got '$(cat "$K1970_GD/build-review-rounds-sha")'"
 git -C "$K1970_E2E/repo.wt/rounds" status --porcelain | grep . >/dev/null \
-  && fail "#1970-e2e: the round marker must NOT appear in the worktree's working tree (git status must stay clean — a stray untracked file would reach the --scoped gate and the coverage manifests)"
+  && fail "#1970-e2e/#2127-e2e: neither marker may appear in the worktree's working tree (git status must stay clean — a stray untracked file would reach the --scoped gate and the coverage manifests)"
 echo "PASS: #1970-e2e round counter — the real generated review-diff shell reads and advances a DURABLE per-worktree counter kept in the private git dir, leaving the working tree clean"
+echo "PASS: #2127-e2e prior-reviewed-sha marker — the real generated review-diff shell reads and advances a DURABLE per-worktree prior-reviewed-SHA marker kept beside build-review-rounds, leaving the working tree clean"
 
 # ============================================================================
 # TEST (K1970-octal): a CORRUPTED-BUT-PRESENT marker degrades SOFT.
@@ -11407,6 +11549,18 @@ fi
   || fail "#2046: running this suite CHANGED the production §3e review-round marker at $REVIEW_ROUNDS_MARKER (before: $REVIEW_ROUNDS_BEFORE, after: $_k2046_after). A test run must never write production state; when the suite runs inside a build worktree this counter is that worktree's own, and inflating it fires #1970's convergence bound before the first real review round."
 unset _k2046_after
 echo "PASS: #2046 production-state guard — a full suite run leaves the §3e review-round marker byte-identical to how it found it (${REVIEW_ROUNDS_BEFORE})"
+
+# temperloop#2127 — the SAME treatment, same reasoning, for the sibling
+# prior-reviewed-SHA marker: it is written by the identical bumping code path,
+# so it needs the identical behavioural (shape-independent) after-snapshot.
+_k2127_after="ABSENT"
+if [ -n "$REVIEW_ROUNDS_SHA_MARKER" ] && [ -f "$REVIEW_ROUNDS_SHA_MARKER" ]; then
+  _k2127_after="$(cat "$REVIEW_ROUNDS_SHA_MARKER" 2>/dev/null || echo UNREADABLE)"
+fi
+[ "$_k2127_after" = "$REVIEW_ROUNDS_SHA_BEFORE" ] \
+  || fail "#2127: running this suite CHANGED the production §3e prior-reviewed-SHA marker at $REVIEW_ROUNDS_SHA_MARKER (before: $REVIEW_ROUNDS_SHA_BEFORE, after: $_k2127_after). Same production-state contract as #2046's round counter — a test run must never write it."
+unset _k2127_after
+echo "PASS: #2127 production-state guard — a full suite run leaves the §3e prior-reviewed-SHA marker byte-identical to how it found it (${REVIEW_ROUNDS_SHA_BEFORE})"
 
 # ============================================================================
 # TEST (K2004-control-empty): a LEGITIMATELY empty level stays SILENT.

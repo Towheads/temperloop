@@ -701,6 +701,16 @@ const SPINE_OUTCOME_SCHEMA = {
     // absent/unparseable means 0 (an older machinery relay, or a worktree
     // predating the marker) — i.e. exactly today's unbounded first round.
     review_rounds: { type: ['number', 'string'] },
+    // temperloop#2127: the SHA that was HEAD when this worktree's PRIOR §3e
+    // round ran, read (and then, on the bumping call, re-written to the
+    // CURRENT HEAD) by reviewDiffCmd from a marker kept beside
+    // build-review-rounds — same durability contract, same worktree git dir.
+    // Empty string on a fresh worktree's first round (nothing to carry) or
+    // when the marker is absent/corrupted (fails soft, never a hard error).
+    // runReviewers() branches on it to build a continuation reviewer's
+    // `<prior-sha>..HEAD` diff instruction, so it is declared here rather
+    // than left to `additionalProperties`.
+    review_prior_sha: { type: 'string' },
     // 3e.5 sliced-gate fields (temperloop#1021). resumeAt — the 0-based gate
     // index the NEXT slice starts at; failed — failures seen in THIS slice (the
     // driver accumulates); elapsedSecs / budgetSecs — the margin pair that makes
@@ -4293,10 +4303,37 @@ function reviewDiffCmd(wt, bump = true) {
     `  review_rounds="$(tr -cd '0-9' < "$rounds_file" | sed -E 's/^0+//')"`,
     `fi`,
     `[ -n "$review_rounds" ] || review_rounds=0`,
+    // temperloop#2127 — the PRIOR reviewed SHA, kept beside build-review-rounds
+    // in the SAME worktree git dir (never the working tree — identical
+    // durability rationale as the round counter above: it must survive the
+    // escalate -> orchestrator -> re-invoke loop, and must never appear in
+    // `git status`, a `--scoped` gate's untracked-path resolution, or a
+    // coverage manifest). Read BEFORE the bump below writes this round's HEAD
+    // into it, so what this call emits is always the SHA that was HEAD at the
+    // START of the round that is about to run — i.e. the commit the PRIOR
+    // round actually reviewed. `tr -cd` sanitises a corrupted/hand-edited
+    // marker down to hex characters only (fails SOFT to an empty string,
+    // exactly like a missing file, rather than emitting garbage into the JSON
+    // line or the eventual `<sha>..HEAD` diff instruction).
+    `sha_file=""`,
+    `[ -n "$gd" ] && sha_file="$gd/build-review-rounds-sha"`,
+    `review_prior_sha=""`,
+    `if [ -n "$sha_file" ] && [ -f "$sha_file" ]; then`,
+    `  review_prior_sha="$(tr -cd '0-9a-fA-F' < "$sha_file" 2>/dev/null)"`,
+    `fi`,
     ...(bump
       ? [
           `if [ -n "$rounds_file" ]; then`,
           `  printf '%s\\n' "$((review_rounds + 1))" > "$rounds_file" 2>/dev/null || true`,
+          `fi`,
+          // Record THIS round's HEAD for the NEXT round to read as its prior
+          // SHA. Written only on the bumping call (temperloop#2046 — the SAME
+          // no-test-writes-production-state guard the round counter already
+          // carries: a non-bumping call, e.g. the #1976 tsv-gap re-fetch or
+          // any test harness invocation, must never touch either marker).
+          `__k2127_head="$(git rev-parse HEAD 2>/dev/null || true)"`,
+          `if [ -n "$sha_file" ] && [ -n "$__k2127_head" ]; then`,
+          `  printf '%s\\n' "$__k2127_head" > "$sha_file" 2>/dev/null || true`,
           `fi`,
         ]
       : []),
@@ -4375,7 +4412,7 @@ function reviewDiffCmd(wt, bump = true) {
     `  tsv_rows=0`,
     `  tsv_checksum=0`,
     `fi`,
-    `printf '{"outcome":"REVIEW_DIFF","files":%s,"tsv_lines":%s,"tsv_rows":%s,"tsv_checksum":%s,"review_rounds":%s}\\n' "$files_json" "$tsv_json" "$tsv_rows" "$tsv_checksum" "$review_rounds"`,
+    `printf '{"outcome":"REVIEW_DIFF","files":%s,"tsv_lines":%s,"tsv_rows":%s,"tsv_checksum":%s,"review_rounds":%s,"review_prior_sha":"%s"}\\n' "$files_json" "$tsv_json" "$tsv_rows" "$tsv_checksum" "$review_rounds" "$review_prior_sha"`,
   ].join('\n');
 }
 
@@ -4532,13 +4569,58 @@ function determineReviewers(item, files, tsvText, opts = {}) {
   }));
 }
 
+// reviewContinuationSection — temperloop#2127. The delta-aware instructions
+// spliced into reviewPrompt() ONLY on a continuation round (round > 1),
+// carrying the PRIOR round's number, the SHA that was HEAD when that round
+// ran, and its findings text (already captured — see runReviewers()'s own
+// comment on where priorFindingsText comes from; this function never
+// re-derives it). Three-part instruction, IN ORDER, per build.md §3e's
+// continuation contract: (1) verify each prior finding is actually resolved,
+// (2) review the diff since the prior reviewed SHA for regressions the fix
+// itself introduced, (3) THEN sweep the full branch once more exactly as a
+// round-1 pass would — a pre-existing HIGH surfacing on that sweep is a MISS
+// of the earlier round and must be reported as such, never silently folded in
+// as newly introduced. `priorContext.sha` can be null (a fresh-enough marker
+// never wrote one, or it was corrupted and reviewDiffCmd degraded it to
+// empty) — the diff instruction degrades to a commit-range-free instruction
+// rather than emitting a bogus `..HEAD` range.
+function reviewContinuationSection(priorContext) {
+  const diffInstruction = priorContext.sha
+    ? `2. Review \`git diff ${priorContext.sha}..HEAD\` for regressions the fix itself introduced.`
+    : '2. Review the commits added since the prior round (no prior reviewed SHA was recorded) for ' +
+      'regressions the fix itself introduced.';
+  return [
+    `## Continuation — round ${priorContext.round + 1} of this item's §3e review (delta-aware)`,
+    `Round ${priorContext.round} found blocking finding(s), reproduced below; a fix round has since run.`,
+    'Do all three of the following, IN ORDER:',
+    '1. Verify each prior-round finding below is actually RESOLVED — re-check the exact code it named.',
+    diffInstruction,
+    '3. Then sweep the FULL branch once more, exactly as a round-1 review would. A pre-existing HIGH',
+    '   you find on this sweep is a MISS of the earlier round — report it explicitly as that, never',
+    '   silently as if newly introduced by the fix.',
+    '',
+    `## Prior round ${priorContext.round} findings`,
+    priorContext.findings && priorContext.findings.trim()
+      ? priorContext.findings
+      : '(no findings text was recorded for the prior round)',
+    '',
+  ];
+}
+
 // reviewPrompt — a read-only pass over THIS item's diff, carrying the same
 // effective (kernel ∪ project) principle set §3c hands the worker (build.md
 // §3e: "Reuse that resolution; do not re-resolve it here") as additional
 // evaluation criteria. The reviewer's own agent definition (claude/agents/…)
 // owns its checklist/output-format contract; this prompt only scopes it.
-function reviewPrompt(item, wt, route, files) {
-  return [
+//
+// `priorContext` (temperloop#2127) — undefined/null on round 1, which keeps
+// this branch's output BYTE-IDENTICAL to pre-#2127 (the `continuation` array
+// below is empty and contributes nothing to the join). On a continuation
+// round it is `{ round, sha, findings }` (see runReviewers()) and splices in
+// reviewContinuationSection()'s delta-aware instructions between the scope
+// header and the changed-files list.
+function reviewPrompt(item, wt, route, files, priorContext) {
+  const header = [
     `You are running build.md's §3e mandatory/routed pre-push review for /build`,
     `item \`${item.slug}\` (route: ${route.reasons.join('; ')}).`,
     '',
@@ -4547,13 +4629,17 @@ function reviewPrompt(item, wt, route, files) {
     `at ${wt}. Run \`git diff\` / \`git log\` yourself there — the file list below is a`,
     'pointer, not the diff. Make no edits, no commits.',
     '',
+  ];
+  const continuation = priorContext ? reviewContinuationSection(priorContext) : [];
+  const footer = [
     `Changed files (${files.length}):`,
     files.length ? files.map((f) => `  - ${f}`).join('\n') : '  (none reported)',
     '',
     ...principlesSection(item),
     '',
     "Follow your own agent definition's checklist and output format exactly.",
-  ].join('\n');
+  ];
+  return [...header, ...continuation, ...footer].join('\n');
 }
 
 // reviewHasBlockingFinding — this repo's reviewer catalog (workflow-reviewer,
@@ -4693,7 +4779,21 @@ function reviewDiffTsvGap(diffOut, files) {
 // `round` (temperloop#1970) is this pass's 1-based round number for THIS item's
 // worktree, durable across the escalate→re-invoke loop (see reviewDiffCmd). The
 // two blocking call sites compare it against REVIEW_BLOCKING_MAX_ROUNDS.
-async function runReviewers(item, wt) {
+//
+// `priorFindingsText` (temperloop#2127, optional) — the PRIOR round's findings
+// text, when the caller already has it. The ONLY caller that ever has this is
+// driveItemBuildPhase's 3e call site on a `review-blocking` continuation: the
+// orchestrator captured `findings: review.blocking` off THIS SAME escalation
+// (see the `escalate(item.slug, 'review-blocking', …)` call below) and handed
+// it back as `input.verdicts[item.slug].verdict_section` — the identical seam
+// 3c already reads for the worker's re-spawn prompt (driveItemBuildPhase's own
+// `verdictSection`). This function never re-derives that text; it only decides
+// WHETHER to use it (never on round 1 — see `priorContext` below) and hands it
+// to reviewPrompt(). The CI-fix re-review call site (§3g) passes nothing: its
+// round bump comes from the SAME shared per-worktree counter, but a round-1
+// pass that reached CI-fix by definition had zero BLOCKING findings (that is
+// why it was pushed), so there is nothing to carry forward there.
+async function runReviewers(item, wt, priorFindingsText) {
   const fetchReviewDiff = (phaseTitle, bump) =>
     runMachinery(reviewDiffCmd(wt, bump), { label: `review-diff:${item.slug}`, slug: item.slug, phase: phaseTitle });
 
@@ -4727,6 +4827,25 @@ async function runReviewers(item, wt) {
     ? Math.max(0, Math.floor(Number(diffOut.review_rounds)))
     : 0;
   const round = priorRounds + 1;
+  // temperloop#2127 — the SHA reviewDiffCmd read (and then, on this bumping
+  // call, overwrote) from the marker kept beside build-review-rounds: the
+  // commit that was HEAD when the PRIOR round ran. Sanitised defensively
+  // (hex-only, non-empty) even though reviewDiffCmd's own `tr -cd` already
+  // filters it — belt-and-suspenders against a relay that mangles the field
+  // the same way `tsv`/`review_rounds` have each been observed to. `null`
+  // (never a bogus value) when absent/corrupted, matching every other
+  // fails-soft marker read in this pipeline.
+  const priorSha =
+    typeof diffOut.review_prior_sha === 'string' && /^[0-9a-fA-F]{4,64}$/.test(diffOut.review_prior_sha)
+      ? diffOut.review_prior_sha
+      : null;
+  // `priorContext` — undefined on round 1 (the ONLY thing that keeps
+  // reviewPrompt()'s round-1 output byte-identical to pre-#2127, acceptance
+  // bullet 3). Built from data already in hand: `priorRounds`/`priorSha` read
+  // above off THIS SAME diffOut, `priorFindingsText` the caller optionally
+  // supplied (never re-derived here).
+  const priorContext =
+    round > 1 ? { round: priorRounds, sha: priorSha, findings: typeof priorFindingsText === 'string' ? priorFindingsText : '' } : null;
   let files = Array.isArray(diffOut.files) ? diffOut.files : [];
   // temperloop#2020 — set (not returned from) the gap arm below, so a degraded
   // relay falls THROUGH to the routing decision with only the table-dependent
@@ -4857,7 +4976,7 @@ async function runReviewers(item, wt) {
     // abandoning only the unsettled ones. It also means a rejected reviewer
     // promise is always handled, so a reviewer that throws after the ceiling has
     // passed can never surface as an unhandled rejection.
-    slot.promise = agent(reviewPrompt(item, wt, route, files), {
+    slot.promise = agent(reviewPrompt(item, wt, route, files, priorContext), {
       // `#<reviewer>` (not `:<reviewer>`) matches the label grammar every
       // other multi-part label in this file already uses (e.g.
       // `ci-batch:<slug>#<n>`) — the slug is always the run of characters up
@@ -7364,7 +7483,21 @@ async function driveItemBuildPhase(item, arm, box) {
   // need to inspect. A loop-back to 3c is only reachable from INSIDE
   // driveItem, never after. (This driver does NOT merge: build.md §3h.5's
   // as-you-go merge is conversational-path-only — temperloop#1452.)
-  const review = await runReviewers(item, wt);
+  //
+  // temperloop#2127 — on a `review-blocking` continuation specifically (the
+  // ONLY escalation kind §3e's own convergence-bound loop below produces),
+  // `verdictSection` (computed above for 3c's worker re-spawn) IS the prior
+  // round's findings text: the orchestrator captured it off THIS SAME
+  // escalation's `findings: review.blocking` payload. Gated on
+  // `kind === 'review-blocking'` so a continuation resuming from a DIFFERENT
+  // escalation kind (design-fork/blocked/failed) — whose verdict block is
+  // about an unrelated human decision, not review findings — never leaks into
+  // the reviewer's prompt as if it were prior review output.
+  const priorReviewFindings =
+    isContinuation && input.verdicts?.[item.slug]?.kind === 'review-blocking'
+      ? input.verdicts[item.slug].verdict_section
+      : undefined;
+  const review = await runReviewers(item, wt, priorReviewFindings);
   if (review.escalation) return review.escalation;
   if (review.blocking.length > 0) {
     // temperloop#1970 — the convergence bound. Under it, a HIGH escalates
