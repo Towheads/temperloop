@@ -102,7 +102,19 @@
 #
 # Env overrides (fixture-driven tests):
 #   CHANGELOG_FRAGMENT_DIR   the changelog.d/-shaped directory to scan
-#                            (default: <repo-root>/changelog.d)
+#                            (default: <repo-root>/changelog.d). NOT an
+#                            operator-tunable setting and deliberately NOT
+#                            a setting-registry.tsv row: its only setters
+#                            are this gate's own two test suites, pointing
+#                            it at scratch fixture dirs. Same
+#                            "setting:exempt" class as
+#                            check-terminology-leak-guard.sh's
+#                            TERMINOLOGY_LEAK_SCAN_ROOT and
+#                            check-contributor-manifest.sh's
+#                            CONTRIBUTOR_MANIFEST_REPO_ROOT; see
+#                            setting-registry.tsv's own "Inclusion rule"
+#                            section, which excludes a test-only seam
+#                            documented as such in its own script.
 #
 # Kept bash-3.2-portable (no associative arrays, no mapfile) and awk-based
 # for the multi-line text scan, matching every sibling
@@ -116,7 +128,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 # `-` (not `:=`) on purpose (LOW: an explicitly-empty CHANGELOG_FRAGMENT_DIR
 # must not be silently redirected at the real tree — see the degenerate-input
 # guards below, which fail loudly on an empty path via the `-e` test).
-CHANGELOG_FRAGMENT_DIR="${CHANGELOG_FRAGMENT_DIR-$REPO_ROOT/changelog.d}"
+CHANGELOG_FRAGMENT_DIR="${CHANGELOG_FRAGMENT_DIR-$REPO_ROOT/changelog.d}"  # setting:exempt — test/fixture directory override, set only by this gate's own test suites; not an operator-facing config-precedence default (same class as check-terminology-leak-guard.sh's TERMINOLOGY_LEAK_SCAN_ROOT)
 
 # shellcheck source=workflows/scripts/lib/changelog.sh
 if ! source "$SCRIPT_DIR/../lib/changelog.sh"; then
