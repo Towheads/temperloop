@@ -136,11 +136,7 @@ gone after the process died" is observable at all.
 The sweeper above could always reclaim a hard-killed run's root — but only
 when a human remembered to run it. That is not a detail: `$TMPDIR`
 accumulated **97 orphan sandboxes, 84GB, over one week** before anyone
-looked, on a volume that fell from 79Gi to 56Gi in three hours. The producer
-keeping it fed is the `/build` §3e acceptance gate hitting its Bash-tool
-ceiling (temperloop#1663/#1650) and killing a run mid-flight, so the leak
-grows with pipeline usage and is invisible — the gate escalation reports a
-timeout and says nothing about residue.
+looked, on a volume that fell from 79Gi to 56Gi in three hours.
 
 So `sandbox_up` now calls `sandbox_reap_orphans` **itself**, once per shell,
 before it mints its own root: each run adopts and reaps its predecessors'
@@ -150,10 +146,16 @@ operator's memory. It delegates recognition and both safety valves to
 implementation of "what is a sandbox root, and is it safe to delete",
 exercised by both entry points.
 
-**This is a reclaim path, not a better trap — deliberately.** `trap cleanup
-EXIT` already works for every run that *exits*; SIGKILL runs no handler at
-all, so no in-process guard can ever cover it. A stronger trap is not an
-available fix.
+The producer keeping the leak fed is the `/build` pipeline's **parent-side
+acceptance gate** — the step that runs this repo's quality-gate suite
+against a worker's commit, `claude/commands/build.md` § 3e.5 — hitting its
+Bash-tool time ceiling (temperloop#1663/#1650) and killing a run mid-flight.
+The leak therefore grows with pipeline usage and is invisible: the gate
+escalation reports a timeout and says nothing about residue.
+
+**This is a reclaim path, not a better trap — deliberately.** As above,
+SIGKILL leaves no handler to run, so a stronger trap is not an available
+fix; reclaiming afterwards is.
 
 **Safety against a concurrent peer is the primary requirement**, since
 getting it wrong destroys another session's in-flight test state. Nothing is
@@ -175,8 +177,8 @@ suppresses it too, so a root kept on purpose is not reaped by the next run.
 block, so a producer in a third location is a *known* gap rather than a
 silent one. Covered: `$TMPDIR` (or `--dir`), one level deep — the only place
 `sandbox_up`'s `mktemp -d` writes. Not covered: `~/.claude/jobs/*/tmp/`, a
-different location with a different producer, tracked by temperloop#1111 and
-not fixed here.
+different location with a different producer, tracked by temperloop#1111
+(build worker scratch never reclaimed) and not fixed here.
 
 Scenarios 9 and 10 of `test_sandbox_trap.sh` are the gate: a fixture that
 `kill -9`s itself, then a follow-up run that must reclaim its root —

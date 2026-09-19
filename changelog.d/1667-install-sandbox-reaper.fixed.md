@@ -13,4 +13,5 @@
   accounting; one stderr line only when something was removed) and a `SCOPES`
   header block naming what it covers — `$TMPDIR`, one level deep — and what it
   does not: `~/.claude/jobs/*/tmp/` is a different location with a different
-  producer, tracked by #1111 and not fixed here.
+  producer, tracked by #1111 (build worker scratch never reclaimed) and not
+  fixed here.
