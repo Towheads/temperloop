@@ -18,12 +18,669 @@ Both were moved here during the first extraction and both had to be put back —
 the first silently turned every `/fix`, `/sweep` and `/build` Step 0 capability
 probe into `CAPABILITIES_INDETERMINATE`. A comment is not automatically prose.
 
-> **Part 1 of 2.** Split to stay under the repo's per-file prose cap
-> (`PROSE_BUDGET_TIER2_FILE_CAP`). The other half is
-> [`build-level.design-notes-2.md`](build-level.design-notes-2.md).
+> **Part 1 of 3.** Split to stay under the repo's per-file prose cap
+> (`PROSE_BUDGET_TIER2_FILE_CAP`). Other parts: [`build-level.design-notes-2.md`](build-level.design-notes-2.md), [`build-level.design-notes-3.md`](build-level.design-notes-3.md).
 
-> **Part 3 of 3.** Split to stay under the repo's per-file prose cap
-> (`PROSE_BUDGET_TIER2_FILE_CAP`). Other parts: [`build-level.design-notes.md`](build-level.design-notes.md), [`build-level.design-notes-2.md`](build-level.design-notes-2.md).
+> **Part 3 of 4.** Split to stay under the repo's per-file prose cap
+> (`PROSE_BUDGET_TIER2_FILE_CAP`). Other parts: [`build-level.design-notes.md`](build-level.design-notes.md), [`build-level.design-notes-2.md`](build-level.design-notes-2.md), [`build-level.design-notes-4.md`](build-level.design-notes-4.md).
+
+## gateCmd(startAt) — one SLICE of the suite (temperloop#1021).
+<a id="gatecmd-startat-one-slice-of-the-suite-temperloop-1021"></a>
+
+```text
+ gateCmd(startAt) — one SLICE of the suite (temperloop#1021).
+
+ The budget is handed to quality-gates.sh as ENV VARS, deliberately not
+ flags: a consuming repo vendoring an OLDER quality-gates.sh ignores an
+ unknown env var and runs the whole suite in one go (today's exact behavior,
+ and still correct), whereas an unknown FLAG would exit 2 "usage" and read
+ back here as a gate failure. So this is compatible with every vendored copy
+ in the fleet with no probing.
+
+ Exit-code protocol: 0 = finished green, 75 = budget spent with gates
+ remaining (the script printed QUALITY_GATES_RESUME_AT= / QUALITY_GATES_FAILED=),
+ anything else = red. Note the 75 arm is only ever taken by a slice-aware
+ script, so an older copy can only ever produce GATE_PASS / GATE_FAIL.
+
+ `set -o pipefail` is LOAD-BEARING (temperloop#68 — see build.md §3e.5).
+ The gate verdict is derived from the subshell's own exit status, and since
+ temperloop#2094 that subshell IS piped — through `tee`, so one slice's
+ output can be isolated for trailer parsing while still STREAMING into the
+ cumulative operator log (see gateSliceLog below for why both are required).
+ A bare pipe's status reflects the LAST stage (tee's 0), which would swallow
+ a RED gate and degrade 3e.5 to a silent no-op; with pipefail set, the gate's
+ own non-zero exit propagates to `$?` and GATE_FAIL is still emitted. This is
+ the exact case build.md §3e.5 permits ("if the gate must be piped, `set -o
+ pipefail` first"), and the exit is read as a bare `$?` — NOT through
+ PIPESTATUS[0], a bash array that expands empty under the zsh this harness's
+ Bash tool actually runs, which is temperloop#801's misread.
+
+ The log is truncated on the first slice and APPENDED to thereafter, so
+ /tmp/qg-<slug>.log stays the single artifact an operator reads, carrying the
+ union of every slice exactly as an unsliced run's log did.
+```
+
+## ONE SLICE'S OWN OUTPUT, kept separate from the cumulative log above
+<a id="one-slice-s-own-output-kept-separate-from-the-cumulative-log"></a>
+
+```text
+ ONE SLICE'S OWN OUTPUT, kept separate from the cumulative log above
+ (temperloop#2094). The trailers below (`QUALITY_GATES_FAILED=`,
+ `QUALITY_GATES_RESUME_AT=`, `QUALITY_GATES_SELECTION=`) are read with
+ `tail -1`, so reading them out of the APPENDED log silently answers a
+ question about THIS slice with the previous slice's numbers whenever this
+ slice printed none of its own — a slice killed before it could report, or
+ one whose `cd`/`unset` prelude failed, inherits a resume point and a
+ failure count it never established. The trailers are therefore parsed from
+ HERE, never from the cumulative log: a trailer present in this file was
+ printed by the slice just run, which is what makes the classifier below
+ able to trust it.
+
+ IT IS A TEE, NOT A REDIRECT-THEN-COPY (review round 1). Writing the slice
+ to this file and `cat`-ing it into ${gateLog} afterwards bought the
+ isolation above at the cost of the guarantee that matters most on the one
+ path that has no other diagnostic: the executor KILLS this whole command at
+ GATE_BASH_TIMEOUT_MS, and a copy step scheduled after the gate never runs.
+ The killed slice's partial output — the only evidence a timeout produces —
+ would never reach /tmp/qg-<slug>.log, the single artifact the escalation
+ payload hands the operator; and with the first-slice truncation moved into
+ that same copy, a timed-out first slice would leave the PREVIOUS run's log
+ in place and the escalation would point at stale content presented as
+ current. So ${gateLog} is truncated UP FRONT on slice 0 and the gate streams
+ into both files through `tee` — per-slice isolation and live, kill-proof
+ streaming at once. `set -o pipefail` is at the head of the command, so the
+ pipeline's `$?` is still the gate's own status (`tee` exits 0); the bare
+ `$?` read is deliberate and dialect-safe — PIPESTATUS[0] is a bash
+ array that expands EMPTY under the zsh this harness's Bash tool runs
+ (temperloop#801), which is the misread that swallows a red gate.
+```
+
+## temperloop#1663: run the acceptance gate DIFF-SCOPED — only the gates 
+<a id="temperloop-1663-run-the-acceptance-gate-diff-scoped-only-the"></a>
+
+```text
+ temperloop#1663: run the acceptance gate DIFF-SCOPED — only the gates this
+ item's own changed paths can reach, resolved through gate-paths.tsv.
+
+ WHY. The full per-item suite could not survive within-level parallelism, and
+ the ceiling it hit is not tunable. Measured on a 3-item level: 55 minutes,
+ 21 agents, 1.24M subagent tokens, ZERO items landed — all three escalated
+ `acceptance-gate-timeout` with every worker finished and committed and only
+ the verdict missing. Three concurrent full suites is 3x QUALITY_GATES_JOBS
+ workers on one machine; contention inflated the gate tail 200-300% (gates
+ that take seconds took 121s), while GATE_SLICE_SECS_MAX sits only 20% above
+ the budget that failed and CANNOT be raised past AGENT_BASH_CAP_MS. So the
+ suite has to get SHORTER, not the budget longer — and the map that knows
+ which gates a diff can reach already exists and was already trusted.
+
+ WHY IT IS SAFE. This puts §3e.5 on exactly the same footing as the
+ `pull_request` run of CI's `checks` job, which has been scoped through this
+ same map since #1024 — so scoping here adds no failure mode that the PR
+ check does not already carry. What actually gates `main` is the UNSCOPED
+ merge_group run, and that is untouched. Every resolution failure in the
+ selector widens to the full set (gate-selection.sh's four silent-green
+ defenses), and a scoped run names every gate it skipped, twice.
+
+ THE SEAM IS AN ENV VAR, NOT THE `--scoped` FLAG, for the same reason the
+ slice budget below is: a consuming repo vendoring an OLDER quality-gates.sh
+ ignores an unknown env var and runs the whole suite (the pre-#1663 behavior,
+ still correct), whereas an unknown FLAG exits 2 "usage" and reads back here
+ as a GATE FAILURE.
+
+ BUILD_GATE_SCOPED is read HERE, in the emitted shell, rather than plumbed in
+ as an orchestrator `input.*` key like gateSliceSecs. That is deliberate and
+ is the narrower seam, not a shortcut: gateSliceSecs must reach the .mjs's
+ OWN control flow (it derives GATE_BASH_TIMEOUT_MS and bounds the slice
+ loop), and the Workflow runtime has no shell to source build.config.sh with
+ — DESIGN NOTE 1. This value is needed ONLY inside the command string, which
+ is bash, and it is read from the WORKTREE'S config, i.e. the version of the
+ setting the change under test actually ships. The read is a subshell so the
+ #1241 scrub below still governs the gate's own environment; an absent or
+ older config file leaves `${BUILD_GATE_SCOPED:-1}` at the default.
+```
+
+## 3f-1. Push-by-SHA on the plan's branch.
+<a id="3f-1-push-by-sha-on-the-plan-s-branch"></a>
+
+```text
+ 3f-1. Push-by-SHA on the plan's branch.
+
+ `--allow-rewrite` (temperloop#2103): 3f-0a above has just REWRITTEN this
+ branch's history onto a fresh origin/<default>, and on a continuation round
+ an earlier round has already pushed the pre-rebase history to origin. A
+ plain push of a rewritten, already-pushed branch can NEVER fast-forward, so
+ it came back PUSH_REJECTED every time — observed three times in one session,
+ each recovered by hand with a lease-force push. The `recovery && pushed`
+ skip above only covers the temperloop#939 lost-return path; an ordinary
+ continuation round is not a `recovery` and never took it.
+
+ This is a REQUEST, not a force: pr.sh downgrades to a plain push on any
+ provable fast-forward (#335), issues nothing at all when the ref is absent
+ or unreadable, and when it does rewrite it uses
+ `--force-with-lease=<ref>:<sha>` over a value it read first — so a
+ concurrent writer is rejected rather than overwritten. The flag is spelled
+ `--allow-rewrite` rather than `--force` so the command line the orchestrator
+ executes carries no classifier-visible force token (#437).
+
+ AND NOT ON THE LEASE ALONE (temperloop#2103 round 3). Because this call site
+ requests a rewrite on EVERY item — not only on a rescue — it is the busiest
+ force path in the pipeline, and a lease protects only against a writer who
+ moves the ref BETWEEN pr.sh's read and its push, never against content that
+ was already there. So pr.sh gates the force on the SAME supersede check
+ preserveCommittedWorkCmd (below) applies on the rescue path: a branch name
+ colliding with unrelated work — a leftover manual branch, a reused slug, a
+ planning bug — comes back PUSH_REJECTED with `refused_reason` rather than
+ being overwritten and reported as an ordinary PUSHED straight into pr-open.
+ The two force paths this file drives are symmetric; the asymmetry between
+ them was the round-2 finding.
+```
+
+## 3f-2 FALLBACK: a PR-ready tree must not be stranded by a bad verdict
+<a id="3f-2-fallback-a-pr-ready-tree-must-not-be-stranded-by-a-bad-"></a>
+
+```text
+ --- 3f-2 FALLBACK: a PR-ready tree must not be stranded by a bad verdict --
+ temperloop#1805, disposition (a). `pr.sh open` REQUIRES a parseable
+ `--verdict` and dies `verdict is not valid JSON` when it does not get one.
+ That is a REPORTING-layer failure, and it was terminal for the item:
+
+   {"slug":"disclosure-watermark-tracked-1316","kind":"pr-open-failed",
+    "payload":{"openOut":{"step":"pr-open","outcome":"ERROR",
+                          "error":"verdict is not valid JSON"}}}
+
+ …against ONE clean commit, a zero-dirty tree, a full `.build-verification.md`
+ and that item's own suite green 39/39. The orchestrator recovered it BY HAND
+ — push, `gh pr create`, verification file as the body — and it became PR
+ #1803. Every piece of information the PR needed was already on disk; only
+ the hand-off failed. The preservation machinery means the commit survives,
+ so this is not data loss — it is PROGRESS loss: the item parks, re-enters
+ the next run, and a fresh worker redoes finished, correct work.
+
+ So the fallback re-issues `open` with a MINIMAL, structurally-safe verdict:
+ the title is the item's own (what `--title` already carried) and the body
+ comes from `.build-verification.md` via the surface flag — exactly the shape
+ the manual recovery used. Everything variable about the rich verdict —
+ `acceptance_results`, the worker's own prose — is dropped, because that is
+ precisely the content that failed to survive the hand-off; the §3e review
+ evidence line is kept, since it is assembled by this file and must stay
+ visible on the PR (temperloop#1430).
+
+ A body-less fallback would be worse than the escalation, so it is attempted
+ ONLY when there is a real surface to fall back ON — either the worktree file
+ or the synthesized inline surface.
+```
+
+## ======================================================================
+<a id="note-2"></a>
+
+```text
+ =============================================================================
+ levelPhaseTitle — the run-identifying progress-row heading (temperloop#903),
+ now emitted ONCE PER STAGE rather than once per level (temperloop#1294).
+ =============================================================================
+ The Workflow progress UI renders one row per workflow (labelled from the PURE
+ LITERAL `meta.description`, which by runtime constraint is byte-identical on
+ every run) plus a group heading per phase(). phase() is therefore the ONLY
+ surface that can carry run context — and it used to read `build level — N
+ item(s)`, which identifies nothing: not the repo, not the items, not the
+ issues. Two concurrent spine runs (routine: one /fix session drives several
+ back to back) rendered indistinguishable rows.
+
+ The heading names, from context already in scope at the call site:
+   build level · <stage> — <ownerRepo> · <N> item(s) · <slug> (#<ghIssue>), …
+ e.g.  build level · gate — Towheads/foundation · 1 item · row-per-stage (#1294)
+
+ temperloop#1294 added the `· <stage>` segment and made the level emit ONE
+ phase() PER STAGE (claim → build → gate → PR → CI) instead of a single static
+ heading for the whole level. Two independent effects, both wanted:
+   • the ACTIVE phase now ADVANCES as the level progresses, so a collapsed view
+     that renders it moves instead of sitting on one heading all run;
+   • the expanded progress tree groups agents by stage instead of dumping every
+     executor into one 'machinery' box.
+ The #903 run context rides EVERY stage heading — dropping it from the later
+ stages would re-open exactly the complaint #903 closed.
+
+ TWO SURFACES, ONE STRING. `phase(t)` moves the GLOBAL cursor (what a collapsed
+ view shows); `agent(…, {phase: t})` assigns one agent to the group named `t`.
+ The Workflow docs are explicit that the global cursor RACES inside
+ parallel()/pipeline() stages — this level fans its items out with parallel(),
+ so item A can be at CI while item B is still at build. Every agent spawn below
+ therefore passes opts.phase EXPLICITLY (same string → same group box) and never
+ relies on whatever the global cursor happens to be. enterStage() returns that
+ string and, as a side effect, advances the global cursor MONOTONICALLY (a stage
+ already passed never re-fires), so the collapsed row tracks the level's
+ furthest-reached stage and can never appear to run backwards when a straggler
+ item is still on an earlier one.
+
+ meta.phases: DELIBERATELY ABSENT. `meta` is a pure literal by runtime
+ constraint, and meta.phases entries are matched against phase() titles
+ EXACTLY. Every title here is dynamic by construction (#903 requires the repo,
+ the item count and the item/issue list in it), so no static entry could ever
+ match one — declaring the five stages statically would render five permanently
+ EMPTY groups alongside the five real ones. Per the runtime's own contract a
+ phase() call with no matching meta entry simply gets its own progress group,
+ which is the correct outcome here; this is a noted, accepted consequence of
+ #903's dynamic-title requirement, not an oversight to work around.
+
+ BOUNDED BY CONSTRUCTION: a level can hold many items, so at most
+ PHASE_TITLE_MAX_ITEMS slugs are named and the rest collapse to `+K more` — a
+ 20-item level can never emit a 20-slug heading that swamps the progress row.
+ Every field is optional-safe (a missing ownerRepo / ghIssue simply drops its
+ segment) because this is a cosmetic display string: it must never be the thing
+ that throws and takes a level down.
+```
+
+## `$branch` goes into the hand-built JSON below through a bare printf
+<a id="branch-goes-into-the-hand-built-json-below-through-a-bare-pr"></a>
+
+```text
+ `$branch` goes into the hand-built JSON below through a bare printf
+ `%s`, deliberately NOT through the `jq -R -s -c .` idiom reviewDiffCmd
+ uses for tsv_lines/files. The reason it is safe here: this is the PLAN's
+ `branch:` field, which plan-schema pins to `<type>/<slug>` with type in
+ a closed set {feat,fix,chore,refactor,docs,test} and slug kebab-case
+ ([a-z0-9-]+), validated at Step 1 — so it carries neither a double quote
+ nor a backslash. Note what is NOT an argument: `git check-ref-format`
+ bans a backslash in a ref name but ACCEPTS a double quote
+ (`git check-ref-format 'refs/heads/build/a"b'` exits 0), and a double
+ quote alone terminates a JSON string. The ref grammar is therefore not a
+ JSON-safety guarantee; the plan schema is. Adding jq would also put a new
+ binary dependency on the one path whose entire job is to work when things
+ are already failing — the opposite of fail-soft.
+ Nothing committed beyond a RESOLVED base — 3f never ran and never needed
+ to. Pushing here would mint an empty remote branch for no benefit.
+```
+
+## 3e.5 gate verdict reconciliation (temperloop#1587)
+<a id="3e-5-gate-verdict-reconciliation-temperloop-1587"></a>
+
+```text
+ --- 3e.5 gate verdict reconciliation (temperloop#1587) ----------------------
+ The defect this pair of helpers closes: the slice loop maintained TWO
+ independent failure counters — an accumulated `gateFailed` and the terminal
+ slice's own `gateOut.failed` — and shipped BOTH in one escalation payload
+ (`{gateOut:{outcome:'GATE_PASS',failed:0,…}, failedGates:1}`). A consumer
+ that trusted either field acted on a fiction: the kind said the gate failed,
+ the embedded object said it passed. Two counters that CAN disagree is the
+ defect, not merely the run on which they did — so there is now exactly ONE
+ record of failure (the per-slice ledger the loop appends to) and every
+ figure reported anywhere — `failedGates`, the verdict, the escalation kind,
+ the reason prose — is DERIVED from it by gateVerdict() below. No second
+ counter is maintained, and the raw terminal `gateOut` (whose `failed` was
+ the contradicting field) is no longer embedded in the payload: its content
+ survives as the ledger's last entry, which cannot disagree with the sum of
+ the ledger it is part of.
+```
+
+## gateSliceFailed(out) — the failure count ONE slice actually ESTABLISHE
+<a id="gateslicefailed-out-the-failure-count-one-slice-actually-est"></a>
+
+```text
+ gateSliceFailed(out) — the failure count ONE slice actually ESTABLISHED.
+ This is the only place a slice's failure count is read, so the ledger's
+ entries are normalized on the way in rather than clamped at each reader:
+   GATE_SLICE — the count the suite's own `QUALITY_GATES_FAILED=` trailer
+                reported for that slice (exit 75 always prints it).
+   GATE_FAIL  — a RED suite by construction, so the floor is 1: an unparseable
+                or stale trailer must never produce a "failed, 0 failures"
+                ledger entry (the mirror image of #1587's contradiction).
+   everything else (GATE_PASS / GATE_ABSENT / GATE_TIMEOUT) — 0. A pass is
+                zero by construction; a TIMEOUT establishes NOTHING (the slice
+                was killed before it could report), and unknown-ness is carried
+                by the verdict, never smuggled into a count.
+```
+
+## gateSliceResumeAt(out) — the 0-based gate index ONE slice said the sui
+<a id="gatesliceresumeat-out-the-0-based-gate-index-one-slice-said-"></a>
+
+```text
+ gateSliceResumeAt(out) — the 0-based gate index ONE slice said the suite
+ still has to reach, or undefined when it reported none (temperloop#2094).
+
+ Read off the outcome REGARDLESS of its kind, deliberately. `suiteFinished`
+ is a claim about whether every gate ran, and the only evidence anyone has
+ for that is the suite's own `QUALITY_GATES_RESUME_AT=` trailer; deriving it
+ from the terminal outcome's NAME instead is what let a run that stopped at
+ gate 152 of 200 ship `suiteFinished: true`. A resume point is that claim's
+ direct counter-evidence whether the slice carrying it was classified
+ GATE_SLICE or (as in the #2094 incident) something else.
+
+ `0` is not a resume point: the trailer is only ever printed with gates
+ REMAINING, so a 0 here is an unparsed/absent field, not "resume at gate 0".
+```
+
+## A resume point in the LAST ledger entry is direct evidence that gates
+<a id="a-resume-point-in-the-last-ledger-entry-is-direct-evidence-t"></a>
+
+```text
+ A resume point in the LAST ledger entry is direct evidence that gates
+ remained when the run stopped, and it OVERRIDES the terminal outcome's own
+ name (temperloop#2094). The incident: the final slice came back with an
+ unexpected exit code and was classified GATE_FAIL, whose name put it in
+ the `finished` set below — so an escalation for a run that stopped at gate
+ 152 of 200 reported `suiteFinished: true`, and the next reader had no way
+ to tell a whole-suite verdict from a 76%-of-the-way-through one. The
+ trailer is the only first-hand evidence about coverage that exists; a
+ classification derived downstream of it can never outrank it.
+```
+
+## harnessCanSpawnAgents — the null-shape discriminator above. Memoizatio
+<a id="harnesscanspawnagents-the-null-shape-discriminator-above-mem"></a>
+
+```text
+ harnessCanSpawnAgents — the null-shape discriminator above. Memoization is
+ deliberately ASYMMETRIC (temperloop#1819 attempt-2 review finding 1): only a
+ DEAD verdict is sticky. The quota is monotone within one exhaustion window —
+ once every spawn dies, they keep dying — so one dead probe answers for the
+ whole level's burst of deaths. (A window that resets mid-level could make the
+ cached "dead" stale for a later item; that item still escalates with its work
+ intact — exactly what the wait-then-resume disposition handles — so the dead
+ cache stays.) An ALIVE verdict is NOT cached: "alive at probe time" says
+ nothing about a spawn that dies LATER in the same level, and a memoized alive
+ would misroute that later quota death back into machinery-denied/worker-error
+ — the destructive mis-cure this whole classifier exists to prevent. So every
+ bare-null re-probes; concurrent callers still share one in-flight probe (the
+ promise is the cache entry until it resolves alive). Fails OPEN: an
+ inconclusive canary (a non-quota throw) reads as "alive" so the pre-#1819
+ kinds stand rather than inventing a quota verdict from a probe that merely
+ misbehaved.
+```
+
+## DECIMAL, NEVER OCTAL (temperloop#1970, typescript-reviewer round 1). T
+<a id="decimal-never-octal-temperloop-1970-typescript-reviewer-roun"></a>
+
+```text
+ DECIMAL, NEVER OCTAL (temperloop#1970, typescript-reviewer round 1). The
+ `tr` filter strips non-digits but NOT leading zeros, and POSIX `$(( ))`
+ reads a leading-`0` numeral as OCTAL — so a marker file someone
+ hand-edited, or restored from a stale snapshot, holding `08`/`09` is not
+ a wrong count but a HARD shell error that aborts the whole step and
+ surfaces as exactly the `review-diff-error` escalation §3e is least able
+ to act on. This code path cannot write such a value itself, but the file
+ is an ordinary file in the worktree's git dir and the surrounding
+ contract is explicit that every marker step fails SOFT — a
+ corrupted-but-present marker was the one case that story did not cover.
+ `sed -E 's/^0+//'` normalises to a bare decimal (an all-zeros value
+ collapses to the empty string, which the `[ -n … ]` fallback below then
+ reads as 0), so a corrupted marker degrades to "first round" exactly as a
+ missing one does. `sed -E` over `\\?`-style BRE: the same portable dialect
+ the `origin/` strip below already relies on.
+```
+
+## Trimmed-emptiness filter (`l.trim()`, not bare `l`) — matches
+<a id="trimmed-emptiness-filter-l-trim-not-bare-l-matches"></a>
+
+```text
+ Trimmed-emptiness filter (`l.trim()`, not bare `l`) — matches
+ reviewDiffCmd's bash `t != ""` check (`t` is the TRIMMED line) exactly,
+ so a whitespace-only line is filtered identically on both sides. This
+ deliberately does NOT reuse parseTsvRows's own first-stage filter (bare
+ `l`), which answers a different question (is this a candidate data row
+ for the routing decision) — tsvChecksum answers "did the bash side count
+ this line," and those two must agree bit-for-bit or the checksum could
+ disagree with a perfectly faithful relay.
+```
+
+## temperloop#2003 — SPAWN EVERY ROUTED REVIEWER FIRST, then wait on the 
+<a id="temperloop-2003-spawn-every-routed-reviewer-first-then-wait-"></a>
+
+```text
+ temperloop#2003 — SPAWN EVERY ROUTED REVIEWER FIRST, then wait on the set
+ under one wall-clock ceiling. Before this the pass awaited each reviewer in
+ turn, so a single agent that never returned kept every LATER one from
+ launching at all: in the observed incident the mandatory `workflow-reviewer`
+ for a `claude/commands/*.md` diff was never spawned, because the reviewer
+ ahead of it in the loop hung. Spawning is synchronous and in route order, so
+ the call ORDER (what the journal and a resume's cached prefix key on) and
+ the per-reviewer result ORDER are both byte-identical to the old loop's.
+```
+
+## No `schema` — a plain read-only advisory pass, not a machine-validated
+<a id="no-schema-a-plain-read-only-advisory-pass-not-a-machine-vali"></a>
+
+```text
+ No `schema` — a plain read-only advisory pass, not a machine-validated
+ verdict (build.md §3e: "docs-reviewer is advisory only ... never a
+ checks gate entry"). Deliberately no `model` override either: the
+ reviewer's OWN agent definition sets its tier (e.g.
+ claude/agents/workflow-reviewer.md declares `model: sonnet`).
+
+ The two-arm `.then` is the settlement RECORDER, not error handling: it
+ makes each reviewer's own outcome readable WITHOUT awaiting it, which is
+ what lets the ceiling below keep every settled reviewer's findings while
+ abandoning only the unsettled ones. It also means a rejected reviewer
+ promise is always handled, so a reviewer that throws after the ceiling has
+ passed can never surface as an unhandled rejection.
+```
+
+## Pass 3 — apply the dispositions in ROUTE order, so `ran`/`skipped`/
+<a id="pass-3-apply-the-dispositions-in-route-order-so-ran-skipped"></a>
+
+```text
+ Pass 3 — apply the dispositions in ROUTE order, so `ran`/`skipped`/
+ `sections` and the log lines keep the ordering the single loop produced. A
+ straggler is read ONE final time here, at the instant its skip would be
+ written: that read, not the one after the await, is what decides a timeout.
+ Exactly one disposition is written per slot, which is what keeps `ran` and
+ `skipped` disjoint by construction — a recovered reviewer can never also
+ appear as `timed_out`, and `mandatory_ok` (derived from `skipped`) reports
+ what actually happened rather than what the ceiling guessed.
+```
+
+## disposeReviewSlot — the verdict for ONE SETTLED reviewer slot, as a pu
+<a id="disposereviewslot-the-verdict-for-one-settled-reviewer-slot-"></a>
+
+```text
+ disposeReviewSlot — the verdict for ONE SETTLED reviewer slot, as a pure
+ descriptor: `{ kind: 'ran', text }` or `{ kind: 'skip', note }`. Purity is the
+ point (temperloop#2032): runReviewers reads its slots in more than one pass so
+ a reviewer that settles late is still consumed, and a disposition step that
+ pushed straight into `ran`/`skipped`/`sections` would emit those in
+ settlement order instead of route order. The caller writes exactly one
+ disposition per slot, in route order, which is what keeps `ran` and `skipped`
+ disjoint. Never call it on an unsettled slot — `slot.done` is the caller's
+ precondition, and the caller re-reads it as late as it possibly can.
+```
+
+## drainReviewSettlements — give every reviewer whose promise has already
+<a id="drainreviewsettlements-give-every-reviewer-whose-promise-has"></a>
+
+```text
+ drainReviewSettlements — give every reviewer whose promise has already
+ resolved the chance to RECORD that fact, then return. `slot.done` is set in a
+ `.then` recorder, so a reviewer can be resolved-but-unrecorded for a few
+ microtasks; this is the only honest way to read the fanout later than the
+ instant an await hands back, and it is bounded by construction (no clock, no
+ spawn, no wait). Used twice: before the ceiling's first timer spawn (a pure
+ cost optimisation — a reviewer that already returned need not be paid for),
+ and again by the disposition passes (temperloop#2032 — a reviewer that
+ settled after the ceiling must not be reported as a timeout).
+```
+
+## reviewBoundReached(review) — the §3e convergence bound's ONE predicate
+<a id="reviewboundreached-review-the-3e-convergence-bound-s-one-pre"></a>
+
+```text
+ reviewBoundReached(review) — the §3e convergence bound's ONE predicate
+ (temperloop#1970), so both blocking call sites (the 3e pass and §3g's CI-fix
+ re-review) ask the identical question and cannot drift apart. True when this
+ round has blocking findings AND the item has spent its budget of review
+ rounds: past that, the findings are CARRIED (PR body + parked tally) instead
+ of escalating for another build-review round-trip. `review.round` is absent
+ only on a return shape older than this item; `?? 1` then reads "first round",
+ which can never trip the bound early.
+```
+
+## round 2 (MEDIUM, temperloop#1937): the outer Bash-tool timeout can kil
+<a id="round-2-medium-temperloop-1937-the-outer-bash-tool-timeout-c"></a>
+
+```text
+ round 2 (MEDIUM, temperloop#1937): the outer Bash-tool timeout can kill
+ gateFreshnessCmd() mid-`git rebase`, leaving a rebase in progress on
+ disk. FRESHNESS_ERROR's fail-open is sound only when the fetch/resolve
+ step never ran at all; here the tree may be mid-rebase, so proceeding
+ blind is exactly the false-signal risk #1937 exists to prevent. Run the
+ follow-up probe, abort any in-progress rebase it finds, and ALWAYS
+ escalate `stale-worktree` — regardless of what the probe itself
+ reports — never falling into the fail-open FRESHNESS_ERROR path.
+```
+
+## temperloop#2080 round-1 review [MEDIUM]. driveItemBuildPhase returns a
+<a id="temperloop-2080-round-1-review-medium-driveitembuildphase-re"></a>
+
+```text
+ temperloop#2080 round-1 review [MEDIUM]. driveItemBuildPhase returns a
+ TERMINAL record on two paths that mean OPPOSITE things: escalate() (a real
+ failure) and — for kind:spike alone — park() (the read-only verdict marker,
+ that item's NORMAL completion, and the only park() the build phase returns
+ at all). Folding "any terminal record" into the loss path recorded a
+ successful spike arm as `gate:'fail' loss_reason:'infra'`, corrupting
+ exactly the ledger this feature exists to produce and making judgeArms
+ report `one-arm-only` for a pair where BOTH arms finished. A spike creates
+ no worktree and runs no gate, so this arm honestly carries no
+ base_sha/guard/cost — but it completed, so it is a passing arm.
+```
+
+## judgeArms — the pairwise judge call, run AT the barrier (temperloop#20
+<a id="judgearms-the-pairwise-judge-call-run-at-the-barrier-temperl"></a>
+
+```text
+ -----------------------------------------------------------------------------
+ judgeArms — the pairwise judge call, run AT the barrier (temperloop#2073).
+ -----------------------------------------------------------------------------
+ One `judge.sh pairwise` per in-scope item whose TWO arms both gate-passed:
+ record-a is the baseline arm, record-b is the candidate arm, and the script
+ sends the same prompt twice in both position orders and reports
+ { preference, margin, order_agreement }. The two record files are assembled
+ in the executor's own shell from this driver's item metadata plus each arm's
+ diff against its recorded base, because that diff exists only on disk.
+
+ A judged item ALWAYS gets a DISPOSITION, never silence: a real verdict, or a
+ named reason there is none (one arm never gated, the seam is absent, the
+ judge refused or was unavailable). That is what makes "every in-scope item has
+ a judge result" checkable at the barrier rather than a hope.
+```
+
+## THE VERDICT IS READ UN-PIPED (temperloop#2080 round-2 review [HIGH]), 
+<a id="the-verdict-is-read-un-piped-temperloop-2080-round-2-review-"></a>
+
+```text
+ THE VERDICT IS READ UN-PIPED (temperloop#2080 round-2 review [HIGH]), the
+ same shape activationProofCmd uses and for the same reason: `$?` after a
+ pipeline is the LAST command's status, so `… | tail -1; __jr=$?` reads
+ tail's status — effectively always 0 — and judge.sh's own exit never
+ reaches the branch below. That mis-reads BOTH ways: a judge.sh that dies
+ AFTER writing a line would have its garbage recorded as a real pairwise
+ verdict, and the refusal's `rc` field — whose whole job is to report that
+ status — would be structurally 0. So: capture whole, read `$?`, THEN trim
+ to the last line in a separate step. Deliberately no PIPESTATUS (zsh
+ spells it `$pipestatus` and 1-indexes it) and no `set -o pipefail` (see
+ activationProofCmd's comment for why that is worse, not safer).
+```
+
+## appendDualBuildRows — the ledger write (temperloop#2072).
+<a id="appenddualbuildrows-the-ledger-write-temperloop-2072"></a>
+
+```text
+ -----------------------------------------------------------------------------
+ appendDualBuildRows — the ledger write (temperloop#2072).
+ -----------------------------------------------------------------------------
+ One `dual-build-ledger.sh append` per row, batched into ONE executor for the
+ item (two rows in scope, one row out of scope). Three of the row's fields
+ cannot be known in this runtime and are filled by the executor's own shell
+ from the arm's worktree:
+   cross_read_attempted — whether the arm-read guard recorded a DENIED
+                          cross-arm read beside the `.dual-build-arm` marker;
+   head_sha             — the arm branch's tip, which exists only on disk;
+   machinery_version    — the checkout's VERSION, the join key K#1924's own
+                          per-step resume ledger uses.
+ Everything else is composed here, in legible .mjs, and handed over as a JSON
+ literal — the same division of labour every other machinery call in this file
+ uses (DESIGN NOTE 1: the branching stays here, the shell only executes).
+```
+
+## driveLevelDualBuild — the level driver, and the BARRIER itself.
+<a id="driveleveldualbuild-the-level-driver-and-the-barrier-itself"></a>
+
+```text
+ -----------------------------------------------------------------------------
+ driveLevelDualBuild — the level driver, and the BARRIER itself.
+ -----------------------------------------------------------------------------
+ Three phases, in this order, and the order IS the contract:
+   1. BUILD. Every item in parallel. An in-scope item fans out two arms and
+      stops at the end of phase 1; a not-in-scope item takes the ordinary
+      single-arm driveItem, PR and all.
+   2. THE BARRIER. The `await` on phase 1 is the barrier — past it, EVERY
+      in-scope arm in the level has a gate result. Only now does any judging
+      happen, and no PR has opened for any in-scope item.
+   3. JUDGE + RECORD. Per item: the pairwise judge, then the ledger rows, then
+      the item's own record. Still no PR for an in-scope item — routing the
+      winner to PR is `level-pick-and-operator-levers`.
+```
+
+## The IN-SCOPE throw (the not-in-scope branch carries its own catch
+<a id="the-in-scope-throw-the-not-in-scope-branch-carries-its-own-c"></a>
+
+```text
+ The IN-SCOPE throw (the not-in-scope branch carries its own catch
+ above, so this is what it adds). `escaped` marks a run that produced
+ NO arms: phase 3 hands its record straight to the level's disposition
+ rather than judging arms that do not exist or inventing a
+ not-in-scope ledger row for an item that IS in scope. No
+ preserveOnEscalation here on purpose — an in-scope item's commits
+ live in `<slug>@baseline` / `<slug>@candidate`, not the `<slug>`
+ worktree that helper pushes from, so calling it would push the wrong
+ (or an absent) tree.
+```
+
+## Continuation detection (escalation-resume loop, 3d-esc)
+<a id="continuation-detection-escalation-resume-loop-3d-esc"></a>
+
+```text
+ --- Continuation detection (escalation-resume loop, 3d-esc) --------------
+ On a 3d-esc continuation the orchestrator re-invokes this workflow with
+ input.onlySlugs = [<this slug>, ...] and input.verdicts[<slug>] carrying the
+ human's captured decision. A continued item's worktree + .build-guard
+ marker are ALREADY in place (the escalation left them intact) and its
+ board issue is ALREADY claimed — so we MUST NOT re-run 3a (claim) or 3b
+ (worktree.sh create force-recreates the path, discarding the escalated
+ build, MINOR fix). We resume at 3c, injecting the captured verdict so the
+ re-spawned worker sees the human's decision instead of re-forking forever
+ (MAJOR fix). verdicts map shape: { [slug]: { kind, verdict_section } }.
+```
+
+## PRELUDE (3a claim + 3b-0 deps-merged + 3b worktree create)
+<a id="prelude-3a-claim-3b-0-deps-merged-3b-worktree-create"></a>
+
+```text
+ --- PRELUDE (3a claim + 3b-0 deps-merged + 3b worktree create) ------------
+ ONE batched executor agent for the whole per-item mechanical prelude
+ (temperloop#942) instead of one agent spawn per command. Ordering, skip
+ conditions and every branch below are unchanged — only the transport is.
+ The batch's own bash short-circuit refuses to run a later step once an
+ earlier one's outcome means it must not (a failed claim never reaches
+ worktree create; an unmerged dep never creates a worktree), so the results
+ array is simply shorter and the .mjs escalates on the step that stopped it.
+```
+
+## Nothing COMMITTED → this is the ordinary stall. Retry exactly once,
+<a id="nothing-committed-this-is-the-ordinary-stall-retry-exactly-o"></a>
+
+```text
+ Nothing COMMITTED → this is the ordinary stall. Retry exactly once,
+ appending FOREGROUND_CURE so the retry prompt DIFFERS from the first — a
+ byte-identical retry re-stalls identically. A 5xx is transient (the extra
+ section is harmless); a stall is cured by it.
+
+ temperloop#993 — MECHANICAL detection of the incomplete-return shape:
+ no verdict AND the worktree dirty with zero commits is the backgrounded-
+ gate stall specifically (not a worker that never started). The probe
+ reports it as RECOVER_DIRTY, and the auto-resume carries the dirty-resume
+ note on top of the cure so the re-spawn CONTINUES on the work already in
+ the worktree instead of rebuilding it. Detection is mechanical here so the
+ prose clause in the worker prompt (prevention) is not the only guard —
+ build.md §3c/§3d stay in lockstep with this block.
+```
 
 ## ======================================================================
 <a id="note-3"></a>
@@ -281,502 +938,4 @@ probe into `CAPABILITIES_INDETERMINATE`. A comment is not automatically prose.
  never recover is the worker's own self-verification — so a recovered record is
  honest about that and marks its acceptance results UNVERIFIED rather than
  letting them read as passing.
-```
-
-## NO `|| default=main` guess. worktree.sh's own default_branch() (its
-<a id="no-default-main-guess-worktree-sh-s-own-default-branch-its"></a>
-
-```text
- NO `|| default=main` guess. worktree.sh's own default_branch() (its
- "The repo's default branch" helper) `return 1`s rather than inventing a
- base, and this path must do the same, because the guess does not fail
- LOUDLY here — it fails into a rev-list that errors, `ahead` that reads 0
- and a WORK_PRESERVE_SKIP "no unlanded commits". Verified against a
- throwaway fixture (bare origin defaulting to `trunk`, origin/HEAD
- deleted, one real unpushed commit): the old chain emitted
- `{"outcome":"WORK_PRESERVE_SKIP","commits_ahead":0}` over real work. And
- because preserveOnEscalation logs its "the worktree may be the ONLY
- copy" warning on every outcome EXCEPT the skip, that false negative
- silenced the one warning this whole seam exists to raise.
-
- So: `base_resolved` splits "genuinely zero commits ahead" from "could
- not compute". Only the FIRST may skip. The second PUSHES ANYWAY —
- pushing is the fail-safe direction on a preservation path: the cost of a
- needless push is one ref on the branch 3f already owns, while the cost
- of a needless skip is the destroyed-work incident this file documents.
- `ahead` is normalized before it is ever read as a number, so nothing
- non-numeric can reach the unquoted `"commits_ahead":%s` position and
- make the line unparseable (the pr.sh `case` idiom, e.g. its cmd_push
- ahead-count normalization).
-```
-
-## Bring the remote tip's objects local so the supersede test can run at
-<a id="bring-the-remote-tip-s-objects-local-so-the-supersede-test-c"></a>
-
-```text
- Bring the remote tip's objects local so the supersede test can run at
- all; a fetch failure leaves `unique` unset and the arm refuses.
-
- `--no-merges` is a DELIBERATE, acknowledged narrowing, not an oversight:
- an ordinary merge commit's underlying unique commits are still counted
- (so a normal merge is not a blind spot), but an "evil merge" — one whose
- own conflict-resolution edits exist nowhere else — carries content this
- count cannot see. Accepted because a `/build` worker branch does not
- normally carry merge commits at all, and because dropping the flag would
- count every merge's whole second parent as remote-only work and refuse
- essentially every rescue. The narrowing is bounded by property 1: the
- push is still leased, so it can only ever land on the exact sha read here.
-
- THREE outcomes, not two (temperloop#2103 review round 1). A refusal on an
- UNANSWERABLE probe is right, but it must not be reported as a refusal on
- an ESTABLISHED conflict: `stale_remote_not_superseded` is what the log
- turns into the flat assertion "origin carries commits this worktree does
- NOT", and a human disposes the escalation against that sentence. When the
- fetch simply failed (the network dropped between the `ls-remote` above
- and this fetch), that sentence is unproven. So `unique` empty ⇒
- `supersede_probe_failed`, `unique > 0` ⇒ `stale_remote_not_superseded`.
- Both refuse identically — only the claim made about why differs.
-```
-
-## gateVerdict(terminalOutcome, ledger) — the ONE reconciliation point be
-<a id="gateverdict-terminaloutcome-ledger-the-one-reconciliation-po"></a>
-
-```text
- gateVerdict(terminalOutcome, ledger) — the ONE reconciliation point between
- the slice loop's terminal outcome and its failure ledger. Every arm's kind,
- counts and reason are computed HERE, from one input, so no arm can ship a
- payload that contradicts its own verdict.
-
- `verdict` is the single field a consumer may trust:
-   RED     — at least one gate FAILED. The branch is known-broken.
-   UNKNOWN — nothing failed and the suite never finished (Bash-tool timeout or
-             slice-cap exhaustion). It says NOTHING about the tree — the whole
-             point of temperloop#1021, preserved exactly: this and only this
-             verdict escalates `acceptance-gate-timeout`.
-   GREEN   — the suite finished and every gate that ran passed.
-
- Precedence: an OBSERVED failure dominates an UNFINISHED remainder. A run that
- failed in slice 1 and then timed out in slice 3 is RED — the failures are
- real evidence, the missing verdict for the un-run gates cannot un-fail them —
- and the reason says both halves. This is the same precedence the pre-#1587
- code already applied to a GATE_PASS terminal after a failing slice, now
- applied to the TIMEOUT arm too, so "timeout" never launders a known failure
- into an unknown. A timeout with NO observed failure is untouched.
-```
-
-## reviewDiffTsvText(diffOut) — temperloop#2020. The ONE place that turns
-<a id="reviewdifftsvtext-diffout-temperloop-2020-the-one-place-that"></a>
-
-```text
- reviewDiffTsvText(diffOut) — temperloop#2020. The ONE place that turns a
- REVIEW_DIFF result's routing-table field into the text parseTsvRows() and
- tsvChecksum() consume, so the gap check and the routing decision can never
- read two different renderings of the same payload.
-
- Accepts BOTH wire shapes, in this precedence:
-   `tsv_lines` — the current shape (an array of data-row strings, #2020).
-                 Joined on `\n`, which is byte-identical to the string the
-                 previous `tsv` scalar carried: reviewDiffCmd's awk `print`
-                 emitted one kept line per row, and both consumers re-append
-                 their own trailing newline per kept line, so a joined array
-                 and the old blob canonicalize to the same bytes and hence
-                 the same row count and the same checksum.
-   `tsv`       — the legacy scalar, still ACCEPTED (never emitted). An
-                 un-migrated caller, a replayed older payload, or a relay
-                 that reconstructed the old field keeps routing normally
-                 instead of degrading.
- Returns null when NEITHER shape is present in a usable form — the caller
- distinguishes "dropped" from "legitimately empty" (`tsv_lines: []` is an
- empty ARRAY, a real zero-row table, not a missing field).
-```
-
-## temperloop#2032 — THE LAST-CHANCE READ, and the reason the disposition
-<a id="temperloop-2032-the-last-chance-read-and-the-reason-the-disp"></a>
-
-```text
- temperloop#2032 — THE LAST-CHANCE READ, and the reason the disposition
- below is three passes rather than one loop. `slot.done` is set by the
- settlement recorder attached at the spawn above, which runs as a MICROTASK
- on the reviewer's own promise — so the ceiling's race can return with a
- reviewer whose result has ALREADY arrived but whose recorder has not run
- yet. The pre-#2032 loop read `!slot.done` exactly once, immediately after
- that await, and never again: such a reviewer was reported
- `skipped — exceeded the §3e review ceiling` while its full review sat in
- hand, unread. That is not a hang — the result ARRIVES and is thrown away
- (run wf_c71d1576-e9d discarded two complete reviews that way, one of which
- had already found the defect a hand-routed reviewer re-found later and
- PR #2039 then fixed).
-
- The ceiling is NOT at fault and is untouched: it still bounds how long the
- pass WAITS, and this changes only what happens to a result that arrives
- anyway. Every read below is therefore as late as it can HONESTLY be —
- bounded settlement drains only (no wall clock, no timer spawn, and never a
- re-spawn of a reviewer whose result is already in hand), never a second
- wait: re-introducing one would be exactly the unbounded stall
- temperloop#2003 removed.
-```
-
-## temperloop#2003 — the CEILING BREACH. This reviewer is abandoned, neve
-<a id="temperloop-2003-the-ceiling-breach-this-reviewer-is-abandone"></a>
-
-```text
- temperloop#2003 — the CEILING BREACH. This reviewer is abandoned, never
- killed: the runtime offers no cancellation, so the promise is simply
- never awaited again and the pass proceeds. The note names the cause, so
- an operator reading the PR body sees a bounded outcome rather than the
- silence the incident actually produced. Disposition splits
- mandatory-vs-advisory below: this is the ADVISORY half (a degraded
- notice + a `mandatory_ok`-preserving tally entry); a MANDATORY route
- additionally ESCALATES after the loop.
-
- TEMPERLOOP#2064 — WHY THIS LINE NO LONGER SAYS "unavailable". It used to,
- to match the documented `skipped — <agent> unavailable` shape
- (CLAUDE.kernel.md § Subagent usage, legible agent-gate degradation) —
- but in that rule `unavailable` is the CAPABILITY-PROBE verdict: the
- agent is not declared in `CLAUDE.md § Subagents` or `.claude/agents/`,
- so it could not be spawned at all. A ceiling breach is the OPPOSITE
- fact: the agent IS installed and WAS spawned, and did not return in
- time. Conflating them sent the #2064 investigator at the agent roster
- while the defect sat one layer below, in the timer — and cost a live
- session ~1200s of apparent hang. disposeReviewSlot() still emits the
- true capability-probe form for the real thing (an agent-resolution
- failure), so the two senses now carry two distinct wordings, which is
- what makes either of them diagnostic. The duration reported is the tick
- this pass actually HONOURED, never the nominal ceiling: when those two
- numbers disagree, that gap IS the bug (#2064 measured 41s against 1200s).
-```
-
-## awaitReviewFanout — temperloop#2003's ceiling, applied to the whole §3
-<a id="awaitreviewfanout-temperloop-2003-s-ceiling-applied-to-the-w"></a>
-
-```text
- awaitReviewFanout — temperloop#2003's ceiling, applied to the whole §3e
- fanout. Returns once every reviewer has settled OR the ceiling elapses,
- whichever comes first; it never rejects and never throws, and the caller reads
- each slot's own `done` flag to decide the per-reviewer disposition.
-
- RETURNS the seconds of wall clock this pass ACTUALLY waited — the sum of the
- slices whose ticks were honoured, never the nominal ceiling (temperloop#2064).
- That number is the `<actual>` the ceiling-breach notice reports, so a reader
- of the notice is told what was measured rather than what was budgeted: the
- #2064 incident is precisely a run whose two numbers differed by ~30x while
- only the budgeted one was ever printed.
-
- HOW IT MEASURES TIME WITHOUT A CLOCK. `Date.now()` throws in this runtime and
- there is no timer primitive, so the wait is raced against something that
- resolves ON a clock: reviewWaitAgent(), a machinery executor whose entire job
- is one `sleep`. Each slice is a separate spawn, so the elapsed total is the
- sum of the slices that have RETURNED — an accounting this file can do with
- integers alone.
-
- FAIL-OPEN, DELIBERATELY. If the timer itself cannot run (the auto-mode safety
- classifier denies it, the executor returns something else), the bound is
- simply unavailable and we fall back to the pre-#2003 behaviour — await the
- fanout — with a legible notice. A timer that resolved without actually
- sleeping would otherwise manufacture an INSTANT false ceiling breach on
- perfectly healthy reviews, which is far worse than the stall it bounds
- (kernel principle 7: advisory over enforced discipline).
-```
-
-## REVIEW_BLOCK_MARK — the EXPLICIT, machine-readable boundary of one rev
-<a id="review-block-mark-the-explicit-machine-readable-boundary-of-"></a>
-
-```text
- REVIEW_BLOCK_MARK — the EXPLICIT, machine-readable boundary of one reviewer's
- block inside `## Review notes` (temperloop#2009 review round 2).
-
- The `### <reviewer>` heading below is for a HUMAN. It is not a parseable
- boundary and never was: reviewBodySuffix splices `sec.text` VERBATIM, and a
- reviewer's own findings text carries `### ` headings of its own (ADR 0007's
- `### [HIGH] <name> in <file>`) plus free prose headings — a single-word
- `### Notes` is indistinguishable from `### docs-reviewer` by shape alone, and
- a fenced code block can contain literally anything. pr.sh's PR-body cap has to
- know where one round's prose ends to drop the OLDEST rounds first, and two
- successive passes at inferring that from Markdown were both spoofable by
- ordinary reviewer prose (the second dropped the NEWEST round's residual HIGH
- findings — precisely what temperloop#1970 routes into this section for the
- human at the merge gate).
-
- So the PRODUCER marks its own blocks. An HTML comment renders as nothing on
- GitHub, is anchored at line start, and carries the two facts the consumer
- needs (which reviewer, which round) as attributes rather than as prose to be
- re-derived. `sec.text` is neutralized before splicing, so a reviewer QUOTING
- this very design — entirely likely, since one already did — cannot inject a
- boundary. Consumer: review_notes() in workflows/scripts/build/pr.sh, which
- matches this token exactly, at line start, and never guesses from a heading.
- The two literals are kept in lockstep by a static guard in test_pr.sh.
-```
-
-## reviewBodySuffix — the ONE renderer of §3e evidence into the PR body
-<a id="reviewbodysuffix-the-one-renderer-of-3e-evidence-into-the-pr"></a>
-
-```text
- reviewBodySuffix — the ONE renderer of §3e evidence into the PR body
- (temperloop#1846), across EVERY round handed to it: rounds[0] is the
- original 3f pass, rounds[1..] are ciPollLoop's CI-fix re-reviews. Before
- this, the body suffix was built from rounds[0] alone while park()'s tally
- merged every round — so a reviewer that ran only in a CI-fix round (its
- diff includes the fix commit, which can touch file classes the original
- diff never did) had its findings affirmatively OMITTED from the body's
- "ran:" line and ## Review notes, the exact #1846 failure (body said
- "ran: docs-reviewer" while review.ran carried shell-reviewer and its three
- findings). Rendering rules:
-   - the "ran:" line names every DISTINCT reviewer across all rounds — a
-     name-set union, so it can never be a subset of the tally's review.ran;
-   - every round's findings section is spliced, none de-duped away: a
-     CI-fix round's block is relabeled `### <reviewer> (ci-fix round N)` so
-     a reviewer that ran in two rounds keeps BOTH blocks, distinguishable;
-   - skip notices are de-duped by their full note text only (byte-identical
-     notices from re-running the same degraded route add no information);
-   - each block opens with a REVIEW_BLOCK_MARK delimiter line (above) that
-     names its reviewer and round, so the PR-body cap can find block edges
-     without parsing Markdown out of reviewer prose.
- For a single round this renders the pre-#1846 shape plus those delimiters.
-```
-
-## activationProofCmd — run the class-A `proof:` predicate from <dir>'s r
-<a id="activationproofcmd-run-the-class-a-proof-predicate-from-dir-"></a>
-
-```text
- activationProofCmd — run the class-A `proof:` predicate from <dir>'s root and
- report Pass/Fail as the predicate's OWN exit code.
-
- THE VERDICT IS READ UN-PIPED, WHICH IS §3e.5'S *PREFERRED* SHAPE, NOT A
- WEAKER ONE (temperloop#68/#801). The predicate runs inside a command
- substitution — not a pipe — so `$?` is already the predicate's own status
- under both bash and zsh, with no PIPESTATUS/pipestatus read to get
- dialect-wrong and no `tee` to swallow it. build.md §3e.5 names exactly this:
- "prefer running the gate un-piped and branching on its exit directly".
-
- DO NOT ADD `set -o pipefail` HERE. It looks like belt-and-suspenders and is
- the opposite: it silently rewrites the meaning of the AUTHOR'S OWN predicate,
- in the one direction that makes this gate theater. `pipefail` reports the
- rightmost NON-ZERO status, and a predicate whose tail exits early on a match
- (`grep -q`, `head`) SIGPIPEs its upstream writer, which dies 141. For the
- wrap-immune ABSENCE idiom plan-schema.md documents
- (`! tr '\n' ' ' < f | tr -s ' ' | grep -q '<phrase>'`) that inverts the
- verdict on the case that matters:
-   phrase PRESENT (must FAIL):  pipefail -> 141 -> `!` -> 0  == false PASS
-                                no pipefail -> 0 -> `!` -> 1 == correct FAIL
- Reproduced deterministically, and asserted by the "pipefail" case in
- test_workflow.sh. `scripts/lint-pipe-grep-q.sh` (temperloop#1050) is the
- tree-wide guard for the same footgun. A false PASS on an absence proof is
- precisely what the temperloop#944 control pass exists to stop, so
- reintroducing it here would defeat the control one layer up.
-```
-
-## gateFreshnessTimeoutProbeCmd — round 2 (temperloop#1937 MEDIUM): what 
-<a id="gatefreshnesstimeoutprobecmd-round-2-temperloop-1937-medium-"></a>
-
-```text
- gateFreshnessTimeoutProbeCmd — round 2 (temperloop#1937 MEDIUM): what to run
- when the OUTER Bash-tool timeout (FRESHNESS_TIMEOUT) kills gateFreshnessCmd()
- mid-flight, possibly mid-`git rebase`. A second, cheap machinery call —
- mirroring the shape of disposeStepTimeout()'s own follow-up probe for the
- inner STEP_TIMEOUT path, not that function itself (its probeSideEffects()
- ladder is push/PR-open specific and has nothing to say about a rebase). If a
- rebase is left in progress it is aborted, restoring the worktree to its
- pre-rebase commit exactly like gateFreshnessCmd's own FRESHNESS_CONFLICT
- arm; either way the caller escalates rather than proceeding blind.
-
- round 3 (HIGH, shell, temperloop#1937): every /build worktree is a LINKED
- worktree (`git worktree add`), whose `.git` is a pointer FILE, not a
- directory — `[ -d .git/rebase-merge ]` is therefore ALWAYS false here; the
- real state lives under `git rev-parse --git-dir` (…/.git/worktrees/<slug>/
- rebase-merge). Rather than resolve and test that path by hand, run
- `git rebase --abort` UNCONDITIONALLY and read ITS OWN exit status as the
- in-progress verdict: exit 0 means a rebase WAS in progress and is now
- aborted; a non-zero "no rebase in progress" exit means there was none to
- abort, which is not itself an error worth surfacing.
-```
-
-## 3b-0 / 3b are prelude steps only for a NON-spike item: a spike is read
-<a id="3b-0-3b-are-prelude-steps-only-for-a-non-spike-item-a-spike-"></a>
-
-```text
- 3b-0 / 3b are prelude steps only for a NON-spike item: a spike is read-only
- and skips 3b–3h entirely, so it must never create a worktree. Its prelude is
- the claim alone (or nothing at all when the board is OFF).
-
- 3b-0. Dep-merge precondition gate (#108).
- A `depends-on` edge REQUIRES its target be [x] MERGED before this item's
- worker starts — the worker must build and self-verify against the merged
- dependency code, NOT a pre-merge base. The orchestrator's level ordering
- (it runs level k's merge gate before invoking build-level for level k+1) is
- the primary guarantee; this is the mechanical backstop that refuses to
- create the worktree until every depended-on PR has actually landed in
- origin/<default> (guarding a resume race, a partial merge, an ordering bug).
- Without it, worktree.sh create bases the branch on an origin/<default> that
- LACKS the dep, the worker self-verifies against stale code, and the 3f
- unconditional rebase (#525) only repairs the branch TEXTUALLY at push —
- too late for the worker's own build/verify. item.dependsOn is [{slug,sha}]
- (each dep's merged head SHA, from the plan note's pushed_sha:); an
- absent/empty list (level-0 or after:-only deps) is a no-op. Skipped on a
- continuation — the worktree already exists and its base was gated at first
- create; re-gating would need SHAs the continuation input does not carry.
-```
-
-## Resolve the gate script from the WORKTREE, not repoRoot (temperloop#62
-<a id="resolve-the-gate-script-from-the-worktree-not-reporoot-tempe"></a>
-
-```text
- Resolve the gate script from the WORKTREE, not repoRoot (temperloop#626).
- The point of 3e.5 is to validate the worker's CHANGES, and the `cd ${wt}`
- below intends exactly that — but quality-gates.sh's first act is
- `cd "$REPO_ROOT"` where REPO_ROOT is derived from the SCRIPT's own path
- (BASH_SOURCE/..). If we ran repoRoot's copy, that cd would jump straight
- back to the main checkout and the gate would validate main's tree, not the
- worktree — silently defeating the cd. Running the worktree's own copy makes
- REPO_ROOT resolve to the worktree, so every gate (make targets, the
- diff-scoped leak guard that diffs the branch's additions, the freshness
- check) runs against the worker's tree — matching what CI sees on the PR's
- merge. The worktree is a full checkout of the branch, so this copy always
- exists whenever repoRoot's would (GATE_ABSENT still fires for a repo with
- no vendored gate). Only build-SPINE scripts (worktree.sh / pr.sh / …) route
- through machineryBin's foundation fallback; the repo-local gate resolves
- directly against the worktree.
-
- Resolved BEFORE the freshness step below (round 3, HIGH, temperloop#1937)
- so runGateFreshness() can gate itself behind the identical presence check
- gateCmd's own GATE_ABSENT arm makes — a project with no vendored gate
- script has nothing for the freshness step to protect.
-```
-
-## A RESUME POINT THIS SLICE PRINTED IS THE VERDICT (temperloop#2094).
-<a id="a-resume-point-this-slice-printed-is-the-verdict-temperloop-"></a>
-
-```text
- A RESUME POINT THIS SLICE PRINTED IS THE VERDICT (temperloop#2094).
- quality-gates.sh emits `QUALITY_GATES_RESUME_AT=` on exactly one path:
- it spent its budget, stopped CLEANLY BETWEEN GATES, and is telling the
- caller where the remaining gates start. That is a PARTIAL slice by
- construction, and its own `QUALITY_GATES_FAILED=` line is the count it
- established. Keying the branch on the exit code INSTEAD made that fact
- conditional on a number the script prints the trailer before producing:
- one unexpected code — a SIGTERM after the trailer, a wrapper that
- remapped the status — and a clean partial was relabelled GATE_FAIL,
- where gateSliceFailed()'s "RED by construction" floor manufactured the
- one failure the slice had just reported as zero. Observed live: three
- slices, `QUALITY_GATES_FAILED=0` in every one, stopped at gate 152 of
- 200, reported `verdict: RED, failedGates: 1, suiteFinished: true`.
- So the resume point is checked FIRST and on its own; `$__rc` rides along
- as `rc` for the record (75 is the protocol code, anything else is an
- anomaly worth seeing in the ledger, neither changes the classification).
- Safe against a stale trailer because ${gateSliceLog} holds THIS slice's
- output alone — see its declaration above.
-```
-
-## ciPollLoop — bounded short-slice CI poll (DESIGN NOTE 2).
-<a id="cipollloop-bounded-short-slice-ci-poll-design-note-2"></a>
-
-```text
- -----------------------------------------------------------------------------
- ciPollLoop — bounded short-slice CI poll (DESIGN NOTE 2).
- -----------------------------------------------------------------------------
- Drives CI_POLL_SLICE_SECS-timeout ci-poll.sh calls until the outcome resolves.
- TIMEOUT on a slice = "still pending, poll again" (NOT a failure) — we keep
- looping while the total budget remains. On CI_FAILED, within
- CI_FAIL_RETRY_BUDGET, we re-spawn the worker + force-push + re-poll PINNED to
- the new SHA (#254 false-green guard).
-
- temperloop#942: the slices no longer cost an agent spawn EACH. One
- `ci-batch:<slug>#n` executor runs CI_POLL_SLICES_PER_BATCH
- (merge-state probe → poll slice) PAIRS in a single Bash invocation and returns
- all their JSON lines; this loop then consumes them one slice at a time from a
- buffer and branches on each exactly as it did when each came from its own
- agent. Interleaving is preserved: the merge-state probe still runs immediately
- before EVERY poll slice (#543), not once per batch. The buffer is FLUSHED
- whenever the head SHA changes (a CI-fix re-push), because buffered results are
- pinned to the OLD sha — keeping the #254 false-green guard intact. And the
- batch never runs one long poll: see DESIGN NOTE 2 for the derived slice count.
- Returns:
-   { ok:true, finalSha }                         — CI green
-   { ok:true, finalSha, noCi:true }              — NO_CI (temperloop#605/#618):
-        no CI configured on this repo/SHA — a legible skip mirroring build.md
-        3g, NOT a failure; 3h parks [m] with the no_ci sentinel stamped
-   { escalation:'ci-failed', payload:{...} }      — budget exhausted / hard fail
-   { escalation:'merge-conflict', payload:{...} } — PR is CONFLICTING/DIRTY
-```
-
-## The pushed-SHA hand-off guard (temperloop#2014).
-<a id="the-pushed-sha-hand-off-guard-temperloop-2014"></a>
-
-```text
- -----------------------------------------------------------------------------
- The pushed-SHA hand-off guard (temperloop#2014).
- -----------------------------------------------------------------------------
- ciPollCmd pins `--sha` to the SHA the push reported — the #254 false-green
- guard, and the one argument of the poll that this file, not the machinery,
- is responsible for. sq() stringifies whatever it is handed, so an ABSENT
- value does not crash: it renders as the literal `undefined` (or `null`),
- ci-poll.sh's own argument validation refuses to run on it, and the driver
- read that refusal back through the catch-all ERROR arm as `ci-failed` — i.e.
- reported a PR whose CI was still running (temperloop#2014: PR #2013 was OPEN
- with checks IN_PROGRESS) as a red one. Two halves close it:
-   • hexSha() is the PRE-FLIGHT. Every value that can become the poll's
-     `--sha` passes through it before a poll is spawned, so the driver never
-     spends a slice on an argument ci-poll.sh is certain to reject.
-   • a bad argument that reaches ci-poll.sh anyway (a vendored older copy, a
-     validation this file does not model) comes back as its OWN escalation
-     kind, `ci-poll-bad-argument`, never `ci-failed` — see isBadArgumentError
-     and the ERROR arm at the bottom of ciPollLoop.
- The predicate is hex-only, matching ci-poll.sh's own `*[!0-9a-fA-F]*`
- rejection exactly. It must never be LOOSER than the check it protects, or
- the pre-flight passes something the poll then refuses — which is the whole
- failure being fixed, one layer down.
-```
-
-## ======================================================================
-<a id="note-4"></a>
-
-```text
- =============================================================================
- ITEM-KEY NORMALIZATION AT THE ORCHESTRATOR→WORKFLOW SEAM (temperloop#1700).
- =============================================================================
- This file reads the item's issue number as `item.ghIssue`. `claude/plan-schema.md`
- DOCUMENTS the field as `gh_issue:`, and `also_closes:` / `depends-on:` likewise.
- A caller that constructs items from the documented schema — a legitimate
- calling pattern, since the schema is what documents it — therefore gets:
-
-   no `--gh-issue` flag on `pr.sh open` → no `Closes #N` in the body →
-   a PR that merges green and leaves its issue OPEN → and no warning anywhere.
-
- Observed on PR #1697 (`closingIssuesReferences` empty); three PRs from one
- level merged closing nothing. The SILENCE is the defect: "this item has no
- tracked issue" is a legal state (`gh_issue:` is optional), so an unread key is
- indistinguishable from an absent one, and the merged-with-no-linkage PR leaves
- a stranded `fnd:status:in-progress` item wearing a live claim stamp.
-
- Same family as #1698 above — one meaning wearing two names across a seam, with
- the consumer's absent-key path producing a plausible-looking result instead of
- an error. Both halves the issue asks for are implemented, because each catches
- what the other cannot:
-   (1) ACCEPT the documented spelling, normalizing once here. Fixes the three
-       aliases we know about.
-   (2) WARN on a key nothing reads. Catches the NEXT one — the class, not the
-       instance.
-```
-
-## temperloop#2006 — the LEVEL-SUMMARY half of the sideline notice. Each
-<a id="temperloop-2006-the-level-summary-half-of-the-sideline-notic"></a>
-
-```text
- temperloop#2006 — the LEVEL-SUMMARY half of the sideline notice. Each
- per-item record already carries its own `sidelined` object (stampSideline
- at the fan-out above); this rolls the level's set up onto the returned
- object so the orchestrator's Step 6 summary and the merge gate see it
- without re-walking two arrays. Omitted entirely when nothing sidelined, so
- an ordinary level's return is byte-identical to before this item.
-
- temperloop#2080 — the map is keyed by the RECORD key, which for a
- dual-build arm is `<slug>@<arm>` (that is what phase 1 sees as item.slug).
- Walking `activeItems` alone would therefore find NEITHER arm's notice and
- the level would report zero sideline notices while two builds sat shelved.
- So the rollup walks the map's own keys and splits the arm back out: a
- two-arm item that sidelined both arms produces TWO entries, one per arm,
- and a single-arm level produces exactly the pre-#2080 list (same entries,
- same order, no `arm` key) because the arm lookups simply miss. The walk
- stays over `activeItems` rather than over the map's own insertion order so
- the list is deterministic — insertion order is parallel-completion order,
- which would reshuffle the rollup run to run.
 ```

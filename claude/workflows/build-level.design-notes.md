@@ -18,12 +18,11 @@ Both were moved here during the first extraction and both had to be put back —
 the first silently turned every `/fix`, `/sweep` and `/build` Step 0 capability
 probe into `CAPABILITIES_INDETERMINATE`. A comment is not automatically prose.
 
-> **Part 1 of 2.** Split to stay under the repo's per-file prose cap
-> (`PROSE_BUDGET_TIER2_FILE_CAP`). The other half is
-> [`build-level.design-notes-2.md`](build-level.design-notes-2.md).
-
 > **Part 1 of 3.** Split to stay under the repo's per-file prose cap
 > (`PROSE_BUDGET_TIER2_FILE_CAP`). Other parts: [`build-level.design-notes-2.md`](build-level.design-notes-2.md), [`build-level.design-notes-3.md`](build-level.design-notes-3.md).
+
+> **Part 1 of 4.** Split to stay under the repo's per-file prose cap
+> (`PROSE_BUDGET_TIER2_FILE_CAP`). Other parts: [`build-level.design-notes-2.md`](build-level.design-notes-2.md), [`build-level.design-notes-3.md`](build-level.design-notes-3.md), [`build-level.design-notes-4.md`](build-level.design-notes-4.md).
 
 ## `meta` MUST be a PURE literal — no vars, calls, or spreads (runtime co
 <a id="meta-must-be-a-pure-literal-no-vars-calls-or-spreads-runtime"></a>
@@ -868,4 +867,51 @@ probe into `CAPABILITIES_INDETERMINATE`. A comment is not automatically prose.
  corrupted-but-present one degrades to 0 rather than aborting the step), so a
  worktree whose git dir cannot be resolved simply behaves as it did before
  this item.
+```
+
+## The 3e.6 class-A activation gate (temperloop#1219). ACTIVATION_PASS /
+<a id="the-3e-6-class-a-activation-gate-temperloop-1219-activation-"></a>
+
+```text
+ The 3e.6 class-A activation gate (temperloop#1219). ACTIVATION_PASS /
+ ACTIVATION_FAIL are the `proof:` predicate's own exit status against
+ the worker's worktree. The three CONTROL outcomes are the
+ temperloop#944 merge-base control pass, run FIRST for an absence-
+ asserting predicate: DISCRIMINATES (fails at the merge base — good,
+ proceed to the worktree run), VACUOUS (passes at the merge base, so it
+ would pass on an untouched tree and proves nothing), ERROR (the control
+ could not be ESTABLISHED — an UNKNOWN, never laundered into either
+ verdict, the same #1021 discipline GATE_TIMEOUT encodes).
+ ACTIVATION_TIMEOUT is that same discipline for the Bash-tool timeout.
+```
+
+## The WORKFLOW-LEVEL step liveness bound (temperloop#1071). Neither of
+<a id="the-workflow-level-step-liveness-bound-temperloop-1071-neith"></a>
+
+```text
+ The WORKFLOW-LEVEL step liveness bound (temperloop#1071). Neither of
+ these comes from a machinery script — both are emitted by the shell
+ watchdog THIS file wraps every machinery step in (see
+ stepBoundPreamble()). STEP_TIMEOUT: the step outlived
+ STEP_CEILING_SECS and was killed, so its result is LOST (never
+ "failed" — the ceiling says nothing about the work, exactly as
+ GATE_TIMEOUT says nothing about the tree). STEP_SLOW: an ADVISORY
+ notice riding alongside a step's real result, never a result itself —
+ runMachineryBatch partitions it out and logs it.
+```
+
+## temperloop#2020 — the post-commit work-preservation push that runs
+<a id="temperloop-2020-the-post-commit-work-preservation-push-that-"></a>
+
+```text
+ temperloop#2020 — the post-commit work-preservation push that runs
+ at the ONE escalation choke point (preserveOnEscalation). Three
+ outcomes, deliberately distinct so a payload never has to infer
+ which: WORK_PRESERVED (the branch is on origin), WORK_PRESERVE_SKIP
+ (there was PROVABLY nothing to preserve — no worktree, or a RESOLVED
+ default branch with no commit ahead of it; an unresolvable base is
+ never a skip, it pushes), WORK_PRESERVE_FAILED (there WAS unlanded work
+ and the push did not land it — the one shape that must stay visible,
+ because a later `worktree.sh remove` is then the last copy's last
+ chance).
 ```

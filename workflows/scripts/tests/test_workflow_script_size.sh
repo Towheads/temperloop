@@ -72,5 +72,36 @@ out="$(bash "$GUARD" 2>&1)" && rc=0 || rc=$?
 [ "$rc" -eq 0 ] && pass "the shipped claude/workflows/*.mjs are within budget" \
   || fail "the shipped workflow scripts are OVER budget: $out"
 
+# --- 5. the engine still carries its MACHINE-PARSED sentinel -------------
+# Suggested by the #2083 session while reviewing this change, and it is the
+# better half of the fix. Extracting comment volume is how this file is kept
+# under the ceiling, and five of the blocks moved on the first pass turned out
+# to be contracts rather than prose. The worst was the HANDOFF-CAPABILITIES
+# sentinel: handoff-capability.sh answers CAPABILITIES_INDETERMINATE when it
+# cannot find the declaration, and INDETERMINATE "reads identically to a pass
+# at every call site" -- every /fix, /sweep and /build Step 0 probe silently
+# reported every hand-off key unverified, with nothing going red.
+#
+# Restoring the block fixed that instance. THIS makes the next instance fail
+# LOUDLY instead: the sentinel's absence from the shipped engine is now a red
+# gate, not a degraded probe. Deliberately asserted HERE rather than by
+# changing handoff-capability.sh's contract -- INDETERMINATE is the right
+# answer for a foreign or older engine, and this repo's own engine is the one
+# thing that must never produce it.
+ENGINE="$(git rev-parse --show-toplevel)/claude/workflows/build-level.mjs"
+if [ -f "$ENGINE" ]; then
+  for marker in 'HANDOFF-CAPABILITIES-BEGIN' 'HANDOFF-CAPABILITIES-END'; do
+    grep -qF -- "$marker" "$ENGINE" \
+      && pass "the engine carries its $marker sentinel inline" \
+      || fail "$marker is GONE from build-level.mjs — handoff-capability.sh will answer CAPABILITIES_INDETERMINATE, which every Step 0 call site reads as a pass. Restore the block inline; never relocate a machine-parsed comment."
+  done
+  probe="$(bash "$(git rev-parse --show-toplevel)/workflows/scripts/build/handoff-capability.sh" check "$ENGINE" "repoRoot,items" 2>/dev/null || true)"
+  case "$probe" in
+    *'"outcome":"CAPABILITIES_OK"'*) pass "handoff-capability.sh reads the engine as CAPABILITIES_OK" ;;
+    *'INDETERMINATE'*) fail "handoff-capability.sh cannot read the engine's declaration (CAPABILITIES_INDETERMINATE) — a silent degradation at every Step 0 call site: $probe" ;;
+    *) fail "handoff-capability.sh returned an unexpected outcome for the engine: $probe" ;;
+  esac
+fi
+
 [ "$fails" -eq 0 ] || { printf '\n%d check(s) failed\n' "$fails" >&2; exit 1; }
 printf '\nOK — all workflow-script-size checks passed\n'

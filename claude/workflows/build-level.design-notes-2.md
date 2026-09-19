@@ -18,12 +18,357 @@ Both were moved here during the first extraction and both had to be put back —
 the first silently turned every `/fix`, `/sweep` and `/build` Step 0 capability
 probe into `CAPABILITIES_INDETERMINATE`. A comment is not automatically prose.
 
-> **Part 1 of 2.** Split to stay under the repo's per-file prose cap
-> (`PROSE_BUDGET_TIER2_FILE_CAP`). The other half is
-> [`build-level.design-notes-2.md`](build-level.design-notes-2.md).
+> **Part 1 of 3.** Split to stay under the repo's per-file prose cap
+> (`PROSE_BUDGET_TIER2_FILE_CAP`). Other parts: [`build-level.design-notes-2.md`](build-level.design-notes-2.md), [`build-level.design-notes-3.md`](build-level.design-notes-3.md).
 
-> **Part 2 of 3.** Split to stay under the repo's per-file prose cap
-> (`PROSE_BUDGET_TIER2_FILE_CAP`). Other parts: [`build-level.design-notes.md`](build-level.design-notes.md), [`build-level.design-notes-3.md`](build-level.design-notes-3.md).
+> **Part 2 of 4.** Split to stay under the repo's per-file prose cap
+> (`PROSE_BUDGET_TIER2_FILE_CAP`). Other parts: [`build-level.design-notes.md`](build-level.design-notes.md), [`build-level.design-notes-3.md`](build-level.design-notes-3.md), [`build-level.design-notes-4.md`](build-level.design-notes-4.md).
+
+## temperloop#2065 "worker-cost-capture" — the per-item WORKER COST
+<a id="temperloop-2065-worker-cost-capture-the-per-item-worker-cost"></a>
+
+```text
+ temperloop#2065 "worker-cost-capture" — the per-item WORKER COST
+ seam. Neither comes from a machinery script proper; both are
+ workflows/scripts/build/worker-usage.sh, the SAME emitted-shell
+ pattern review-wait.sh established for giving this runtime a
+ wall-clock tick it otherwise has none of. WORKER_CLOCK is a bare
+ `date` read (no side effect); WORKER_USAGE is that same reading
+ PLUS the durable per-seat attribution write (model-usage-
+ envelope.sh's model_usage_emit_from_envelope, seat "build-worker" —
+ see that file's own header). See workerClockNow()/workerUsageEmit().
+```
+
+## `'null'` IS LOAD-BEARING HERE, not defensive padding (temperloop#1698,
+<a id="null-is-load-bearing-here-not-defensive-padding-temperloop-1"></a>
+
+```text
+ `'null'` IS LOAD-BEARING HERE, not defensive padding (temperloop#1698,
+ review round 2). The gate emitter below deliberately prints a bareword
+ `null` when the elapsed figure is unreadable — that IS the fix: an
+ unknown duration must degrade to "I don't know", never to a plausible
+ `0`. This object is what `agent({schema})` validates the executor's
+ returned line against, so leaving `null` out of the type array would
+ reject (or silently coerce) the ONE shape the fix exists to produce —
+ reintroducing the same degrade-to-a-believable-value defect one layer
+ up, on the path that only fires when the figure is already unknown.
+ Same precedent as `input_tokens` / `output_tokens` above, declared
+ `['number', 'null']` for exactly this reason. Kept honest by the K1698
+ producer↔schema case in test_workflow.sh, which runs the REAL emitted
+ shell fragment and validates the REAL line it prints against THIS object
+ rather than against an injected outcome object.
+```
+
+## temperloop#1698 — these three are the NON-canonical (wire) spelling: t
+<a id="temperloop-1698-these-three-are-the-non-canonical-wire-spell"></a>
+
+```text
+ temperloop#1698 — these three are the NON-canonical (wire) spelling: the
+ emitted `__lb` shell prints them, so the schema must keep admitting them
+ or the bound's own STEP_TIMEOUT would fail validation. They are
+ canonicalized to `ceilingSecs` / `elapsedSecs` / `slowSecs` by
+ canonicalizeOutcome() at the transport boundary, and NO consumer in this
+ file reads a snake_case duration key any more. The camelCase twins are
+ declared alongside so an emitter that already speaks canonical (the 3e.5
+ gate does, for `elapsedSecs`/`budgetSecs` above) validates unchanged.
+```
+
+## STEP_OUTCOME_SCHEMA — one element of a BATCH's results array (temperlo
+<a id="step-outcome-schema-one-element-of-a-batch-s-results-array-t"></a>
+
+```text
+ STEP_OUTCOME_SCHEMA — one element of a BATCH's results array (temperloop#942).
+ Same permissive shape as SPINE_OUTCOME_SCHEMA (whose `properties` it reuses
+ verbatim — #543's "do NOT touch SPINE_OUTCOME_SCHEMA" still holds; this derives
+ from it, it does not mutate it) with two differences:
+   - `outcome` is NOT required, because one batched step is the read-only
+     merge-state probe (`gh pr view --json mergeable,mergeStateStatus`), whose
+     object carries no `outcome` key at all. When `outcome` IS present the
+     closed enum still applies.
+   - the merge-state fields are declared so the .mjs can branch on them.
+```
+
+## WORKER_VERDICT_SCHEMA — matches build.md §3c's return contract. The
+<a id="worker-verdict-schema-matches-build-md-3c-s-return-contract-"></a>
+
+```text
+ WORKER_VERDICT_SCHEMA — matches build.md §3c's return contract. The
+ worker owns only these fields (never branch/pr/pushed_sha — orchestrator-
+ owned). `status` is a closed enum, 1:1 with the 3d handling branches.
+
+ Output shape (temperloop#1080): the `description` on each free-prose field
+ states what that field is FOR, so the shape rule reaches the worker on the
+ schema surface too, not only in the prompt. Deliberately NO word numbers
+ here — a JSON schema cannot enforce a string length, so the numeric bounds
+ live in exactly one place (the WORKER_*_MAX_WORDS constants, interpolated
+ into the prompt's `## Output shape` section) rather than being restated in a
+ second surface that could drift. The two surfaces are complementary: the
+ schema fixes the SHAPE (machine-validated), the prompt fixes the SIZE.
+```
+
+## Kill ORDER is load-bearing, and the obvious order is wrong. Killing th
+<a id="kill-order-is-load-bearing-and-the-obvious-order-is-wrong-ki"></a>
+
+```text
+ Kill ORDER is load-bearing, and the obvious order is wrong. Killing the
+ step's children FIRST unblocks the step body — which then races ahead and
+ runs its NEXT command (printing a result the workflow must not believe)
+ before the kill of the body itself lands. Measured, not theorised: with
+ children-first, a `sleep 30; printf …` step still printed its `printf`.
+ So: SNAPSHOT the direct children, kill the body, THEN kill the snapshot
+ (once the body dies its children reparent, and `pgrep -P` can no longer
+ find them — hence the snapshot rather than a second lookup).
+```
+
+## runMachinery — the sh() replacement (spike §1).
+<a id="runmachinery-the-sh-replacement-spike-1"></a>
+
+```text
+ -----------------------------------------------------------------------------
+ runMachinery — the sh() replacement (spike §1).
+ -----------------------------------------------------------------------------
+ Spawns a one-shot executor agent that runs EXACTLY one machinery command via Bash
+ and returns its single closed-outcome JSON line, schema-validated. No model
+ override beyond haiku (cheapest tier — the executor does no reasoning); NO
+ isolation:'worktree' (the machinery scripts manage their own worktrees, §5).
+ `phase` (temperloop#1294) is the caller's STAGE group name — the string
+ enterStage()/stagePhase() returned. It is passed EXPLICITLY rather than read
+ off the global phase() cursor, which races under parallel(). The `?? 'machinery'`
+ fallback keeps a caller that omits it on the pre-#1294 flat group rather than
+ on whatever stage happens to be current.
+```
+
+## Wording (temperloop#72): describe the command as a KNOWN build-machine
+<a id="wording-temperloop-72-describe-the-command-as-a-known-build-"></a>
+
+```text
+ Wording (temperloop#72): describe the command as a KNOWN build-machinery helper
+ script that self-reports its result, rather than telling the sub-agent to
+ "run exactly / do NOT interpret" an opaque line. The old phrasing, paired
+ with the nested-readlink path resolution, read to the auto-mode safety
+ classifier as an instruction to blindly execute an obfuscated command.
+ BOTH framing lines stay in the LEAN prompt too: the auto-mode classifier
+ sees the prompt (and the agent type), never the agent's system prompt, so
+ the #72 framing is not something the executor definition can absorb.
+```
+
+## temperloop#1021: name the TIMEOUT case explicitly. NOT lean-guarded, a
+<a id="temperloop-1021-name-the-timeout-case-explicitly-not-lean-gu"></a>
+
+```text
+ temperloop#1021: name the TIMEOUT case explicitly. NOT lean-guarded, and
+ deliberately so: unlike the three standing lines above, this one is
+ per-call (it fires only when a caller passes `timeoutOutcome`) and it
+ interpolates a dynamic outcome name, so it cannot live in the static
+ machinery-executor.md agent definition the lean prompt relies on.
+ Without this line the executor, having been killed by the Bash tool
+ before any JSON line was
+ printed, picks the closest failure-shaped enum member it knows — which
+ for the gate is GATE_FAIL. That silently reported a GREEN suite as
+ BROKEN and made a budget-exhaustion escalation indistinguishable from a
+ real gate failure. The timeout is a fact about the BUDGET, never about
+ the tree, so it gets its own outcome and the executor is told to use it
+ rather than guess.
+```
+
+## temperloop#982: orchestrator-supplied workflow input, NOT a config-fil
+<a id="temperloop-982-orchestrator-supplied-workflow-input-not-a-co"></a>
+
+```text
+ temperloop#982: orchestrator-supplied workflow input, NOT a config-file
+ read (this runtime has no shell — DESIGN NOTE 1). `||`, NOT `??` —
+ `??` only falls through on null/undefined, and a caller (or an
+ omitted-vs-empty prose mistake upstream) can easily hand this an
+ empty string, which `??` would pass straight through as a literal
+ "" model and silently defeat the fallback. `||` collapses BOTH the
+ absent-input case (build.md didn't resolve BUILD_MACHINERY_SOLO_MODEL,
+ or the key was omitted) AND an empty-string input to the same
+ 'haiku' default — UNCHANGED from before this setting existed, the
+ byte-identical-when-unset contract this item ships under. This is the
+ load-bearing invariant; it lives here (the consumer), not in the
+ orchestrator prose (the producer), so it holds regardless of how
+ build.md/sweep.md/fix.md construct the input.
+```
+
+## Null-guard (temperloop#72): agent() returns null when the run is DENIE
+<a id="null-guard-temperloop-72-agent-returns-null-when-the-run-is-"></a>
+
+```text
+ Null-guard (temperloop#72): agent() returns null when the run is DENIED by
+ the auto-mode safety classifier (or a user skip / transient API error).
+ Every consumer below dereferences `.outcome`, so a raw null crashed the
+ whole level with `null is not an object`. Normalize it to a closed
+ SPINE_DENIED sentinel — a well-formed outcome object every call site can
+ detect (via machineryDenied()) and turn into a parkable `machinery-denied`
+ escalation instead of a TypeError.
+ temperloop#1698 — canonicalize the duration keys ONCE, here at the
+ transport boundary, so every consumer below reads exactly one spelling.
+```
+
+## temperloop#1071 — PARTITION the advisory notices out of the results ar
+<a id="temperloop-1071-partition-the-advisory-notices-out-of-the-re"></a>
+
+```text
+ temperloop#1071 — PARTITION the advisory notices out of the results array
+ BEFORE anyone indexes it. A STEP_SLOW line is emitted alongside a real
+ result, not in place of one, so leaving it in would shift every later step's
+ index by one and silently mis-branch the whole batch. Filtering here (once,
+ at the transport) is what lets every `batchStep(batch, i)` call site below
+ stay exactly as it was.
+ temperloop#1698 — canonicalize every step's duration keys at this same
+ transport boundary (the batch twin of runMachinery's call above), BEFORE
+ the partition below and before any `batchStep(batch, i)` consumer.
+```
+
+## discriminationEvidenceSection — the §3c "test-discrimination evidence"
+<a id="discriminationevidencesection-the-3c-test-discrimination-evi"></a>
+
+```text
+ discriminationEvidenceSection — the §3c "test-discrimination evidence"
+ requirement (temperloop#1319), a SELF-CONTAINED section appended once into
+ workerPrompt()'s array, mirroring principlesSection()'s shape so a sibling
+ edit to workerPrompt() rebases cleanly. Gated on REQUIRE_DISCRIMINATION_
+ EVIDENCE (see that constant's own comment above for the full rationale,
+ including the correction on why /sweep and /fix are excluded — an
+ operational scope decision, not a structural one) — returns an EMPTY
+ array, not a degraded/notice variant, when the caller didn't ask for it:
+ unlike principlesSummaries' "never silence" rule, an unrequired discipline
+ staying silent is correct here, since REQUIRE_DISCRIMINATION_EVIDENCE is
+ false for any caller that never armed the requirement in the first place.
+```
+
+## parentSummarySection — the epic #1847 Produces #7 companion: injects t
+<a id="parentsummarysection-the-epic-1847-produces-7-companion-inje"></a>
+
+```text
+ parentSummarySection — the epic #1847 Produces #7 companion: injects the
+ parent epic's own "group summary" into an admitted epic member's worker
+ prompt, a SELF-CONTAINED section appended once into workerPrompt()'s
+ array, mirroring changelogFragmentSection()'s shape so a sibling edit to
+ workerPrompt() rebases cleanly. Gated on `item.parentSummary` — set ONLY
+ by /sweep's Step 3 items[] construction for a member it admitted via Step
+ 1 item 6 (Operational-epic member admission); a plain singleton, and every
+ /build plan item, never carries the field, so this returns an empty array
+ and the section is silently absent. Unlike principlesSection()'s DEGRADED
+ notice, there is no "missing" case to flag here: an item with no parent
+ epic genuinely has no group summary to inject, so silence is correct, not
+ a degradation.
+```
+
+## #1072 — the near-miss this institutionalizes: a build worker (temperlo
+<a id="1072-the-near-miss-this-institutionalizes-a-build-worker-tem"></a>
+
+```text
+ #1072 — the near-miss this institutionalizes: a build worker (temperloop#635)
+ spawned a context-inheriting fork for a narrow read-only sub-task; the fork
+ INHERITED the "drive to done and commit" mission, fabricated a completion
+ report, and committed to the shared worktree (self-recovered — see
+ Mistakes/foundation - research fork inherits drive-to-done context and
+ commits to shared worktree). Embedded here, structurally, rather than left
+ to a vault note someone has to remember to re-paste — mirrors how the
+ foreground-only contract below is embedded rather than left to prose alone.
+```
+
+## ## Output shape (temperloop#1080) — the SIZE half of the return contra
+<a id="output-shape-temperloop-1080-the-size-half-of-the-return-con"></a>
+
+```text
+ ## Output shape (temperloop#1080) — the SIZE half of the return contract.
+ The schema below fixes the shape; nothing fixed the length, and measured
+ across 83 real worker verdicts the two prose slots ran 2-4x past what the
+ spec asked for. Stated as an explicit bound here — the one surface the
+ worker actually reads — with the routing rule that makes the bound safe:
+ detail goes to the verification-surface FILE, which reaches the PR body
+ without entering orchestrator context. build.md §3c carries the same
+ contract; the two must stay in lockstep (static guard in test_workflow.sh).
+```
+
+## temperloop#2065 review round 2 [HIGH]: workerClockNow()/workerUsageEmi
+<a id="temperloop-2065-review-round-2-high-workerclocknow-workerusa"></a>
+
+```text
+ temperloop#2065 review round 2 [HIGH]: workerClockNow()/workerUsageEmit()
+ both bottom out in runMachinery() -> machineryAgent(), which explicitly
+ re-throws (does not degrade) an unresolvable-agentType / StructuredOutput-
+ absent / retry-cap-exceeded executor spawn — the exact throw shape
+ callWorker()'s own agent({schema}) call is documented as capable of, two
+ blocks below. The block comment above these two functions promises they
+ are FAIL-OPEN and "never a thrown error" — that promise covers only a
+ malformed VALUE in a successful response (numOrNull()'s job); it does not
+ cover the underlying machinery spawn itself throwing. These two guards are
+ what backs the promise with code: every call site below goes through one
+ of these instead of calling workerClockNow()/workerUsageEmit() bare, so a
+ cost-ledger bookkeeping failure can never abort the item build it is only
+ supposed to be measuring.
+```
+
+## callWorker — spawn the implementation worker so a lost return channel 
+<a id="callworker-spawn-the-implementation-worker-so-a-lost-return-"></a>
+
+```text
+ callWorker — spawn the implementation worker so a lost return channel can
+ never escape as a throw. agent({schema}) THROWS on a StructuredOutput-absent
+ / retry-cap-exceeded subagent and returns null on a skip / terminal API error;
+ both are the same thing to the caller ("no verdict"), and neither is evidence
+ about the work. Normalize both into { verdict, error } so driveItem decides
+ what they MEAN only after the side-effect probe has run.
+ `phaseName` (temperloop#1294) — the STAGE group this worker belongs to,
+ passed explicitly (the global phase() cursor races under parallel()).
+
+ temperloop#2065 — every call also brackets the worker in the clock/usage
+ seam above and returns its reading as { wallClockMs, tokensIn, tokensOut },
+ on BOTH the return and the throw arm: a re-spawned worker that itself
+ blows its return channel still spent real tokens, and the ledger records
+ that spend rather than silently dropping it.
+```
+
+## temperloop#982: item.model || undefined, NOT bare item.model — an
+<a id="temperloop-982-item-model-undefined-not-bare-item-model-an"></a>
+
+```text
+ temperloop#982: item.model || undefined, NOT bare item.model — an
+ empty-string item.model (e.g. an orchestrator that resolved
+ SWEEP_WORKER_MODEL/FIX_WORKER_MODEL to "" and passed it through
+ unfiltered) must collapse to undefined here, the sentinel the agent()
+ hook reads as "inherit session model" — a bare "" would instead be
+ sent as a literal (invalid) model name. undefined/absent item.model
+ already coerces to undefined via `||`, so this is a strict
+ widening (covers "" too), never a behavior change for the existing
+ undefined case.
+```
+
+## isVerdictUnparseable — the pr-open outcome temperloop#1805 is about: p
+<a id="isverdictunparseable-the-pr-open-outcome-temperloop-1805-is-"></a>
+
+```text
+ isVerdictUnparseable — the pr-open outcome temperloop#1805 is about: pr.sh's
+ own `die` when the verdict file it was handed is not usable JSON. It is
+ deliberately NARROW — three literal messages pr.sh emits about the VERDICT
+ (`open`'s `jq -e .` guard, and assemble_body's two field checks) — because the
+ tolerance path below re-issues the PR-open command, and a blind re-issue of a
+ non-idempotent machinery step on any broader class is exactly the double-open
+ hazard the rest of this file is built to avoid. Anything else — a `gh` failure,
+ a push race, a missing surface file — keeps the unchanged escalation.
+```
+
+## recoverLostReturn — the 3f push/pr-open twin of disposeStepTimeout's p
+<a id="recoverlostreturn-the-3f-push-pr-open-twin-of-disposesteptim"></a>
+
+```text
+ recoverLostReturn — the 3f push/pr-open twin of disposeStepTimeout's probe,
+ for the NON-timeout case: a pr-batch step's own JSON line was dropped (lost
+ pr-batch return) with every step before it in the SAME batch already
+ confirmed successful (the caller only reaches this after its own
+ rebase/scan/push branches above already passed) — temperloop#1067, distinct
+ from #1071's liveness-kill. Reuses the EXISTING probeSideEffects/RECOVER_*
+ ladder — no second probe, no new machinery. Returns one of:
+   { kind: 'adopted', pr, pushedSha }   — landed; caller skips re-push/re-open
+   { kind: 'escalate', escKind, payload } — a resume attempt itself failed
+   { kind: 'none' }                      — RECOVER_NONE/RECOVER_DIRTY/unusable
+                                            probe; caller does its UNCHANGED
+                                            escalation exactly as before this
+                                            wiring existed.
+```
 
 ## RELAY ONLY THE DATA ROWS (temperloop#1982 round 3). The field crosses 
 <a id="relay-only-the-data-rows-temperloop-1982-round-3-the-field-c"></a>
@@ -583,250 +928,4 @@ probe into `CAPABILITIES_INDETERMINATE`. A comment is not automatically prose.
       very transcript this item's acceptance pins as unchanged. Here the
       clean path runs `worktree.sh create` and prints its CREATED line with
       nothing added — same step count, same agent count, same JSON.
-```
-
-## gateCmd(startAt) — one SLICE of the suite (temperloop#1021).
-<a id="gatecmd-startat-one-slice-of-the-suite-temperloop-1021"></a>
-
-```text
- gateCmd(startAt) — one SLICE of the suite (temperloop#1021).
-
- The budget is handed to quality-gates.sh as ENV VARS, deliberately not
- flags: a consuming repo vendoring an OLDER quality-gates.sh ignores an
- unknown env var and runs the whole suite in one go (today's exact behavior,
- and still correct), whereas an unknown FLAG would exit 2 "usage" and read
- back here as a gate failure. So this is compatible with every vendored copy
- in the fleet with no probing.
-
- Exit-code protocol: 0 = finished green, 75 = budget spent with gates
- remaining (the script printed QUALITY_GATES_RESUME_AT= / QUALITY_GATES_FAILED=),
- anything else = red. Note the 75 arm is only ever taken by a slice-aware
- script, so an older copy can only ever produce GATE_PASS / GATE_FAIL.
-
- `set -o pipefail` is LOAD-BEARING (temperloop#68 — see build.md §3e.5).
- The gate verdict is derived from the subshell's own exit status, and since
- temperloop#2094 that subshell IS piped — through `tee`, so one slice's
- output can be isolated for trailer parsing while still STREAMING into the
- cumulative operator log (see gateSliceLog below for why both are required).
- A bare pipe's status reflects the LAST stage (tee's 0), which would swallow
- a RED gate and degrade 3e.5 to a silent no-op; with pipefail set, the gate's
- own non-zero exit propagates to `$?` and GATE_FAIL is still emitted. This is
- the exact case build.md §3e.5 permits ("if the gate must be piped, `set -o
- pipefail` first"), and the exit is read as a bare `$?` — NOT through
- PIPESTATUS[0], a bash array that expands empty under the zsh this harness's
- Bash tool actually runs, which is temperloop#801's misread.
-
- The log is truncated on the first slice and APPENDED to thereafter, so
- /tmp/qg-<slug>.log stays the single artifact an operator reads, carrying the
- union of every slice exactly as an unsliced run's log did.
-```
-
-## ONE SLICE'S OWN OUTPUT, kept separate from the cumulative log above
-<a id="one-slice-s-own-output-kept-separate-from-the-cumulative-log"></a>
-
-```text
- ONE SLICE'S OWN OUTPUT, kept separate from the cumulative log above
- (temperloop#2094). The trailers below (`QUALITY_GATES_FAILED=`,
- `QUALITY_GATES_RESUME_AT=`, `QUALITY_GATES_SELECTION=`) are read with
- `tail -1`, so reading them out of the APPENDED log silently answers a
- question about THIS slice with the previous slice's numbers whenever this
- slice printed none of its own — a slice killed before it could report, or
- one whose `cd`/`unset` prelude failed, inherits a resume point and a
- failure count it never established. The trailers are therefore parsed from
- HERE, never from the cumulative log: a trailer present in this file was
- printed by the slice just run, which is what makes the classifier below
- able to trust it.
-
- IT IS A TEE, NOT A REDIRECT-THEN-COPY (review round 1). Writing the slice
- to this file and `cat`-ing it into ${gateLog} afterwards bought the
- isolation above at the cost of the guarantee that matters most on the one
- path that has no other diagnostic: the executor KILLS this whole command at
- GATE_BASH_TIMEOUT_MS, and a copy step scheduled after the gate never runs.
- The killed slice's partial output — the only evidence a timeout produces —
- would never reach /tmp/qg-<slug>.log, the single artifact the escalation
- payload hands the operator; and with the first-slice truncation moved into
- that same copy, a timed-out first slice would leave the PREVIOUS run's log
- in place and the escalation would point at stale content presented as
- current. So ${gateLog} is truncated UP FRONT on slice 0 and the gate streams
- into both files through `tee` — per-slice isolation and live, kill-proof
- streaming at once. `set -o pipefail` is at the head of the command, so the
- pipeline's `$?` is still the gate's own status (`tee` exits 0); the bare
- `$?` read is deliberate and dialect-safe — PIPESTATUS[0] is a bash
- array that expands EMPTY under the zsh this harness's Bash tool runs
- (temperloop#801), which is the misread that swallows a red gate.
-```
-
-## temperloop#1663: run the acceptance gate DIFF-SCOPED — only the gates 
-<a id="temperloop-1663-run-the-acceptance-gate-diff-scoped-only-the"></a>
-
-```text
- temperloop#1663: run the acceptance gate DIFF-SCOPED — only the gates this
- item's own changed paths can reach, resolved through gate-paths.tsv.
-
- WHY. The full per-item suite could not survive within-level parallelism, and
- the ceiling it hit is not tunable. Measured on a 3-item level: 55 minutes,
- 21 agents, 1.24M subagent tokens, ZERO items landed — all three escalated
- `acceptance-gate-timeout` with every worker finished and committed and only
- the verdict missing. Three concurrent full suites is 3x QUALITY_GATES_JOBS
- workers on one machine; contention inflated the gate tail 200-300% (gates
- that take seconds took 121s), while GATE_SLICE_SECS_MAX sits only 20% above
- the budget that failed and CANNOT be raised past AGENT_BASH_CAP_MS. So the
- suite has to get SHORTER, not the budget longer — and the map that knows
- which gates a diff can reach already exists and was already trusted.
-
- WHY IT IS SAFE. This puts §3e.5 on exactly the same footing as the
- `pull_request` run of CI's `checks` job, which has been scoped through this
- same map since #1024 — so scoping here adds no failure mode that the PR
- check does not already carry. What actually gates `main` is the UNSCOPED
- merge_group run, and that is untouched. Every resolution failure in the
- selector widens to the full set (gate-selection.sh's four silent-green
- defenses), and a scoped run names every gate it skipped, twice.
-
- THE SEAM IS AN ENV VAR, NOT THE `--scoped` FLAG, for the same reason the
- slice budget below is: a consuming repo vendoring an OLDER quality-gates.sh
- ignores an unknown env var and runs the whole suite (the pre-#1663 behavior,
- still correct), whereas an unknown FLAG exits 2 "usage" and reads back here
- as a GATE FAILURE.
-
- BUILD_GATE_SCOPED is read HERE, in the emitted shell, rather than plumbed in
- as an orchestrator `input.*` key like gateSliceSecs. That is deliberate and
- is the narrower seam, not a shortcut: gateSliceSecs must reach the .mjs's
- OWN control flow (it derives GATE_BASH_TIMEOUT_MS and bounds the slice
- loop), and the Workflow runtime has no shell to source build.config.sh with
- — DESIGN NOTE 1. This value is needed ONLY inside the command string, which
- is bash, and it is read from the WORKTREE'S config, i.e. the version of the
- setting the change under test actually ships. The read is a subshell so the
- #1241 scrub below still governs the gate's own environment; an absent or
- older config file leaves `${BUILD_GATE_SCOPED:-1}` at the default.
-```
-
-## 3f-1. Push-by-SHA on the plan's branch.
-<a id="3f-1-push-by-sha-on-the-plan-s-branch"></a>
-
-```text
- 3f-1. Push-by-SHA on the plan's branch.
-
- `--allow-rewrite` (temperloop#2103): 3f-0a above has just REWRITTEN this
- branch's history onto a fresh origin/<default>, and on a continuation round
- an earlier round has already pushed the pre-rebase history to origin. A
- plain push of a rewritten, already-pushed branch can NEVER fast-forward, so
- it came back PUSH_REJECTED every time — observed three times in one session,
- each recovered by hand with a lease-force push. The `recovery && pushed`
- skip above only covers the temperloop#939 lost-return path; an ordinary
- continuation round is not a `recovery` and never took it.
-
- This is a REQUEST, not a force: pr.sh downgrades to a plain push on any
- provable fast-forward (#335), issues nothing at all when the ref is absent
- or unreadable, and when it does rewrite it uses
- `--force-with-lease=<ref>:<sha>` over a value it read first — so a
- concurrent writer is rejected rather than overwritten. The flag is spelled
- `--allow-rewrite` rather than `--force` so the command line the orchestrator
- executes carries no classifier-visible force token (#437).
-
- AND NOT ON THE LEASE ALONE (temperloop#2103 round 3). Because this call site
- requests a rewrite on EVERY item — not only on a rescue — it is the busiest
- force path in the pipeline, and a lease protects only against a writer who
- moves the ref BETWEEN pr.sh's read and its push, never against content that
- was already there. So pr.sh gates the force on the SAME supersede check
- preserveCommittedWorkCmd (below) applies on the rescue path: a branch name
- colliding with unrelated work — a leftover manual branch, a reused slug, a
- planning bug — comes back PUSH_REJECTED with `refused_reason` rather than
- being overwritten and reported as an ordinary PUSHED straight into pr-open.
- The two force paths this file drives are symmetric; the asymmetry between
- them was the round-2 finding.
-```
-
-## 3f-2 FALLBACK: a PR-ready tree must not be stranded by a bad verdict
-<a id="3f-2-fallback-a-pr-ready-tree-must-not-be-stranded-by-a-bad-"></a>
-
-```text
- --- 3f-2 FALLBACK: a PR-ready tree must not be stranded by a bad verdict --
- temperloop#1805, disposition (a). `pr.sh open` REQUIRES a parseable
- `--verdict` and dies `verdict is not valid JSON` when it does not get one.
- That is a REPORTING-layer failure, and it was terminal for the item:
-
-   {"slug":"disclosure-watermark-tracked-1316","kind":"pr-open-failed",
-    "payload":{"openOut":{"step":"pr-open","outcome":"ERROR",
-                          "error":"verdict is not valid JSON"}}}
-
- …against ONE clean commit, a zero-dirty tree, a full `.build-verification.md`
- and that item's own suite green 39/39. The orchestrator recovered it BY HAND
- — push, `gh pr create`, verification file as the body — and it became PR
- #1803. Every piece of information the PR needed was already on disk; only
- the hand-off failed. The preservation machinery means the commit survives,
- so this is not data loss — it is PROGRESS loss: the item parks, re-enters
- the next run, and a fresh worker redoes finished, correct work.
-
- So the fallback re-issues `open` with a MINIMAL, structurally-safe verdict:
- the title is the item's own (what `--title` already carried) and the body
- comes from `.build-verification.md` via the surface flag — exactly the shape
- the manual recovery used. Everything variable about the rich verdict —
- `acceptance_results`, the worker's own prose — is dropped, because that is
- precisely the content that failed to survive the hand-off; the §3e review
- evidence line is kept, since it is assembled by this file and must stay
- visible on the PR (temperloop#1430).
-
- A body-less fallback would be worse than the escalation, so it is attempted
- ONLY when there is a real surface to fall back ON — either the worktree file
- or the synthesized inline surface.
-```
-
-## ======================================================================
-<a id="note-2"></a>
-
-```text
- =============================================================================
- levelPhaseTitle — the run-identifying progress-row heading (temperloop#903),
- now emitted ONCE PER STAGE rather than once per level (temperloop#1294).
- =============================================================================
- The Workflow progress UI renders one row per workflow (labelled from the PURE
- LITERAL `meta.description`, which by runtime constraint is byte-identical on
- every run) plus a group heading per phase(). phase() is therefore the ONLY
- surface that can carry run context — and it used to read `build level — N
- item(s)`, which identifies nothing: not the repo, not the items, not the
- issues. Two concurrent spine runs (routine: one /fix session drives several
- back to back) rendered indistinguishable rows.
-
- The heading names, from context already in scope at the call site:
-   build level · <stage> — <ownerRepo> · <N> item(s) · <slug> (#<ghIssue>), …
- e.g.  build level · gate — Towheads/foundation · 1 item · row-per-stage (#1294)
-
- temperloop#1294 added the `· <stage>` segment and made the level emit ONE
- phase() PER STAGE (claim → build → gate → PR → CI) instead of a single static
- heading for the whole level. Two independent effects, both wanted:
-   • the ACTIVE phase now ADVANCES as the level progresses, so a collapsed view
-     that renders it moves instead of sitting on one heading all run;
-   • the expanded progress tree groups agents by stage instead of dumping every
-     executor into one 'machinery' box.
- The #903 run context rides EVERY stage heading — dropping it from the later
- stages would re-open exactly the complaint #903 closed.
-
- TWO SURFACES, ONE STRING. `phase(t)` moves the GLOBAL cursor (what a collapsed
- view shows); `agent(…, {phase: t})` assigns one agent to the group named `t`.
- The Workflow docs are explicit that the global cursor RACES inside
- parallel()/pipeline() stages — this level fans its items out with parallel(),
- so item A can be at CI while item B is still at build. Every agent spawn below
- therefore passes opts.phase EXPLICITLY (same string → same group box) and never
- relies on whatever the global cursor happens to be. enterStage() returns that
- string and, as a side effect, advances the global cursor MONOTONICALLY (a stage
- already passed never re-fires), so the collapsed row tracks the level's
- furthest-reached stage and can never appear to run backwards when a straggler
- item is still on an earlier one.
-
- meta.phases: DELIBERATELY ABSENT. `meta` is a pure literal by runtime
- constraint, and meta.phases entries are matched against phase() titles
- EXACTLY. Every title here is dynamic by construction (#903 requires the repo,
- the item count and the item/issue list in it), so no static entry could ever
- match one — declaring the five stages statically would render five permanently
- EMPTY groups alongside the five real ones. Per the runtime's own contract a
- phase() call with no matching meta entry simply gets its own progress group,
- which is the correct outcome here; this is a noted, accepted consequence of
- #903's dynamic-title requirement, not an oversight to work around.
-
- BOUNDED BY CONSTRUCTION: a level can hold many items, so at most
- PHASE_TITLE_MAX_ITEMS slugs are named and the rest collapse to `+K more` — a
- 20-item level can never emit a 20-slug heading that swamps the progress row.
- Every field is optional-safe (a missing ownerRepo / ghIssue simply drops its
- segment) because this is a cosmetic display string: it must never be the thing
- that throws and takes a level down.
 ```

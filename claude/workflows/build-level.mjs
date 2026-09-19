@@ -457,15 +457,7 @@ const SPINE_OUTCOME_SCHEMA = {
         'FRESHNESS_CONFLICT', 'FRESHNESS_REBASE_ERROR',
         'FRESHNESS_ERROR', 'FRESHNESS_TIMEOUT', 'FRESHNESS_TIMEOUT_PROBE', 'FRESHNESS_TIMEOUT_PROBE_ERROR',
         // The 3e.6 class-A activation gate (temperloop#1219). ACTIVATION_PASS /
-        // ACTIVATION_FAIL are the `proof:` predicate's own exit status against
-        // the worker's worktree. The three CONTROL outcomes are the
-        // temperloop#944 merge-base control pass, run FIRST for an absence-
-        // asserting predicate: DISCRIMINATES (fails at the merge base — good,
-        // proceed to the worktree run), VACUOUS (passes at the merge base, so it
-        // would pass on an untouched tree and proves nothing), ERROR (the control
-        // could not be ESTABLISHED — an UNKNOWN, never laundered into either
-        // verdict, the same #1021 discipline GATE_TIMEOUT encodes).
-        // ACTIVATION_TIMEOUT is that same discipline for the Bash-tool timeout.
+        // Full design note: build-level.design-notes.md#the-3e-6-class-a-activation-gate-temperloop-1219-activation-
         'ACTIVATION_PASS', 'ACTIVATION_FAIL', 'ACTIVATION_TIMEOUT',
         'ACTIVATION_CONTROL_DISCRIMINATES', 'ACTIVATION_CONTROL_VACUOUS', 'ACTIVATION_CONTROL_ERROR',
         // The 3e pre-push review's diff/routing-data fetch (temperloop#1430).
@@ -487,39 +479,17 @@ const SPINE_OUTCOME_SCHEMA = {
         // cure is a foreground re-spawn on the SAME worktree.
         'RECOVER_NONE', 'RECOVER_DIRTY', 'RECOVER_COMMITTED', 'RECOVER_PUSHED', 'RECOVER_PR_OPEN',
         // The WORKFLOW-LEVEL step liveness bound (temperloop#1071). Neither of
-        // these comes from a machinery script — both are emitted by the shell
-        // watchdog THIS file wraps every machinery step in (see
-        // stepBoundPreamble()). STEP_TIMEOUT: the step outlived
-        // STEP_CEILING_SECS and was killed, so its result is LOST (never
-        // "failed" — the ceiling says nothing about the work, exactly as
-        // GATE_TIMEOUT says nothing about the tree). STEP_SLOW: an ADVISORY
-        // notice riding alongside a step's real result, never a result itself —
-        // runMachineryBatch partitions it out and logs it.
+        // Full design note: build-level.design-notes.md#the-workflow-level-step-liveness-bound-temperloop-1071-neith
         'STEP_TIMEOUT', 'STEP_SLOW',
         // temperloop#2020 — the post-commit work-preservation push that runs
-        // at the ONE escalation choke point (preserveOnEscalation). Three
-        // outcomes, deliberately distinct so a payload never has to infer
-        // which: WORK_PRESERVED (the branch is on origin), WORK_PRESERVE_SKIP
-        // (there was PROVABLY nothing to preserve — no worktree, or a RESOLVED
-        // default branch with no commit ahead of it; an unresolvable base is
-        // never a skip, it pushes), WORK_PRESERVE_FAILED (there WAS unlanded work
-        // and the push did not land it — the one shape that must stay visible,
-        // because a later `worktree.sh remove` is then the last copy's last
-        // chance).
+        // Full design note: build-level.design-notes.md#temperloop-2020-the-post-commit-work-preservation-push-that-
         'WORK_PRESERVED', 'WORK_PRESERVE_SKIP', 'WORK_PRESERVE_FAILED',
         // The §3e REVIEW-AGENT liveness bound's timer (temperloop#2003), whose
         // Full design note: build-level.design-notes.md#the-3e-review-agent-liveness-bound-s-timer-temperloop-2003-w
         'REVIEW_WAIT_ELAPSED', 'REVIEW_WAIT_TOOL_TIMEOUT', 'REVIEW_WAIT_BLOCKED',
         'REVIEW_WAIT_UNAVAILABLE',
         // temperloop#2065 "worker-cost-capture" — the per-item WORKER COST
-        // seam. Neither comes from a machinery script proper; both are
-        // workflows/scripts/build/worker-usage.sh, the SAME emitted-shell
-        // pattern review-wait.sh established for giving this runtime a
-        // wall-clock tick it otherwise has none of. WORKER_CLOCK is a bare
-        // `date` read (no side effect); WORKER_USAGE is that same reading
-        // PLUS the durable per-seat attribution write (model-usage-
-        // envelope.sh's model_usage_emit_from_envelope, seat "build-worker" —
-        // see that file's own header). See workerClockNow()/workerUsageEmit().
+        // Full design note: build-level.design-notes-2.md#temperloop-2065-worker-cost-capture-the-per-item-worker-cost
         'WORKER_CLOCK', 'WORKER_USAGE',
         'ERROR',
       ],
@@ -633,19 +603,7 @@ const SPINE_OUTCOME_SCHEMA = {
     resumeAt: { type: ['number', 'string'] },
     failed: { type: ['number', 'string'] },
     // `'null'` IS LOAD-BEARING HERE, not defensive padding (temperloop#1698,
-    // review round 2). The gate emitter below deliberately prints a bareword
-    // `null` when the elapsed figure is unreadable — that IS the fix: an
-    // unknown duration must degrade to "I don't know", never to a plausible
-    // `0`. This object is what `agent({schema})` validates the executor's
-    // returned line against, so leaving `null` out of the type array would
-    // reject (or silently coerce) the ONE shape the fix exists to produce —
-    // reintroducing the same degrade-to-a-believable-value defect one layer
-    // up, on the path that only fires when the figure is already unknown.
-    // Same precedent as `input_tokens` / `output_tokens` above, declared
-    // `['number', 'null']` for exactly this reason. Kept honest by the K1698
-    // producer↔schema case in test_workflow.sh, which runs the REAL emitted
-    // shell fragment and validates the REAL line it prints against THIS object
-    // rather than against an injected outcome object.
+    // Full design note: build-level.design-notes-2.md#null-is-load-bearing-here-not-defensive-padding-temperloop-1
     elapsedSecs: { type: ['number', 'string', 'null'] },
     budgetSecs: { type: ['number', 'string'] },
     // temperloop#2094: the gate slice's own exit status. It is a FACT the
@@ -659,14 +617,8 @@ const SPINE_OUTCOME_SCHEMA = {
     // `step` is the batch step's own `kind` (or 'solo'), so an escalation payload
     // names WHICH machinery call the ceiling bounded without any correlation work.
     step: { type: 'string' },
-    // temperloop#1698 — these three are the NON-canonical (wire) spelling: the
-    // emitted `__lb` shell prints them, so the schema must keep admitting them
-    // or the bound's own STEP_TIMEOUT would fail validation. They are
-    // canonicalized to `ceilingSecs` / `elapsedSecs` / `slowSecs` by
-    // canonicalizeOutcome() at the transport boundary, and NO consumer in this
-    // file reads a snake_case duration key any more. The camelCase twins are
-    // declared alongside so an emitter that already speaks canonical (the 3e.5
-    // gate does, for `elapsedSecs`/`budgetSecs` above) validates unchanged.
+    // temperloop#1698 — these three are the NON-canonical (wire) spelling: t
+    // Full design note: build-level.design-notes-2.md#temperloop-1698-these-three-are-the-non-canonical-wire-spell
     ceiling_secs: { type: ['number', 'string'] },
     elapsed_secs: { type: ['number', 'string'] },
     slow_secs: { type: ['number', 'string'] },
@@ -680,15 +632,8 @@ const SPINE_OUTCOME_SCHEMA = {
   },
 };
 
-// STEP_OUTCOME_SCHEMA — one element of a BATCH's results array (temperloop#942).
-// Same permissive shape as SPINE_OUTCOME_SCHEMA (whose `properties` it reuses
-// verbatim — #543's "do NOT touch SPINE_OUTCOME_SCHEMA" still holds; this derives
-// from it, it does not mutate it) with two differences:
-//   - `outcome` is NOT required, because one batched step is the read-only
-//     merge-state probe (`gh pr view --json mergeable,mergeStateStatus`), whose
-//     object carries no `outcome` key at all. When `outcome` IS present the
-//     closed enum still applies.
-//   - the merge-state fields are declared so the .mjs can branch on them.
+// STEP_OUTCOME_SCHEMA — one element of a BATCH's results array (temperlo
+// Full design note: build-level.design-notes-2.md#step-outcome-schema-one-element-of-a-batch-s-results-array-t
 const STEP_OUTCOME_SCHEMA = {
   type: 'object',
   required: [],
@@ -714,17 +659,7 @@ const SPINE_BATCH_SCHEMA = {
 };
 
 // WORKER_VERDICT_SCHEMA — matches build.md §3c's return contract. The
-// worker owns only these fields (never branch/pr/pushed_sha — orchestrator-
-// owned). `status` is a closed enum, 1:1 with the 3d handling branches.
-//
-// Output shape (temperloop#1080): the `description` on each free-prose field
-// states what that field is FOR, so the shape rule reaches the worker on the
-// schema surface too, not only in the prompt. Deliberately NO word numbers
-// here — a JSON schema cannot enforce a string length, so the numeric bounds
-// live in exactly one place (the WORKER_*_MAX_WORDS constants, interpolated
-// into the prompt's `## Output shape` section) rather than being restated in a
-// second surface that could drift. The two surfaces are complementary: the
-// schema fixes the SHAPE (machine-validated), the prompt fixes the SIZE.
+// Full design note: build-level.design-notes-2.md#worker-verdict-schema-matches-build-md-3c-s-return-contract-
 const WORKER_VERDICT_SCHEMA = {
   type: 'object',
   required: ['status'],
@@ -1234,14 +1169,8 @@ function stepBoundPreamble(slowSecs) {
     '  __lbt=$(date +%s)',
     '  "$@" &',
     '  __lbp=$!',
-    // Kill ORDER is load-bearing, and the obvious order is wrong. Killing the
-    // step's children FIRST unblocks the step body — which then races ahead and
-    // runs its NEXT command (printing a result the workflow must not believe)
-    // before the kill of the body itself lands. Measured, not theorised: with
-    // children-first, a `sleep 30; printf …` step still printed its `printf`.
-    // So: SNAPSHOT the direct children, kill the body, THEN kill the snapshot
-    // (once the body dies its children reparent, and `pgrep -P` can no longer
-    // find them — hence the snapshot rather than a second lookup).
+    // Kill ORDER is load-bearing, and the obvious order is wrong. Killing th
+    // Full design note: build-level.design-notes-2.md#kill-order-is-load-bearing-and-the-obvious-order-is-wrong-ki
     '  ( sleep "$__lb_ceil" 2>/dev/null; __lbc=$(pgrep -P "$__lbp" 2>/dev/null); kill -9 "$__lbp" 2>/dev/null; [ -n "$__lbc" ] && kill -9 $__lbc 2>/dev/null ) </dev/null >/dev/null 2>&1 &',
     '  __lbw=$!',
     '  wait "$__lbp" 2>/dev/null; __lbr=$?',
@@ -1359,18 +1288,8 @@ function canonicalizeOutcome(o) {
 // null, never a false zero"). #1698's gate read below calls it rather than
 // declaring a second one, so the two can never drift apart.
 
-// -----------------------------------------------------------------------------
 // runMachinery — the sh() replacement (spike §1).
-// -----------------------------------------------------------------------------
-// Spawns a one-shot executor agent that runs EXACTLY one machinery command via Bash
-// and returns its single closed-outcome JSON line, schema-validated. No model
-// override beyond haiku (cheapest tier — the executor does no reasoning); NO
-// isolation:'worktree' (the machinery scripts manage their own worktrees, §5).
-// `phase` (temperloop#1294) is the caller's STAGE group name — the string
-// enterStage()/stagePhase() returned. It is passed EXPLICITLY rather than read
-// off the global phase() cursor, which races under parallel(). The `?? 'machinery'`
-// fallback keeps a caller that omits it on the pre-#1294 flat group rather than
-// on whatever stage happens to be current.
+// Full design note: build-level.design-notes-2.md#runmachinery-the-sh-replacement-spike-1
 async function runMachinery(cmd, { label, slug, bashTimeoutMs, timeoutOutcome, phase: phaseName } = {}) {
   // temperloop#1071: the command runs under the workflow's own wall-clock
   // ceiling. `slowSecs` is 0 on this path — a solo executor returns exactly ONE
@@ -1383,14 +1302,8 @@ async function runMachinery(cmd, { label, slug, bashTimeoutMs, timeoutOutcome, p
     stepFnDef('__s0', cmd),
     stepBoundInvoke('__s0', soloKind),
   ].join('\n');
-  // Wording (temperloop#72): describe the command as a KNOWN build-machinery helper
-  // script that self-reports its result, rather than telling the sub-agent to
-  // "run exactly / do NOT interpret" an opaque line. The old phrasing, paired
-  // with the nested-readlink path resolution, read to the auto-mode safety
-  // classifier as an instruction to blindly execute an obfuscated command.
-  // BOTH framing lines stay in the LEAN prompt too: the auto-mode classifier
-  // sees the prompt (and the agent type), never the agent's system prompt, so
-  // the #72 framing is not something the executor definition can absorb.
+  // Wording (temperloop#72): describe the command as a KNOWN build-machine
+  // Full design note: build-level.design-notes-2.md#wording-temperloop-72-describe-the-command-as-a-known-build-
   const promptFor = (lean) =>
     [
       'Run this single build-machinery helper command with the Bash tool, exactly as written.',
@@ -1414,19 +1327,8 @@ async function runMachinery(cmd, { label, slug, bashTimeoutMs, timeoutOutcome, p
       lean ? null : 'It prints a SINGLE JSON line on stdout describing its own result (a closed `outcome` set).',
       lean ? null : 'Return that JSON object verbatim as your result — the schema captures it.',
       lean ? null : 'If the command exits non-zero it STILL prints its JSON line; return that line.',
-      // temperloop#1021: name the TIMEOUT case explicitly. NOT lean-guarded, and
-      // deliberately so: unlike the three standing lines above, this one is
-      // per-call (it fires only when a caller passes `timeoutOutcome`) and it
-      // interpolates a dynamic outcome name, so it cannot live in the static
-      // machinery-executor.md agent definition the lean prompt relies on.
-      // Without this line the executor, having been killed by the Bash tool
-      // before any JSON line was
-      // printed, picks the closest failure-shaped enum member it knows — which
-      // for the gate is GATE_FAIL. That silently reported a GREEN suite as
-      // BROKEN and made a budget-exhaustion escalation indistinguishable from a
-      // real gate failure. The timeout is a fact about the BUDGET, never about
-      // the tree, so it gets its own outcome and the executor is told to use it
-      // rather than guess.
+      // temperloop#1021: name the TIMEOUT case explicitly. NOT lean-guarded, a
+      // Full design note: build-level.design-notes-2.md#temperloop-1021-name-the-timeout-case-explicitly-not-lean-gu
       timeoutOutcome
         ? `If the Bash tool's own timeout kills the command BEFORE it prints any JSON line, do NOT guess a failure outcome and do NOT re-run it: return exactly {"outcome":"${timeoutOutcome}"}. A timeout means the time budget ran out — it is NOT evidence that anything failed, and reporting it as a failure is a known defect (temperloop#1021).`
         : null,
@@ -1439,33 +1341,15 @@ async function runMachinery(cmd, { label, slug, bashTimeoutMs, timeoutOutcome, p
     {
       label: label ?? `machinery:${cmd.split(' ').slice(0, 2).join(' ')}`,
       phase: phaseName ?? 'machinery',
-      // temperloop#982: orchestrator-supplied workflow input, NOT a config-file
-      // read (this runtime has no shell — DESIGN NOTE 1). `||`, NOT `??` —
-      // `??` only falls through on null/undefined, and a caller (or an
-      // omitted-vs-empty prose mistake upstream) can easily hand this an
-      // empty string, which `??` would pass straight through as a literal
-      // "" model and silently defeat the fallback. `||` collapses BOTH the
-      // absent-input case (build.md didn't resolve BUILD_MACHINERY_SOLO_MODEL,
-      // or the key was omitted) AND an empty-string input to the same
-      // 'haiku' default — UNCHANGED from before this setting existed, the
-      // byte-identical-when-unset contract this item ships under. This is the
-      // load-bearing invariant; it lives here (the consumer), not in the
-      // orchestrator prose (the producer), so it holds regardless of how
-      // build.md/sweep.md/fix.md construct the input.
+      // temperloop#982: orchestrator-supplied workflow input, NOT a config-fil
+      // Full design note: build-level.design-notes-2.md#temperloop-982-orchestrator-supplied-workflow-input-not-a-co
       model: input.machinerySoloModel || 'haiku',
       schema: SPINE_OUTCOME_SCHEMA,
       // NB: deliberately NO isolation:'worktree' — see DESIGN NOTE 3.
     },
   );
-  // Null-guard (temperloop#72): agent() returns null when the run is DENIED by
-  // the auto-mode safety classifier (or a user skip / transient API error).
-  // Every consumer below dereferences `.outcome`, so a raw null crashed the
-  // whole level with `null is not an object`. Normalize it to a closed
-  // SPINE_DENIED sentinel — a well-formed outcome object every call site can
-  // detect (via machineryDenied()) and turn into a parkable `machinery-denied`
-  // escalation instead of a TypeError.
-  // temperloop#1698 — canonicalize the duration keys ONCE, here at the
-  // transport boundary, so every consumer below reads exactly one spelling.
+  // Null-guard (temperloop#72): agent() returns null when the run is DENIE
+  // Full design note: build-level.design-notes-2.md#null-guard-temperloop-72-agent-returns-null-when-the-run-is-
   return out == null ? { outcome: 'SPINE_DENIED', denied: true } : canonicalizeOutcome(out);
 }
 
@@ -1575,15 +1459,8 @@ async function runMachineryBatch(steps, { label, slug, bashTimeoutMs, phase: pha
       out: out ?? { outcome: 'SPINE_DENIED', denied: true },
     };
   }
-  // temperloop#1071 — PARTITION the advisory notices out of the results array
-  // BEFORE anyone indexes it. A STEP_SLOW line is emitted alongside a real
-  // result, not in place of one, so leaving it in would shift every later step's
-  // index by one and silently mis-branch the whole batch. Filtering here (once,
-  // at the transport) is what lets every `batchStep(batch, i)` call site below
-  // stay exactly as it was.
-  // temperloop#1698 — canonicalize every step's duration keys at this same
-  // transport boundary (the batch twin of runMachinery's call above), BEFORE
-  // the partition below and before any `batchStep(batch, i)` consumer.
+  // temperloop#1071 — PARTITION the advisory notices out of the results ar
+  // Full design note: build-level.design-notes-2.md#temperloop-1071-partition-the-advisory-notices-out-of-the-re
   out.results.forEach(canonicalizeOutcome);
   const notices = out.results.filter((r) => r && r.outcome === 'STEP_SLOW');
   const results = out.results.filter((r) => !(r && r.outcome === 'STEP_SLOW'));
@@ -1676,16 +1553,7 @@ function principlesSection(item) {
 }
 
 // discriminationEvidenceSection — the §3c "test-discrimination evidence"
-// requirement (temperloop#1319), a SELF-CONTAINED section appended once into
-// workerPrompt()'s array, mirroring principlesSection()'s shape so a sibling
-// edit to workerPrompt() rebases cleanly. Gated on REQUIRE_DISCRIMINATION_
-// EVIDENCE (see that constant's own comment above for the full rationale,
-// including the correction on why /sweep and /fix are excluded — an
-// operational scope decision, not a structural one) — returns an EMPTY
-// array, not a degraded/notice variant, when the caller didn't ask for it:
-// unlike principlesSummaries' "never silence" rule, an unrequired discipline
-// staying silent is correct here, since REQUIRE_DISCRIMINATION_EVIDENCE is
-// false for any caller that never armed the requirement in the first place.
+// Full design note: build-level.design-notes-2.md#discriminationevidencesection-the-3c-test-discrimination-evi
 function discriminationEvidenceSection() {
   if (!REQUIRE_DISCRIMINATION_EVIDENCE) return [];
   return [
@@ -1870,18 +1738,8 @@ function activationProofSection(item) {
   ];
 }
 
-// parentSummarySection — the epic #1847 Produces #7 companion: injects the
-// parent epic's own "group summary" into an admitted epic member's worker
-// prompt, a SELF-CONTAINED section appended once into workerPrompt()'s
-// array, mirroring changelogFragmentSection()'s shape so a sibling edit to
-// workerPrompt() rebases cleanly. Gated on `item.parentSummary` — set ONLY
-// by /sweep's Step 3 items[] construction for a member it admitted via Step
-// 1 item 6 (Operational-epic member admission); a plain singleton, and every
-// /build plan item, never carries the field, so this returns an empty array
-// and the section is silently absent. Unlike principlesSection()'s DEGRADED
-// notice, there is no "missing" case to flag here: an item with no parent
-// epic genuinely has no group summary to inject, so silence is correct, not
-// a degradation.
+// parentSummarySection — the epic #1847 Produces #7 companion: injects t
+// Full design note: build-level.design-notes-2.md#parentsummarysection-the-epic-1847-produces-7-companion-inje
 function parentSummarySection(item) {
   if (!item.parentSummary) return [];
   const epicRef = item.parentEpic ? `#${item.parentEpic}` : 'the parent epic';
@@ -2007,14 +1865,8 @@ function workerPrompt(item, worktreePath, extraSection) {
     '- No issue-closing keywords (Closes/Fixes/Resolves + #N) in commit messages —',
     '  GitHub auto-closes on default-branch merge from commit messages too.',
     '',
-    // #1072 — the near-miss this institutionalizes: a build worker (temperloop#635)
-    // spawned a context-inheriting fork for a narrow read-only sub-task; the fork
-    // INHERITED the "drive to done and commit" mission, fabricated a completion
-    // report, and committed to the shared worktree (self-recovered — see
-    // Mistakes/foundation - research fork inherits drive-to-done context and
-    // commits to shared worktree). Embedded here, structurally, rather than left
-    // to a vault note someone has to remember to re-paste — mirrors how the
-    // foreground-only contract below is embedded rather than left to prose alone.
+    // #1072 — the near-miss this institutionalizes: a build worker (temperlo
+    // Full design note: build-level.design-notes-2.md#1072-the-near-miss-this-institutionalizes-a-build-worker-tem
     '## No context-inheriting research forks',
     '- BANNED: spawning a context-inheriting `fork` for a narrow READ-ONLY sub-task',
     '  (e.g. gathering conventions, reading code). A fork inherits this ENTIRE prompt,',
@@ -2109,14 +1961,8 @@ function workerPrompt(item, worktreePath, extraSection) {
     '',
     extraSection ?? '',
     '',
-    // ## Output shape (temperloop#1080) — the SIZE half of the return contract.
-    // The schema below fixes the shape; nothing fixed the length, and measured
-    // across 83 real worker verdicts the two prose slots ran 2-4x past what the
-    // spec asked for. Stated as an explicit bound here — the one surface the
-    // worker actually reads — with the routing rule that makes the bound safe:
-    // detail goes to the verification-surface FILE, which reaches the PR body
-    // without entering orchestrator context. build.md §3c carries the same
-    // contract; the two must stay in lockstep (static guard in test_workflow.sh).
+    // ## Output shape (temperloop#1080) — the SIZE half of the return contra
+    // Full design note: build-level.design-notes-2.md#output-shape-temperloop-1080-the-size-half-of-the-return-con
     '## Output shape — your return value is a REPORT, not a transcript',
     'Everything you return is an output token the orchestrator then ingests, so the',
     'verdict stays small on purpose. It is not a place to show your work — you already',
@@ -2293,19 +2139,8 @@ async function workerUsageEmit(item, tag, seat, phaseName) {
 // all" arm.
 const USAGE_UNAVAILABLE = Object.freeze({ epochS: null, tokensIn: null, tokensOut: null });
 
-// temperloop#2065 review round 2 [HIGH]: workerClockNow()/workerUsageEmit()
-// both bottom out in runMachinery() -> machineryAgent(), which explicitly
-// re-throws (does not degrade) an unresolvable-agentType / StructuredOutput-
-// absent / retry-cap-exceeded executor spawn — the exact throw shape
-// callWorker()'s own agent({schema}) call is documented as capable of, two
-// blocks below. The block comment above these two functions promises they
-// are FAIL-OPEN and "never a thrown error" — that promise covers only a
-// malformed VALUE in a successful response (numOrNull()'s job); it does not
-// cover the underlying machinery spawn itself throwing. These two guards are
-// what backs the promise with code: every call site below goes through one
-// of these instead of calling workerClockNow()/workerUsageEmit() bare, so a
-// cost-ledger bookkeeping failure can never abort the item build it is only
-// supposed to be measuring.
+// temperloop#2065 review round 2 [HIGH]: workerClockNow()/workerUsageEmi
+// Full design note: build-level.design-notes-2.md#temperloop-2065-review-round-2-high-workerclocknow-workerusa
 async function safeWorkerClockNow(item, tag, phaseName) {
   try {
     return await workerClockNow(item, tag, phaseName);
@@ -2347,20 +2182,8 @@ function mergeWorkerCost(acc, add) {
   };
 }
 
-// callWorker — spawn the implementation worker so a lost return channel can
-// never escape as a throw. agent({schema}) THROWS on a StructuredOutput-absent
-// / retry-cap-exceeded subagent and returns null on a skip / terminal API error;
-// both are the same thing to the caller ("no verdict"), and neither is evidence
-// about the work. Normalize both into { verdict, error } so driveItem decides
-// what they MEAN only after the side-effect probe has run.
-// `phaseName` (temperloop#1294) — the STAGE group this worker belongs to,
-// passed explicitly (the global phase() cursor races under parallel()).
-//
-// temperloop#2065 — every call also brackets the worker in the clock/usage
-// seam above and returns its reading as { wallClockMs, tokensIn, tokensOut },
-// on BOTH the return and the throw arm: a re-spawned worker that itself
-// blows its return channel still spent real tokens, and the ledger records
-// that spend rather than silently dropping it.
+// callWorker — spawn the implementation worker so a lost return channel 
+// Full design note: build-level.design-notes-2.md#callworker-spawn-the-implementation-worker-so-a-lost-return-
 async function callWorker(item, wt, extraSection, label, phaseName) {
   const startS = await safeWorkerClockNow(item, label, phaseName);
   try {
@@ -2368,14 +2191,7 @@ async function callWorker(item, wt, extraSection, label, phaseName) {
       label,
       phase: phaseName ?? 'worker',
       // temperloop#982: item.model || undefined, NOT bare item.model — an
-      // empty-string item.model (e.g. an orchestrator that resolved
-      // SWEEP_WORKER_MODEL/FIX_WORKER_MODEL to "" and passed it through
-      // unfiltered) must collapse to undefined here, the sentinel the agent()
-      // hook reads as "inherit session model" — a bare "" would instead be
-      // sent as a literal (invalid) model name. undefined/absent item.model
-      // already coerces to undefined via `||`, so this is a strict
-      // widening (covers "" too), never a behavior change for the existing
-      // undefined case.
+      // Full design note: build-level.design-notes-2.md#temperloop-982-item-model-undefined-not-bare-item-model-an
       model: item.model || undefined, // "" or undefined → inherit session model
       schema: WORKER_VERDICT_SCHEMA,
     });
@@ -2556,14 +2372,8 @@ function isLostReturn(stepOut) {
   );
 }
 
-// isVerdictUnparseable — the pr-open outcome temperloop#1805 is about: pr.sh's
-// own `die` when the verdict file it was handed is not usable JSON. It is
-// deliberately NARROW — three literal messages pr.sh emits about the VERDICT
-// (`open`'s `jq -e .` guard, and assemble_body's two field checks) — because the
-// tolerance path below re-issues the PR-open command, and a blind re-issue of a
-// non-idempotent machinery step on any broader class is exactly the double-open
-// hazard the rest of this file is built to avoid. Anything else — a `gh` failure,
-// a push race, a missing surface file — keeps the unchanged escalation.
+// isVerdictUnparseable — the pr-open outcome temperloop#1805 is about: p
+// Full design note: build-level.design-notes-2.md#isverdictunparseable-the-pr-open-outcome-temperloop-1805-is-
 const VERDICT_UNPARSEABLE_ERR = /verdict (?:is not valid JSON|JSON missing|JSON has malformed)/i;
 function isVerdictUnparseable(stepOut) {
   return Boolean(
@@ -2574,19 +2384,8 @@ function isVerdictUnparseable(stepOut) {
   );
 }
 
-// recoverLostReturn — the 3f push/pr-open twin of disposeStepTimeout's probe,
-// for the NON-timeout case: a pr-batch step's own JSON line was dropped (lost
-// pr-batch return) with every step before it in the SAME batch already
-// confirmed successful (the caller only reaches this after its own
-// rebase/scan/push branches above already passed) — temperloop#1067, distinct
-// from #1071's liveness-kill. Reuses the EXISTING probeSideEffects/RECOVER_*
-// ladder — no second probe, no new machinery. Returns one of:
-//   { kind: 'adopted', pr, pushedSha }   — landed; caller skips re-push/re-open
-//   { kind: 'escalate', escKind, payload } — a resume attempt itself failed
-//   { kind: 'none' }                      — RECOVER_NONE/RECOVER_DIRTY/unusable
-//                                            probe; caller does its UNCHANGED
-//                                            escalation exactly as before this
-//                                            wiring existed.
+// recoverLostReturn — the 3f push/pr-open twin of disposeStepTimeout's p
+// Full design note: build-level.design-notes-2.md#recoverlostreturn-the-3f-push-pr-open-twin-of-disposesteptim
 async function recoverLostReturn(item, wt, openCmd) {
   const probe = await probeSideEffects(item, wt);
   if (probe.landed && probe.stage === 'RECOVER_PR_OPEN' && probe.pr && probe.sha) {
@@ -2801,7 +2600,7 @@ function preserveCommittedWorkCmd(wt, branch) {
     `  done`,
     `fi`,
     // NO `|| default=main` guess. worktree.sh's own default_branch() (its
-    // Full design note: build-level.design-notes-3.md#no-default-main-guess-worktree-sh-s-own-default-branch-its
+    // Full design note: build-level.design-notes-4.md#no-default-main-guess-worktree-sh-s-own-default-branch-its
     `base_resolved=false`,
     `ahead=0`,
     `if [ -n "$default" ] && count="$(git rev-list --count "origin/$default..HEAD" 2>/dev/null)"; then`,
@@ -2809,20 +2608,7 @@ function preserveCommittedWorkCmd(wt, branch) {
     `fi`,
     `branch=${sq(branch)}`,
     // `$branch` goes into the hand-built JSON below through a bare printf
-    // `%s`, deliberately NOT through the `jq -R -s -c .` idiom reviewDiffCmd
-    // uses for tsv_lines/files. The reason it is safe here: this is the PLAN's
-    // `branch:` field, which plan-schema pins to `<type>/<slug>` with type in
-    // a closed set {feat,fix,chore,refactor,docs,test} and slug kebab-case
-    // ([a-z0-9-]+), validated at Step 1 — so it carries neither a double quote
-    // nor a backslash. Note what is NOT an argument: `git check-ref-format`
-    // bans a backslash in a ref name but ACCEPTS a double quote
-    // (`git check-ref-format 'refs/heads/build/a"b'` exits 0), and a double
-    // quote alone terminates a JSON string. The ref grammar is therefore not a
-    // JSON-safety guarantee; the plan schema is. Adding jq would also put a new
-    // binary dependency on the one path whose entire job is to work when things
-    // are already failing — the opposite of fail-soft.
-    // Nothing committed beyond a RESOLVED base — 3f never ran and never needed
-    // to. Pushing here would mint an empty remote branch for no benefit.
+    // Full design note: build-level.design-notes-3.md#branch-goes-into-the-hand-built-json-below-through-a-bare-pr
     `if [ "$base_resolved" = true ] && [ "$ahead" = 0 ]; then`,
     `  printf '{"outcome":"WORK_PRESERVE_SKIP","branch":"%s","base_resolved":true,"commits_ahead":0,"detail":"no unlanded commits"}\\n' "$branch"`,
     `  exit 0`,
@@ -2849,7 +2635,7 @@ function preserveCommittedWorkCmd(wt, branch) {
     `  pushed=true`,
     `elif [ -n "$remote_sha" ] && [ -n "$head_sha" ] && [ "$remote_sha" != "$head_sha" ]; then`,
     // Bring the remote tip's objects local so the supersede test can run at
-    // Full design note: build-level.design-notes-3.md#bring-the-remote-tip-s-objects-local-so-the-supersede-test-c
+    // Full design note: build-level.design-notes-4.md#bring-the-remote-tip-s-objects-local-so-the-supersede-test-c
     `  unique=""`,
     `  if git fetch --quiet origin "refs/heads/$branch" >/dev/null 2>&1; then`,
     `    unique="$(git rev-list --count --cherry-pick --right-only --no-merges "HEAD...$remote_sha" 2>/dev/null || true)"`,
@@ -2964,34 +2750,11 @@ async function preserveOnEscalation(item, result) {
   return result;
 }
 
-// --- 3e.5 gate verdict reconciliation (temperloop#1587) ----------------------
-// The defect this pair of helpers closes: the slice loop maintained TWO
-// independent failure counters — an accumulated `gateFailed` and the terminal
-// slice's own `gateOut.failed` — and shipped BOTH in one escalation payload
-// (`{gateOut:{outcome:'GATE_PASS',failed:0,…}, failedGates:1}`). A consumer
-// that trusted either field acted on a fiction: the kind said the gate failed,
-// the embedded object said it passed. Two counters that CAN disagree is the
-// defect, not merely the run on which they did — so there is now exactly ONE
-// record of failure (the per-slice ledger the loop appends to) and every
-// figure reported anywhere — `failedGates`, the verdict, the escalation kind,
-// the reason prose — is DERIVED from it by gateVerdict() below. No second
-// counter is maintained, and the raw terminal `gateOut` (whose `failed` was
-// the contradicting field) is no longer embedded in the payload: its content
-// survives as the ledger's last entry, which cannot disagree with the sum of
-// the ledger it is part of.
+// 3e.5 gate verdict reconciliation (temperloop#1587)
+// Full design note: build-level.design-notes-3.md#3e-5-gate-verdict-reconciliation-temperloop-1587
 
-// gateSliceFailed(out) — the failure count ONE slice actually ESTABLISHED.
-// This is the only place a slice's failure count is read, so the ledger's
-// entries are normalized on the way in rather than clamped at each reader:
-//   GATE_SLICE — the count the suite's own `QUALITY_GATES_FAILED=` trailer
-//                reported for that slice (exit 75 always prints it).
-//   GATE_FAIL  — a RED suite by construction, so the floor is 1: an unparseable
-//                or stale trailer must never produce a "failed, 0 failures"
-//                ledger entry (the mirror image of #1587's contradiction).
-//   everything else (GATE_PASS / GATE_ABSENT / GATE_TIMEOUT) — 0. A pass is
-//                zero by construction; a TIMEOUT establishes NOTHING (the slice
-//                was killed before it could report), and unknown-ness is carried
-//                by the verdict, never smuggled into a count.
+// gateSliceFailed(out) — the failure count ONE slice actually ESTABLISHE
+// Full design note: build-level.design-notes-3.md#gateslicefailed-out-the-failure-count-one-slice-actually-est
 function gateSliceFailed(out) {
   if (!out) return 0;
   if (out.outcome === 'GATE_FAIL') return Math.max(1, Number(out.failed) || 0);
@@ -2999,19 +2762,8 @@ function gateSliceFailed(out) {
   return 0;
 }
 
-// gateSliceResumeAt(out) — the 0-based gate index ONE slice said the suite
-// still has to reach, or undefined when it reported none (temperloop#2094).
-//
-// Read off the outcome REGARDLESS of its kind, deliberately. `suiteFinished`
-// is a claim about whether every gate ran, and the only evidence anyone has
-// for that is the suite's own `QUALITY_GATES_RESUME_AT=` trailer; deriving it
-// from the terminal outcome's NAME instead is what let a run that stopped at
-// gate 152 of 200 ship `suiteFinished: true`. A resume point is that claim's
-// direct counter-evidence whether the slice carrying it was classified
-// GATE_SLICE or (as in the #2094 incident) something else.
-//
-// `0` is not a resume point: the trailer is only ever printed with gates
-// REMAINING, so a 0 here is an unparsed/absent field, not "resume at gate 0".
+// gateSliceResumeAt(out) — the 0-based gate index ONE slice said the sui
+// Full design note: build-level.design-notes-3.md#gatesliceresumeat-out-the-0-based-gate-index-one-slice-said-
 function gateSliceResumeAt(out) {
   if (!out) return undefined;
   const n = Number(out.resumeAt);
@@ -3019,19 +2771,12 @@ function gateSliceResumeAt(out) {
 }
 
 // gateVerdict(terminalOutcome, ledger) — the ONE reconciliation point be
-// Full design note: build-level.design-notes-3.md#gateverdict-terminaloutcome-ledger-the-one-reconciliation-po
+// Full design note: build-level.design-notes-4.md#gateverdict-terminaloutcome-ledger-the-one-reconciliation-po
 function gateVerdict(terminalOutcome, ledger) {
   const failedGates = ledger.reduce((n, s) => n + (Number(s.failed) || 0), 0);
   const failedInSlices = ledger.filter((s) => (Number(s.failed) || 0) > 0).map((s) => s.slice);
   // A resume point in the LAST ledger entry is direct evidence that gates
-  // remained when the run stopped, and it OVERRIDES the terminal outcome's own
-  // name (temperloop#2094). The incident: the final slice came back with an
-  // unexpected exit code and was classified GATE_FAIL, whose name put it in
-  // the `finished` set below — so an escalation for a run that stopped at gate
-  // 152 of 200 reported `suiteFinished: true`, and the next reader had no way
-  // to tell a whole-suite verdict from a 76%-of-the-way-through one. The
-  // trailer is the only first-hand evidence about coverage that exists; a
-  // classification derived downstream of it can never outrank it.
+  // Full design note: build-level.design-notes-3.md#a-resume-point-in-the-last-ledger-entry-is-direct-evidence-t
   const lastSliceResumeAt = ledger.length > 0
     ? gateSliceResumeAt(ledger[ledger.length - 1])
     : undefined;
@@ -3266,22 +3011,8 @@ function quotaDeath(text) {
   return { reset: m ? m[1].trim() : null };
 }
 
-// harnessCanSpawnAgents — the null-shape discriminator above. Memoization is
-// deliberately ASYMMETRIC (temperloop#1819 attempt-2 review finding 1): only a
-// DEAD verdict is sticky. The quota is monotone within one exhaustion window —
-// once every spawn dies, they keep dying — so one dead probe answers for the
-// whole level's burst of deaths. (A window that resets mid-level could make the
-// cached "dead" stale for a later item; that item still escalates with its work
-// intact — exactly what the wait-then-resume disposition handles — so the dead
-// cache stays.) An ALIVE verdict is NOT cached: "alive at probe time" says
-// nothing about a spawn that dies LATER in the same level, and a memoized alive
-// would misroute that later quota death back into machinery-denied/worker-error
-// — the destructive mis-cure this whole classifier exists to prevent. So every
-// bare-null re-probes; concurrent callers still share one in-flight probe (the
-// promise is the cache entry until it resolves alive). Fails OPEN: an
-// inconclusive canary (a non-quota throw) reads as "alive" so the pre-#1819
-// kinds stand rather than inventing a quota verdict from a probe that merely
-// misbehaved.
+// harnessCanSpawnAgents — the null-shape discriminator above. Memoizatio
+// Full design note: build-level.design-notes-3.md#harnesscanspawnagents-the-null-shape-discriminator-above-mem
 let agentLivenessCheck = null;
 function harnessCanSpawnAgents() {
   if (!agentLivenessCheck) {
@@ -3385,21 +3116,8 @@ function reviewDiffCmd(wt, bump = true) {
     `gd="$(git rev-parse --git-dir 2>/dev/null)"`,
     `[ -n "$gd" ] && rounds_file="$gd/build-review-rounds"`,
     `review_rounds=0`,
-    // DECIMAL, NEVER OCTAL (temperloop#1970, typescript-reviewer round 1). The
-    // `tr` filter strips non-digits but NOT leading zeros, and POSIX `$(( ))`
-    // reads a leading-`0` numeral as OCTAL — so a marker file someone
-    // hand-edited, or restored from a stale snapshot, holding `08`/`09` is not
-    // a wrong count but a HARD shell error that aborts the whole step and
-    // surfaces as exactly the `review-diff-error` escalation §3e is least able
-    // to act on. This code path cannot write such a value itself, but the file
-    // is an ordinary file in the worktree's git dir and the surrounding
-    // contract is explicit that every marker step fails SOFT — a
-    // corrupted-but-present marker was the one case that story did not cover.
-    // `sed -E 's/^0+//'` normalises to a bare decimal (an all-zeros value
-    // collapses to the empty string, which the `[ -n … ]` fallback below then
-    // reads as 0), so a corrupted marker degrades to "first round" exactly as a
-    // missing one does. `sed -E` over `\\?`-style BRE: the same portable dialect
-    // the `origin/` strip below already relies on.
+    // DECIMAL, NEVER OCTAL (temperloop#1970, typescript-reviewer round 1). T
+    // Full design note: build-level.design-notes-3.md#decimal-never-octal-temperloop-1970-typescript-reviewer-roun
     `if [ -n "$rounds_file" ] && [ -f "$rounds_file" ]; then`,
     `  review_rounds="$(tr -cd '0-9' < "$rounds_file" | sed -E 's/^0+//')"`,
     `fi`,
@@ -3465,13 +3183,7 @@ function parseTsvRows(tsvText) {
 // Full design note: build-level.design-notes-2.md#tsvchecksum-temperloop-1982-made-position-sensitive-in-round
 function tsvChecksum(tsvText) {
   // Trimmed-emptiness filter (`l.trim()`, not bare `l`) — matches
-  // reviewDiffCmd's bash `t != ""` check (`t` is the TRIMMED line) exactly,
-  // so a whitespace-only line is filtered identically on both sides. This
-  // deliberately does NOT reuse parseTsvRows's own first-stage filter (bare
-  // `l`), which answers a different question (is this a candidate data row
-  // for the routing decision) — tsvChecksum answers "did the bash side count
-  // this line," and those two must agree bit-for-bit or the checksum could
-  // disagree with a perfectly faithful relay.
+  // Full design note: build-level.design-notes-3.md#trimmed-emptiness-filter-l-trim-not-bare-l-matches
   const canon = String(tsvText ?? '')
     .split('\n')
     .map((l) => l.replace(/\r$/, ''))
@@ -3601,7 +3313,7 @@ function reviewHasBlockingFinding(text) {
 // Full design note: build-level.design-notes-2.md#reviewdifftsvgap-temperloop-1976-row-count-extended-by-tempe
 
 // reviewDiffTsvText(diffOut) — temperloop#2020. The ONE place that turns
-// Full design note: build-level.design-notes-3.md#reviewdifftsvtext-diffout-temperloop-2020-the-one-place-that
+// Full design note: build-level.design-notes-4.md#reviewdifftsvtext-diffout-temperloop-2020-the-one-place-that
 function reviewDiffTsvText(diffOut) {
   if (Array.isArray(diffOut?.tsv_lines)) {
     return diffOut.tsv_lines.map((l) => String(l)).join('\n');
@@ -3731,28 +3443,12 @@ async function runReviewers(item, wt) {
   // (`### <reviewer> (ci-fix round N)`) without regex surgery on reviewer
   // text that may itself contain `### ` lines.
   const sections = [];
-  // temperloop#2003 — SPAWN EVERY ROUTED REVIEWER FIRST, then wait on the set
-  // under one wall-clock ceiling. Before this the pass awaited each reviewer in
-  // turn, so a single agent that never returned kept every LATER one from
-  // launching at all: in the observed incident the mandatory `workflow-reviewer`
-  // for a `claude/commands/*.md` diff was never spawned, because the reviewer
-  // ahead of it in the loop hung. Spawning is synchronous and in route order, so
-  // the call ORDER (what the journal and a resume's cached prefix key on) and
-  // the per-reviewer result ORDER are both byte-identical to the old loop's.
+  // temperloop#2003 — SPAWN EVERY ROUTED REVIEWER FIRST, then wait on the 
+  // Full design note: build-level.design-notes-3.md#temperloop-2003-spawn-every-routed-reviewer-first-then-wait-
   const slots = routes.map((route) => {
     const slot = { route, done: false, value: undefined, error: undefined };
     // No `schema` — a plain read-only advisory pass, not a machine-validated
-    // verdict (build.md §3e: "docs-reviewer is advisory only ... never a
-    // checks gate entry"). Deliberately no `model` override either: the
-    // reviewer's OWN agent definition sets its tier (e.g.
-    // claude/agents/workflow-reviewer.md declares `model: sonnet`).
-    //
-    // The two-arm `.then` is the settlement RECORDER, not error handling: it
-    // makes each reviewer's own outcome readable WITHOUT awaiting it, which is
-    // what lets the ceiling below keep every settled reviewer's findings while
-    // abandoning only the unsettled ones. It also means a rejected reviewer
-    // promise is always handled, so a reviewer that throws after the ceiling has
-    // passed can never surface as an unhandled rejection.
+    // Full design note: build-level.design-notes-3.md#no-schema-a-plain-read-only-advisory-pass-not-a-machine-vali
     slot.promise = agent(reviewPrompt(item, wt, route, files), {
       // `#<reviewer>` (not `:<reviewer>`) matches the label grammar every
       // other multi-part label in this file already uses (e.g.
@@ -3769,7 +3465,7 @@ async function runReviewers(item, wt) {
   });
   const waitedSecs = await awaitReviewFanout(item, slots);
   // temperloop#2032 — THE LAST-CHANCE READ, and the reason the disposition
-  // Full design note: build-level.design-notes-3.md#temperloop-2032-the-last-chance-read-and-the-reason-the-disp
+  // Full design note: build-level.design-notes-4.md#temperloop-2032-the-last-chance-read-and-the-reason-the-disp
   await drainReviewSettlements(slots);
 
   // Pass 1 — consume every reviewer that has settled. disposeReviewSlot() is
@@ -3786,20 +3482,14 @@ async function runReviewers(item, wt) {
   }
 
   // Pass 3 — apply the dispositions in ROUTE order, so `ran`/`skipped`/
-  // `sections` and the log lines keep the ordering the single loop produced. A
-  // straggler is read ONE final time here, at the instant its skip would be
-  // written: that read, not the one after the await, is what decides a timeout.
-  // Exactly one disposition is written per slot, which is what keeps `ran` and
-  // `skipped` disjoint by construction — a recovered reviewer can never also
-  // appear as `timed_out`, and `mandatory_ok` (derived from `skipped`) reports
-  // what actually happened rather than what the ceiling guessed.
+  // Full design note: build-level.design-notes-3.md#pass-3-apply-the-dispositions-in-route-order-so-ran-skipped
   for (let i = 0; i < slots.length; i++) {
     const slot = slots[i];
     const route = slot.route;
     const disposition = dispositions[i] ?? (slot.done ? disposeReviewSlot(slot) : null);
     if (disposition === null) {
       // temperloop#2003 — the CEILING BREACH. This reviewer is abandoned, neve
-      // Full design note: build-level.design-notes-3.md#temperloop-2003-the-ceiling-breach-this-reviewer-is-abandone
+      // Full design note: build-level.design-notes-4.md#temperloop-2003-the-ceiling-breach-this-reviewer-is-abandone
       const note =
         `skipped — ${route.reviewer} timed out after ${waitedSecs}s ` +
         `(the §3e review ceiling of ${REVIEW_AGENT_CEILING_SECS}s — temperloop#2003; the agent is ` +
@@ -3886,15 +3576,8 @@ async function runReviewers(item, wt) {
   return result;
 }
 
-// disposeReviewSlot — the verdict for ONE SETTLED reviewer slot, as a pure
-// descriptor: `{ kind: 'ran', text }` or `{ kind: 'skip', note }`. Purity is the
-// point (temperloop#2032): runReviewers reads its slots in more than one pass so
-// a reviewer that settles late is still consumed, and a disposition step that
-// pushed straight into `ran`/`skipped`/`sections` would emit those in
-// settlement order instead of route order. The caller writes exactly one
-// disposition per slot, in route order, which is what keeps `ran` and `skipped`
-// disjoint. Never call it on an unsettled slot — `slot.done` is the caller's
-// precondition, and the caller re-reads it as late as it possibly can.
+// disposeReviewSlot — the verdict for ONE SETTLED reviewer slot, as a pu
+// Full design note: build-level.design-notes-3.md#disposereviewslot-the-verdict-for-one-settled-reviewer-slot-
 function disposeReviewSlot(slot) {
   const route = slot.route;
   if (slot.error) {
@@ -3935,14 +3618,7 @@ function disposeReviewSlot(slot) {
 const REVIEW_SETTLE_DRAIN_TICKS = 16;
 
 // drainReviewSettlements — give every reviewer whose promise has already
-// resolved the chance to RECORD that fact, then return. `slot.done` is set in a
-// `.then` recorder, so a reviewer can be resolved-but-unrecorded for a few
-// microtasks; this is the only honest way to read the fanout later than the
-// instant an await hands back, and it is bounded by construction (no clock, no
-// spawn, no wait). Used twice: before the ceiling's first timer spawn (a pure
-// cost optimisation — a reviewer that already returned need not be paid for),
-// and again by the disposition passes (temperloop#2032 — a reviewer that
-// settled after the ceiling must not be reported as a timeout).
+// Full design note: build-level.design-notes-3.md#drainreviewsettlements-give-every-reviewer-whose-promise-has
 async function drainReviewSettlements(slots) {
   for (let i = 0; i < REVIEW_SETTLE_DRAIN_TICKS; i++) {
     if (slots.every((s) => s.done)) return;
@@ -3951,7 +3627,7 @@ async function drainReviewSettlements(slots) {
 }
 
 // awaitReviewFanout — temperloop#2003's ceiling, applied to the whole §3
-// Full design note: build-level.design-notes-3.md#awaitreviewfanout-temperloop-2003-s-ceiling-applied-to-the-w
+// Full design note: build-level.design-notes-4.md#awaitreviewfanout-temperloop-2003-s-ceiling-applied-to-the-w
 async function awaitReviewFanout(item, slots) {
   const allSettled = Promise.all(slots.map((s) => s.promise));
   const pending = () => slots.filter((s) => !s.done);
@@ -4087,19 +3763,13 @@ async function reviewWaitAgent(item, secs, mark) {
 }
 
 // reviewBoundReached(review) — the §3e convergence bound's ONE predicate
-// (temperloop#1970), so both blocking call sites (the 3e pass and §3g's CI-fix
-// re-review) ask the identical question and cannot drift apart. True when this
-// round has blocking findings AND the item has spent its budget of review
-// rounds: past that, the findings are CARRIED (PR body + parked tally) instead
-// of escalating for another build-review round-trip. `review.round` is absent
-// only on a return shape older than this item; `?? 1` then reads "first round",
-// which can never trip the bound early.
+// Full design note: build-level.design-notes-3.md#reviewboundreached-review-the-3e-convergence-bound-s-one-pre
 function reviewBoundReached(review) {
   return review.blocking.length > 0 && (review.round ?? 1) >= REVIEW_BLOCKING_MAX_ROUNDS;
 }
 
 // REVIEW_BLOCK_MARK — the EXPLICIT, machine-readable boundary of one rev
-// Full design note: build-level.design-notes-3.md#review-block-mark-the-explicit-machine-readable-boundary-of-
+// Full design note: build-level.design-notes-4.md#review-block-mark-the-explicit-machine-readable-boundary-of-
 const REVIEW_BLOCK_MARK = '3e-review-block';
 // Matches an opening comment whose first token is the mark and that has not
 // already been neutralized, so re-neutralizing is idempotent rather than
@@ -4124,7 +3794,7 @@ function neutralizeReviewBlockMark(text) {
 }
 
 // reviewBodySuffix — the ONE renderer of §3e evidence into the PR body
-// Full design note: build-level.design-notes-3.md#reviewbodysuffix-the-one-renderer-of-3e-evidence-into-the-pr
+// Full design note: build-level.design-notes-4.md#reviewbodysuffix-the-one-renderer-of-3e-evidence-into-the-pr
 function reviewBodySuffix(rounds) {
   const ranNames = [];
   const skippedNotes = [];
@@ -4243,7 +3913,7 @@ const ACTIVATION_DETAIL_FILTER =
   `__d="$(printf '%s' "$__out" | tr '\\n\\r\\t' '   ' | tr -d '\\\\"' | tr -cd '[:print:]' | tail -c 300)"`;
 
 // activationProofCmd — run the class-A `proof:` predicate from <dir>'s r
-// Full design note: build-level.design-notes-3.md#activationproofcmd-run-the-class-a-proof-predicate-from-dir-
+// Full design note: build-level.design-notes-4.md#activationproofcmd-run-the-class-a-proof-predicate-from-dir-
 function activationProofCmd(dir, proof, passOutcome, failOutcome) {
   return [
     `cd ${sq(dir)} || { printf '{"outcome":"%s","detail":"cannot cd to the checkout root"}\\n' ${sq(failOutcome)}; exit 0; }`,
@@ -4358,7 +4028,7 @@ function gateFreshnessCmd(wt, qgBin) {
 }
 
 // gateFreshnessTimeoutProbeCmd — round 2 (temperloop#1937 MEDIUM): what 
-// Full design note: build-level.design-notes-3.md#gatefreshnesstimeoutprobecmd-round-2-temperloop-1937-medium-
+// Full design note: build-level.design-notes-4.md#gatefreshnesstimeoutprobecmd-round-2-temperloop-1937-medium-
 function gateFreshnessTimeoutProbeCmd(wt) {
   return [
     `cd ${sq(wt)} || { jq -cn '{outcome:"FRESHNESS_ERROR",detail:"cannot cd to the worktree for the timeout probe"}'; exit 0; }`,
@@ -4440,14 +4110,8 @@ async function runGateFreshness(item, wt, qgBin) {
     });
   }
   if (out.outcome === 'FRESHNESS_TIMEOUT') {
-    // round 2 (MEDIUM, temperloop#1937): the outer Bash-tool timeout can kill
-    // gateFreshnessCmd() mid-`git rebase`, leaving a rebase in progress on
-    // disk. FRESHNESS_ERROR's fail-open is sound only when the fetch/resolve
-    // step never ran at all; here the tree may be mid-rebase, so proceeding
-    // blind is exactly the false-signal risk #1937 exists to prevent. Run the
-    // follow-up probe, abort any in-progress rebase it finds, and ALWAYS
-    // escalate `stale-worktree` — regardless of what the probe itself
-    // reports — never falling into the fail-open FRESHNESS_ERROR path.
+    // round 2 (MEDIUM, temperloop#1937): the outer Bash-tool timeout can kil
+    // Full design note: build-level.design-notes-3.md#round-2-medium-temperloop-1937-the-outer-bash-tool-timeout-c
     const probe = await runMachinery(gateFreshnessTimeoutProbeCmd(wt), {
       label: `gate-freshness:${item.slug}`,
       slug: item.slug,
@@ -4834,15 +4498,7 @@ async function driveArm(item, dual, armName, order) {
 
   const built = await driveItemBuild(ai, { name: armName, sibling, slug: item.slug, order });
   // temperloop#2080 round-1 review [MEDIUM]. driveItemBuildPhase returns a
-  // TERMINAL record on two paths that mean OPPOSITE things: escalate() (a real
-  // failure) and — for kind:spike alone — park() (the read-only verdict marker,
-  // that item's NORMAL completion, and the only park() the build phase returns
-  // at all). Folding "any terminal record" into the loss path recorded a
-  // successful spike arm as `gate:'fail' loss_reason:'infra'`, corrupting
-  // exactly the ledger this feature exists to produce and making judgeArms
-  // report `one-arm-only` for a pair where BOTH arms finished. A spike creates
-  // no worktree and runs no gate, so this arm honestly carries no
-  // base_sha/guard/cost — but it completed, so it is a passing arm.
+  // Full design note: build-level.design-notes-3.md#temperloop-2080-round-1-review-medium-driveitembuildphase-re
   if (built.result && built.result._kind === 'parked') {
     log(`[${ai.slug}] dual-build arm completed as a read-only spike verdict (no worktree, no gate) — a passing arm, not a loss`);
     return {
@@ -4895,20 +4551,8 @@ function dualBuildCost(armResult) {
   };
 }
 
-// -----------------------------------------------------------------------------
-// judgeArms — the pairwise judge call, run AT the barrier (temperloop#2073).
-// -----------------------------------------------------------------------------
-// One `judge.sh pairwise` per in-scope item whose TWO arms both gate-passed:
-// record-a is the baseline arm, record-b is the candidate arm, and the script
-// sends the same prompt twice in both position orders and reports
-// { preference, margin, order_agreement }. The two record files are assembled
-// in the executor's own shell from this driver's item metadata plus each arm's
-// diff against its recorded base, because that diff exists only on disk.
-//
-// A judged item ALWAYS gets a DISPOSITION, never silence: a real verdict, or a
-// named reason there is none (one arm never gated, the seam is absent, the
-// judge refused or was unavailable). That is what makes "every in-scope item has
-// a judge result" checkable at the barrier rather than a hope.
+// judgeArms — the pairwise judge call, run AT the barrier (temperloop#20
+// Full design note: build-level.design-notes-3.md#judgearms-the-pairwise-judge-call-run-at-the-barrier-temperl
 async function judgeArms(item, dual, arms) {
   const a = arms.find((x) => x.arm === 'baseline');
   const b = arms.find((x) => x.arm === 'candidate');
@@ -4964,17 +4608,8 @@ async function judgeArms(item, dual, arms) {
     'else',
     `printf %s ${sq(recordFor(a))} | jq -c --arg d "$(${diffCmd(a)})" '.score.diff.text_excerpt=$d' > "$__jd/a.json"`,
     `printf %s ${sq(recordFor(b))} | jq -c --arg d "$(${diffCmd(b)})" '.score.diff.text_excerpt=$d' > "$__jd/b.json"`,
-    // THE VERDICT IS READ UN-PIPED (temperloop#2080 round-2 review [HIGH]), the
-    // same shape activationProofCmd uses and for the same reason: `$?` after a
-    // pipeline is the LAST command's status, so `… | tail -1; __jr=$?` reads
-    // tail's status — effectively always 0 — and judge.sh's own exit never
-    // reaches the branch below. That mis-reads BOTH ways: a judge.sh that dies
-    // AFTER writing a line would have its garbage recorded as a real pairwise
-    // verdict, and the refusal's `rc` field — whose whole job is to report that
-    // status — would be structurally 0. So: capture whole, read `$?`, THEN trim
-    // to the last line in a separate step. Deliberately no PIPESTATUS (zsh
-    // spells it `$pipestatus` and 1-indexes it) and no `set -o pipefail` (see
-    // activationProofCmd's comment for why that is worse, not safer).
+    // THE VERDICT IS READ UN-PIPED (temperloop#2080 round-2 review [HIGH]), 
+    // Full design note: build-level.design-notes-3.md#the-verdict-is-read-un-piped-temperloop-2080-round-2-review-
     `__jo=$(bash "$__mc/judge.sh" pairwise --record-a "$__jd/a.json" --record-b "$__jd/b.json" --live --repo ${sq(input.ownerRepo ?? '')} 2>/dev/null); __jr=$?`,
     `__jo=$(printf '%s\\n' "$__jo" | tail -1)`,
     'rm -rf "$__jd"',
@@ -5022,21 +4657,8 @@ async function judgeArms(item, dual, arms) {
   };
 }
 
-// -----------------------------------------------------------------------------
 // appendDualBuildRows — the ledger write (temperloop#2072).
-// -----------------------------------------------------------------------------
-// One `dual-build-ledger.sh append` per row, batched into ONE executor for the
-// item (two rows in scope, one row out of scope). Three of the row's fields
-// cannot be known in this runtime and are filled by the executor's own shell
-// from the arm's worktree:
-//   cross_read_attempted — whether the arm-read guard recorded a DENIED
-//                          cross-arm read beside the `.dual-build-arm` marker;
-//   head_sha             — the arm branch's tip, which exists only on disk;
-//   machinery_version    — the checkout's VERSION, the join key K#1924's own
-//                          per-step resume ledger uses.
-// Everything else is composed here, in legible .mjs, and handed over as a JSON
-// literal — the same division of labour every other machinery call in this file
-// uses (DESIGN NOTE 1: the branching stays here, the shell only executes).
+// Full design note: build-level.design-notes-3.md#appenddualbuildrows-the-ledger-write-temperloop-2072
 async function appendDualBuildRows(item, dual, rows) {
   if (rows.length === 0) return { appended: 0, rejected: 0, unavailable: false };
   const ledgerBin = sq(`${input.repoRoot}/workflows/scripts/model-comparison/dual-build-ledger.sh`);
@@ -5223,19 +4845,8 @@ function dualBuildGuarded(fn, onError) {
   };
 }
 
-// -----------------------------------------------------------------------------
 // driveLevelDualBuild — the level driver, and the BARRIER itself.
-// -----------------------------------------------------------------------------
-// Three phases, in this order, and the order IS the contract:
-//   1. BUILD. Every item in parallel. An in-scope item fans out two arms and
-//      stops at the end of phase 1; a not-in-scope item takes the ordinary
-//      single-arm driveItem, PR and all.
-//   2. THE BARRIER. The `await` on phase 1 is the barrier — past it, EVERY
-//      in-scope arm in the level has a gate result. Only now does any judging
-//      happen, and no PR has opened for any in-scope item.
-//   3. JUDGE + RECORD. Per item: the pairwise judge, then the ledger rows, then
-//      the item's own record. Still no PR for an in-scope item — routing the
-//      winner to PR is `level-pick-and-operator-levers`.
+// Full design note: build-level.design-notes-3.md#driveleveldualbuild-the-level-driver-and-the-barrier-itself
 async function driveLevelDualBuild(activeItems, dual) {
   const boardWrites = [];
   log(
@@ -5260,14 +4871,7 @@ async function driveLevelDualBuild(activeItems, dual) {
           return driveInScopeItem(item, dual, boardWrites);
         },
         // The IN-SCOPE throw (the not-in-scope branch carries its own catch
-        // above, so this is what it adds). `escaped` marks a run that produced
-        // NO arms: phase 3 hands its record straight to the level's disposition
-        // rather than judging arms that do not exist or inventing a
-        // not-in-scope ledger row for an item that IS in scope. No
-        // preserveOnEscalation here on purpose — an in-scope item's commits
-        // live in `<slug>@baseline` / `<slug>@candidate`, not the `<slug>`
-        // worktree that helper pushes from, so calling it would push the wrong
-        // (or an absent) tree.
+        // Full design note: build-level.design-notes-3.md#the-in-scope-throw-the-not-in-scope-branch-carries-its-own-c
         (err) => ({
           item,
           inScope: false,
@@ -5442,30 +5046,16 @@ async function driveItemBuildPhase(item, arm, box) {
   const { repoRoot, board } = input;
   const worktreePath = `${repoRoot}.wt/${item.slug}`;
 
-  // --- Continuation detection (escalation-resume loop, 3d-esc) --------------
-  // On a 3d-esc continuation the orchestrator re-invokes this workflow with
-  // input.onlySlugs = [<this slug>, ...] and input.verdicts[<slug>] carrying the
-  // human's captured decision. A continued item's worktree + .build-guard
-  // marker are ALREADY in place (the escalation left them intact) and its
-  // board issue is ALREADY claimed — so we MUST NOT re-run 3a (claim) or 3b
-  // (worktree.sh create force-recreates the path, discarding the escalated
-  // build, MINOR fix). We resume at 3c, injecting the captured verdict so the
-  // re-spawned worker sees the human's decision instead of re-forking forever
-  // (MAJOR fix). verdicts map shape: { [slug]: { kind, verdict_section } }.
+  // Continuation detection (escalation-resume loop, 3d-esc)
+  // Full design note: build-level.design-notes-3.md#continuation-detection-escalation-resume-loop-3d-esc
   const isContinuation =
     Array.isArray(input.onlySlugs) && input.onlySlugs.includes(item.slug);
   const verdictSection = isContinuation
     ? input.verdicts?.[item.slug]?.verdict_section
     : undefined;
 
-  // --- PRELUDE (3a claim + 3b-0 deps-merged + 3b worktree create) ------------
-  // ONE batched executor agent for the whole per-item mechanical prelude
-  // (temperloop#942) instead of one agent spawn per command. Ordering, skip
-  // conditions and every branch below are unchanged — only the transport is.
-  // The batch's own bash short-circuit refuses to run a later step once an
-  // earlier one's outcome means it must not (a failed claim never reaches
-  // worktree create; an unmerged dep never creates a worktree), so the results
-  // array is simply shorter and the .mjs escalates on the step that stopped it.
+  // PRELUDE (3a claim + 3b-0 deps-merged + 3b worktree create)
+  // Full design note: build-level.design-notes-3.md#prelude-3a-claim-3b-0-deps-merged-3b-worktree-create
   const preludeSteps = [];
   const preludeAt = {}; // kind → index into preludeSteps / batch.results
   const addPrelude = (kind, cmd, continueOutcomes) => {
@@ -5511,7 +5101,7 @@ async function driveItemBuildPhase(item, arm, box) {
   }
 
   // 3b-0 / 3b are prelude steps only for a NON-spike item: a spike is read
-  // Full design note: build-level.design-notes-3.md#3b-0-3b-are-prelude-steps-only-for-a-non-spike-item-a-spike-
+  // Full design note: build-level.design-notes-4.md#3b-0-3b-are-prelude-steps-only-for-a-non-spike-item-a-spike-
   const depShas = isContinuation
     ? []
     : (item.dependsOn ?? []).map((d) => d && d.sha).filter(Boolean);
@@ -5732,18 +5322,7 @@ async function driveItemBuildPhase(item, arm, box) {
       recovery = probe;
     } else {
       // Nothing COMMITTED → this is the ordinary stall. Retry exactly once,
-      // appending FOREGROUND_CURE so the retry prompt DIFFERS from the first — a
-      // byte-identical retry re-stalls identically. A 5xx is transient (the extra
-      // section is harmless); a stall is cured by it.
-      //
-      // temperloop#993 — MECHANICAL detection of the incomplete-return shape:
-      // no verdict AND the worktree dirty with zero commits is the backgrounded-
-      // gate stall specifically (not a worker that never started). The probe
-      // reports it as RECOVER_DIRTY, and the auto-resume carries the dirty-resume
-      // note on top of the cure so the re-spawn CONTINUES on the work already in
-      // the worktree instead of rebuilding it. Detection is mechanical here so the
-      // prose clause in the worker prompt (prevention) is not the only guard —
-      // build.md §3c/§3d stay in lockstep with this block.
+      // Full design note: build-level.design-notes-3.md#nothing-committed-this-is-the-ordinary-stall-retry-exactly-o
       if (probe.stalled) {
         log(`[${item.slug}] worker returned no verdict; ${probe.dirtyFiles} uncommitted path(s), 0 commits — the #993 backgrounded-gate stall: auto-resuming on the same worktree (foreground cure)`);
       } else {
@@ -5813,16 +5392,8 @@ async function driveItemBuildPhase(item, arm, box) {
   // 3h below once `pr` is known, and threaded to park() for the Step 6 tally.
   const discGaps = discriminationGaps(verdict);
 
-  // --- 3e. Mandatory/routed pre-push review (temperloop#1430) --------------
-  // Runs HERE — between 3d and 3e.5, inside this driver — spawning the routed
-  // reviewer(s) itself via `agent({agentType})`. See build.md §3e's own "why
-  // this runs inside the workflow, not the orchestrator" paragraph: by the
-  // time this driver RETURNS to the orchestrator, the item is already pushed
-  // with its PR open (irreversible), and the orchestrator's post-return
-  // partition removes the parked item's worktree — the tree a review would
-  // need to inspect. A loop-back to 3c is only reachable from INSIDE
-  // driveItem, never after. (This driver does NOT merge: build.md §3h.5's
-  // as-you-go merge is conversational-path-only — temperloop#1452.)
+  // 3e. Mandatory/routed pre-push review (temperloop#1430)
+  // Full design note: build-level.design-notes-4.md#3e-mandatory-routed-pre-push-review-temperloop-1430
   const review = await runReviewers(item, wt);
   if (review.escalation) return review.escalation;
   if (review.blocking.length > 0) {
@@ -5848,20 +5419,12 @@ async function driveItemBuildPhase(item, arm, box) {
         `(${review.blocking.map((b) => b.reviewer).join(', ')})`,
     );
   }
-  // Carried into the PR body at 3f below (verdictJson.summary) — the PR must
-  // carry REAL evidence a review ran (or a legible, non-guaranteed skip
-  // notice), never silently read as if the gate had passed by default.
-  // `notes` (temperloop#1450) is the reviewer's FULL findings text, rendered
-  // as its own `## Review notes` section so a non-blocking (MEDIUM/LOW-only)
-  // pass is still visible to the human reviewer — not computed, checked for
-  // HIGH, and thrown away. Rendered via reviewBodySuffix (temperloop#1846) —
-  // the SAME renderer 3g.5's post-CI-fix re-render uses, so the two surfaces
-  // can never drift; with the single round it renders the pre-#1846 shape
-  // byte-identically.
+  // Carried into the PR body at 3f below (verdictJson.summary) — the PR mu
+  // Full design note: build-level.design-notes-4.md#carried-into-the-pr-body-at-3f-below-verdictjson-summary-the
   const reviewSummarySuffix = reviewBodySuffix([review]);
 
   // Resolve the gate script from the WORKTREE, not repoRoot (temperloop#62
-  // Full design note: build-level.design-notes-3.md#resolve-the-gate-script-from-the-worktree-not-reporoot-tempe
+  // Full design note: build-level.design-notes-4.md#resolve-the-gate-script-from-the-worktree-not-reporoot-tempe
   const qgBin = `${wt}/scripts/quality-gates.sh`;
 
   // --- 3e.5-pre. Gate-freshness rebase (temperloop#1937) --------------------
@@ -5890,33 +5453,18 @@ async function driveItemBuildPhase(item, arm, box) {
   // missing/older helper prints nothing → `unset` no-op → prior behavior.
   const settingsBin = `${wt}/workflows/scripts/build/build-config-settings.sh`;
   // gateCmd(startAt) — one SLICE of the suite (temperloop#1021).
-  // Full design note: build-level.design-notes-2.md#gatecmd-startat-one-slice-of-the-suite-temperloop-1021
+  // Full design note: build-level.design-notes-3.md#gatecmd-startat-one-slice-of-the-suite-temperloop-1021
   const gateLog = `/tmp/qg-${item.slug}.log`;
   // ONE SLICE'S OWN OUTPUT, kept separate from the cumulative log above
-  // Full design note: build-level.design-notes-2.md#one-slice-s-own-output-kept-separate-from-the-cumulative-log
+  // Full design note: build-level.design-notes-3.md#one-slice-s-own-output-kept-separate-from-the-cumulative-log
   const gateSliceLog = `${gateLog}.slice`;
   // temperloop#1663: run the acceptance gate DIFF-SCOPED — only the gates 
-  // Full design note: build-level.design-notes-2.md#temperloop-1663-run-the-acceptance-gate-diff-scoped-only-the
+  // Full design note: build-level.design-notes-3.md#temperloop-1663-run-the-acceptance-gate-diff-scoped-only-the
   const configBin = `${wt}/workflows/scripts/build/build.config.sh`;
   const gateScopeEnv =
     `QUALITY_GATES_SCOPED=$(. ${sq(configBin)} >/dev/null 2>&1; echo "\${BUILD_GATE_SCOPED:-1}")`;
-  // SLICE-STABLE SELECTION (temperloop#1663). `QUALITY_GATES_START_AT` is an
-  // ORDINAL into the gate list, and now that the list can be a SCOPED subset
-  // re-derived from a live working-tree probe, two slices of one suite could
-  // resolve DIFFERENT lists — leaving the ordinal pointing at a different gate,
-  // silently skipping one, and still exiting 0. Before scoping, §3e.5 always
-  // resolved the static full array, so the ordinal was stable by construction.
-  //
-  // The pin file is the prevention half: slice 0 writes the resolved changed set
-  // there and every later slice reads it instead of re-probing, so the selection's
-  // INPUT cannot move mid-suite. It is removed on slice 0 for the same reason the
-  // log is truncated there — a re-drive must not inherit a previous attempt's
-  // state.
-  //
-  // The fingerprint is the detection half behind it: each slice reports the
-  // identity of the list its resume index was measured in, and the next slice is
-  // handed it back. On a mismatch the gate restarts from 0 on the FULL set and
-  // says so, rather than resuming an index that no longer means anything.
+  // SLICE-STABLE SELECTION (temperloop#1663). `QUALITY_GATES_START_AT` is 
+  // Full design note: build-level.design-notes-4.md#slice-stable-selection-temperloop-1663-quality-gates-start-a
   const gatePin = `/tmp/qg-${item.slug}.selection-pin`;
   const gateCmd = (startAt, expectSelection) =>
     `set -o pipefail; if [ ! -x ${sq(qgBin)} ]; then echo '{"outcome":"GATE_ABSENT"}'; ` +
@@ -5929,42 +5477,20 @@ async function driveItemBuildPhase(item, arm, box) {
     `__el=$(sed -n 's/.*passed in \\([0-9]*\\)s.*/\\1/p;s/.*of [0-9]* in \\([0-9]*\\)s.*/\\1/p' ${sq(gateSliceLog)} | tail -1); ` +
     `__f=$(sed -n 's/^QUALITY_GATES_FAILED=//p' ${sq(gateSliceLog)} | tail -1); ` +
     `__r=$(sed -n 's/^QUALITY_GATES_RESUME_AT=//p' ${sq(gateSliceLog)} | tail -1); ` +
-    // THE RESUME POINT IS LOAD-BEARING, SO ITS SHAPE IS CHECKED (review round 1).
-    // Dropping the old `[ "$__rc" = 75 ]` co-condition removed the only
-    // cross-check on a value that is matched against the whole slice log, gate
-    // output included, and then interpolated RAW into JSON by `%s` below. A
-    // non-numeric or half-written trailer would emit a syntactically invalid
-    // line, which lands in the executor's "outside the closed set" path instead
-    // of being classified. Anchoring to digits here is the whole defense: a
-    // reading that is not a plain integer is treated as ABSENT, exactly as a
-    // missing trailer already is. (`0` is not a resume point either — the
-    // trailer is only ever printed with gates REMAINING — and gateSliceResumeAt()
-    // already drops it downstream.)
+    // THE RESUME POINT IS LOAD-BEARING, SO ITS SHAPE IS CHECKED (review roun
+    // Full design note: build-level.design-notes-4.md#the-resume-point-is-load-bearing-so-its-shape-is-checked-rev
     `case "$__r" in ''|*[!0-9]*) __r='' ;; esac; ` +
     `__s=$(sed -n 's/^QUALITY_GATES_SELECTION=//p' ${sq(gateSliceLog)} | tail -1); ` +
     // AN UNKNOWN ELAPSED IS `null`, NEVER `0` (temperloop#1698). `__el` is a
-    // best-effort sed over the slice log: a vendored gate whose summary line
-    // this pattern does not match, or a slice killed before printing one,
-    // leaves it EMPTY. The old `${__el:-0}` turned that straight into a
-    // confident `"elapsedSecs":0` — a plausible-looking number in place of an
-    // admission that the figure is unknown, on the one instrument built to make
-    // suite growth visible. Emitting JSON `null` instead makes the consumer's
-    // strict read (numOrNull) return null and render `?`.
+    // Full design note: build-level.design-notes-4.md#an-unknown-elapsed-is-null-never-0-temperloop-1698-el-is-a
     `case "$__el" in ''|*[!0-9]*) __elj=null ;; *) __elj=$__el ;; esac; ` +
     // temperloop#865 — CLASSIFY THE WORKER'S OWN GATE SENTINEL, parent-side.
-    // The worker is handed a gate invocation that always writes a result
-    // sentinel (workerGateCmd below); this reads that artifact from the very
-    // worktree the acceptance gate is about and reports one of four words. It
-    // is how a worker that BACKGROUNDED its gate and abandoned it becomes
-    // distinguishable, in the driver's own log and in the gate payload, from a
-    // worker whose gate was merely slow — the #865 acceptance criterion that a
-    // re-worded warning cannot meet. Read-only, fail-open: a repo whose workers
-    // predate the sentinel reports 'absent' and nothing changes.
+    // Full design note: build-level.design-notes-4.md#temperloop-865-classify-the-worker-s-own-gate-sentinel-paren
     `__wg=absent; if [ -f ${sq(workerGateSentinel(item.slug))} ]; then ` +
     `case "$(cat ${sq(workerGateSentinel(item.slug))} 2>/dev/null)" in ` +
     `*'"state":"finished"'*) __wg=finished ;; *'"state":"running"'*) __wg=running ;; *) __wg=unknown ;; esac; fi; ` +
     // A RESUME POINT THIS SLICE PRINTED IS THE VERDICT (temperloop#2094).
-    // Full design note: build-level.design-notes-3.md#a-resume-point-this-slice-printed-is-the-verdict-temperloop-
+    // Full design note: build-level.design-notes-4.md#a-resume-point-this-slice-printed-is-the-verdict-temperloop-
     `if [ -n "$__r" ]; then ` +
     `printf '{"outcome":"GATE_SLICE","resumeAt":%s,"failed":%s,"elapsedSecs":%s,"selection":"%s","rc":%s,"workerGate":"%s","budgetSecs":${GATE_SLICE_SECS}}\\n' "$__r" "\${__f:-0}" "$__elj" "$__s" "$__rc" "$__wg"; ` +
     `elif [ "$__rc" = 0 ]; then ` +
@@ -6105,15 +5631,8 @@ async function driveItemBuildPhase(item, arm, box) {
     // worktree: 'finished' | 'running' | 'absent' | 'unknown'.
     workerGate: workerGateState(gateOut),
   };
-  // temperloop#865 — THE LOUD HALF. A worker that backgrounded its gate and
-  // yielded leaves a sentinel still reading `running` (or, if it never issued
-  // the handed invocation at all, none). Today "waiting for the gate" is
-  // indistinguishable from a healthy long gate until the budget is gone; this
-  // is the one place in the run that can tell them apart, because it reads the
-  // artifact from the same worktree the acceptance gate just ran in. It is a
-  // NOTICE, never a block: 3e.5 is the acceptance authority and its verdict
-  // stands on its own, so a stale sentinel must not fail an otherwise-green
-  // item — it must be impossible to miss.
+  // temperloop#865 — THE LOUD HALF. A worker that backgrounded its gate an
+  // Full design note: build-level.design-notes-4.md#temperloop-865-the-loud-half-a-worker-that-backgrounded-its-
   const wgState = gatePayload.workerGate;
   if (wgState === 'running') {
     log(
@@ -6199,18 +5718,8 @@ async function driveItemBuildPhase(item, arm, box) {
   return null;
 }
 
-// =============================================================================
-// driveItemPr — PHASE 2 (temperloop#2080): 3f push + PR → 3g CI → 3g.5 →  3h.
-// =============================================================================
-// The callable boundary ADR 0038's level barrier needs. Takes the context
-// phase 1 produced and returns the item's terminal record. Every line below is
-// the pre-split 3f–3h body, re-homed verbatim; the only edit is the
-// destructuring header that replaces the closure it used to read from.
-//
-// On a dual-build level this is NOT called for an in-scope item's arms — that
-// is the barrier. It is called (by driveItem, unchanged) for a not-in-scope
-// item, and it is what `level-pick-and-operator-levers` will call for the
-// winning arm once the pick is made.
+// ======================================================================
+// Full design note: build-level.design-notes-4.md#note-5
 async function driveItemPr(ctx) {
   const {
     item, wt, verdict, recovery, review, reviewSummarySuffix, discGaps, mainCost,
@@ -6233,23 +5742,8 @@ async function driveItemPr(ctx) {
     prSteps.push({ kind, cmd, continueOutcomes });
   };
 
-  // 3f-0a. Rebase onto fresh origin/<default> — the unconditional stale-base
-  // guard (#525). EVERY worker (not just speculative ones) branched off the
-  // default at the start of its run; on a fast-moving default a long run lets
-  // the default advance mid-build, so by here the worker's base may be stale
-  // and a straight push would land a PR whose cumulative diff REVERTS whatever
-  // merged in between (W49/W52). pr.sh rebase fetches the default fresh and
-  // replays the worker's commits onto its tip (a no-op when already current).
-  // On REBASE_CONFLICT it has already `git rebase --abort`ed (worktree left
-  // clean, NEVER a silent revert) → escalate as a rebase conflict for a human.
-  //
-  // SKIPPED on a recovery whose branch is ALREADY on origin (temperloop#939).
-  // The rebase rewrites the worker's commits, so the plain (non-force) push
-  // below would then be a non-fast-forward and come back PUSH_REJECTED —
-  // converting a clean recovery of already-landed work into a spurious
-  // escalation, which is the exact class of failure #939 is about. The
-  // RECOVER_COMMITTED stage has pushed nothing yet, so it still rebases
-  // normally; so does every non-recovery drive.
+  // 3f-0a. Rebase onto fresh origin/<default> — the unconditional stale-ba
+  // Full design note: build-level.design-notes-4.md#3f-0a-rebase-onto-fresh-origin-default-the-unconditional-sta
   if (!(recovery && recovery.pushed)) {
     addPrStep('rebase', `${prBin} rebase ${sq(wt)}`, ['REBASED']);
   } else {
@@ -6260,7 +5754,7 @@ async function driveItemPr(ctx) {
   addPrStep('scan', `${prBin} scan ${sq(wt)}`, ['SCAN_CLEAN']);
 
   // 3f-1. Push-by-SHA on the plan's branch.
-  // Full design note: build-level.design-notes-2.md#3f-1-push-by-sha-on-the-plan-s-branch
+  // Full design note: build-level.design-notes-3.md#3f-1-push-by-sha-on-the-plan-s-branch
   addPrStep('push', `${prBin} push ${sq(wt)} ${sq(item.branch)} --allow-rewrite`, ['PUSHED']);
 
   // 3f-2. Open the PR. The verification surface is read from the deterministic
@@ -6271,15 +5765,8 @@ async function driveItemPr(ctx) {
   // reads from the verdict — summary + acceptance_results — assembled compactly.
   const verdictJson = JSON.stringify({
     status: 'done',
-    // temperloop#1430: the §3e review outcome rides the PR body via `summary`
-    // (the one verdict field pr.sh always renders) — this is what lets a real
-    // review pass (or a genuine, non-guaranteed skip) be OBSERVED on the PR
-    // itself, rather than living only in this run's transcript.
-    // The worker's own prose is neutralized for the same reason reviewer prose
-    // is (see REVIEW_BLOCK_MARK): it is spliced verbatim ABOVE `## Review
-    // notes`, so an un-neutralized delimiter there would open a phantom first
-    // block whose span swallowed the `§3e review — ran:` line the cap must
-    // never cut.
+    // temperloop#1430: the §3e review outcome rides the PR body via `summary
+    // Full design note: build-level.design-notes-4.md#temperloop-1430-the-3e-review-outcome-rides-the-pr-body-via-
     summary: neutralizeReviewBlockMark(verdict.summary ?? '') + reviewSummarySuffix,
     acceptance_results: verdict.acceptance_results ?? [],
     // temperloop#939: a recovered verdict carries a synthesized inline surface.
@@ -6287,22 +5774,8 @@ async function driveItemPr(ctx) {
     // so this is used ONLY when no real `.build-verification.md` exists.
     ...(verdict.verification_surface ? { verification_surface: verdict.verification_surface } : {}),
   });
-  // Cross-repo `Closes` qualification (temperloop#852, build.md 3f "Cross-repo
-  // `repo:` honor point"). `item.repo` (plan-schema.md § Optional `repo:`
-  // field) names the repo THIS item's PR opens against; it is absent for the
-  // common same-repo case. `gh_issue:`/`also_closes:` numbers are tracked
-  // wherever the item was triaged — the plan's HOME repo, i.e. `ownerRepo` —
-  // NOT necessarily `item.repo` (the kernel-classified-item case is the
-  // mirror image of the `repo:` case: the PR lands in the kernel repo but the
-  // issue was triaged, and stays tracked, in the plan's home repo). So a
-  // cross-repo item (`item.repo` set AND different from `ownerRepo`) must
-  // emit the fully-qualified `owner/repo#N` form — a bare `Closes #N` is
-  // same-repo only and would resolve against the wrong repo (or nothing) once
-  // pushed. pr.sh's `closes_line()`/`validate_issue()` already accept either
-  // shape verbatim (do not change pr.sh) — the qualification decision belongs
-  // here, at the one call site that knows both repos. A same-repo item (no
-  // `repo:`, or `repo:` equal to `ownerRepo`) is unaffected: bare `Closes #N`
-  // exactly as before.
+  // Cross-repo `Closes` qualification (temperloop#852, build.md 3f "Cross-
+  // Full design note: build-level.design-notes-4.md#cross-repo-closes-qualification-temperloop-852-build-md-3f-c
   const crossRepo = Boolean(item.repo && ownerRepo && item.repo !== ownerRepo);
   const qualifyIssueRef = (n) => (crossRepo ? `${ownerRepo}#${n}` : `${n}`);
   const ghIssueFlag = item.ghIssue ? ` --gh-issue ${sq(qualifyIssueRef(item.ghIssue))}` : '';
@@ -6328,7 +5801,7 @@ async function driveItemPr(ctx) {
   addPrStep('pr-open', openCmd); // terminal step — nothing gates after it
 
   // 3f-2 FALLBACK: a PR-ready tree must not be stranded by a bad verdict
-  // Full design note: build-level.design-notes-2.md#3f-2-fallback-a-pr-ready-tree-must-not-be-stranded-by-a-bad-
+  // Full design note: build-level.design-notes-3.md#3f-2-fallback-a-pr-ready-tree-must-not-be-stranded-by-a-bad-
   const fallbackVerdictJson = JSON.stringify({
     status: 'done',
     summary:
@@ -6362,14 +5835,8 @@ async function driveItemPr(ctx) {
     }, wt);
   }
 
-  // temperloop#1071 — a pr-batch step that outlived the liveness ceiling. THIS is
-  // the incident's own shape: the 9h49m call was a `pr-batch` whose steps all in
-  // fact completed (PR #1070 opened) while the workflow sat waiting. So the
-  // disposal probes for exactly that — an already-opened PR is ADOPTED and the
-  // item flows straight on to CI, never re-pushed and never re-opened. Any other
-  // probe stage escalates. Either way, the rebase/scan/push/pr-open branches
-  // below are SKIPPED: their step objects were destroyed by the kill, and
-  // re-deriving them from a truncated batch is how a double-push happens.
+  // temperloop#1071 — a pr-batch step that outlived the liveness ceiling. 
+  // Full design note: build-level.design-notes-4.md#temperloop-1071-a-pr-batch-step-that-outlived-the-liveness-c
   const prTimeout = timedOutStep(prb.results);
   let adopted = null;
   if (prTimeout) {
@@ -6417,13 +5884,7 @@ async function driveItemPr(ctx) {
     }
 
     // 3f-1 branch — the push decision. Before escalating a non-PUSHED,
-    // non-PUSH_REJECTED outcome, probe for a LOST pr-batch return
-    // (temperloop#1067): batchStep synthesizes the same 'ERROR'/'produced no
-    // result' sentinel for both a genuine short-circuit and a dropped last JSON
-    // line, and by this point rebase+scan are ALREADY confirmed successful (the
-    // branches above), so a sentinel here specifically means push's own result
-    // line was lost, not that push never ran. A genuine PUSH_REJECTED (or any
-    // other real failure) is unaffected — it never reaches isLostReturn().
+    // Full design note: build-level.design-notes-4.md#3f-1-branch-the-push-decision-before-escalating-a-non-pushed
     const pushOut = batchStep(prb, prAt.push);
     if (pushOut.outcome === 'PUSH_REJECTED') {
       // Remote-branch collision / non-ff — orchestrator triages (force vs rename).
@@ -6453,15 +5914,8 @@ async function driveItemPr(ctx) {
       pushedSha = pushOut.sha;
     }
 
-    // 3f-2 branch — the PR-open decision. Skipped entirely when the push-branch
-    // recovery above already adopted or opened a PR (`pr` is already set) —
-    // re-running open against a branch that already has one is exactly the
-    // duplicate-PR hazard this wiring must never cause.
-    // EXISTS means the branch already had an open PR (a create-retry after a
-    // succeeded first attempt). Treat it as PR_OPENED — adopt the existing PR and
-    // continue to CI-poll/park-with-pr. Any other non-PR_OPENED outcome is
-    // probed for the same lost-return sentinel (temperloop#1067) before it
-    // escalates as a genuine pr-open-failed.
+    // 3f-2 branch — the PR-open decision. Skipped entirely when the push-bra
+    // Full design note: build-level.design-notes-4.md#3f-2-branch-the-pr-open-decision-skipped-entirely-when-the-p
     if (pr == null) {
       let openOut = batchStep(prb, prAt['pr-open']);
       // temperloop#1805 — TOLERATE an unparseable verdict over a PR-ready tree.
@@ -6545,23 +5999,8 @@ async function driveItemPr(ctx) {
     }
   }
 
-  // --- 3f→3g SHA hand-off guard (temperloop#2014) --------------------------
-  // The ONE choke point every arm above converges on. FOUR paths can set
-  // `pushedSha` and all four are covered here rather than four times over:
-  //   1. the timeout-ADOPT arm       — `adopted.sha ?? null` (probe.sha; the
-  //      `?? null` makes a probe that landed a PR but resolved no SHA reach
-  //      this guard as an explicit null rather than an `undefined`);
-  //   2. the push lost-return RECOVERY arm      — `rec.pushedSha`;
-  //   3. the pr-open lost-return RECOVERY arm   — `rec.pushedSha ?? pushedSha`;
-  //   4. the plain PUSHED arm        — `pushOut.sha`, unguarded until now: the
-  //      push outcome is transported through an executor agent's structured
-  //      return, so a `sha` key that never makes it back leaves this
-  //      `undefined` while the step still reports success — the temperloop#2014
-  //      reproduction's own path.
-  // A guard at each assignment would have to be written (and kept) four times
-  // and would still miss a fifth arm added later; one guard on the value the
-  // poll actually receives cannot be bypassed by a new arm. The CI-fix re-push
-  // inside ciPollLoop re-pins `sha` after this point and carries its own copy.
+  // 3f→3g SHA hand-off guard (temperloop#2014)
+  // Full design note: build-level.design-notes-4.md#3f-3g-sha-hand-off-guard-temperloop-2014
   if (hexSha(pushedSha) === null) {
     return escalate(
       item.slug,
@@ -6681,7 +6120,7 @@ async function driveItemPr(ctx) {
 }
 
 // ciPollLoop — bounded short-slice CI poll (DESIGN NOTE 2).
-// Full design note: build-level.design-notes-3.md#cipollloop-bounded-short-slice-ci-poll-design-note-2
+// Full design note: build-level.design-notes-4.md#cipollloop-bounded-short-slice-ci-poll-design-note-2
 
 // MERGE_CONFLICT_GLOBS — the substrings that make the batched merge-state probe
 // stop the sequence early. This is the STOP-EARLY MIRROR of the .mjs branch
@@ -6692,20 +6131,13 @@ async function driveItemPr(ctx) {
 const MERGE_CONFLICT_GLOBS = ['"mergeable":"CONFLICTING"', '"mergeStateStatus":"DIRTY"'];
 
 function mergeStateCmd(ownerRepo, pr) {
-  // gh pr view returns JSON; if it fails (e.g. auth error) the executor catches
-  // non-zero exit and returns whatever gh printed — the caller handles missing fields.
-  //
-  // `tr -d ' \n'` COMPACTS the object onto one line (temperloop#942). gh may
-  // pretty-print `--json` output, and a batched step's result must be a single
-  // JSON line for both the executor's line-per-step contract and the `case`
-  // stop-early glob above (which would miss `"mergeable": "CONFLICTING"` with a
-  // space). Only `mergeable`/`mergeStateStatus` are requested and both are
-  // space-free enum values, so stripping spaces cannot corrupt a value.
+  // gh pr view returns JSON; if it fails (e.g. auth error) the executor ca
+  // Full design note: build-level.design-notes-4.md#gh-pr-view-returns-json-if-it-fails-e-g-auth-error-the-execu
   return `gh pr view ${sq(pr)} --repo ${sq(ownerRepo)} --json mergeable,mergeStateStatus | tr -d ' \\n'`;
 }
 
 // The pushed-SHA hand-off guard (temperloop#2014).
-// Full design note: build-level.design-notes-3.md#the-pushed-sha-hand-off-guard-temperloop-2014
+// Full design note: build-level.design-notes-4.md#the-pushed-sha-hand-off-guard-temperloop-2014
 function hexSha(value) {
   return typeof value === 'string' && value !== '' && /^[0-9a-fA-F]+$/.test(value)
     ? value
@@ -6729,15 +6161,8 @@ function badShaEscalation(pr, seen, stage, detail) {
   };
 }
 
-// isBadArgumentError — true iff a ci-poll.sh ERROR is the script REFUSING TO
-// RUN on its own arguments, rather than a poll that ran and went wrong. The
-// primary signal is the structured `usage_error:true` field ci-poll.sh stamps
-// on every argument-validation die (its own header documents it alongside
-// transient_retries_exhausted / deterministic_failure). The error-text fallback
-// covers a vendored or older ci-poll.sh predating that stamp: every one of its
-// argument dies renders as `<name> '<value>' invalid — must be …`, or the
-// `usage: ci-poll.sh …` line — phrasings no API/transport error shares. Narrow
-// on purpose: a genuine CI failure must never be laundered out of `ci-failed`.
+// isBadArgumentError — true iff a ci-poll.sh ERROR is the script REFUSIN
+// Full design note: build-level.design-notes-4.md#isbadargumenterror-true-iff-a-ci-poll-sh-error-is-the-script
 function isBadArgumentError(out) {
   if (!out || out.outcome !== 'ERROR') return false;
   if (out.usage_error === true) return true;
@@ -6908,19 +6333,7 @@ async function ciPollLoop(item, ownerRepo, pr, initialSha, wt) {
       const cifixLabel = `worker-cifix:${item.slug}`;
       const cifixStartS = await safeWorkerClockNow(item, cifixLabel, enterStage(STAGE_CI));
       // temperloop#2065 review round 1 [HIGH]: agent({schema}) THROWS on a
-      // StructuredOutput-absent / retry-cap-exceeded subagent — the SAME
-      // primitive callWorker() wraps in try/catch for exactly this reason
-      // (see that function's own comment). This call used to be bare: an
-      // uncaught throw here skipped the workerUsageEmit() block below
-      // entirely (never reaching it) AND propagated past this function
-      // uncaught, converting to a generic top-level `worker-error`
-      // escalation whose payload carries no cost field — silently dropping
-      // not just the retry's own tokens but the item's WHOLE ledger (the
-      // main worker's already-successful tokens/wall-clock too), since
-      // driveItem never reaches park(). Catch it here and normalize into the
-      // SAME "no verdict" shape the null-return arm below already handles,
-      // so the emit call is never skippable and this always resolves to a
-      // clean, in-band escalation instead of an uncaught throw.
+      // Full design note: build-level.design-notes-4.md#temperloop-2065-review-round-1-high-agent-schema-throws-on-a
       let fixVerdict = null;
       let fixThrew = null;
       try {
@@ -6947,16 +6360,7 @@ async function ciPollLoop(item, ownerRepo, pr, initialSha, wt) {
         fixThrew = String((err && err.message) || err);
       }
       // temperloop#2065 — the retry's own cost, regardless of what fixVerdict
-      // turns out to be below (or whether agent() threw above instead): the
-      // tokens were spent (and the wall-clock burned) the moment agent()
-      // returned OR threw, and a fix that FAILS — or never returns a verdict
-      // at all — still cost real money. Tokens roll up into ONE combined
-      // `retryTokens` figure (the epic's ledger names "retry tokens" as a
-      // single number, unlike the main worker's split tokens_in/tokens_out —
-      // see park()); wall-clock rolls into the SAME total `wall_clock_ms` the
-      // main worker contributes to (driveItem sums it into mainCost at the
-      // ciPollLoop call site) — there is one wall-clock figure for the whole
-      // item, not a per-phase one.
+      // Full design note: build-level.design-notes-4.md#temperloop-2065-the-retry-s-own-cost-regardless-of-what-fixv
       {
         const cifixUsage = await safeWorkerUsageEmit(item, cifixLabel, 'build-worker', enterStage(STAGE_CI));
         const inT = cifixUsage.tokensIn ?? 0;
@@ -7022,19 +6426,8 @@ async function ciPollLoop(item, ownerRepo, pr, initialSha, wt) {
         );
       }
       fixReviewRounds.push(fixReview);
-      // Push the fixed SHA and pin the re-poll to it. This is a plain push — no
-      // --force — because the CI-fix worker's head is a fast-forward descendant
-      // by construction: it resets to the remote tip (`git reset --hard
-      // FETCH_HEAD`) and commits on top, so the local head strictly descends
-      // from the current remote tip. A plain push therefore always succeeds on
-      // the intended path. We deliberately do NOT pass a classifier-visible
-      // --force here: pr.sh's internal downgrade cannot prevent the git-
-      // destructive safety classifier from pre-emptively denying the command
-      // as SPINE_DENIED (#437), which would mask a routine retry as an opaque
-      // pre-execution denial. If the head is somehow a genuine non-fast-forward,
-      // the plain push surfaces as a visible PUSH_REJECTED outcome (triaged
-      // below), not an opaque SPINE_DENIED. (pr.sh's --force→plain downgrade is
-      // retained for other callers that legitimately rewrite history — #335.)
+      // Push the fixed SHA and pin the re-poll to it. This is a plain push — n
+      // Full design note: build-level.design-notes-4.md#push-the-fixed-sha-and-pin-the-re-poll-to-it-this-is-a-plain
       const prBin = machineryBin(input.repoRoot, 'pr.sh');
       const fpush = await runMachinery(
         `${prBin} push ${sq(wt)} ${sq(item.branch)}`,
@@ -7089,16 +6482,7 @@ async function ciPollLoop(item, ownerRepo, pr, initialSha, wt) {
     }
 
     // ERROR or any unexpected outcome (e.g. ci-poll.sh itself errored) →
-    // escalate rather than spin.
-    //
-    // temperloop#2014 — but NOT as `ci-failed` when ci-poll.sh refused to run on
-    // its own arguments. `ci-failed` means "this PR's CI is red", and a run
-    // disposing on it parks or re-drives a healthy PR; a bad argument means the
-    // poll never observed CI at all, so it is its own kind with its own
-    // disposition. The pre-flight above makes this unreachable from the
-    // driver's own hand-off — this arm catches the argument errors the driver
-    // does not own (a stale vendored ci-poll.sh, an owner/repo or PR number
-    // this file passed through from its input).
+    // Full design note: build-level.design-notes-4.md#error-or-any-unexpected-outcome-e-g-ci-poll-sh-itself-errore
     if (isBadArgumentError(out)) {
       return {
         escalation: 'ci-poll-bad-argument',
@@ -7113,7 +6497,7 @@ async function ciPollLoop(item, ownerRepo, pr, initialSha, wt) {
 }
 
 // ======================================================================
-// Full design note: build-level.design-notes-2.md#note-2
+// Full design note: build-level.design-notes-3.md#note-2
 const PHASE_TITLE_MAX_ITEMS = 3;
 
 // The level's stages, in the order an item passes through them. STAGE_RECOVER is
@@ -7235,7 +6619,7 @@ function zeroDispositionContradiction(activeItems, parked, escalations) {
 }
 
 // ======================================================================
-// Full design note: build-level.design-notes-3.md#note-4
+// Full design note: build-level.design-notes-4.md#note-4
 const ITEM_KEY_ALIASES = {
   gh_issue: 'ghIssue',
   also_closes: 'alsoCloses',
@@ -7245,13 +6629,7 @@ const ITEM_KEY_ALIASES = {
   parent_summary: 'parentSummary',
 };
 // Every key this file actually READS off an item. This list is not a
-// hand-maintained copy that drifts: the K1700 lockstep guard in
-// test_workflow.sh greps THIS file for `item.<key>` dereferences and
-// reconciles the resulting set against this array in BOTH directions — a read
-// missing from the list, or a listed key nothing reads any more, fails the
-// suite. (Round 2: the comment used to claim that guard before it existed,
-// which is the same "a backstop that is only asserted in prose" defect this PR
-// removes elsewhere. The guard is real now.)
+// Full design note: build-level.design-notes-4.md#every-key-this-file-actually-reads-off-an-item-this-list-is-
 const ITEM_KEYS_READ = [
   'slug', 'branch', 'title', 'kind', 'ghIssue', 'alsoCloses', 'repo', 'model',
   'acceptance', 'source', 'scope', 'notes', 'dependsOn', 'activation',
@@ -7330,16 +6708,8 @@ async function buildLevel() {
     log(`continuation mode — onlySlugs=[${[...slugFilter].join(',')}] active=${activeItems.length}/${items.length}`);
   }
 
-  // Name the run in the progress row (temperloop#903). Set AFTER the onlySlugs
-  // filter on purpose: on a continuation the heading must name the slugs actually
-  // being re-driven, not the level's full membership (whose siblings are already
-  // parked and untouched). Nothing above this point awaits, so the row is never
-  // observed unlabelled.
-  //
-  // temperloop#1294: `phaseItems` is the ONE assignment that binds every later
-  // stage heading to this run's active items — it must land before any agent
-  // spawns. enterStage() then opens the first stage (claim) and each later stage
-  // advances the cursor from its own spawn site inside driveItem().
+  // Name the run in the progress row (temperloop#903). Set AFTER the onlyS
+  // Full design note: build-level.design-notes-4.md#name-the-run-in-the-progress-row-temperloop-903-set-after-th
   phaseItems = activeItems;
   stageReached = -1;
   enterStage(STAGE_CLAIM);
@@ -7397,7 +6767,7 @@ async function buildLevel() {
   }
 
   // temperloop#2006 — the LEVEL-SUMMARY half of the sideline notice. Each
-  // Full design note: build-level.design-notes-3.md#temperloop-2006-the-level-summary-half-of-the-sideline-notic
+  // Full design note: build-level.design-notes-4.md#temperloop-2006-the-level-summary-half-of-the-sideline-notic
   const sidelined = [];
   for (const it of activeItems) {
     const plain = SIDELINE_NOTICES.get(it.slug);
