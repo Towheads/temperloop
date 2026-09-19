@@ -123,10 +123,19 @@ if ! source "$SCRIPT_DIR/../lib/changelog.sh"; then
   echo "check-changelog-fragment-register: cannot load $SCRIPT_DIR/../lib/changelog.sh — refusing to report a false OK" >&2
   exit 1
 fi
-if ! command -v changelog_fragment_names >/dev/null 2>&1; then
-  echo "check-changelog-fragment-register: changelog.sh loaded but did not define changelog_fragment_names — refusing to report a false OK" >&2
-  exit 1
-fi
+# Belt 2 covers EVERY lib function this checker's main loop depends on, not
+# just the listing one (round-3 HIGH 2): `body="$(changelog_fragment_body …)"`
+# is a command substitution, so a lib that defines `changelog_fragment_names`
+# but not `changelog_fragment_body` yields an empty `$body` with a DISCARDED
+# exit status — every check below then passes vacuously and the run reports a
+# green "0 violations". Same silent-green shape as a failed `source`.
+for _ccfr_fn in changelog_fragment_names changelog_fragment_body; do
+  if ! command -v "$_ccfr_fn" >/dev/null 2>&1; then
+    echo "check-changelog-fragment-register: changelog.sh loaded but did not define $_ccfr_fn — refusing to report a false OK" >&2
+    exit 1
+  fi
+done
+unset _ccfr_fn
 
 # --- degenerate-input guards (fail loudly; never a silent OK) --------------
 if [[ ! -e "$CHANGELOG_FRAGMENT_DIR" ]]; then
@@ -194,6 +203,23 @@ checked=0
 while IFS= read -r name; do
   [[ -n "$name" ]] || continue
   checked=$((checked + 1))
+
+  # PER-FILE readability guard (round-3 HIGH 2) — the file-granularity twin of
+  # the directory-granularity `-r` guard above. `changelog_fragment_body`
+  # shells out to awk and its exit status is DISCARDED by the command
+  # substitution below, so an unreadable fragment yields an awk error on
+  # stderr and an EMPTY `$body`: both greps find nothing and
+  # `_ccfr_first_ref_hooked` exits 0 on an empty body, so the fragment passes
+  # all three checks VACUOUSLY and the run prints a green "0 violations".
+  # Belt 3 cannot see it either — the file IS on disk, so the raw glob count
+  # and $checked agree. This is the third arm of the same reads-green-while-
+  # inert class belts 1/2/3 close; the check-surface registry's `unreadable`
+  # row for this script covers both granularities because of this guard.
+  if [[ ! -r "$CHANGELOG_FRAGMENT_DIR/$name" ]]; then
+    echo "check-changelog-fragment-register: fragment unreadable, refusing to report a false OK: $name" >&2
+    exit 1
+  fi
+
   body="$(changelog_fragment_body "$CHANGELOG_FRAGMENT_DIR/$name")"
 
   # Check 2 -- bare cross-repo shorthand (K<N>/S<N>/F<N>/M<N>/W<N>). Boundary
@@ -215,8 +241,15 @@ while IFS= read -r name; do
   # an optional backtick around `checks` and a `-` or space before `gate`
   # (MEDIUM 1 fix) -- this corpus universally writes `` `checks` gate ``,
   # which the original bare `checks gate` literal never matched.
+  #
+  # RIGHT-ANCHORED (round-3 LOW 3): widening the separator to `[ -]+` also
+  # made a bare `checks gate-paths.tsv` match -- a phrase with real occasion
+  # to appear in this repo's fragments, since that file is a live artifact
+  # fragments discuss. `gates?([^-A-Za-z]|$)` requires the word to END at
+  # `gate`/`gates`, so `gate-paths.tsv` (and any other `gate-`-prefixed
+  # filename) no longer trips it while the genuine jargon token still does.
   # shellcheck disable=SC2016  # backticks below are a literal regex alternative, not expansion
-  hit="$(printf '%s\n' "$body" | grep -niE 'WIP cap|`?checks`?[ -]+gate' || true)"
+  hit="$(printf '%s\n' "$body" | grep -niE 'WIP cap|`?checks`?[ -]+gates?([^-A-Za-z]|$)' || true)"
   if [[ -n "$hit" ]]; then
     printf 'REGISTER: %s: names an internal-jargon token an adopter cannot resolve (docs-reviewer.md § Unexplained shorthand)\n' "$name"
     printf '%s\n' "$hit" | sed -E 's/^([0-9]+):/    body line \1: /'
@@ -259,7 +292,7 @@ _ccfr_raw_md_count() {
 
 raw_md_count="$(_ccfr_raw_md_count "$CHANGELOG_FRAGMENT_DIR")"
 if [[ "$raw_md_count" -ne "$checked" ]]; then
-  echo "check-changelog-fragment-register: sanity mismatch -- processed $checked fragment(s) via changelog.sh but found $raw_md_count *.md file(s) (excluding README.md) directly in $CHANGELOG_FRAGMENT_DIR. This usually means the fragment loop silently processed the wrong set (a load/permission failure) rather than that a non-conforming *.md file is present -- investigate before trusting any result above." >&2
+  echo "check-changelog-fragment-register: sanity mismatch -- processed $checked fragment(s) via changelog.sh but found $raw_md_count *.md file(s) (excluding README.md) directly in $CHANGELOG_FRAGMENT_DIR. Two causes produce this, neither ranked above the other: (a) the fragment loop processed the wrong set (a load or permission failure -- the reads-green-while-inert shape this belt exists to catch), or (b) the directory holds an entry the two counts legitimately disagree about -- a non-conforming *.md name, a directory or dangling symlink named *.md, or any other non-regular entry, since the raw glob counts every *.md name while changelog_fragment_names returns only conforming REGULAR files. Run changelog_fragment_invalid / changelog_fragment_nonregular on this directory to tell (b) from (a); investigate before trusting any result above." >&2
   exit 1
 fi
 

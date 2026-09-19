@@ -12,10 +12,13 @@
   `workflows/scripts/config/check-changelog-fragment-register.sh`, wired
   into `scripts/quality-gates.sh`, backing `checks` in
   `.github/workflows/ci.yml`, fails a fragment whose first issue mention
-  has no bold title hook, that carries bare
-  `K<N>`/`S<N>`/`F<N>`/`M<N>`/`W<N>`-style cross-repo shorthand, or that
-  names one of two internal-jargon phrases `docs-reviewer` itself lists as
-  unexplained-shorthand examples. Deliberately narrower than
+  has no bold title hook, that carries an unexpanded cross-repo issue
+  shorthand — a single letter plus a number standing in for a whole
+  repository, `K1451` for temperloop issue 1451 and `S658` for stageFind
+  issue 658, with the same shape for three sibling repositories; the family
+  is defined in `claude/CLAUDE.kernel.md` § Communication conventions — or
+  that names one of two internal-jargon phrases `docs-reviewer` itself
+  lists as unexplained-shorthand examples. Deliberately narrower than
   `changelog.d/README.md`'s full register rule — see the checker's own
   header for why its step-letter/section-index pattern (a numbered build
   step, a section-symbol reference) stays a `docs-reviewer` judgment call

@@ -128,7 +128,17 @@ workflows/scripts/config/check-contributor-manifest.sh	absent	covered	workflows/
 workflows/scripts/config/check-contributor-manifest.sh	unreadable	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	check-contributor-manifest.sh [unreadable]: exits non-zero, never a silent OK
 workflows/scripts/config/check-contributor-manifest.sh	empty	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	check-contributor-manifest.sh [empty]: exits non-zero, never a silent OK
 workflows/scripts/config/check-changelog-fragment-register.sh	absent	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	check-changelog-fragment-register.sh [absent]: exits non-zero, never a silent OK
-workflows/scripts/config/check-changelog-fragment-register.sh	unreadable	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	check-changelog-fragment-register.sh [unreadable]: exits non-zero, never a silent OK
+# This surface's `unreadable` case has TWO granularities, and the row is
+# anchored in the checker's own suite because that is the only place both are
+# proved. The CASE vocabulary is a fixed three values and a second
+# `unreadable` row would fail DUPLICATE-CASE, so the row's DETAIL names both
+# arms instead: an unreadable DIRECTORY (test case 8, and independently
+# test_check_surface_degenerate_backfill.sh's own dir:unreadable assertion,
+# which stays in place as extra coverage) and an unreadable FRAGMENT FILE
+# inside an otherwise-normal directory (test case 14, round-3 HIGH 2 — the
+# arm that previously printed a green "0 violations" over a fragment awk
+# could not open).
+workflows/scripts/config/check-changelog-fragment-register.sh	unreadable	covered	workflows/scripts/config/tests/test_check_changelog_fragment_register.sh	check-changelog-fragment-register.sh [unreadable]: an unreadable fragment directory OR an unreadable fragment FILE exits non-zero, never a silent OK
 workflows/scripts/config/check-changelog-fragment-register.sh	empty	not-applicable	-	an EMPTY-but-present-and-readable changelog.d/ is the legitimate post-release-cut state (scripts/assemble-changelog.sh deletes every fragment at the cut) — not a degenerate input the checker failed to evaluate. Its job is to flag register violations in whatever fragments exist; zero fragments correctly yields zero violations (proved GREEN by test_check_changelog_fragment_register.sh case 6), which is a different thing from "could not evaluate its input and reported success anyway".
 workflows/scripts/config/check-gate-paths.sh	absent	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	check-gate-paths.sh [absent]: exits non-zero, never a silent OK
 workflows/scripts/config/check-gate-paths.sh	unreadable	covered	workflows/scripts/tests/test_check_surface_degenerate_backfill.sh	check-gate-paths.sh [unreadable]: exits non-zero, never a silent OK
