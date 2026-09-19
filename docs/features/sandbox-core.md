@@ -131,6 +131,59 @@ scenario runs a generated fixture suite as a **separate process** with
 that directory holds once the fixture is dead — the only place "the root is
 gone after the process died" is observable at all.
 
+## Automatic orphan reap (temperloop#1667)
+
+The sweeper above could always reclaim a hard-killed run's root — but only
+when a human remembered to run it. That is not a detail: `$TMPDIR`
+accumulated **97 orphan sandboxes, 84GB, over one week** before anyone
+looked, on a volume that fell from 79Gi to 56Gi in three hours. The producer
+keeping it fed is the `/build` §3e acceptance gate hitting its Bash-tool
+ceiling (temperloop#1663/#1650) and killing a run mid-flight, so the leak
+grows with pipeline usage and is invisible — the gate escalation reports a
+timeout and says nothing about residue.
+
+So `sandbox_up` now calls `sandbox_reap_orphans` **itself**, once per shell,
+before it mints its own root: each run adopts and reaps its predecessors'
+orphans, and the reclaim path sits on the hot path instead of in an
+operator's memory. It delegates recognition and both safety valves to
+`sandbox-sweep.sh` (`--apply --quiet`), so there is exactly one
+implementation of "what is a sandbox root, and is it safe to delete",
+exercised by both entry points.
+
+**This is a reclaim path, not a better trap — deliberately.** `trap cleanup
+EXIT` already works for every run that *exits*; SIGKILL runs no handler at
+all, so no in-process guard can ever cover it. A stronger trap is not an
+available fix.
+
+**Safety against a concurrent peer is the primary requirement**, since
+getting it wrong destroys another session's in-flight test state. Nothing is
+removed by wildcard: a root qualifies only if it carries the marker or
+`sandbox_up`'s exact directory signature, is older than
+`SANDBOX_REAP_AGE_MIN` minutes (default **120** — the two-hour threshold the
+incident's own live-run constraint established), **and** records no live
+pid. A peer's in-flight root fails the last two independently.
+
+The reap is **best-effort and never fatal** — a missing sweeper, an
+unreadable `$TMPDIR` or a non-zero sweep must not turn a green suite red; it
+is disk hygiene, not an assertion. It is silent when it finds nothing, and
+prints one line on stderr when it actually removes something. Knobs:
+`SANDBOX_REAP=0` disables it, `SANDBOX_REAP_AGE_MIN=<n>` sets the age floor,
+and `SANDBOX_KEEP` (which already means "retain roots for debugging")
+suppresses it too, so a root kept on purpose is not reaped by the next run.
+
+**Scopes are named explicitly**, in `sandbox-sweep.sh`'s own `SCOPES` header
+block, so a producer in a third location is a *known* gap rather than a
+silent one. Covered: `$TMPDIR` (or `--dir`), one level deep — the only place
+`sandbox_up`'s `mktemp -d` writes. Not covered: `~/.claude/jobs/*/tmp/`, a
+different location with a different producer, tracked by temperloop#1111 and
+not fixed here.
+
+Scenarios 9 and 10 of `test_sandbox_trap.sh` are the gate: a fixture that
+`kill -9`s itself, then a follow-up run that must reclaim its root —
+asserted in **both** directions, since with `SANDBOX_REAP=0` the same orphan
+must survive, so a reaper that quietly became a no-op cannot still read
+green.
+
 ## Resource impact
 
 Local filesystem only: a `mktemp -d` throwaway root per test run, removed

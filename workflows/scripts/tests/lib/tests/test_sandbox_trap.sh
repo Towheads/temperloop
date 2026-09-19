@@ -36,6 +36,13 @@
 #      legacy-layout root; skips a live-pid root, a too-recent root and an
 #      unrelated directory; removes nothing without --apply and exactly the
 #      stale set with it.
+#   9. HARD KILL (temperloop#1667): a SIGKILL'd fixture — untrappable, so
+#      nothing above can cover it — leaks its root, and the NEXT sandbox_up
+#      adopts and reaps it. Asserted in BOTH directions: with SANDBOX_REAP=0
+#      the same orphan must survive, so a reaper that silently became a no-op
+#      cannot still read green.
+#  10. The automatic reap is SAFE AGAINST A CONCURRENT PEER: a live-pid root,
+#      a too-recent root and an unrelated directory all survive it.
 #
 # Every path this suite touches is under its own mktemp scratch root — it
 # never reads or writes the real $HOME, and its fixtures' sandbox roots land
@@ -360,6 +367,122 @@ bash "$SWEEP" --dir "$SWEEPDIR" --older-than 1 --apply >"$apply" 2>&1 \
 grep -q 'removed 2 of 2 stale root(s)' "$apply" \
   || fail "8e: expected a 'removed 2 of 2' summary, got:\n$(cat "$apply")"
 pass "8: sandbox-sweep.sh finds marker-bearing AND pre-guard legacy roots, skips live/recent ones and unrelated directories, and removes nothing until --apply"
+
+# =============================================================================
+# 9. HARD KILL -> the NEXT run reclaims the orphan (temperloop#1667).
+#
+# The trap guard above cannot reach this: SIGKILL runs no handler. So the
+# property is "a run that was KILLED, not merely exited, leaves a root — and
+# the next sandbox_up adopts and reaps it". Both arms are asserted, so the
+# reaper cannot regress into a no-op that still reads green: with
+# SANDBOX_REAP=0 the orphan MUST survive (the red state), with the reap on it
+# MUST be gone.
+# =============================================================================
+cat >"$FIXTURES/hardkill.sh" <<'FIXTURE_EOF'
+set -uo pipefail
+# shellcheck source=/dev/null
+source "$SANDBOX_LIB"
+sandbox_up trapfix-hardkill
+printf '%s' "$SANDBOX_ROOT" >"$ROOT_OUT"
+# The untrappable death, verbatim: SIGKILL to our own pid. No EXIT/TERM
+# handler runs, so nothing removes the root — this is NOT a `kill -TERM` in
+# disguise.
+kill -9 $$
+# Unreachable. Present so that a raced kill cannot fall through to a clean
+# exit and let this fixture masquerade as a hard kill.
+sleep 30
+FIXTURE_EOF
+
+cat >"$FIXTURES/nextrun.sh" <<'FIXTURE_EOF'
+set -uo pipefail
+# shellcheck source=/dev/null
+source "$SANDBOX_LIB"
+sandbox_up trapfix-nextrun
+printf '%s' "$SANDBOX_ROOT" >"$ROOT_OUT"
+sandbox_down
+exit 0
+FIXTURE_EOF
+
+SCAN="$(fresh_scan_dir hardkill)"
+ROOT_OUT="$SCRATCH/root-hardkill.txt"
+# Backgrounded, then `wait` inside a stderr-redirected group. Both halves are
+# load-bearing: bash announces a child killed by SIGKILL ("... Killed: 9 ...")
+# on the WAITING shell's own stderr — unlike the SIGTERM of scenario 2, which
+# it reports silently — and that announcement would land in this suite's
+# output looking like a broken test. The redirection belongs to the `wait`,
+# not to the child, and $? still carries the child's 137.
+TMPDIR="$SCAN" SANDBOX_LIB="$LIB" ROOT_OUT="$ROOT_OUT" SANDBOX_REAP=0 \
+  bash "$FIXTURES/hardkill.sh" >/dev/null 2>&1 &
+hk_pid=$!
+{ wait "$hk_pid"; rc=$?; } 2>/dev/null
+[ "$rc" -eq 137 ] \
+  || fail "9: expected the conventional 128+9=137 from a SIGKILL'd fixture, got $rc — the fixture did not hard-kill itself"
+orphan="$(cat "$ROOT_OUT")"
+[ -n "$orphan" ] || fail "9: the hard-killed fixture never recorded its \$SANDBOX_ROOT"
+[ -d "$orphan" ] \
+  || fail "9: the SIGKILL'd run's root was already gone ($orphan) — this suite's premise (a trap cannot cover SIGKILL) no longer holds; re-derive it before trusting the arms below"
+
+# The reaper's age valve is real, so the orphan has to be aged past it for a
+# same-second test to observe a reclaim at all.
+touch -t 200001010000 "$orphan"
+
+orphan_pid="$(sed -n 's/^pid=//p' "$orphan/.sandbox-root" | head -1)"
+[ -n "$orphan_pid" ] || fail "9: the orphan carries no marker pid — the sweeper's live-pid valve cannot be exercised"
+kill -0 "$orphan_pid" 2>/dev/null \
+  && fail "9: the killed fixture's pid ($orphan_pid) is alive again (pid reuse) — the live-pid valve would correctly skip this root, so the arms below would not mean what they claim"
+
+# RED arm: the reap disabled — the orphan must survive, which is exactly the
+# state this item fixes.
+TMPDIR="$SCAN" SANDBOX_LIB="$LIB" ROOT_OUT="$SCRATCH/root-nextrun-off.txt" \
+  SANDBOX_REAP=0 SANDBOX_REAP_AGE_MIN=1 \
+  bash "$FIXTURES/nextrun.sh" >/dev/null 2>&1 \
+  || fail "9: the follow-up run exited non-zero with the reap disabled"
+[ -d "$orphan" ] \
+  || fail "9: SANDBOX_REAP=0 still reclaimed the orphan — the opt-out does not work, and this suite's green arm below would prove nothing"
+
+# GREEN arm: default (reap on) — the next run adopts and reaps it.
+nextrun_err="$SCRATCH/nextrun.err"
+TMPDIR="$SCAN" SANDBOX_LIB="$LIB" ROOT_OUT="$SCRATCH/root-nextrun.txt" \
+  SANDBOX_REAP_AGE_MIN=1 \
+  bash "$FIXTURES/nextrun.sh" >/dev/null 2>"$nextrun_err"
+rc=$?
+[ "$rc" -eq 0 ] || fail "9: the follow-up run exited $rc — the reap must never fail a suite:\n$(cat "$nextrun_err")"
+[ ! -e "$orphan" ] \
+  || fail "9: the next run did NOT reclaim the hard-killed run's sandbox ($orphan) — the leak this item fixes is back"
+grep -q 'reclaimed 1 orphaned sandbox root' "$nextrun_err" \
+  || fail "9: an automatic reap that deleted a root must say so on stderr; got:\n$(cat "$nextrun_err")"
+[ "$(count_entries "$SCAN")" = "0" ] \
+  || fail "9: \$TMPDIR is not empty after the reaping run (its own root should also be gone):\n$(ls -A "$SCAN")"
+pass "9: a HARD-KILLED (SIGKILL, untrappable) run leaks its root, and the next sandbox_up adopts and reaps it — with SANDBOX_REAP=0 the same orphan survives, so the reclaim is the thing being observed"
+
+# =============================================================================
+# 10. The automatic reap is SAFE AGAINST A CONCURRENT PEER.
+#
+# The primary correctness requirement: getting this wrong destroys another
+# session's in-flight test state. Neither safety valve may be bypassed just
+# because the sweep is now automatic.
+# =============================================================================
+PEERDIR="$(fresh_scan_dir peers)"
+mk_marker_root "$PEERDIR/peer-live" "$$"          # aged, but pid alive
+mk_marker_root "$PEERDIR/peer-fresh" "$DEAD_PID"  # dead pid, but brand new
+mk_legacy_root "$PEERDIR/legacy-fresh"            # no marker, brand new
+mkdir -p "$PEERDIR/not-a-sandbox"
+echo "precious" >"$PEERDIR/not-a-sandbox/keep-me.txt"
+touch -t 200001010000 "$PEERDIR/peer-live" "$PEERDIR/not-a-sandbox"
+
+TMPDIR="$PEERDIR" SANDBOX_LIB="$LIB" ROOT_OUT="$SCRATCH/root-peers.txt" \
+  SANDBOX_REAP_AGE_MIN=1 \
+  bash "$FIXTURES/nextrun.sh" >/dev/null 2>&1 \
+  || fail "10: the reaping run exited non-zero"
+[ -d "$PEERDIR/peer-live" ] \
+  || fail "10: the automatic reap removed a root whose marker pid is STILL ALIVE — a peer session's in-flight sandbox"
+[ -d "$PEERDIR/peer-fresh" ] \
+  || fail "10: the automatic reap removed a root newer than the age threshold"
+[ -d "$PEERDIR/legacy-fresh" ] \
+  || fail "10: the automatic reap removed a brand-new legacy-layout root"
+[ -f "$PEERDIR/not-a-sandbox/keep-me.txt" ] \
+  || fail "10: the automatic reap removed an unrelated directory — it is not a wildcard delete"
+pass "10: the automatic reap leaves a live peer's root, a too-recent root and an unrelated directory untouched — age + live-pid, never a blanket wildcard"
 
 echo
 echo "ALL PASS: test_sandbox_trap.sh"
