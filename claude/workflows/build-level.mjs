@@ -1,333 +1,309 @@
-// build-level.mjs — foundation's FIRST saved Workflow.
-// =============================================================================
-// The per-level driver for /build. It re-homes build.md's 3a–3h
-// per-item loop out of the conversational orchestrator and into a bounded
-// Workflow process, so the orchestrator's context stays pinned to ONE small
-// {parked, escalations} object per dependency level — regardless of how many
-// items or machinery calls the level contains. The orchestrator invokes this once
-// per level (via the Workflow tool), the workflow drives every item's machinery +
-// worker, and returns only what to write back. The orchestrator still owns the
-// MERGE GATE (Step 4) — this workflow never merges and never writes the plan
-// note. Corollary (temperloop#1452): build.md §3h.5's as-you-go merge, which
-// needs BOTH of those seats, is scoped to /build's `--no-workflow`
-// conversational path and has no implementation here by design — a
-// Workflow-path level batches every item to the Step-4 gate.
+//  build-level.mjs — foundation's FIRST saved Workflow.
+//  =============================================================================
+//  The per-level driver for /build. It re-homes build.md's 3a–3h
+//  per-item loop out of the conversational orchestrator and into a bounded
+//  Workflow process, so the orchestrator's context stays pinned to ONE small
+//  {parked, escalations} object per dependency level — regardless of how many
+//  items or machinery calls the level contains. The orchestrator invokes this once
+//  per level (via the Workflow tool), the workflow drives every item's machinery +
+//  worker, and returns only what to write back. The orchestrator still owns the
+//  MERGE GATE (Step 4) — this workflow never merges and never writes the plan
+//  note. Corollary (temperloop#1452): build.md §3h.5's as-you-go merge, which
+//  needs BOTH of those seats, is scoped to /build's `--no-workflow`
+//  conversational path and has no implementation here by design — a
+//  Workflow-path level batches every item to the Step-4 gate.
 //
-// -----------------------------------------------------------------------------
-// DESIGN NOTES (read before editing — these three decisions are load-bearing)
-// -----------------------------------------------------------------------------
+//  -----------------------------------------------------------------------------
+//  DESIGN NOTES (read before editing — these three decisions are load-bearing)
+//  -----------------------------------------------------------------------------
 //
-// 1. THE runMachinery BRIDGE (spike #421 verdict §1; BATCHED per temperloop#942).
-//    The deterministic bash machinery (worktree.sh / pr.sh / ci-poll.sh /
-//    quality-gates.sh / board claim.sh) is the source of truth for every
-//    mechanical step. But the Workflow runtime has NO filesystem, NO Node, NO
-//    shell in the script body — so there is no `sh()` primitive. The bridge:
-//    a machinery call becomes an `agent({schema})` whose entire job is "run
-//    exactly this command text, return each step's closed-outcome JSON line as a
-//    validated object." The runtime's agent() hook gives a subagent the normal
-//    Bash tool and (with a schema) returns a validated object, not free text —
-//    so an agent that runs a command IS the missing sh().
+//  1. THE runMachinery BRIDGE (spike #421 verdict §1; BATCHED per temperloop#942).
+//     The deterministic bash machinery (worktree.sh / pr.sh / ci-poll.sh /
+//     quality-gates.sh / board claim.sh) is the source of truth for every
+//     mechanical step. But the Workflow runtime has NO filesystem, NO Node, NO
+//     shell in the script body — so there is no `sh()` primitive. The bridge:
+//     a machinery call becomes an `agent({schema})` whose entire job is "run
+//     exactly this command text, return each step's closed-outcome JSON line as a
+//     validated object." The runtime's agent() hook gives a subagent the normal
+//     Bash tool and (with a schema) returns a validated object, not free text —
+//     so an agent that runs a command IS the missing sh().
 //
-//    WHAT THE BRIDGE'S INVARIANT ACTUALLY IS: the BRANCHING LOGIC (if
-//    SCAN_BLOCKED → escalate, if PUSH_REJECTED → escalate) stays in legible .mjs
-//    here, never buried in an opaque agent prompt that returns a single verdict.
-//    It is NOT "one agent per command" — that was only the cheapest way to keep
-//    each step's outcome individually visible. temperloop#942 measured the cost
-//    of taking it literally: an L0 level of 3 items spawned 40 agents (3 real
-//    workers + 37 haiku micro-agents), each paying ~160K cache-read tokens and 4
-//    API round-trips to execute one shell one-liner.
+//     WHAT THE BRIDGE'S INVARIANT ACTUALLY IS: the BRANCHING LOGIC (if
+//     SCAN_BLOCKED → escalate, if PUSH_REJECTED → escalate) stays in legible .mjs
+//     here, never buried in an opaque agent prompt that returns a single verdict.
+//     It is NOT "one agent per command" — that was only the cheapest way to keep
+//     each step's outcome individually visible. temperloop#942 measured the cost
+//     of taking it literally: an L0 level of 3 items spawned 40 agents (3 real
+//     workers + 37 haiku micro-agents), each paying ~160K cache-read tokens and 4
+//     API round-trips to execute one shell one-liner.
 //
-//    So mechanically-adjacent steps are now BATCHED into one executor agent via
-//    `runMachineryBatch()`: one Bash invocation runs the steps in sequence and
-//    prints ONE JSON line per step, and the agent returns them as
-//    `{results:[…]}` — so the driver still sees EVERY step's own closed-outcome
-//    object and branches on each of them, one `if` at a time, right here in .mjs.
-//    The bash wrapper's only added logic is a `case` short-circuit that stops the
-//    sequence when a step's outcome means the remaining steps must not run (a
-//    stop-early mirror, never the decision: the .mjs re-reads the same JSON and
-//    makes the authoritative call, and a truncated results array simply means the
-//    .mjs already escalated on the earlier step). Three batch sites:
-//      • `prelude:<slug>`  — 3a claim + 3b-0 deps-merged + 3b worktree create
-//      • `pr-batch:<slug>` — 3f-0a rebase + 3f-0 scan + 3f-1 push + 3f-2 pr open
-//      • `ci-batch:<slug>#n` — the interleaved merge-state probe + CI poll slices
-//    The 3e.5 quality gate stays a SOLO call on purpose — it is the one machinery
-//    step whose own runtime is minutes-scale (measured 6:05 for this repo's
-//    suite), so folding it into a batch would put a single Bash invocation within
-//    reach of the agent's ~10-min cap. See DESIGN NOTE 2.
+//     So mechanically-adjacent steps are now BATCHED into one executor agent via
+//     `runMachineryBatch()`: one Bash invocation runs the steps in sequence and
+//     prints ONE JSON line per step, and the agent returns them as
+//     `{results:[…]}` — so the driver still sees EVERY step's own closed-outcome
+//     object and branches on each of them, one `if` at a time, right here in .mjs.
+//     The bash wrapper's only added logic is a `case` short-circuit that stops the
+//     sequence when a step's outcome means the remaining steps must not run (a
+//     stop-early mirror, never the decision: the .mjs re-reads the same JSON and
+//     makes the authoritative call, and a truncated results array simply means the
+//     .mjs already escalated on the earlier step). Three batch sites:
+//       • `prelude:<slug>`  — 3a claim + 3b-0 deps-merged + 3b worktree create
+//       • `pr-batch:<slug>` — 3f-0a rebase + 3f-0 scan + 3f-1 push + 3f-2 pr open
+//       • `ci-batch:<slug>#n` — the interleaved merge-state probe + CI poll slices
+//     The 3e.5 quality gate stays a SOLO call on purpose — it is the one machinery
+//     step whose own runtime is minutes-scale (measured 6:05 for this repo's
+//     suite), so folding it into a batch would put a single Bash invocation within
+//     reach of the agent's ~10-min cap. See DESIGN NOTE 2.
 //
-//    The cost — ~4 executor spawns + 1 worker per item — lands entirely in THIS
-//    discardable workflow process, never the orchestrator's context. That is the
-//    whole point: orchestrator growth is bounded to one summary object per level.
+//     The cost — ~4 executor spawns + 1 worker per item — lands entirely in THIS
+//     discardable workflow process, never the orchestrator's context. That is the
+//     whole point: orchestrator growth is bounded to one summary object per level.
 //
-//    CRITICAL (from the live probe in the spike): shell-quote every argument.
-//    A spaced path (e.g. a vault plan path "Plans/2026-06-13 foo - bar.md")
-//    MUST be single-quoted in the command string or the one-shot executor runs
-//    the wrong command. Every command this file builds goes through `sq()` for
-//    each interpolated value — and batching does NOT relax that: a batch is
-//    literally the same per-step command strings joined by fixed shell syntax,
-//    so every argument is still sq()-quoted exactly as before.
+//     CRITICAL (from the live probe in the spike): shell-quote every argument.
+//     A spaced path (e.g. a vault plan path "Plans/2026-06-13 foo - bar.md")
+//     MUST be single-quoted in the command string or the one-shot executor runs
+//     the wrong command. Every command this file builds goes through `sq()` for
+//     each interpolated value — and batching does NOT relax that: a batch is
+//     literally the same per-step command strings joined by fixed shell syntax,
+//     so every argument is still sq()-quoted exactly as before.
 //
-// 2. THE CI-POLL LOOP (spike #421 verdict §1 "ci-poll caveat").
-//    ci-poll.sh can poll up to 1h, but an agent()'s foreground Bash has a
-//    ~10-min cap — so we must NOT runMachinery a single long poll (it would die
-//    mid-poll). Instead we drive SHORT-timeout polls (CI_POLL_SLICE_SECS,
-//    default 240s) until the outcome resolves to CI_GREEN or CI_FAILED, bounded
-//    by a total wall budget (CI_POLL_TOTAL_SECS). The short poll returns TIMEOUT
-//    when the slice elapses with checks still pending — that is the signal to
-//    poll again, NOT a failure. On CI_FAILED within a small retry budget we
-//    re-spawn the worker, force-push, and re-poll PINNED to the new SHA (the #254
-//    false-green guard — never let the poll re-resolve the head from the PR API
-//    after a force-push). Past the budget without resolution → escalate
-//    `ci-failed` so a human drives it.
+//  2. THE CI-POLL LOOP (spike #421 verdict §1 "ci-poll caveat").
+//     ci-poll.sh can poll up to 1h, but an agent()'s foreground Bash has a
+//     ~10-min cap — so we must NOT runMachinery a single long poll (it would die
+//     mid-poll). Instead we drive SHORT-timeout polls (CI_POLL_SLICE_SECS,
+//     default 240s) until the outcome resolves to CI_GREEN or CI_FAILED, bounded
+//     by a total wall budget (CI_POLL_TOTAL_SECS). The short poll returns TIMEOUT
+//     when the slice elapses with checks still pending — that is the signal to
+//     poll again, NOT a failure. On CI_FAILED within a small retry budget we
+//     re-spawn the worker, force-push, and re-poll PINNED to the new SHA (the #254
+//     false-green guard — never let the poll re-resolve the head from the PR API
+//     after a force-push). Past the budget without resolution → escalate
+//     `ci-failed` so a human drives it.
 //
-//    temperloop#942 stopped spawning a FRESH agent per poll cycle (the measured
-//    L0 run burned 7 ci-poll spawns + 8 `gh pr view` spawns at one level) — but
-//    the ~10-min cap is unchanged and is now enforced ARITHMETICALLY rather than
-//    by comment. One `ci-batch` agent runs CI_POLL_SLICES_PER_BATCH slices in one
-//    Bash invocation, and that count is DERIVED: it is
-//    floor(CI_POLL_MAX_BATCH_WALL_MS / CI_POLL_SLICE_SECS), so the poll wall a
-//    single Bash invocation may occupy can never exceed CI_POLL_MAX_BATCH_WALL_MS
-//    (< the AGENT_BASH_CAP_MS ceiling) no matter how the slice length is retuned.
-//    Each individual ci-poll.sh invocation still carries its own
-//    CI_POLL_SLICE_SECS `--timeout`; the batch never asks for one long poll.
-//    The batch also short-circuits the moment a slice resolves, so a green PR
-//    does not sit through the remaining slices.
+//     temperloop#942 stopped spawning a FRESH agent per poll cycle (the measured
+//     L0 run burned 7 ci-poll spawns + 8 `gh pr view` spawns at one level) — but
+//     the ~10-min cap is unchanged and is now enforced ARITHMETICALLY rather than
+//     by comment. One `ci-batch` agent runs CI_POLL_SLICES_PER_BATCH slices in one
+//     Bash invocation, and that count is DERIVED: it is
+//     floor(CI_POLL_MAX_BATCH_WALL_MS / CI_POLL_SLICE_SECS), so the poll wall a
+//     single Bash invocation may occupy can never exceed CI_POLL_MAX_BATCH_WALL_MS
+//     (< the AGENT_BASH_CAP_MS ceiling) no matter how the slice length is retuned.
+//     Each individual ci-poll.sh invocation still carries its own
+//     CI_POLL_SLICE_SECS `--timeout`; the batch never asks for one long poll.
+//     The batch also short-circuits the moment a slice resolves, so a green PR
+//     does not sit through the remaining slices.
 //
-// 3. DROP isolation:'worktree' (spike #421 verdict §5).
-//    The worker agent() runs WITHOUT isolation:'worktree'. build has its
-//    own worktree mechanism (worktree.sh create), and three contracts assume
-//    IT, not the runtime's opaque isolation: (a) the deterministic path
-//    <repoRoot>.wt/<slug> that pr.sh / quality-gates / the verification-surface
-//    file all reference; (b) the .build-guard write-jail marker that arms
-//    the PreToolUse guard per-worktree; (c) push-by-SHA on the plan's branch.
-//    So we runMachinery('worktree.sh create …') first, then tell the worker (in its
-//    prompt) that its cwd IS that deterministic path. The worker's writes are
-//    confined by the .build-guard hook — the intended jail.
+//  3. DROP isolation:'worktree' (spike #421 verdict §5).
+//     The worker agent() runs WITHOUT isolation:'worktree'. build has its
+//     own worktree mechanism (worktree.sh create), and three contracts assume
+//     IT, not the runtime's opaque isolation: (a) the deterministic path
+//     <repoRoot>.wt/<slug> that pr.sh / quality-gates / the verification-surface
+//     file all reference; (b) the .build-guard write-jail marker that arms
+//     the PreToolUse guard per-worktree; (c) push-by-SHA on the plan's branch.
+//     So we runMachinery('worktree.sh create …') first, then tell the worker (in its
+//     prompt) that its cwd IS that deterministic path. The worker's writes are
+//     confined by the .build-guard hook — the intended jail.
 //
-// -----------------------------------------------------------------------------
-// I/O CONTRACT
-// -----------------------------------------------------------------------------
-//   Input  (via global `args`):
-//     { repoRoot, planLink, board, items:[{ slug, branch, title, kind,
-//        ghIssue, alsoCloses, repo, model, acceptance, source, scope, notes,
-//        dependsOn, activation }],
-//       ownerRepo, claimCmd, verdicts, onlySlugs }
+//  -----------------------------------------------------------------------------
+//  I/O CONTRACT
+//  -----------------------------------------------------------------------------
+//    Input  (via global `args`):
+//      { repoRoot, planLink, board, items:[{ slug, branch, title, kind,
+//         ghIssue, alsoCloses, repo, model, acceptance, source, scope, notes,
+//         dependsOn, activation }],
+//        ownerRepo, claimCmd, verdicts, onlySlugs }
 //
-//     repoRoot   — the parent checkout's top-level path; worktrees live at
-//                  `<repoRoot>.wt/<slug>` and machinery scripts at
-//                  `<repoRoot>/workflows/scripts/build/`.
-//     planLink   — the plan note's vault link (passed to pr.sh --plan-link).
-//     board      — board id (3/4) or null/false when board is OFF.
-//     items      — this level's FULL item array (the onlySlugs filter, below,
-//                  selects the active subset on a continuation). Per item,
-//                  `dependsOn` is an array of { slug, sha } — the merged head
-//                  SHA of each `depends-on` target (from that dep's plan-note
-//                  `pushed_sha:`). It gates worktree creation (3b-0, #108): the
-//                  worktree is created only once every dep SHA is an ancestor of
-//                  origin/<default> (i.e. the depended-on PR has MERGED), so the
-//                  worker builds and self-verifies against merged dependency
-//                  code, not a pre-merge base. Absent/empty for level-0 items or
-//                  items whose only cross-item edges are `after:` (no merge dep).
-//                  `repo` is the item's plan-schema `repo:` field (owner/repo,
-//                  absent for the common same-repo case) — the ONLY thing it
-//                  drives today is the 3f cross-repo `Closes` qualification
-//                  below (temperloop#852); it does NOT yet retarget worktree
-//                  creation/`repoRoot` or CI polling per item, a separate,
-//                  larger gap this fix does not attempt.
-//                  `activation` is the item's plan-schema `activation:` block
-//                  straight through — `{ class, proof, locus }`, absent on an
-//                  item that declares none (temperloop#1219). ONLY `class: A`
-//                  does anything here: §3e.6 runs its `proof:` predicate against
-//                  the worktree between 3e.5 and 3f. Absent, or `class: B`/`C`
-//                  (ledger-discharged at 4d-epic step 2a, orchestrator-side),
-//                  is a no-op on this path. WITHOUT this field the §3e.6 gate
-//                  cannot run at all — the defect temperloop#1219 filed.
-//     ownerRepo  — "owner/repo" for ci-poll.sh / gh ops. The workflow has no
-//                  shell to derive it, so the orchestrator passes it in (Step 0
-//                  probe: `gh repo view --json nameWithOwner -q .nameWithOwner`).
-//                  WITHOUT it every CI poll gets '' → ERROR. This is also the
-//                  qualifier used for a cross-repo item's `Closes` line (3f,
-//                  temperloop#852): `gh_issue:`/`also_closes:` numbers are
-//                  tracked wherever the item was triaged — the plan's HOME repo
-//                  (this value), not necessarily `item.repo` — so when
-//                  `item.repo` is set and differs from `ownerRepo`, the issue
-//                  ref is qualified as `<ownerRepo>#<N>` rather than emitted
-//                  bare (build.md 3f "Cross-repo `repo:` honor point").
-//     claimCmd   — absolute path to the board claim.sh entrypoint (Step 0 CLAIM
-//                  probe). Used by 3a; defaults to bare 'claim.sh' if absent.
-//     machineryAgentType
-//                — optional override for the executor agent type. Absent (the
-//                  norm) means 'machinery-executor', with an automatic one-time
-//                  fallback to 'general-purpose' in a checkout that has not
-//                  deployed the agent definition. Pass 'general-purpose' to pin
-//                  the pre-#1014 behavior. See machineryAgent() below.
-//     reviewBlockingMaxRounds
-//                — the §3e convergence bound (temperloop#1970), resolved from
-//                  $BUILD_REVIEW_BLOCKING_MAX_ROUNDS at build.md / sweep.md /
-//                  fix.md Step 0 and handed in on the SAME seam, for the same
-//                  structural reason, as gateSliceSecs (the Workflow runtime has
-//                  no shell to source build.config.sh — DESIGN NOTE 1). Caps how
-//                  many review ROUNDS one item's worktree may spend before a
-//                  HIGH finding is carried into the PR body instead of
-//                  escalating `review-blocking` again. Absent / empty /
-//                  non-positive → the in-file default; never unbounded.
-//     reviewAgentCeilingSecs / reviewAgentSlowSecs
-//                — the §3e review-agent LIVENESS bound and its progress-notice
-//                  threshold (temperloop#2003), resolved from
-//                  $BUILD_REVIEW_AGENT_CEILING_SECS / $BUILD_REVIEW_AGENT_SLOW_SECS
-//                  at build.md / sweep.md / fix.md Step 0 and handed in on the
-//                  SAME seam as reviewBlockingMaxRounds above. The ceiling bounds
-//                  the WHOLE §3e fanout's wall clock so a reviewer that never
-//                  returns cannot stall the level; the slow threshold makes a
-//                  long-but-alive review visible first. Both are clamped in this
-//                  file (the ceiling floored at one CI-poll/gate slice) so no
-//                  operator value can manufacture a false timeout on healthy
-//                  work. Absent / empty / non-positive → the in-file defaults.
-//     verdicts   — escalation-continuation map. Empty/absent on a fresh level;
-//                  on a 3d-esc continuation, keyed by slug:
-//                    { [slug]: { kind, verdict_section } }
-//                  where `kind` is the escalation kind (design-fork/blocked/
-//                  failed) and `verdict_section` is the FULL markdown block the
-//                  orchestrator appended to the plan note (a `## Design verdict
-//                  — <slug>` or `## User answers — <slug>` section, heading +
-//                  body). driveItem injects it verbatim into the re-spawned
-//                  worker's prompt (3c) so the worker sees the human's decision
-//                  instead of re-forking. Read ONLY for slugs in onlySlugs.
-//     onlySlugs  — optional continuation filter. Absent/empty on a fresh level
-//                  (drive everything). On a continuation it is the array of
-//                  still-unresolved slugs to re-drive; their siblings are
-//                  already parked and are left untouched. A slug in onlySlugs is
-//                  driven in CONTINUATION mode: claim (3a) and worktree create
-//                  (3b) are SKIPPED (issue already claimed, worktree intact —
-//                  re-creating it would discard the escalated build), and the
-//                  captured verdict is injected at 3c.
-//   Output (returned):
-//     { parked:      [{ slug, pr, pushed_sha, acceptance_results }],
-//       escalations: [{ slug, kind, payload }],
-//       sidelined?:  [{ slug, path, branch, recovery }] }
+//      repoRoot   — the parent checkout's top-level path; worktrees live at
+//                   `<repoRoot>.wt/<slug>` and machinery scripts at
+//                   `<repoRoot>/workflows/scripts/build/`.
+//      planLink   — the plan note's vault link (passed to pr.sh --plan-link).
+//      board      — board id (3/4) or null/false when board is OFF.
+//      items      — this level's FULL item array (the onlySlugs filter, below,
+//                   selects the active subset on a continuation). Per item,
+//                   `dependsOn` is an array of { slug, sha } — the merged head
+//                   SHA of each `depends-on` target (from that dep's plan-note
+//                   `pushed_sha:`). It gates worktree creation (3b-0, #108): the
+//                   worktree is created only once every dep SHA is an ancestor of
+//                   origin/<default> (i.e. the depended-on PR has MERGED), so the
+//                   worker builds and self-verifies against merged dependency
+//                   code, not a pre-merge base. Absent/empty for level-0 items or
+//                   items whose only cross-item edges are `after:` (no merge dep).
+//                   `repo` is the item's plan-schema `repo:` field (owner/repo,
+//                   absent for the common same-repo case) — the ONLY thing it
+//                   drives today is the 3f cross-repo `Closes` qualification
+//                   below (temperloop#852); it does NOT yet retarget worktree
+//                   creation/`repoRoot` or CI polling per item, a separate,
+//                   larger gap this fix does not attempt.
+//                   `activation` is the item's plan-schema `activation:` block
+//                   straight through — `{ class, proof, locus }`, absent on an
+//                   item that declares none (temperloop#1219). ONLY `class: A`
+//                   does anything here: §3e.6 runs its `proof:` predicate against
+//                   the worktree between 3e.5 and 3f. Absent, or `class: B`/`C`
+//                   (ledger-discharged at 4d-epic step 2a, orchestrator-side),
+//                   is a no-op on this path. WITHOUT this field the §3e.6 gate
+//                   cannot run at all — the defect temperloop#1219 filed.
+//      ownerRepo  — "owner/repo" for ci-poll.sh / gh ops. The workflow has no
+//                   shell to derive it, so the orchestrator passes it in (Step 0
+//                   probe: `gh repo view --json nameWithOwner -q .nameWithOwner`).
+//                   WITHOUT it every CI poll gets '' → ERROR. This is also the
+//                   qualifier used for a cross-repo item's `Closes` line (3f,
+//                   temperloop#852): `gh_issue:`/`also_closes:` numbers are
+//                   tracked wherever the item was triaged — the plan's HOME repo
+//                   (this value), not necessarily `item.repo` — so when
+//                   `item.repo` is set and differs from `ownerRepo`, the issue
+//                   ref is qualified as `<ownerRepo>#<N>` rather than emitted
+//                   bare (build.md 3f "Cross-repo `repo:` honor point").
+//      claimCmd   — absolute path to the board claim.sh entrypoint (Step 0 CLAIM
+//                   probe). Used by 3a; defaults to bare 'claim.sh' if absent.
+//      machineryAgentType
+//                 — optional override for the executor agent type. Absent (the
+//                   norm) means 'machinery-executor', with an automatic one-time
+//                   fallback to 'general-purpose' in a checkout that has not
+//                   deployed the agent definition. Pass 'general-purpose' to pin
+//                   the pre-#1014 behavior. See machineryAgent() below.
+//      reviewBlockingMaxRounds
+//                 — the §3e convergence bound (temperloop#1970), resolved from
+//                   $BUILD_REVIEW_BLOCKING_MAX_ROUNDS at build.md / sweep.md /
+//                   fix.md Step 0 and handed in on the SAME seam, for the same
+//                   structural reason, as gateSliceSecs (the Workflow runtime has
+//                   no shell to source build.config.sh — DESIGN NOTE 1). Caps how
+//                   many review ROUNDS one item's worktree may spend before a
+//                   HIGH finding is carried into the PR body instead of
+//                   escalating `review-blocking` again. Absent / empty /
+//                   non-positive → the in-file default; never unbounded.
+//      reviewAgentCeilingSecs / reviewAgentSlowSecs
+//                 — the §3e review-agent LIVENESS bound and its progress-notice
+//                   threshold (temperloop#2003), resolved from
+//                   $BUILD_REVIEW_AGENT_CEILING_SECS / $BUILD_REVIEW_AGENT_SLOW_SECS
+//                   at build.md / sweep.md / fix.md Step 0 and handed in on the
+//                   SAME seam as reviewBlockingMaxRounds above. The ceiling bounds
+//                   the WHOLE §3e fanout's wall clock so a reviewer that never
+//                   returns cannot stall the level; the slow threshold makes a
+//                   long-but-alive review visible first. Both are clamped in this
+//                   file (the ceiling floored at one CI-poll/gate slice) so no
+//                   operator value can manufacture a false timeout on healthy
+//                   work. Absent / empty / non-positive → the in-file defaults.
+//      verdicts   — escalation-continuation map. Empty/absent on a fresh level;
+//                   on a 3d-esc continuation, keyed by slug:
+//                     { [slug]: { kind, verdict_section } }
+//                   where `kind` is the escalation kind (design-fork/blocked/
+//                   failed) and `verdict_section` is the FULL markdown block the
+//                   orchestrator appended to the plan note (a `## Design verdict
+//                   — <slug>` or `## User answers — <slug>` section, heading +
+//                   body). driveItem injects it verbatim into the re-spawned
+//                   worker's prompt (3c) so the worker sees the human's decision
+//                   instead of re-forking. Read ONLY for slugs in onlySlugs.
+//      onlySlugs  — optional continuation filter. Absent/empty on a fresh level
+//                   (drive everything). On a continuation it is the array of
+//                   still-unresolved slugs to re-drive; their siblings are
+//                   already parked and are left untouched. A slug in onlySlugs is
+//                   driven in CONTINUATION mode: claim (3a) and worktree create
+//                   (3b) are SKIPPED (issue already claimed, worktree intact —
+//                   re-creating it would discard the escalated build), and the
+//                   captured verdict is injected at 3c.
+//    Output (returned):
+//      { parked:      [{ slug, pr, pushed_sha, acceptance_results }],
+//        escalations: [{ slug, kind, payload }],
+//        sidelined?:  [{ slug, path, branch, recovery }] }
 //
-//   `sidelined` (temperloop#2006) is present ONLY when `worktree.sh create`
-//   shelved a resumable build for at least one item on this level. `create`
-//   must never refuse (worktree.sh:783-787), so when the deterministic path
-//   already holds committed work preservation could not capture, it MOVES that
-//   occupant to `<path>.unpreserved-<sha8>` on `<branch>.unpreserved-<sha8>`
-//   and creates over the freed path — reporting exactly that as the CREATED
-//   line's `sidelined` / `sidelined_path` / `sidelined_branch` fields. This
-//   driver reads them at 3b and surfaces the fact three ways: a named
-//   `SIDELINED BUILD` log line at the moment of discovery, the same
-//   `{ path, branch, recovery }` object stamped onto that item's OWN record
-//   (`parked.sidelined`, or `escalation.payload.sidelined` — whichever the item
-//   produced), and this level-wide rollup. `recovery` is the concrete reclaim
-//   command, not a description of the event.
+//    `sidelined` (temperloop#2006) is present ONLY when `worktree.sh create`
+//    shelved a resumable build for at least one item on this level. `create`
+//    must never refuse (worktree.sh:783-787), so when the deterministic path
+//    already holds committed work preservation could not capture, it MOVES that
+//    occupant to `<path>.unpreserved-<sha8>` on `<branch>.unpreserved-<sha8>`
+//    and creates over the freed path — reporting exactly that as the CREATED
+//    line's `sidelined` / `sidelined_path` / `sidelined_branch` fields. This
+//    driver reads them at 3b and surfaces the fact three ways: a named
+//    `SIDELINED BUILD` log line at the moment of discovery, the same
+//    `{ path, branch, recovery }` object stamped onto that item's OWN record
+//    (`parked.sidelined`, or `escalation.payload.sidelined` — whichever the item
+//    produced), and this level-wide rollup. `recovery` is the concrete reclaim
+//    command, not a description of the event.
 //
-//   The reading lives HERE rather than in a driver's prose deliberately. It is
-//   the same commit-ahead-of-base fact /fix's Step 4a worktree state table
-//   reasons about, and /build and /sweep reach `worktree.sh create` through
-//   this file's prelude with no table of their own — so all three inherit the
-//   check from one place instead of each restating it (the per-instance-fix
-//   smell: hoist the mechanism rather than patch the instance). A sideline is
-//   NOT a failure and never stalls the level: the item is being rebuilt from
-//   scratch and the shelved build stands until `worktree.sh prune`'s own
-//   two-gate disposal owner reaps it. It is a notice a human should act on
-//   before that happens.
+//    The reading lives HERE rather than in a driver's prose deliberately. It is
+//    the same commit-ahead-of-base fact /fix's Step 4a worktree state table
+//    reasons about, and /build and /sweep reach `worktree.sh create` through
+//    this file's prelude with no table of their own — so all three inherit the
+//    check from one place instead of each restating it (the per-instance-fix
+//    smell: hoist the mechanism rather than patch the instance). A sideline is
+//    NOT a failure and never stalls the level: the item is being rebuilt from
+//    scratch and the shelved build stands until `worktree.sh prune`'s own
+//    two-gate disposal owner reaps it. It is a notice a human should act on
+//    before that happens.
 //
-//   A parked record MAY additionally carry `acceptance_unverified: true` +
-//   `recovered_from: <RECOVER_* stage>` (temperloop#939). That pair means the
-//   worker's return channel failed and this record was RECONSTRUCTED from
-//   observable side-effects: the PR and SHA are ground truth, but the acceptance
-//   results are UNKNOWN — never treat them as passing. The orchestrator MUST
-//   re-verify that item's acceptance itself before the Step 4 merge gate.
+//    A parked record MAY additionally carry `acceptance_unverified: true` +
+//    `recovered_from: <RECOVER_* stage>` (temperloop#939). That pair means the
+//    worker's return channel failed and this record was RECONSTRUCTED from
+//    observable side-effects: the PR and SHA are ground truth, but the acceptance
+//    results are UNKNOWN — never treat them as passing. The orchestrator MUST
+//    re-verify that item's acceptance itself before the Step 4 merge gate.
 //
-//   A parked record MAY additionally carry `discrimination_gaps: [<criterion>,
-//   ...]` (temperloop#1319) — present ONLY when this run armed
-//   requireDiscriminationEvidence AND the done verdict had at least one
-//   passed:true acceptance_results[] entry with an empty/absent
-//   discrimination_evidence. Non-fatal (kernel principle 7 — advisory, never a
-//   new blocking gate): already logged as a named warning at 3h; the
-//   orchestrator rolls the list into the Step 6 summary tally (build.md §3f
-//   step 2's sibling verification_surface degraded-case pattern).
+//    A parked record MAY additionally carry `discrimination_gaps: [<criterion>,
+//    ...]` (temperloop#1319) — present ONLY when this run armed
+//    requireDiscriminationEvidence AND the done verdict had at least one
+//    passed:true acceptance_results[] entry with an empty/absent
+//    discrimination_evidence. Non-fatal (kernel principle 7 — advisory, never a
+//    new blocking gate): already logged as a named warning at 3h; the
+//    orchestrator rolls the list into the Step 6 summary tally (build.md §3f
+//    step 2's sibling verification_surface degraded-case pattern).
 //
-//   A parked record MAY additionally carry `host_config_deferrals:
-//   [{ criterion, host_config }, ...]` (temperloop#1182) — one entry per
-//   acceptance criterion the worker reported DEFERRED because it turns on a
-//   gitignored, host-local file (a credential file, an operator-placed
-//   secret, an env var sourced from one). A worktree is populated from the
-//   git INDEX, so such a file is NEVER carried into it: the worker's reading
-//   is uninformative on every host, always — which is why a deferral is
-//   neither a pass nor a failure here (it does not stall the level, and it
-//   never reads as confirmed). These criteria are UNVERIFIED, exactly like
-//   `acceptance_unverified` above: the orchestrator MUST verify each one
-//   ITSELF, in the real checkout where the file actually exists, before that
-//   item's merge gate — and MUST NOT resolve one by copying the named file
-//   into the worktree, which is the secret-in-worktree exposure the
-//   host-config seam (/assess A.8) exists to prevent.
+//    A parked record MAY additionally carry `host_config_deferrals:
+//    [{ criterion, host_config }, ...]` (temperloop#1182) — one entry per
+//    acceptance criterion the worker reported DEFERRED because it turns on a
+//    gitignored, host-local file (a credential file, an operator-placed
+//    secret, an env var sourced from one). A worktree is populated from the
+//    git INDEX, so such a file is NEVER carried into it: the worker's reading
+//    is uninformative on every host, always — which is why a deferral is
+//    neither a pass nor a failure here (it does not stall the level, and it
+//    never reads as confirmed). These criteria are UNVERIFIED, exactly like
+//    `acceptance_unverified` above: the orchestrator MUST verify each one
+//    ITSELF, in the real checkout where the file actually exists, before that
+//    item's merge gate — and MUST NOT resolve one by copying the named file
+//    into the worktree, which is the secret-in-worktree exposure the
+//    host-config seam (/assess A.8) exists to prevent.
 //
-//   Because this driver is SHARED, that obligation has THREE consumer seats,
-//   one per invoking spec — keep all three in lockstep with the (deliberately
-//   ungated) prompt section `hostConfigDeferralSection()` below:
-//     /build -> claude/commands/build.md §4a, the level merge gate. §3h.5's
-//               as-you-go fast path is explicitly INELIGIBLE for an item
-//               carrying this field, precisely because it never reaches §4a.
-//     /sweep -> claude/commands/sweep.md, the per-chunk merge pass: verify
-//               before `gh pr merge --auto`; not-confirmed / cannot-establish
-//               parks the issue instead of merging it.
-//     /fix   -> claude/commands/fix.md Step 5, the ONE modal merge gate: the
-//               deferral rides that same single ask as a named state caveat.
-//   An ungated prompt section on a path with NO seat would let a deferral
-//   auto-merge with nobody having verified it — the exact silent loss this
-//   field exists to make impossible.
+//    Because this driver is SHARED, that obligation has THREE consumer seats,
+//    one per invoking spec — keep all three in lockstep with the (deliberately
+//    ungated) prompt section `hostConfigDeferralSection()` below:
+//      /build -> claude/commands/build.md §4a, the level merge gate. §3h.5's
+//                as-you-go fast path is explicitly INELIGIBLE for an item
+//                carrying this field, precisely because it never reaches §4a.
+//      /sweep -> claude/commands/sweep.md, the per-chunk merge pass: verify
+//                before `gh pr merge --auto`; not-confirmed / cannot-establish
+//                parks the issue instead of merging it.
+//      /fix   -> claude/commands/fix.md Step 5, the ONE modal merge gate: the
+//                deferral rides that same single ask as a named state caveat.
+//    An ungated prompt section on a path with NO seat would let a deferral
+//    auto-merge with nobody having verified it — the exact silent loss this
+//    field exists to make impossible.
 //
-//   A parked record also carries
-//   `review: { ran, skipped, mandatory_ok, routed_not_run }`
-//   (temperloop#1450/#1984) — the §3e reviewer tally across every round this
-//   item's build ran (the original 3e pass plus any CI-fix re-review), the
-//   source for the Step 6 "reviewer outcome" summary build.md §3e promises.
-//   `routed_not_run` names every routed-but-unrun reviewer, mandatory or not,
-//   so the tally cannot read fully clean while a tsv-routed reviewer was
-//   skipped. Absent only for a spike (kind:spike skips 3b-3h, never reviews).
+//    A parked record also carries
+//    `review: { ran, skipped, mandatory_ok, routed_not_run }`
+//    (temperloop#1450/#1984) — the §3e reviewer tally across every round this
+//    item's build ran (the original 3e pass plus any CI-fix re-review), the
+//    source for the Step 6 "reviewer outcome" summary build.md §3e promises.
+//    `routed_not_run` names every routed-but-unrun reviewer, mandatory or not,
+//    so the tally cannot read fully clean while a tsv-routed reviewer was
+//    skipped. Absent only for a spike (kind:spike skips 3b-3h, never reviews).
 //
-//   That `review` object ALSO carries `residual_blocking: [{ round, max_rounds,
-//   findings }]` (temperloop#1970) — present ONLY when a review round hit the
-//   §3e convergence bound: HIGH findings that were CARRIED into the PR body's
-//   `## Review notes` instead of escalating `review-blocking` for yet another
-//   build-review round-trip. It is the bound's per-run execution signal, and it
-//   marks an item a human should read the review notes on before merging; it is
-//   NOT a failure (the gates, the activation gate and CI all still passed) and
-//   it never stalls the level. Omitted entirely when no round hit the bound.
+//    That `review` object ALSO carries `residual_blocking: [{ round, max_rounds,
+//    findings }]` (temperloop#1970) — present ONLY when a review round hit the
+//    §3e convergence bound: HIGH findings that were CARRIED into the PR body's
+//    `## Review notes` instead of escalating `review-blocking` for yet another
+//    build-review round-trip. It is the bound's per-run execution signal, and it
+//    marks an item a human should read the review notes on before merging; it is
+//    NOT a failure (the gates, the activation gate and CI all still passed) and
+//    it never stalls the level. Omitted entirely when no round hit the bound.
 //
-//   The workflow NEVER writes the plan note (race-safety: the orchestrator
-//   serializes all plan-note writeback at the level boundary). It only RETURNS
-//   what to write. Escalations leave the worktree INTACT (the orchestrator
-//   re-drives them); parked items' worktree removal is the orchestrator's job
-//   at the boundary too. The workflow removes no worktrees.
-// =============================================================================
+//    The workflow NEVER writes the plan note (race-safety: the orchestrator
+//    serializes all plan-note writeback at the level boundary). It only RETURNS
+//    what to write. Escalations leave the worktree INTACT (the orchestrator
+//    re-drives them); parked items' worktree removal is the orchestrator's job
+//    at the boundary too. The workflow removes no worktrees.
+//  =============================================================================
 
-// `meta` MUST be a PURE literal — no vars, calls, or spreads (runtime constraint).
-// Consequence (temperloop#903): `description` can NEVER carry run context — it is
-// the same bytes on every run. So it is written for the operator as a plain
-// statement of what the run DOES, deliberately WITHOUT asserting a scope (a
-// "level") or a single caller: this script is invoked by THREE commands —
-// /build (a full dependency level), /fix (a 1-item level), and /sweep (a
-// chunk of singleton issues) — and a description that named only one of them,
-// or asserted a single dependency-level scope, would misdescribe the other
-// two invocations byte-for-byte identically (temperloop#1941 — the /fix and
-// /sweep launch/completion lines used to inherit build's level-scoped wording
-// on runs that drove neither a level nor a dependency edge). The
-// run-IDENTIFYING half (caller, repo, items, issues, round) rides two
-// dynamic surfaces instead:
-// the phase() title — see levelPhaseTitle() near the entry point, emitted
-// ONCE PER STAGE (temperloop#1294) — and, pushed unconditionally rather than
-// left to the opt-in `/workflows` surface, the orchestrator's own Workflow
-// launch/return line printed immediately around every invocation of this
-// script (`claude/message-schema.md` §§ Workflow launch line / Workflow
-// return line; `claude/commands/build.md` Step 3 + 3d-esc, `fix.md` Step 4a,
-// `sweep.md` Phase 2). The optional `phases` key is deliberately ABSENT from
-// this literal: meta.phases entries are matched against phase() titles
-// EXACTLY, and every title this workflow emits is dynamic, so a static entry
-// could only ever render an empty duplicate group. See the levelPhaseTitle
-// block for the full reasoning. Return shape, the never-merges rule and
-// the never-writes-the-plan-note rule are contract detail and live in the I/O
-// CONTRACT block above; do not re-state them here.
+// `meta` MUST be a PURE literal — no vars, calls, or spreads (runtime co
+// Full design note: build-level.design-notes.md#meta-must-be-a-pure-literal-no-vars-calls-or-spreads-runtime
 export const meta = {
   name: 'build-level',
   description:
@@ -335,65 +311,65 @@ export const meta = {
   version: '1.0.0',
 };
 
-// -----------------------------------------------------------------------------
-// THE HAND-OFF CAPABILITY DECLARATION (temperloop#2018)
-// -----------------------------------------------------------------------------
+//  -----------------------------------------------------------------------------
+//  THE HAND-OFF CAPABILITY DECLARATION (temperloop#2018)
+//  -----------------------------------------------------------------------------
 //
-// Every key below is a top-level `input.*` key THIS COPY of the engine reads.
-// The orchestrator->engine hand-off is deliberately ADDITIVE — an absent key
-// falls back to an in-file default, so a new key can never regress an
-// un-migrated caller (see the `machineryBinDir`, `principlesSummaries` and
-// `reviewerRoutingTsv` comments below, which each say so in their own words).
-// That property is correct and is NOT changed here. Its cost is that the
-// converse is silent too: a STALE installed engine simply ignores a key a
-// current orchestrator passes, and neither side says anything. Live case:
-// an installed copy 18 days behind had zero `reviewerRoutingTsv` support, so
-// following the driver spec literally dropped the key and fell back to the
-// very agent relay the run was fixing.
+//  Every key below is a top-level `input.*` key THIS COPY of the engine reads.
+//  The orchestrator->engine hand-off is deliberately ADDITIVE — an absent key
+//  falls back to an in-file default, so a new key can never regress an
+//  un-migrated caller (see the `machineryBinDir`, `principlesSummaries` and
+//  `reviewerRoutingTsv` comments below, which each say so in their own words).
+//  That property is correct and is NOT changed here. Its cost is that the
+//  converse is silent too: a STALE installed engine simply ignores a key a
+//  current orchestrator passes, and neither side says anything. Live case:
+//  an installed copy 18 days behind had zero `reviewerRoutingTsv` support, so
+//  following the driver spec literally dropped the key and fell back to the
+//  very agent relay the run was fixing.
 //
-// This list is what makes that DETECTABLE. It is read TEXTUALLY — never by
-// importing this module, which cannot be imported at all outside the Workflow
-// runtime (the `args` reference below throws ReferenceError) — by
-// `workflows/scripts/build/handoff-capability.sh`, which a driver runs at
-// Step 0 against the engine path it is about to invoke. That is why the
-// sentinel comments are load-bearing and why the list is a flat array of
-// single-quoted literals: the probe must work against ANY copy of this file,
-// including a consuming repo's older VENDORED one, with no repo checkout to
-// diff against and no Node available.
+//  This list is what makes that DETECTABLE. It is read TEXTUALLY — never by
+//  importing this module, which cannot be imported at all outside the Workflow
+//  runtime (the `args` reference below throws ReferenceError) — by
+//  `workflows/scripts/build/handoff-capability.sh`, which a driver runs at
+//  Step 0 against the engine path it is about to invoke. That is why the
+//  sentinel comments are load-bearing and why the list is a flat array of
+//  single-quoted literals: the probe must work against ANY copy of this file,
+//  including a consuming repo's older VENDORED one, with no repo checkout to
+//  diff against and no Node available.
 //
-// KEEPING IT HONEST. A declaration that drifts from what the code actually
-// reads would be a second list to maintain, so it is not maintained by hand:
-// `workflows/scripts/build/tests/test_handoff_capability.sh` asserts SET
-// EQUALITY between this block and every `input.<key>` occurrence in this file
-// — add a key read without declaring it (or declare one nothing reads) and
-// `make test-build` goes red.
+//  KEEPING IT HONEST. A declaration that drifts from what the code actually
+//  reads would be a second list to maintain, so it is not maintained by hand:
+//  `workflows/scripts/build/tests/test_handoff_capability.sh` asserts SET
+//  EQUALITY between this block and every `input.<key>` occurrence in this file
+//  — add a key read without declaring it (or declare one nothing reads) and
+//  `make test-build` goes red.
 //
-// KNOWN BOUNDARY, stated rather than implied: this declares TOP-LEVEL keys
-// only. Nested per-item fields (`items[].activation`, `items[].dependsOn`)
-// are a real hand-off surface with the same drop-silently property — the
-// `activation` block's own absence was temperloop#1219 — and are NOT covered
-// by this declaration. The probe reports what it covers; it never implies
-// more.
+//  KNOWN BOUNDARY, stated rather than implied: this declares TOP-LEVEL keys
+//  only. Nested per-item fields (`items[].activation`, `items[].dependsOn`)
+//  are a real hand-off surface with the same drop-silently property — the
+//  `activation` block's own absence was temperloop#1219 — and are NOT covered
+//  by this declaration. The probe reports what it covers; it never implies
+//  more.
 //
-// CONVERGENCE WITH temperloop#2024 (the hand-off key REGISTRY + author-side
-// lint): the same key set seen from the other side — #2024 asks "did the
-// author wire this new key into all three drivers", this block answers "does
-// THIS engine understand this key". This block is the per-ENGINE half and
-// must stay in the file (a vendored copy travels alone); #2024's registry is
-// the per-REPO half and adds the authoring columns (which drivers wire a key,
-// since-version, owner). They converge by DERIVATION, not duplication: the
-// registry's lint reads this declaration via `handoff-capability.sh declared`
-// and asserts the two agree, exactly as the test above already does for the
-// code. Do not create a second hand-maintained list.
+//  CONVERGENCE WITH temperloop#2024 (the hand-off key REGISTRY + author-side
+//  lint): the same key set seen from the other side — #2024 asks "did the
+//  author wire this new key into all three drivers", this block answers "does
+//  THIS engine understand this key". This block is the per-ENGINE half and
+//  must stay in the file (a vendored copy travels alone); #2024's registry is
+//  the per-REPO half and adds the authoring columns (which drivers wire a key,
+//  since-version, owner). They converge by DERIVATION, not duplication: the
+//  registry's lint reads this declaration via `handoff-capability.sh declared`
+//  and asserts the two agree, exactly as the test above already does for the
+//  code. Do not create a second hand-maintained list.
 //
-// NOT `export`ed, deliberately. Nothing imports this — the probe reads it as
-// TEXT — and `export const meta` is the ONE export the offline harness
-// (workflows/scripts/build/tests/test_workflow.sh) strips before wrapping this
-// file's body in an AsyncFunction, so a second top-level `export` is a
-// SyntaxError there. A plain `const` runs identically in the Workflow runtime
-// and in the harness.
+//  NOT `export`ed, deliberately. Nothing imports this — the probe reads it as
+//  TEXT — and `export const meta` is the ONE export the offline harness
+//  (workflows/scripts/build/tests/test_workflow.sh) strips before wrapping this
+//  file's body in an AsyncFunction, so a second top-level `export` is a
+//  SyntaxError there. A plain `const` runs identically in the Workflow runtime
+//  and in the harness.
 //
-// HANDOFF-CAPABILITIES-BEGIN (machine-parsed — workflows/scripts/build/handoff-capability.sh)
+//  HANDOFF-CAPABILITIES-BEGIN (machine-parsed — workflows/scripts/build/handoff-capability.sh)
 const inputCapabilities = [
   'board',
   'claimCmd',
@@ -476,30 +452,7 @@ const SPINE_OUTCOME_SCHEMA = {
         // payload indistinguishable from real breakage.
         'GATE_PASS', 'GATE_FAIL', 'GATE_ABSENT', 'GATE_SLICE', 'GATE_TIMEOUT',
         // The §3e.5 PRE-gate freshness/rebase step (temperloop#1937): brings
-        // the worktree up to current origin/main before the gate runs, so an
-        // origin/main-ratcheted validator never false-fails on rows main
-        // gained after this worktree's base was cut. NO_GATE (round 3, HIGH)
-        // means the worktree carries no `scripts/quality-gates.sh` at all —
-        // the same presence check gateCmd's own GATE_ABSENT arm makes — so
-        // there is nothing for this step to protect and it takes the
-        // byte-identical pre-change path with no fetch/rebase attempted.
-        // CURRENT/REBASED are the two non-blocking outcomes (proceed to the
-        // gate); DIRTY (round 2, HIGH) means git refused to even start the
-        // rebase over uncommitted tracked-file edits, probed BEFORE the
-        // rebase and escalated as `dirty-worktree`, never misread as a
-        // conflict; CONFLICT means the rebase hit a real clash and was
-        // aborted (worktree left intact, escalates `stale-worktree` — the
-        // gate never runs); REBASE_ERROR (round 3, MEDIUM) is a rebase
-        // failure with NO conflicted files (a pre-rebase hook, a missing
-        // identity, a leftover in-progress rebase) — never misreported as
-        // CONFLICT's empty-list false positive, its own not-a-conflict
-        // outcome carrying git's own output tail; ERROR is a fail-open
-        // (fetch/resolve itself could not run; proceed on the tree as-is,
-        // exactly the pre-#1937 behavior); TIMEOUT (round 2, MEDIUM) is the
-        // OUTER Bash-tool kill mid-fetch/rebase — never fail-open, always
-        // routed through a follow-up abort-and-probe before escalating
-        // `stale-worktree`. TIMEOUT_PROBE(_ERROR) are that follow-up probe's
-        // own closed outcomes.
+        // Full design note: build-level.design-notes.md#the-3e-5-pre-gate-freshness-rebase-step-temperloop-1937-brin
         'FRESHNESS_NO_GATE', 'FRESHNESS_CURRENT', 'FRESHNESS_REBASED', 'FRESHNESS_DIRTY',
         'FRESHNESS_CONFLICT', 'FRESHNESS_REBASE_ERROR',
         'FRESHNESS_ERROR', 'FRESHNESS_TIMEOUT', 'FRESHNESS_TIMEOUT_PROBE', 'FRESHNESS_TIMEOUT_PROBE_ERROR',
@@ -555,35 +508,7 @@ const SPINE_OUTCOME_SCHEMA = {
         // chance).
         'WORK_PRESERVED', 'WORK_PRESERVE_SKIP', 'WORK_PRESERVE_FAILED',
         // The §3e REVIEW-AGENT liveness bound's timer (temperloop#2003), whose
-        // executor runs workflows/scripts/build/review-wait.sh to give this
-        // runtime the wall-clock tick it otherwise has none of (`Date.now()`
-        // THROWS here — DESIGN NOTE 1). FOUR closed outcomes, each a pure
-        // OBSERVATION the executor can make without inventing anything — the
-        // distinction temperloop#2049 turned on, plus the fourth
-        // temperloop#2064 had to split out of it:
-        //   REVIEW_WAIT_ELAPSED       the script printed its line. It carries
-        //                             `realized_secs`, the script's OWN measure
-        //                             of the wait, which reviewWaitAgent()
-        //                             checks against the interval it asked for.
-        //   REVIEW_WAIT_TOOL_TIMEOUT  the Bash tool's own timeout killed the
-        //                             command. That budget is secs+60s, so this
-        //                             can only fire AFTER the interval — the
-        //                             same fact, reported honestly.
-        //   REVIEW_WAIT_BLOCKED       a harness PERMISSION CONTROL refused the
-        //                             command outright ("<tool_use_error>Blocked:
-        //                             …"). NO time passed. This is SPLIT OUT of
-        //                             REVIEW_WAIT_UNAVAILABLE by temperloop#2064
-        //                             because a block and a TOOL_TIMEOUT are the
-        //                             same observation to the executor — "no JSON
-        //                             line" — while only ONE of them (the tool
-        //                             timeout) is the PERMISSIVE arm. Naming the
-        //                             block is what lets reviewWaitAgent() refuse
-        //                             to let a refusal land on that arm.
-        //   REVIEW_WAIT_UNAVAILABLE   the command never ran to completion for any
-        //                             OTHER reason (it errored; the helper was
-        //                             missing). NO time passed either, so the
-        //                             caller FAILS OPEN on both.
-        // None of them says anything whatsoever about the review being bounded.
+        // Full design note: build-level.design-notes.md#the-3e-review-agent-liveness-bound-s-timer-temperloop-2003-w
         'REVIEW_WAIT_ELAPSED', 'REVIEW_WAIT_TOOL_TIMEOUT', 'REVIEW_WAIT_BLOCKED',
         'REVIEW_WAIT_UNAVAILABLE',
         // temperloop#2065 "worker-cost-capture" — the per-item WORKER COST
@@ -871,67 +796,8 @@ const WORKER_VERDICT_SCHEMA = {
   },
 };
 
-// -----------------------------------------------------------------------------
 // RETRY-LOOP INVENTORY (temperloop#976)
-// -----------------------------------------------------------------------------
-// Every loop in this file that can RE-ATTEMPT something, with its hard cap and
-// its transient-vs-deterministic disposition. Repeating a deterministically-
-// failing operation cannot change its outcome, so a loop either classifies
-// before retrying or states why classification does not apply. The audit is
-// kept HERE, beside the budgets, so a new loop cannot be added without a
-// reviewer seeing the shape it has to satisfy.
-//
-//   1. ciPollLoop slice loop — CAP: maxSlices = ceil(CI_POLL_TOTAL_SECS /
-//      CI_POLL_SLICE_SECS). NOT A RETRY: each slice waits on external state
-//      (pending check-runs) that genuinely changes between polls, and every
-//      terminal verdict (CI_GREEN / CI_FAILED / NO_CI) exits the loop on the
-//      spot. The deterministic cases it MUST not spin on are already short-
-//      circuited by name, not by budget: CONFLICTING/DIRTY escalates
-//      merge-conflict immediately (#543), a NO_CI SHA resolves through
-//      ci-poll.sh's bounded grace window (temperloop#605), and any ERROR
-//      escalates rather than re-polls. No classification step applies.
-//   2. CI_FAILED worker re-spawn — CAP: CI_FAIL_RETRY_BUDGET (below), past
-//      which the item escalates `ci-failed` for a human. NOT A RETRY EITHER, in
-//      the sense that matters here: the re-attempt does not re-issue the failed
-//      operation, it spawns a worker to FIX the failure and pushes a NEW SHA, so
-//      the input to the next CI run differs by construction. That is what makes
-//      a classify-before-retry step inapplicable — and the budget is already at
-//      its floor of one, so a deterministic repeat cannot cost a second one.
-//   3. null-verdict main-worker re-spawn (driveItem, ~1145) — CAP: exactly one,
-//      and CLASSIFIED BEFORE IT FIRES on both axes: the recover-probe runs FIRST
-//      and adopts any work that already landed (so a lost return is never re-
-//      built), and the retry prompt is deliberately DIFFERENT from the first
-//      (FOREGROUND_CURE appended) because a byte-identical retry re-stalls
-//      identically. The read-only spike worker's null escalates with NO retry.
-//   4. pr.sh `EXISTS` adoption (3f) — not a loop: a create-retry whose first
-//      attempt in fact succeeded is ADOPTED as PR_OPENED rather than re-issued.
-//   5. STEP_TIMEOUT disposal (temperloop#1071) — NOT A RETRY AT ALL, and named
-//      here so a future edit cannot quietly make it one. A machinery step killed
-//      by the workflow liveness ceiling is CLASSIFIED FIRST (pr.sh recover-probe,
-//      the same ladder rule 3 uses) and then either ADOPTED (rule 4's shape: an
-//      already-opened PR is taken, never re-opened) or ESCALATED. There is no arm
-//      that re-issues the bounded step — push and pr-create are not idempotent,
-//      and the ceiling firing is precisely the case where you cannot know whether
-//      the first attempt landed.
-//
-// The two loops this file DELEGATES to carry their own caps + classification
-// and are documented in their own scripts, not restated here: ci-poll.sh's
-// gh_retry (CI_POLL_API_MAX_ATTEMPTS / _RETRY_BACKOFF / _DETERMINISTIC_PATTERN)
-// and quality-gates.sh's per-gate retry via workflows/scripts/lib/gate-retry.sh
-// (GATE_MAX_ATTEMPTS / GATE_RETRY_BACKOFF / GATE_DETERMINISTIC_PATTERN). The
-// 3e.5 acceptance gate itself does NOT retry: a GATE_FAIL escalates
-// `acceptance-gate-failed` on the first failure.
-//
-// -----------------------------------------------------------------------------
-// Tunables (no Date.now()/Math.random() — those THROW in the runtime; all
-// budgets are expressed as counts/seconds the executor agent enforces itself).
-// The Workflow runtime has no shell, so these stay named constants here rather
-// than build.config.sh settings — the same structural constraint that forces
-// machinerySoloModel/machineryBatchModel through build.md's Step-0 hand-off.
-// A tunable that genuinely needs to be operator-configurable rides that SAME
-// Step-0 hand-off (an `input.*` key with an in-file default), never a config
-// read from inside this file: GATE_SLICE_SECS below is the worked example.
-// -----------------------------------------------------------------------------
+// Full design note: build-level.design-notes.md#retry-loop-inventory-temperloop-976
 const CI_POLL_SLICE_SECS = 240;   // one ci-poll.sh slice; < the ~10-min agent Bash cap
 const CI_POLL_TOTAL_SECS = 3600;  // total wall budget across slices before escalating
 const CI_FAIL_RETRY_BUDGET = 1;   // re-spawn+force-push+re-poll attempts on CI_FAILED
@@ -1008,54 +874,8 @@ const GATE_SLICE_SECS = Math.max(
     Number(input.gateSliceSecs) > 0 ? Math.floor(Number(input.gateSliceSecs)) : GATE_SLICE_SECS_DEFAULT,
   ),
 );
-// --- §3e review-blocking convergence bound (temperloop#1970) -----------------
-// THE FAILURE THIS BOUNDS. §3e is a cold, one-shot advisory pass, and a HIGH
-// finding escalates `review-blocking` → the orchestrator loops the item back to
-// 3c → the worker fixes it → a FRESH reviewer reads the now-LARGER diff. Nothing
-// bounded that loop. Measured on one live item (temperloop#1938 L1, item
-// `interview-command-spec`/#1962): FIVE consecutive §3e passes, four DISTINCT
-// HIGHs, ZERO repeats, ~2h45m and ~1.05M subagent tokens before convergence —
-// and pass 4's HIGH was CAUSED by pass 3's directed fix, while the reviewed spec
-// grew 447 → 635 lines across the rounds. So the loop is partly SELF-FEEDING,
-// not merely serial discovery: each round enlarges the surface the next one
-// reads, and the orchestrator had to invent a stopping rule by hand at pass 5.
-//
-// THE OTHER HALF IS THE REVIEWER SEAT, NOT THIS BOUND. claude/agents/
-// workflow-reviewer.md now instructs the seat to enumerate EVERY HIGH it can
-// identify in ONE pass before it ranks or narrows; this constant is the backstop
-// for when that still does not converge. Deliberately NOT a model-tier change:
-// that seat is pinned `model: sonnet` by its own frontmatter, on purpose.
-//
-// WHAT IT DOES, PRECISELY. `REVIEW_BLOCKING_MAX_ROUNDS` caps the number of
-// review ROUNDS one item's worktree may spend. On the round that reaches the
-// cap, a blocking finding no longer escalates: the item continues to 3e.5/3f
-// with the findings carried in the return value — into the PR body's
-// `## Review notes` (the same reviewBodySuffix() render every round uses) and
-// into the parked record's `review.residual_blocking` tally — so the human at
-// the merge gate reads exactly what the reviewer said. ADVISORY, NEVER A
-// SUPPRESSION: what stops is the automatic build-review-build loop, not the
-// findings. An item that converges in fewer rounds is byte-identical to
-// pre-#1970 behaviour, which is why the default preserves today's path for
-// everything under the bound.
-//
-// ROUND COUNTING IS DURABLE, because the loop spans PROCESSES: each
-// review-blocking escalation returns to the orchestrator, which re-invokes this
-// workflow. The Workflow runtime has no filesystem (DESIGN NOTE 1), so the
-// counter lives in the worktree's own GIT DIR (never the working tree — it must
-// not show up in `git status`, in a `--scoped` gate's untracked-path resolution,
-// or in a coverage manifest) and is read+bumped by reviewDiffCmd in the SAME
-// machinery call §3e already makes: zero extra agent spawns. A continuation
-// re-uses the worktree (3b is skipped), so the count survives exactly the loop
-// it bounds; a fresh item gets a fresh worktree and therefore a fresh count.
-// The CI-fix re-review (§3g) shares the counter deliberately — it is the same
-// item's review budget, and counting it is the conservative direction.
-//
-// REVIEW_BLOCKING_MAX_ROUNDS is a NAMED SETTING (BUILD_REVIEW_BLOCKING_MAX_ROUNDS),
-// handed in by the orchestrator at Step 0 exactly like GATE_SLICE_SECS above —
-// the Workflow runtime cannot source build.config.sh itself. A non-positive or
-// unparseable value falls back to the in-file default rather than disabling the
-// bound, and the floor of 1 means no caller can configure the loop back to
-// unbounded.
+// §3e review-blocking convergence bound (temperloop#1970)
+// Full design note: build-level.design-notes.md#3e-review-blocking-convergence-bound-temperloop-1970
 const REVIEW_BLOCKING_MAX_ROUNDS_DEFAULT = 3;
 const REVIEW_BLOCKING_MAX_ROUNDS = Math.max(
   1,
@@ -1063,60 +883,8 @@ const REVIEW_BLOCKING_MAX_ROUNDS = Math.max(
     ? Math.floor(Number(input.reviewBlockingMaxRounds))
     : REVIEW_BLOCKING_MAX_ROUNDS_DEFAULT,
 );
-// --- §3e review-agent LIVENESS BOUND (temperloop#2003) -----------------------
-// THE FAILURE THIS BOUNDS — the sibling of temperloop#1071 one layer up. Run
-// `wf_f3b9c160-6ca` routed four §3e reviewers. Two returned. `shell-reviewer`
-// was spawned and never returned: its own agent transcript ends mid-sentence at
-// "Now compiling the final review output", the workflow stopped writing its
-// journal, and ~41 minutes of silence followed until a human ran `TaskStop`.
-// `workflow-reviewer` — MANDATORY for that item's `claude/commands/*.md` diff —
-// never launched at all, because the §3e pass awaited each reviewer in turn and
-// the second one never resolved.
-//
-// WHY THAT IS WORSE THAN A PLAIN HANG. The mandatory-reviewer contract
-// (foundation#1007) guarantees `workflow-reviewer` RUNS, and `review.
-// mandatory_ok` reports whether it did. A hang UPSTREAM of it in the same pass
-// means neither the guarantee nor the tally is ever EVALUATED: the gate does not
-// fail, it never resolves. An operator watching the tally sees nothing wrong,
-// because there is no tally yet — which is exactly why the incident stayed
-// invisible for 41 minutes. So the bound's job is not only to stop waiting; it
-// is to make the pass ALWAYS produce a disposition.
-//
-// WHY THE BOUND CANNOT BE A TIMER. Same two runtime facts temperloop#1071 hit:
-// `Date.now()` THROWS here and there is no timer primitive, so a deadline is not
-// directly expressible. But `Promise.race` IS — what #1071 lacked was something
-// that resolves ON A CLOCK to race against, and this file already owns one: a
-// machinery executor running a WAIT. reviewWaitAgent() is that tick.
-//
-// TEMPERLOOP#2049 — WHERE THAT TICK HAS TO LIVE. The wait was first written as
-// a bare inline `sleep N; printf '<json>'` Bash command. A harness permission
-// control REFUSES that command shape in the machinery executor's seat, and the
-// executor's prompt then told it to report the interval elapsed anyway: the
-// nominal 1200s ceiling realized in ~30s, abandoning reviewers that were
-// finishing normally at 177-257s. The wait now runs inside the named helper
-// workflows/scripts/build/review-wait.sh (the shape ci-poll.sh already uses,
-// observably honoured in the same seat for a 280s single call), and an elapse
-// is honoured only when it carries the script's OWN `realized_secs`. See
-// reviewWaitAgent() for the measurements and both halves of the fix.
-// A reviewer is an `agent({agentType})` call, NOT a shell command, so #1071's
-// emitted-shell watchdog cannot reach it; the race is the only seam that can.
-//
-// THE SHAPE, mirroring #1071's ceiling+observability pair exactly:
-//   • REVIEW_AGENT_CEILING_SECS — the wall-clock ceiling on the WHOLE §3e pass,
-//     measured from fanout start. Every routed reviewer is spawned CONCURRENTLY
-//     (they are independent read-only passes; nothing ordered them), so one
-//     hung agent can no longer keep a later one from launching — the observed
-//     failure — and the pass costs max(reviewer) rather than sum(reviewer).
-//     A reviewer still unsettled at the ceiling is ABANDONED, not killed: this
-//     runtime cannot cancel an agent, and the promise is simply never awaited
-//     again. Its disposition then respects mandatory-vs-advisory (runReviewers).
-//   • REVIEW_AGENT_SLOW_SECS — the observability half: a pass still running at
-//     this threshold emits a log() progress notice naming who is outstanding, so
-//     a long review is VISIBLE well before it is given up on. 0 disables it.
-// Both are NAMED SETTINGS (BUILD_REVIEW_AGENT_CEILING_SECS /
-// BUILD_REVIEW_AGENT_SLOW_SECS), handed in by the orchestrator at Step 0 on the
-// SAME seam as GATE_SLICE_SECS / the #1071 pair above, for the same structural
-// reason (this runtime has no shell to source build.config.sh).
+// §3e review-agent LIVENESS BOUND (temperloop#2003)
+// Full design note: build-level.design-notes.md#3e-review-agent-liveness-bound-temperloop-2003
 const REVIEW_AGENT_CEILING_SECS_DEFAULT = 1200;
 const REVIEW_AGENT_SLOW_SECS_DEFAULT = 300;
 // FLOOR — a ceiling below the longest LEGITIMATE wait would manufacture false
@@ -1225,47 +993,8 @@ const GATE_BASH_TIMEOUT_MS = Math.min(
   AGENT_BASH_CAP_MS,
   GATE_SLICE_SECS * 1000 + GATE_SLICE_OVERRUN_MS,
 );
-// --- Machinery-step LIVENESS BOUND (temperloop#1071) -------------------------
-// THE FAILURE THIS BOUNDS. A `pr-batch` machinery agent ran 35,362,333ms — 9h49m
-// — on TWO tool calls and 45k tokens. Not a retry loop, not a runaway: ONE Bash
-// invocation blocked and then completed successfully (all four steps green, the
-// PR opened). Every bound that should have made that unreachable failed: the
-// Bash tool's `timeout` parameter is capped at AGENT_BASH_CAP_MS and the prompt
-// above asks for less than that, so a 9.8h call is not supposed to exist — and
-// NOTHING ELSE bounded it. The root cause is NOT established (candidates exist;
-// none is acted on here without a disconfirming probe), so this is deliberately
-// a ROOT-CAUSE-AGNOSTIC seam: a bound that holds regardless of WHICH hypothesis
-// is true.
-//
-// WHY IT LIVES IN THE EMITTED SHELL, NOT IN THIS FILE'S CONTROL FLOW. Two hard
-// runtime facts. (a) `Date.now()` THROWS in the Workflow runtime (see the
-// tunables header above), so this file cannot measure elapsed time at all — a
-// `Promise.race` deadline is not expressible here, there is no timer primitive
-// to race against. (b) The thing that failed to fire IS the harness's own
-// tool-timeout layer, so putting the new bound in that same layer would inherit
-// the failure. So the ceiling is compiled INTO the command text every machinery
-// step already runs through: a bash + `sleep` + `kill` watchdog, modelled on
-// `workflows/scripts/lib/portable-timeout.sh`'s dependency-free fallback tier
-// (its pipe-leak redirect included, verbatim in spirit — see stepBoundPreamble).
-// It is still a WORKFLOW-LEVEL bound: this file decides it, this file emits it,
-// this file branches on the STEP_TIMEOUT it produces, and it applies to every
-// machinery executor (`prelude` / `pr-batch` / `ci-batch` / solo `gate`) rather
-// than to any one script.
-//
-// WHY NOT run_with_timeout(1) ITSELF. `portable-timeout.sh`'s preferred backends
-// are `timeout`/`gtimeout`, which `exec` a BINARY — they cannot run a shell
-// FUNCTION, and a batched step body is exactly that (a multi-command shell
-// snippet with `&&`, `;`, redirections and command substitutions). Re-wrapping
-// each body as `bash -c '<quoted script>'` to reach those backends would also
-// re-introduce the nested-quoting shape temperloop#72 found the auto-mode safety
-// classifier reads as an obfuscated command — the class of failure that denied
-// every push/worktree step on unattended runs. So the fallback tier is
-// reproduced inline, with its provenance named here.
-//
-// The two settings are NAMED SETTINGS (BUILD_MACHINERY_STEP_CEILING_SECS /
-// BUILD_MACHINERY_STEP_SLOW_SECS), handed in by the orchestrator at Step 0 on
-// the SAME seam as gateSliceSecs above, and for the same structural reason. `||`
-// vs `??`: same empty-string safety documented at the model settings.
+// Machinery-step LIVENESS BOUND (temperloop#1071)
+// Full design note: build-level.design-notes.md#machinery-step-liveness-bound-temperloop-1071
 const STEP_CEILING_SECS_DEFAULT = 900;
 const STEP_SLOW_SECS_DEFAULT = 300;
 // FLOOR — a ceiling below the longest LEGITIMATE single step would manufacture
@@ -1307,34 +1036,8 @@ const GATE_MAX_SLICES = 8;
 // long before it becomes a blown budget (the thing #115 had no way to see).
 const GATE_MARGIN_WARN_RATIO = 0.75;
 
-// --- 3c worker return-value output-shape bounds (temperloop#1080) ------------
-// The verdict's SHAPE is already machine-enforced (WORKER_VERDICT_SCHEMA below,
-// passed to every worker agent({schema}) call) — but a JSON schema can constrain
-// a field's TYPE and never its LENGTH, so the two free-prose slots were bounded
-// by nothing but the worker's judgment. Measured across 83 real /build worker
-// verdicts recovered from subagent transcripts: `summary` ran to a median 119
-// words (mean 145, max 557) against a spec asking for "1-3 sentences", and each
-// `acceptance_results[].evidence` to a median 33 words (max 244) against a spec
-// asking for "<file:line or test name>". Every one of those words is an OUTPUT
-// token — the weight-5 class, the most expensive token this pipeline emits — and
-// the orchestrator then ingests all of them.
-//
-// The bound is NOT information loss, and that is the whole reason it is safe:
-// the worker already writes its full argument to `.build-verification.md`, a
-// FILE whose path (not content) rides the verdict, and pr.sh splices that file
-// into the PR body's `## Verification` section by path (`--verification-surface-
-// file`) so it reaches the human reviewer WITHOUT ever entering orchestrator
-// context. Bounding the verdict moves prose off the expensive path; it does not
-// delete it. What must NOT survive anywhere is process narration — the worker's
-// route to the answer ("first I read X, then ruled out Y") is not a finding.
-//
-// NAMED SETTINGS (BUILD_WORKER_SUMMARY_MAX_WORDS / BUILD_WORKER_EVIDENCE_MAX_
-// WORDS), handed in by the orchestrator at Step 0 exactly like GATE_SLICE_SECS
-// above — the Workflow runtime has no shell to source build.config.sh itself
-// (DESIGN NOTE 1). `||`, not `??`, for the documented empty-string reason. A
-// caller that omits the keys (sweep.md / fix.md today) still emits a BOUNDED
-// prompt: the shape is inherited by every caller of the shared workerPrompt(),
-// only the tuning is build.md's.
+// 3c worker return-value output-shape bounds (temperloop#1080)
+// Full design note: build-level.design-notes.md#3c-worker-return-value-output-shape-bounds-temperloop-1080
 const WORKER_SUMMARY_MAX_WORDS_DEFAULT = 60;
 const WORKER_EVIDENCE_MAX_WORDS_DEFAULT = 30;
 const WORKER_SUMMARY_MAX_WORDS = Math.max(
@@ -1350,41 +1053,41 @@ const WORKER_EVIDENCE_MAX_WORDS = Math.max(
     : WORKER_EVIDENCE_MAX_WORDS_DEFAULT,
 );
 
-// --- §3c test-discrimination evidence requirement (temperloop#1319) ---------
-// A worker reporting `passed: true` on its own say-so is exactly the class of
-// self-report this pipeline has repeatedly had to distrust — a check that
-// PASSES because it can never FAIL (a mistargeted assertion, a fixture that
-// never exercises the changed path) looks identical, from the returned
-// verdict alone, to a check that genuinely discriminates. The fix is not more
-// prose asking the worker to "verify carefully" — it is asking for the
-// specific artifact that PROVES discrimination happened: which mechanism was
-// removed, that the suite went red without it, that restoring it went green.
+//  --- §3c test-discrimination evidence requirement (temperloop#1319) ---------
+//  A worker reporting `passed: true` on its own say-so is exactly the class of
+//  self-report this pipeline has repeatedly had to distrust — a check that
+//  PASSES because it can never FAIL (a mistargeted assertion, a fixture that
+//  never exercises the changed path) looks identical, from the returned
+//  verdict alone, to a check that genuinely discriminates. The fix is not more
+//  prose asking the worker to "verify carefully" — it is asking for the
+//  specific artifact that PROVES discrimination happened: which mechanism was
+//  removed, that the suite went red without it, that restoring it went green.
 //
-// Gated on a per-run input flag (`requireDiscriminationEvidence`, boolean —
-// `=== true`, not `||`/`??`, since an accidentally-truthy non-boolean must
-// never silently arm a requirement the caller didn't intend) rather than
-// baked unconditionally into the shared workerPrompt(), on the SAME Step-0
-// hand-off seam as gateSliceSecs/principlesSummaries above. workerPrompt()
-// is shared by THREE callers: `/build`, `/sweep`, and `/fix`.
+//  Gated on a per-run input flag (`requireDiscriminationEvidence`, boolean —
+//  `=== true`, not `||`/`??`, since an accidentally-truthy non-boolean must
+//  never silently arm a requirement the caller didn't intend) rather than
+//  baked unconditionally into the shared workerPrompt(), on the SAME Step-0
+//  hand-off seam as gateSliceSecs/principlesSummaries above. workerPrompt()
+//  is shared by THREE callers: `/build`, `/sweep`, and `/fix`.
 //
-// CORRECTION (the mechanical scoping below is accurate; an earlier version of
-// this comment additionally claimed /sweep and /fix structurally CANNOT carry
-// real per-criterion bullets — that claim was FALSE and has been removed).
-// `sweep.md`/`fix.md` both define `acceptance:` as "checkable bullets from the
-// issue body", falling back to the bare-string placeholder
-// `"(self-verify the issue is resolved)"` ONLY when the issue body carries
-// none — and `acceptanceList()` (below) already handles the array case for
-// any caller. So a real, multi-bullet acceptance array from /sweep or /fix
-// DOES have exactly the per-criterion shape this requirement targets; nothing
-// here makes widening to them structurally impossible.
+//  CORRECTION (the mechanical scoping below is accurate; an earlier version of
+//  this comment additionally claimed /sweep and /fix structurally CANNOT carry
+//  real per-criterion bullets — that claim was FALSE and has been removed).
+//  `sweep.md`/`fix.md` both define `acceptance:` as "checkable bullets from the
+//  issue body", falling back to the bare-string placeholder
+//  `"(self-verify the issue is resolved)"` ONLY when the issue body carries
+//  none — and `acceptanceList()` (below) already handles the array case for
+//  any caller. So a real, multi-bullet acceptance array from /sweep or /fix
+//  DOES have exactly the per-criterion shape this requirement targets; nothing
+//  here makes widening to them structurally impossible.
 //
-// The actual reason `/build` passes `requireDiscriminationEvidence: true`
-// (claude/commands/build.md Step 3 args) while `/sweep` and `/fix` omit the
-// key is an OPERATIONAL SCOPE DECISION, not a structural one: temperloop#1319
-// scopes this requirement to `/build` only. `/sweep` and `/fix` inherit the
-// OFF default — the same caller-scoped widening `principlesSummaries`
-// already establishes for a different §3c requirement — until a future item
-// makes the case for extending it to them.
+//  The actual reason `/build` passes `requireDiscriminationEvidence: true`
+//  (claude/commands/build.md Step 3 args) while `/sweep` and `/fix` omit the
+//  key is an OPERATIONAL SCOPE DECISION, not a structural one: temperloop#1319
+//  scopes this requirement to `/build` only. `/sweep` and `/fix` inherit the
+//  OFF default — the same caller-scoped widening `principlesSummaries`
+//  already establishes for a different §3c requirement — until a future item
+//  makes the case for extending it to them.
 const REQUIRE_DISCRIMINATION_EVIDENCE = input.requireDiscriminationEvidence === true;
 
 // --- §3c effective engineering principles (temperloop#1432) ------------------
@@ -1481,81 +1184,48 @@ function resolvePrinciplesSummary(item) {
 // Command-building helpers — EVERY interpolated value goes through sq().
 // -----------------------------------------------------------------------------
 
-// sq — POSIX-quote a value for safe shell interpolation. A spaced path MUST be
-// quoted or the one-shot executor runs the wrong command (the live-probe
-// finding). Numbers are coerced to string.
+//  sq — POSIX-quote a value for safe shell interpolation. A spaced path MUST be
+//  quoted or the one-shot executor runs the wrong command (the live-probe
+//  finding). Numbers are coerced to string.
 //
-// TWO FORMS, CHOSEN BY CONTENT (temperloop#1806). The classic single-quote form
-// escapes an embedded `'` via the `'\''` idiom, which is correct POSIX — and is
-// exactly what killed a live item. The command text this file builds is not
-// executed by this process: it is handed to an executor AGENT, whose Bash tool
-// parses it first. A payload carrying escaped single quotes nests `'\''` inside
-// a shell function inside a batch script, and that parser refused the whole
-// command at PARSE time, before touching git:
+//  TWO FORMS, CHOSEN BY CONTENT (temperloop#1806). The classic single-quote form
+//  escapes an embedded `'` via the `'\''` idiom, which is correct POSIX — and is
+//  exactly what killed a live item. The command text this file builds is not
+//  executed by this process: it is handed to an executor AGENT, whose Bash tool
+//  parses it first. A payload carrying escaped single quotes nests `'\''` inside
+//  a shell function inside a batch script, and that parser refused the whole
+//  command at PARSE time, before touching git:
 //
-//   {"outcome":"ERROR","step":"parse","error":"Shell parsing failed due to
-//    deeply nested quotes. … multiple instances of '\'' embedded within a bash
-//    function, creating an unresolvable quotation context …"}
+//    {"outcome":"ERROR","step":"parse","error":"Shell parsing failed due to
+//     deeply nested quotes. … multiple instances of '\'' embedded within a bash
+//     function, creating an unresolvable quotation context …"}
 //
-// It is deterministic for a given item — a re-drive can never clear it, because
-// the trigger is the item's own text — and it fires most readily on re-driven
-// items whose notes quote reviewer findings or shell snippets, i.e. the items
-// that have already cost the most work. sq() is the ONE definition behind all
-// ~86 call sites, so the fix belongs here and nowhere else.
+//  It is deterministic for a given item — a re-drive can never clear it, because
+//  the trigger is the item's own text — and it fires most readily on re-driven
+//  items whose notes quote reviewer findings or shell snippets, i.e. the items
+//  that have already cost the most work. sq() is the ONE definition behind all
+//  ~86 call sites, so the fix belongs here and nowhere else.
 //
-// So: a value with NO single quote keeps the single-quoted form, byte-identical
-// to before (the overwhelming majority of call sites — paths, slugs, outcome
-// globs). A value that DOES contain one is emitted DOUBLE-quoted instead, with
-// the four characters that stay special inside double quotes (`"`, `\`, `$`,
-// backtick) backslash-escaped. A double-quoted string may contain `'` verbatim,
-// so no nesting is produced at any depth, and the round-trip is exact:
-// everything else — newlines, `!` (history expansion is interactive-only),
-// glob punctuation — is literal inside double quotes exactly as it is inside
-// single ones. The two forms are interchangeable at every call site: each is a
-// single self-contained shell word, including inside a `case` pattern (both
-// quoting forms suppress glob expansion) and inside a `"$( … )"` substitution
-// (which opens a fresh quoting context).
+//  So: a value with NO single quote keeps the single-quoted form, byte-identical
+//  to before (the overwhelming majority of call sites — paths, slugs, outcome
+//  globs). A value that DOES contain one is emitted DOUBLE-quoted instead, with
+//  the four characters that stay special inside double quotes (`"`, `\`, `$`,
+//  backtick) backslash-escaped. A double-quoted string may contain `'` verbatim,
+//  so no nesting is produced at any depth, and the round-trip is exact:
+//  everything else — newlines, `!` (history expansion is interactive-only),
+//  glob punctuation — is literal inside double quotes exactly as it is inside
+//  single ones. The two forms are interchangeable at every call site: each is a
+//  single self-contained shell word, including inside a `case` pattern (both
+//  quoting forms suppress glob expansion) and inside a `"$( … )"` substitution
+//  (which opens a fresh quoting context).
 function sq(value) {
   const s = String(value);
   if (!s.includes("'")) return `'${s}'`;
   return `"${s.replace(/(["\\$`])/g, '\\$1')}"`;
 }
 
-// -----------------------------------------------------------------------------
-// The step LIVENESS BOUND, compiled into the command text (temperloop#1071).
-// -----------------------------------------------------------------------------
-// See the STEP_CEILING_SECS block above for WHY the bound lives in the emitted
-// shell rather than in this file's control flow (no Date.now(), no timer, and
-// the layer that failed to fire IS the tool-timeout layer). These three helpers
-// are the HOW.
-//
-// stepBoundPreamble(slowSecs) — the prologue every bounded command carries: the
-// two budgets as plain shell variables, then `__lb`, which runs ONE step body
-// under them. `__lb` is the dependency-free fallback tier of
-// `workflows/scripts/lib/portable-timeout.sh`, reproduced here (that library's
-// preferred `timeout`/`gtimeout` backends `exec` a BINARY and cannot run a shell
-// FUNCTION, which is what a step body is). Two details are load-bearing and both
-// come straight from that file's header:
-//   • the watchdog subshell is redirected AT THE SUBSHELL BOUNDARY
-//     (`) </dev/null >/dev/null 2>&1 &`). Without it, its `sleep` grandchild
-//     inherits the caller's `$( … )` pipe write-end and every FAST, successful
-//     step stalls for the full ceiling waiting on EOF (foundation #861).
-//   • the watchdog is killed AND reaped on the fast path, so a completed step
-//     leaves nothing behind.
-// The kill is best-effort DEEP: direct children first (`pkill -P`, so the helper
-// script dies before the subshell that owns it), then the subshell itself. A
-// deeper grandchild (a `gh` inside a `pr.sh`) can still outlive the bound — which
-// is exactly why a timed-out step is disposed through the recover-probe rather
-// than blind-retried: the workflow stops WAITING on it without ever assuming it
-// did nothing.
-//
-// The step body's own stdout is untouched — it flows to wherever the caller put
-// it (a `$( … )` capture in a batch, the script's stdout for a solo call), so the
-// machinery's "one JSON line per step" contract is preserved byte for byte on
-// every healthy run. `__lb` only ADDS a line, and only in the two abnormal cases:
-// STEP_TIMEOUT (replacing a result the kill destroyed) and STEP_SLOW (an advisory
-// riding alongside a real result — hence `slowSecs` is 0 on the SOLO path, whose
-// schema admits exactly one object).
+// The step LIVENESS BOUND, compiled into the command text (temperloop#10
+// Full design note: build-level.design-notes.md#the-step-liveness-bound-compiled-into-the-command-text-tempe
 function stepBoundPreamble(slowSecs) {
   return [
     `__lb_ceil=${STEP_CEILING_SECS}; __lb_slow=${slowSecs}`,
@@ -1607,27 +1277,8 @@ function stepBoundInvoke(name, kind) {
   return `__lb ${sq(kind)} ${name}`;
 }
 
-// machineryBin — resolve a build-SPINE script (worktree.sh / pr.sh / ci-poll.sh),
-// which lives in the FOUNDATION repo (workflows/scripts/build/). A consuming repo
-// (stageFind) normally reaches it via a dev-local `workflows/` symlink into
-// foundation — but that symlink is NOT guaranteed in every checkout (#560: a
-// stageFind checkout lacking it escalated at pr.sh with `push-error: script path
-// does not exist`). We run in the Workflow sandbox (no fs / Node API), so the
-// fallback is done in BASH, emitted as a quoted command-substitution: prefer
-// <repoRoot>/workflows/scripts/build; if that dir is absent, locate the
-// foundation checkout via $FOUNDATION, the deployed workflow symlink
-// ($HOME/.claude/workflows/build-level.mjs → foundation, best-effort — a BSD
-// readlink without -f just fails that candidate), or the TEMPERLOOP_HOME
-// bootstrap-clone convention (bin/bootstrap.sh's own default,
-// $HOME/.local/share/temperloop — never a hardcoded personal dev path,
-// temperloop#406; the legacy FOUNDATION_HOME fallback was removed in
-// v0.19.0 with the rest of the temperloop#165 window). If none resolve, the
-// emitted path points at the missing
-// repo-local dir and the machinery script's own "not found" (exit 127) surfaces
-// loudly. NOTE:
-// only machinery scripts route through here; the project's OWN vendored gate
-// (scripts/quality-gates.sh) is repo-local and is resolved directly against
-// the WORKTREE checkout (see 3e.5, temperloop#626), never via this fallback.
+// machineryBin — resolve a build-SPINE script (worktree.sh / pr.sh / ci-
+// Full design note: build-level.design-notes-3.md#machinerybin-resolve-a-build-spine-script-worktree-sh-pr-sh-
 function machineryBin(repoRoot, name) {
   // De-obfuscated fast path (temperloop#72). When the orchestrator has already
   // resolved the build-machinery directory in its OWN shell (build.md Step 0, and
@@ -1658,42 +1309,8 @@ function machineryBin(repoRoot, name) {
 // push/scan take the worktree path. WITHOUT input.ownerRepo every ci-poll gets
 // '' → ERROR, so the orchestrator MUST pass it (Step 0 probe). See the I/O note.
 
-// -----------------------------------------------------------------------------
-// THE EXECUTOR AGENT TYPE — context size is the machinery agents' cost (#1014).
-// -----------------------------------------------------------------------------
-// A machinery executor's whole job is one Bash call, but a `general-purpose`
-// agent carries the FULL harness surface to make it: every tool schema, the
-// skill listing, the deferred-tool listing. That is dead weight on every spawn
-// and it is charged TWICE for the two executors that exceed the ~300s
-// prompt-cache TTL by construction — the CI poll (waiting IS its job) and the
-// minutes-scale 3e.5 gate. Their post-wait call is a total cache miss: the whole
-// context is re-WRITTEN at weight 1.25 instead of re-READ at 0.1, so the excess
-// is proportional to CONTEXT SIZE, not to the length of the wait (#1014).
-//
-// So machinery executors run as `machinery-executor` (claude/agents/), whose
-// tool surface is Bash alone (+ the runtime's own StructuredOutput, appended
-// automatically when a schema is passed) and whose system prompt carries the
-// standing "run it verbatim, return each step's JSON line" contract that every
-// per-call prompt used to restate. Measured on this harness, same prompts, same
-// machine (temperloop#1014): ci-batch 37,428 -> 30,856 first-call
-// cache_creation tokens, 3e.5 gate 37,201 -> 30,734 (-17.5%). The residual is
-// almost entirely the installed CLAUDE.md (measured at 25,714 tokens, identical
-// under both agent types) — which the harness injects into every non-built-in
-// agent and NO agent definition can decline, so it is out of this file's reach.
-// Of the context this file CAN reach, the lean type removes 56%.
-//
-// FALLBACK, NOT A DEPENDENCY. A checkout that has not deployed the agent
-// definition (`workflows/scripts/install/project-agents.sh`) must still build.
-// agent() rejects an unresolvable (or permission-denied) agentType at RESOLUTION
-// time — before any subagent is spawned, so nothing has run and re-issuing the
-// call is safe — with a message naming `agent({agentType})` and the type it could
-// not resolve. machineryAgent() catches exactly that shape once, pins the type to
-// 'general-purpose' for the rest of the run, and re-issues with the full prompt.
-// Any OTHER failure propagates untouched: a blind retry of a machinery command is
-// NEVER safe (push / pr-create are not idempotent), so the match is deliberately
-// narrow — two independent markers of a resolution failure, never a catch-all.
-// An explicit input.machineryAgentType (orchestrator-supplied) overrides the
-// default and disables the probe.
+// THE EXECUTOR AGENT TYPE — context size is the machinery agents' cost (
+// Full design note: build-level.design-notes.md#the-executor-agent-type-context-size-is-the-machinery-agents
 const MACHINERY_RESOLUTION_ERR = /agent\(\{agentType\}\)|agent type '[^']*' (?:not found|is denied)/;
 const MACHINERY_AGENT_TYPE_DEFAULT = 'machinery-executor';
 let machineryAgentType =
@@ -1718,29 +1335,8 @@ async function machineryAgent(promptFor, opts) {
   }
 }
 
-// -----------------------------------------------------------------------------
-// ONE MEANING, ONE NAME — the machinery-outcome key canonicalizer (temperloop#1698).
-// -----------------------------------------------------------------------------
-// The closed outcome set carries TWO names for one concept. The step-liveness
-// bound (temperloop#1071) emits `elapsed_secs` / `ceiling_secs` / `slow_secs`;
-// the 3e.5 gate emits `elapsedSecs` / `budgetSecs`; and the permissive
-// passthrough schema admits BOTH on ANY outcome. An executor that normalizes a
-// GATE_PASS toward the sibling spelling therefore produces a structurally VALID
-// object that the consumer — `Number(gateOut.elapsedSecs) || 0` — reads as
-// `Number(undefined) || 0` → **0**. Observed live (run wf_9ce4bd0c-58b): a gate
-// whose own log said "passed in 215s" was reported as "0s of gate wall time".
-//
-// That figure is the DECAY SIGNAL — the instrument whose whole job is to make
-// suite growth visible on GREEN runs, before it blows a budget (the failure
-// #1021 and #1663 both exist because of). An instrument that reads zero when it
-// does not know is worse than one that reads nothing.
-//
-// The fix is a single normalization at the TRANSPORT boundary rather than a
-// `??` chain at each read site (which re-opens the defect for the next field):
-// CANONICAL = camelCase, everywhere downstream of here. The snake_case key is
-// left in place on the object — it is what the emitted shell actually prints and
-// what escalation payloads echo verbatim — but no CONSUMER in this file reads it
-// any more, so the two spellings can no longer disagree about one value.
+// ONE MEANING, ONE NAME — the machinery-outcome key canonicalizer (tempe
+// Full design note: build-level.design-notes-3.md#one-meaning-one-name-the-machinery-outcome-key-canonicalizer
 const OUTCOME_KEY_ALIASES = {
   elapsed_secs: 'elapsedSecs',
   ceiling_secs: 'ceilingSecs',
@@ -1873,30 +1469,8 @@ async function runMachinery(cmd, { label, slug, bashTimeoutMs, timeoutOutcome, p
   return out == null ? { outcome: 'SPINE_DENIED', denied: true } : canonicalizeOutcome(out);
 }
 
-// -----------------------------------------------------------------------------
 // runMachineryBatch — the BATCHED sh() replacement (temperloop#942).
-// -----------------------------------------------------------------------------
-// Runs SEVERAL machinery commands inside ONE executor agent (one Bash
-// invocation), returning each step's own closed-outcome JSON object so the
-// driver keeps branching per-step in .mjs. See DESIGN NOTE 1 for why this does
-// not weaken the bridge's invariant.
-//
-// A step is { kind, cmd, continueOutcomes?, stopGlobs? }:
-//   kind             — a short name; it appears in the prompt's `Steps:` manifest
-//                      and in a denial payload, and is what the .mjs indexes by.
-//   cmd              — the fully sq()-quoted command text, byte-identical to what
-//                      the un-batched runMachinery call used to send.
-//   continueOutcomes — the outcome(s) that permit the NEXT step to run. Anything
-//                      else stops the sequence (the .mjs then branches on this
-//                      step's object and escalates, exactly as before).
-//   stopGlobs        — the inverse form, for a step with no `outcome` key (the
-//                      merge-state probe): raw substrings that, if present, stop
-//                      the sequence.
-// The last step needs neither — nothing follows it.
-//
-// The bash short-circuit is a STOP-EARLY MIRROR, not the decision: it only
-// avoids running steps whose result the .mjs is about to discard anyway. The
-// authoritative branch is always the `if` in .mjs reading the same JSON.
+// Full design note: build-level.design-notes-3.md#runmachinerybatch-the-batched-sh-replacement-temperloop-942
 
 // globPat — a `case` pattern matching any line CONTAINING `sub`. The literal is
 // single-quoted (via sq) so the shell never glob-expands the JSON punctuation.
@@ -2140,36 +1714,36 @@ function discriminationEvidenceSection() {
   ];
 }
 
-// hostConfigDeferralSection — the §3c host-config/secret deferral contract
-// (temperloop#1182), a SELF-CONTAINED section appended once into
-// workerPrompt()'s array, mirroring discriminationEvidenceSection()'s shape.
+//  hostConfigDeferralSection — the §3c host-config/secret deferral contract
+//  (temperloop#1182), a SELF-CONTAINED section appended once into
+//  workerPrompt()'s array, mirroring discriminationEvidenceSection()'s shape.
 //
-// WHY IT IS UNGATED. Unlike discrimination evidence, this is not a discipline
-// a caller opts into — it is a STRUCTURAL fact about every worktree on every
-// path (/build, /sweep, /fix all route through this same prompt): `git
-// worktree add` populates from the git INDEX, so a gitignored host-local file
-// is never present, on any host, ever. foundation#1556 is the measured
-// instance: an item whose acceptance was "`pipeline-retro-judge-spawn.sh
-// --dry-run` reports credential_present" read `false` in the worktree and
-// `true` in BOTH real checkouts moments later. The worker did the right thing
-// (reported rather than went looking), but nothing structural stopped it from
-// "helpfully" copying the token into a non-gitignored path — which is the
-// exposure /assess A.8 exists to prevent, and a strictly worse failure than
-// the unverified criterion.
+//  WHY IT IS UNGATED. Unlike discrimination evidence, this is not a discipline
+//  a caller opts into — it is a STRUCTURAL fact about every worktree on every
+//  path (/build, /sweep, /fix all route through this same prompt): `git
+//  worktree add` populates from the git INDEX, so a gitignored host-local file
+//  is never present, on any host, ever. foundation#1556 is the measured
+//  instance: an item whose acceptance was "`pipeline-retro-judge-spawn.sh
+//  --dry-run` reports credential_present" read `false` in the worktree and
+//  `true` in BOTH real checkouts moments later. The worker did the right thing
+//  (reported rather than went looking), but nothing structural stopped it from
+//  "helpfully" copying the token into a non-gitignored path — which is the
+//  exposure /assess A.8 exists to prevent, and a strictly worse failure than
+//  the unverified criterion.
 //
-// The bar is NOT relaxed (A.8 still demands confirmed-set, not location-named):
-// what this changes is WHO confirms, not WHETHER. The worker defers; the
-// orchestrating session, which runs in the real checkout, verifies parent-side
-// after hand-back, fed by park()'s host_config_deferrals field.
+//  The bar is NOT relaxed (A.8 still demands confirmed-set, not location-named):
+//  what this changes is WHO confirms, not WHETHER. The worker defers; the
+//  orchestrating session, which runs in the real checkout, verifies parent-side
+//  after hand-back, fed by park()'s host_config_deferrals field.
 //
-// UNGATED IS ONLY SOUND BECAUSE ALL THREE PATHS HAVE A SEAT. Each invoking
-// spec owns a parent-side verification step for the deferral this section
-// produces — build.md §4a, sweep.md's per-chunk merge pass, fix.md Step 5's
-// modal gate (and build.md §3h.5's as-you-go tier explicitly EXCLUDES an item
-// carrying the field, since that path bypasses §4a). See the seat list in the
-// I/O CONTRACT above. If a future path starts invoking this driver, it either
-// grows its own seat or this section stops being ungated — shipping the
-// instruction to a path with no seat is how a deferral auto-merges unverified.
+//  UNGATED IS ONLY SOUND BECAUSE ALL THREE PATHS HAVE A SEAT. Each invoking
+//  spec owns a parent-side verification step for the deferral this section
+//  produces — build.md §4a, sweep.md's per-chunk merge pass, fix.md Step 5's
+//  modal gate (and build.md §3h.5's as-you-go tier explicitly EXCLUDES an item
+//  carrying the field, since that path bypasses §4a). See the seat list in the
+//  I/O CONTRACT above. If a future path starts invoking this driver, it either
+//  grows its own seat or this section stops being ungated — shipping the
+//  instruction to a path with no seat is how a deferral auto-merges unverified.
 function hostConfigDeferralSection() {
   return [
     '',
@@ -2238,26 +1812,8 @@ function changelogFragmentSection(item) {
   ];
 }
 
-// gateRegistrationChecklistSection — the §3c "new gate script? register it"
-// checklist (temperloop#1931), a SELF-CONTAINED section appended once into
-// workerPrompt()'s array, mirroring discriminationEvidenceSection()'s shape.
-// UNGATED, like hostConfigDeferralSection() — every /build, /sweep and /fix
-// worker can add a new check-*.sh/validate-*.sh/test_*.sh, so every worker
-// needs the checklist, not just an opted-in caller.
-//
-// WHY THIS EXISTS: #1931's observed instance — three of five workers in one
-// /build level shipped a new validator/test that went RED on
-// validate-check-surface-degenerate-coverage.sh (and its test), and two also
-// missed gate-paths.tsv/setting-registry.tsv rows, because the worker's own
-// `--scoped` run (temperloop#957) selects gates by DIFF PATH: a brand-new
-// script's path matched no row in gate-paths.tsv until the worker itself
-// registered one, so the very gates that would have caught the omission
-// never ran worker-side — each miss cost a full parent-side sliced
-// acceptance-gate round trip (about 10-20 minutes). gate-paths.tsv now also
-// carries generic new-surface globs closing the SELECTION half of that gap
-// (see its own header, temperloop#1931) — this section is the PREVENTION
-// half: naming the registries up front so the worker registers before its
-// own scoped run ever needs to catch the omission after the fact.
+// gateRegistrationChecklistSection — the §3c "new gate script? register 
+// Full design note: build-level.design-notes-3.md#gateregistrationchecklistsection-the-3c-new-gate-script-regi
 function gateRegistrationChecklistSection() {
   return [
     '',
@@ -2286,26 +1842,7 @@ function gateRegistrationChecklistSection() {
 }
 
 // activationProofSection — the temperloop#1934 "show the worker its own
-// class-A activation predicate" section, a SELF-CONTAINED section appended
-// once into workerPrompt()'s array, mirroring gateRegistrationChecklistSection()'s
-// shape so a sibling edit to workerPrompt() rebases cleanly. Gated on
-// activationClass(item) === 'A' (defined below — hoisted, so the forward
-// reference from here is fine): an absent `activation` block, or a class
-// B/C block, renders NOTHING, so this section changes zero bytes of the
-// prompt for those items (the acceptance's byte-identical requirement).
-//
-// WHY THIS EXISTS: the live instance (epic #1910, item join-key-registry) —
-// the worker built and wired `join-keys-lib.sh`, but the plan's `proof:`
-// predicate grepped for the producer-chosen literal `join_keys`, a name the
-// worker never saw and had no reason to preserve. The worker's own
-// acceptance bullets all passed; §3e.6 then failed the whole item on a name
-// mismatch the worker was never shown, costing a full re-drive round trip.
-// Rendering the `proof:` command VERBATIM — not a paraphrase of what it
-// checks — lets the worker see the exact reachability surface the
-// orchestrator will run and either name its own artifacts to match, or, if
-// the predicate genuinely conflicts with the acceptance bullets, say so
-// (`blocked`) instead of guessing a silent rename that may or may not agree
-// with what §3e.6 actually runs.
+// Full design note: build-level.design-notes-3.md#activationproofsection-the-temperloop-1934-show-the-worker-i
 function activationProofSection(item) {
   if (activationClass(item) !== 'A') return [];
   const proof = typeof item.activation.proof === 'string' ? item.activation.proof.trim() : '';
@@ -2361,48 +1898,8 @@ function parentSummarySection(item) {
   ];
 }
 
-// -----------------------------------------------------------------------------
-// THE WORKER GATE SENTINEL — a RESULT artifact, not a process (temperloop#865).
-// -----------------------------------------------------------------------------
-// Both Level-1 workers of epic #810 backgrounded `scripts/quality-gates.sh`,
-// then polled for a PID to exit instead of reading the run's result, and ended
-// their turn with no verdict. 2/2 — AGAINST A PROMPT THAT NAMED THE EXACT
-// FAILURE AND PRESCRIBED THE FIX, and one of them re-stalled after being told in
-// so many words to go read the output file. The issue's own acceptance forbids
-// the obvious response: "demonstrated by whatever mechanism is chosen, not by a
-// re-worded warning". A third wording is not a fix; this is kernel principle 5
-// (counter AI failure modes STRUCTURALLY) applied to the engine's own seam.
-//
-// So THREE structural changes replace the warning:
-//
-//  1. THE WORKER NO LONGER COMPOSES ITS OWN GATE INVOCATION. workerGateCmd()
-//     below is built by the orchestrator and handed over verbatim, so the shape
-//     of the run is not a choice the worker makes turn by turn.
-//  2. THAT INVOCATION ALWAYS LEAVES A RESULT. It writes `{"state":"running"}`
-//     before the suite starts and overwrites it with
-//     `{"state":"finished","rc":N,"elapsedSecs":S}` when the suite ends, then
-//     prints the sentinel as its final line. A worker that loses the tool output
-//     — backgrounded, reaped, timed out — polls the FILE and gets a verdict. A
-//     PID poll cannot ever succeed (the exit status is gone with the process,
-//     and a subagent receives no background-task notification at all); an
-//     ARTIFACT poll can. That is the issue's candidate 2, and candidate 1's
-//     "hand the worker an invocation" half.
-//  3. THE RESIDUAL FAILURE IS LOUD. The parent-side 3e.5 gate command classifies
-//     this same file from the same worktree and reports `workerGate` on its own
-//     outcome, so the driver logs a NAMED notice when the sentinel still reads
-//     `running`. Today "waiting for the gate" is indistinguishable from a
-//     healthy long gate until the budget is gone; after this, a stalled worker
-//     reads differently from a slow one in the run log and in the gate payload.
-//
-// NOT IN SCOPE (recorded, deliberately not implemented): the issue's candidate 3
-// — move the gate out of the worker entirely. It is an architectural subtraction
-// touching every worker on every run and must not ride a five-defect PR.
-//
-// WHY /tmp, NOT THE WORKTREE. It mirrors the 3e.5 gate's own `/tmp/qg-<slug>.log`
-// convention, and it keeps a machine-written file out of the tree `pr.sh rebase`
-// and the leak guard inspect — an untracked artifact inside the worktree would
-// need a matching `info/exclude` entry in worktree.sh, which is outside this
-// item's scope and would make the fix a cross-script change.
+// THE WORKER GATE SENTINEL — a RESULT artifact, not a process (temperloo
+// Full design note: build-level.design-notes.md#the-worker-gate-sentinel-a-result-artifact-not-a-process-tem
 function workerGateSentinel(slug) {
   return `/tmp/qg-${slug}.worker-gate.json`;
 }
@@ -2426,49 +1923,7 @@ function workerGateState(out) {
 }
 
 // workerGateCmd — the ONE invocation the worker is handed. Foreground by
-// construction (it ends by printing its own result), always-sentinel-writing by
-// construction (both the `running` and the `finished` writes are unconditional
-// steps of the same command line), and it exits with the gate's own status so a
-// worker that only reads the exit code still gets the truth.
-//
-// `set -o pipefail` is load-bearing for the same reason it is in gateCmd
-// (temperloop#68): the suite is piped through `tee`, and without it `$?` would
-// be tee's 0 and a RED gate would write `"rc":0` into the sentinel — a silent
-// green, which is the single worst thing this artifact could do. The exit status
-// is read as a bare `$?`, never PIPESTATUS[0], which expands empty under the zsh
-// this harness's Bash tool actually runs (temperloop#801).
-//
-// EVERY PROLOGUE STEP HARD-REFUSES; NONE OF THEM IS `&&`-CHAINED INTO THE RUN
-// (review round 2, the HIGH). `A && B && C; D` is NOT a guard: it skips `B..C`
-// on `A`'s failure and then runs `D` anyway. That shape — which this function
-// shipped in its first cut — meant a failed `cd` (worktree pruned, moved, or an
-// unresolvable path) skipped both the `running` sentinel AND `set -o pipefail`
-// and then ran `./scripts/quality-gates.sh` in whatever directory the worker's
-// shell happened to start in, recording a RED suite in the WRONG repo as
-// `{"state":"finished","rc":0}` with a nonsense `elapsedSecs` (`__t0` unset, so
-// the arithmetic read it as 0). That is precisely the silent green the comment
-// above calls the worst thing this artifact could do, reintroduced by the fix
-// for it. So each prologue step is now its own statement ending in an explicit
-// `|| exit`, and `set -o pipefail` comes FIRST — before anything it protects —
-// rather than being `&&`-chained after work that has already happened:
-//
-//   - `set -o pipefail || exit 1` — a shell without pipefail refuses here. A
-//     POSIX special builtin's failure exits a non-interactive shell outright
-//     (dash), and the `|| exit 1` catches the lenient shells that merely return
-//     non-zero. Either way nothing downstream runs unprotected.
-//   - `[ -x ./scripts/quality-gates.sh ] || exit 127` — "this repo has no gate"
-//     refuses BEFORE any sentinel is written, so `absent` (never `finished`)
-//     is what both the worker and §3e.5 see. Before this, a missing script ran
-//     as an ENOENT through the pipe and the NEXT statement wrote
-//     `{"state":"finished","rc":127}` unconditionally — which the handed prompt
-//     then told the worker to report as "a real FAIL", turning a repo with no
-//     gate into a gate failure (review round 2, the MEDIUM).
-//   - `cd … || exit 1` and the `running` write's own `|| exit 1` — the suite
-//     can never run outside the worktree, and can never run with no artifact to
-//     poll.
-//
-// The invariant to preserve on any future edit: a `finished` sentinel is
-// reachable ONLY after the suite actually ran, in the worktree, under pipefail.
+// Full design note: build-level.design-notes.md#workergatecmd-the-one-invocation-the-worker-is-handed-foregr
 function workerGateCmd(slug, worktreePath) {
   const sent = sq(workerGateSentinel(slug));
   const glog = sq(workerGateLog(slug));
@@ -2593,23 +2048,8 @@ function workerPrompt(item, worktreePath, extraSection) {
     `Write your verification-surface markdown block to ${worktreePath}/.build-verification.md`,
     'and return its path as `verification_surface_path`. Do NOT inline it in the JSON.',
     '',
-    // §3c "No long-running background work" (#1219). Embedded in the generated
-    // prompt — NOT left to prose the caller may forget — so every worker (main
-    // AND spike, both route through workerPrompt) is told up front to foreground
-    // the gate. Without this the worker backgrounds quality-gates.sh, yields, and
-    // returns no verdict (build.md §3c/§3d must stay in lockstep with this block).
-    //
-    // temperloop#997 adds the SCOPE half of the same contract: the worker must not
-    // run the BARE, repo-wide suite in its own context at all. That run is minutes-
-    // scale, and one blocking turn that long blows the ~5-min prompt-cache TTL — the
-    // worker's whole ~213K-token context is then re-WRITTEN (weight 1.25) instead of
-    // re-READ (0.1) on the next call. The ACCEPTANCE run stays parent-side at 3e.5
-    // (unchanged, still the authority — the PR #309 silent-red lesson; since
-    // temperloop#1663 that run is itself diff-scoped through the same map, which
-    // changes WHICH gates it runs but not WHO decides acceptance). The two
-    // halves live in ONE section on purpose: foreground-only governs HOW the worker
-    // runs its checks, #997 governs WHICH checks it runs, and dropping either one
-    // re-opens a measured defect. build.md §3c carries both in lockstep.
+    // §3c "No long-running background work" (#1219). Embedded in the generat
+    // Full design note: build-level.design-notes-3.md#3c-no-long-running-background-work-1219-embedded-in-the-gene
     '## Quality gate & long-running work — FOREGROUND ONLY (#1219)',
     '- Run EVERY verification command you DO run in the FOREGROUND (a blocking Bash',
     '  call): the changed-file-scoped gate run below, plus any eval / build / sweep.',
@@ -2781,25 +2221,8 @@ function withCure(section, dirtyFiles, slug) {
   return [section, FOREGROUND_CURE, sentinel, dirty].filter(Boolean).join('\n\n');
 }
 
-// -----------------------------------------------------------------------------
 // Lost-return recovery (temperloop#939).
-// -----------------------------------------------------------------------------
-// The 3c worker can die in TWO different ways that look identical from here:
-//   (a) it genuinely failed — nothing was built, and escalating is correct;
-//   (b) it did the whole job and only the RETURN CHANNEL failed — the subagent
-//       completed without calling StructuredOutput, or blew the StructuredOutput
-//       retry cap, so `agent({schema})` THROWS (it does not return null).
-// Case (b) is not hypothetical: in the #939 run it hit 2 of 5 workers. One had
-// committed, pushed, opened PR #936 and gone green; the other had committed but
-// not pushed. Both were reported as `worker-error` — a `ask-now` halt over work
-// that had already landed, with a live risk of re-spawning a worker onto a
-// worktree that already held the finished commit (a second PR, a stacked commit).
-//
-// The fix is to STOP GUESSING from the exception and go LOOK: probe the
-// observable side-effects (commit / push / PR) before classifying. What we can
-// never recover is the worker's own self-verification — so a recovered record is
-// honest about that and marks its acceptance results UNVERIFIED rather than
-// letting them read as passing.
+// Full design note: build-level.design-notes-3.md#lost-return-recovery-temperloop-939
 
 const RECOVERY_UNVERIFIED =
   'UNVERIFIED — the worker completed without returning a verdict (temperloop#939); ' +
@@ -2808,43 +2231,8 @@ const RECOVERY_UNVERIFIED =
 // The recover-probe outcomes that mean "work landed" (anything but RECOVER_NONE).
 const RECOVER_STAGES = ['RECOVER_COMMITTED', 'RECOVER_PUSHED', 'RECOVER_PR_OPEN'];
 
-// -----------------------------------------------------------------------------
 // Worker cost capture (temperloop#2065, epic #2062's dual-build ledger).
-// -----------------------------------------------------------------------------
-// The worker `agent()` spawn is the Workflow runtime's own subagent primitive:
-// it returns no usage envelope, and the runtime has no timer (`Date.now()`
-// throws — see the STEP CEILING block, DESIGN NOTE 1's sibling). Both gaps
-// are closed the SAME way every other shell-only fact this file needs is:
-// an emitted-shell machinery call (DESIGN NOTE 1's runMachinery bridge).
-// workflows/scripts/build/worker-usage.sh is that bridge — the SAME pattern
-// review-wait.sh established for giving this runtime a wall-clock tick it
-// otherwise has none of (temperloop#2049).
-//
-//   workerClockNow()  — a bare `date` read, no side effect. Returns epoch
-//                       SECONDS (a plain number — safe to subtract, since
-//                       only Date.now()/Math.random() throw here, never
-//                       arithmetic on a value already in hand) or null on
-//                       anything but a clean numeric reading.
-//   workerUsageEmit() — the SAME reading PLUS the durable per-seat
-//                       attribution write: model-usage-envelope.sh's shared
-//                       model_usage_emit_from_envelope, seat "build-worker" —
-//                       the SAME helper pipeline-drive.sh's A7/A8 and
-//                       pipeline-retro-judge-spawn.sh's A9 already call, so
-//                       the build worker joins their attribution stream as a
-//                       FOURTH emitting seat (ADR 0026) — the coverage
-//                       denominator in report-producers/model-comparison
-//                       names it. No `claude -p --output-format json`
-//                       envelope exists for a Workflow agent() call, so this
-//                       degrades to usage_source:"unavailable" (no tokens) on
-//                       every REAL call today — worker-usage.sh's own header
-//                       carries that honesty disclosure; the fields still
-//                       flow through byte-for-byte the day a real envelope
-//                       becomes available, and the offline test harness
-//                       exercises exactly that path.
-//
-// Both are FAIL-OPEN and never escalate: a cost-ledger entry must never be
-// the thing that stalls a build. A malformed/absent reading degrades to
-// null, never a thrown error or a denial.
+// Full design note: build-level.design-notes.md#worker-cost-capture-temperloop-2065-epic-2062-s-dual-build-l
 function workerUsageBin() {
   return machineryBin(input.repoRoot, 'worker-usage.sh');
 }
@@ -3341,45 +2729,8 @@ function escalate(slug, kind, payload) {
   return { _kind: 'escalation', slug, escalation: { slug, kind, payload } };
 }
 
-// -----------------------------------------------------------------------------
-// The SIDELINE notice — the consumer half of worktree.sh's CREATED verdict
-// (temperloop#2006).
-// -----------------------------------------------------------------------------
-// `worktree.sh create` must NEVER refuse (its own contract at worktree.sh:783-787
-// — a refusing create turns /build's prelude batch from CREATED into escalated),
-// so when the deterministic path is already occupied by committed work that
-// preservation could not capture, it SIDELINES: the occupant is MOVED — never
-// copied, never removed — to `<path>.unpreserved-<sha8>` on branch
-// `<branch>.unpreserved-<sha8>`, which frees the path so create still CREATES.
-// It already REPORTS that, as fields on the CREATED line it was always going to
-// print: `sidelined` / `sidelined_path` / `sidelined_branch`.
-//
-// This driver used to DROP all three. That is the whole of the defect #2006
-// names: an intact, committed, reviewed build gets shelved while a fresh worker
-// rebuilds the same item from scratch, and nothing reports it — not because the
-// information is missing, but because nobody read it. The cost is a wasted
-// re-drive plus an orphaned worktree nobody knows to reclaim, and it silently
-// defeats the point of temperloop#1988's preserve-the-build fix.
-//
-// WHY THE CONSUMER LIVES HERE, below the drivers. The "is there a commit ahead
-// of base at the deterministic path?" reading is the same fact /fix's Step 4a
-// worktree state table reasons about in prose. /build and /sweep have no such
-// table: they invoke this file on its normal `fresh` route (no onlySlugs, no
-// verdicts) and reach `worktree.sh create` through the prelude batch below. A
-// guard that lives in one driver's prose holds only for that driver — the
-// per-instance-fix smell the kernel names ("hoist the mechanism rather than
-// patch the instance, or you re-patch every sibling in turn"). Putting the
-// consumer in the ONE file all three drivers route through is what lets /build
-// and /sweep inherit what /fix has without any of them restating the rule.
-//
-// NOTHING here touches worktree.sh. `create` still never refuses, still
-// sidelines rather than destroys, and still emits the identical CREATED line;
-// this is purely the reading half that was missing.
-//
-// Keyed by slug rather than threaded through driveItem's ~30 return points:
-// the notice is discovered at 3b and must ride whichever record the item
-// eventually produces (parked OR escalation), which is exactly the shape
-// preserveOnEscalation already solved with one choke point at the fan-out.
+// The SIDELINE notice — the consumer half of worktree.sh's CREATED verdi
+// Full design note: build-level.design-notes.md#the-sideline-notice-the-consumer-half-of-worktree-sh-s-creat
 const SIDELINE_NOTICES = new Map(); // slug → { path, branch, recovery }
 
 // sidelineRecoveryCmd — NAME THE RECOVERY, not merely the event. A sidelined
@@ -3433,54 +2784,8 @@ function stampSideline(item, r) {
   return r;
 }
 
-// -----------------------------------------------------------------------------
 // preserveCommittedWorkCmd / preserveOnEscalation — temperloop#2020.
-// -----------------------------------------------------------------------------
-// THE DATA-LOSS SEAM. An escalation leaves the worktree intact, and every
-// downstream spec says so — but "intact" is a promise about a LOCAL directory
-// and a LOCAL `build/<slug>` branch, and the specs that dispose an escalated
-// item are AI-executed prose. On Towheads/foundation (kernel v0.39.0, run
-// wf_967c2878-0a7 driving foundation#1869) a §3e `review-diff-error` fired
-// with the worker's work committed but un-pushed and un-PR'd; /fix's 4a
-// escalation-park path then ran `worktree.sh remove`, taking the directory and
-// the only branch pointing at those commits with it. 515 verified lines were
-// hand-rescued from the parent session's transcript. fix.md's prose guard for
-// exactly this hazard (its `FX.8 class:escalated-work-destruction` cite, and a
-// worktree state table that permits removal on one row only) was already in
-// place and did not hold — which is the whole argument for fixing it HERE:
-// kernel principle 5, counter a known AI failure mode STRUCTURALLY rather than
-// with more prose the next agent may also misread.
-//
-// So: before an escalation LEAVES this driver, any commit the worker made that
-// is not yet on origin is PUSHED. After that, every destructive disposition a
-// caller can take — `worktree.sh remove`, its `git branch -D`, a force-clearing
-// `worktree.sh create` on a later run — destroys only a local copy of work that
-// already exists on the remote. This protects callers whose escalation paths
-// this file cannot see, which a fix in any one caller's prose cannot.
-//
-// Fail-soft in every direction, and deliberately so — this runs on a path that
-// is ALREADY failing, and must never convert an escalation into a worse one:
-// no worktree, no commits, a rejected push, a denied executor, a thrown
-// machinery call — each returns the original escalation unchanged, annotated
-// with what happened. The annotation is the point on the failing arm:
-// WORK_PRESERVE_FAILED tells the operator disposing this escalation that the
-// worktree IS the only copy.
-//
-// NOT a substitute for 3f: this pushes the BRANCH only — no PR, no CI, no
-// rebase, no closing-keyword scan. A pushed branch with no PR merges into
-// nothing; it is a durable copy, not a landing.
-//
-// `branch` is the PLAN's `item.branch` (`<type>/<slug>`), NOT the worktree's
-// throwaway local `build/<slug>` HEAD (worktree.sh's own header). It has to be:
-// 3f pushes via `pr.sh push <wt> <item.branch>`, which sends
-// `$sha:refs/heads/$branch` — so preserving `HEAD` under its LOCAL name would
-// mint a SECOND remote ref (`build/<slug>`) on every post-3f escalation
-// (ci-failed, gate-fail, review-blocking), one that no PR watches and that
-// neither `delete_branch_on_merge` nor prune-merged-branches.sh can ever
-// reclaim. That is precisely the two-ref split pr.sh's PUSHED_UNWATCHED logic
-// (temperloop#1688) exists to make visible. Pushing the ref 3f already owns
-// makes the idempotency claim below TRUE of what the code does, and leaves the
-// rescue copy on a ref a human already has a handle for.
+// Full design note: build-level.design-notes.md#preservecommittedworkcmd-preserveonescalation-temperloop-202
 function preserveCommittedWorkCmd(wt, branch) {
   return [
     // No worktree (an escalation from before 3b, e.g. claim-conflict) — there
@@ -3496,26 +2801,7 @@ function preserveCommittedWorkCmd(wt, branch) {
     `  done`,
     `fi`,
     // NO `|| default=main` guess. worktree.sh's own default_branch() (its
-    // "The repo's default branch" helper) `return 1`s rather than inventing a
-    // base, and this path must do the same, because the guess does not fail
-    // LOUDLY here — it fails into a rev-list that errors, `ahead` that reads 0
-    // and a WORK_PRESERVE_SKIP "no unlanded commits". Verified against a
-    // throwaway fixture (bare origin defaulting to `trunk`, origin/HEAD
-    // deleted, one real unpushed commit): the old chain emitted
-    // `{"outcome":"WORK_PRESERVE_SKIP","commits_ahead":0}` over real work. And
-    // because preserveOnEscalation logs its "the worktree may be the ONLY
-    // copy" warning on every outcome EXCEPT the skip, that false negative
-    // silenced the one warning this whole seam exists to raise.
-    //
-    // So: `base_resolved` splits "genuinely zero commits ahead" from "could
-    // not compute". Only the FIRST may skip. The second PUSHES ANYWAY —
-    // pushing is the fail-safe direction on a preservation path: the cost of a
-    // needless push is one ref on the branch 3f already owns, while the cost
-    // of a needless skip is the destroyed-work incident this file documents.
-    // `ahead` is normalized before it is ever read as a number, so nothing
-    // non-numeric can reach the unquoted `"commits_ahead":%s` position and
-    // make the line unparseable (the pr.sh `case` idiom, e.g. its cmd_push
-    // ahead-count normalization).
+    // Full design note: build-level.design-notes-3.md#no-default-main-guess-worktree-sh-s-own-default-branch-its
     `base_resolved=false`,
     `ahead=0`,
     `if [ -n "$default" ] && count="$(git rev-list --count "origin/$default..HEAD" 2>/dev/null)"; then`,
@@ -3550,55 +2836,7 @@ function preserveCommittedWorkCmd(wt, branch) {
     `  extra=",\\"detail\\":\\"base unresolved — pushed unconditionally\\""`,
     `fi`,
     // temperloop#2103 — THE REBASED-BRANCH-ALREADY-ON-ORIGIN ARM.
-    //
-    // The plain push below is right on the ordinary path and CANNOT work on the
-    // one that produced this issue three times in a single session: a
-    // continuation round whose branch an EARLIER round already pushed, which
-    // 3f-0a then rebased onto a newer origin/<default>. The rewritten history
-    // does not contain the remote tip, so a plain push is a non-fast-forward by
-    // construction — not a transient — and the seam whose entire job is to make
-    // the work durable reported WORK_PRESERVE_FAILED over four commits that
-    // existed nowhere else.
-    //
-    // Three properties the arm below holds to, in this order:
-    //
-    //   1. READ THE REMOTE VALUE FIRST. Nothing here ever issues a bare
-    //      `--force`. The retry is `--force-with-lease=refs/heads/$branch:$sha`
-    //      against the value `git ls-remote` just returned, so a concurrent
-    //      writer that moved the ref in between gets a REJECTION, not a silent
-    //      overwrite. An unreadable remote means no force at all.
-    //   2. ONLY OVER WORK THE LOCAL HISTORY SUPERSEDES. This path runs
-    //      unattended on an already-failing item and nobody ASKED it to rewrite
-    //      anything (unlike 3f, which force-requests the rebase it just
-    //      performed). So the force is gated on the operator's own manual
-    //      recovery criterion from the issue — "after confirming the local
-    //      history superseded the remote tip": every commit reachable from the
-    //      remote tip but not from HEAD must have a patch-equivalent in HEAD
-    //      (`rev-list --cherry-pick --right-only`, `git cherry`'s own test).
-    //      Zero such commits ⇒ the remote holds a stale pre-rebase copy of
-    //      exactly this work ⇒ overwriting it destroys nothing. Otherwise the
-    //      remote carries commits this worktree does not, and the arm REFUSES
-    //      and says so — a loud WORK_PRESERVE_FAILED naming the remote sha is
-    //      recoverable; destroying someone else's commits is not.
-    //   3. `preserved` IS READ BACK FROM ORIGIN, NEVER INFERRED FROM AN EXIT
-    //      CODE. The third occurrence recorded the exact reason: a push from
-    //      the same run HAD landed a pre-rebase state on origin while the field
-    //      read false, so "the branch exists on origin" overstated and
-    //      `preserved:false` understated. The final `ls-remote` below decides
-    //      the outcome by comparing the remote value to this worktree's HEAD,
-    //      and BOTH shas ride the record, so neither signal has to be trusted
-    //      alone.
-    //
-    // Idempotent, and TRULY so: this pushes the same `refs/heads/$branch` 3f
-    // pushes, so when 3f already pushed this sha git reports "Everything
-    // up-to-date" and exits 0 — a post-3f escalation (a CI failure, say) costs
-    // one no-op push and reports WORK_PRESERVED truthfully, minting no second
-    // ref. No `-u`: this is a one-shot rescue push and has no business writing
-    // branch.<name>.remote/.merge into the worktree's config.
-    //
-    // Still no jq (the fail-soft argument above): every value interpolated into
-    // the JSON below is either the plan's validated `branch:`, a literal, or a
-    // 40-hex sha normalized through the `case` guard before it is read.
+    // Full design note: build-level.design-notes.md#temperloop-2103-the-rebased-branch-already-on-origin-arm
     `head_sha="$(git rev-parse HEAD 2>/dev/null || true)"`,
     `case "$head_sha" in *[!0-9a-f]*) head_sha="" ;; esac`,
     `remote_sha="$(git ls-remote origin "refs/heads/$branch" 2>/dev/null | awk 'NR==1 {print $1}')"`,
@@ -3611,27 +2849,7 @@ function preserveCommittedWorkCmd(wt, branch) {
     `  pushed=true`,
     `elif [ -n "$remote_sha" ] && [ -n "$head_sha" ] && [ "$remote_sha" != "$head_sha" ]; then`,
     // Bring the remote tip's objects local so the supersede test can run at
-    // all; a fetch failure leaves `unique` unset and the arm refuses.
-    //
-    // `--no-merges` is a DELIBERATE, acknowledged narrowing, not an oversight:
-    // an ordinary merge commit's underlying unique commits are still counted
-    // (so a normal merge is not a blind spot), but an "evil merge" — one whose
-    // own conflict-resolution edits exist nowhere else — carries content this
-    // count cannot see. Accepted because a `/build` worker branch does not
-    // normally carry merge commits at all, and because dropping the flag would
-    // count every merge's whole second parent as remote-only work and refuse
-    // essentially every rescue. The narrowing is bounded by property 1: the
-    // push is still leased, so it can only ever land on the exact sha read here.
-    //
-    // THREE outcomes, not two (temperloop#2103 review round 1). A refusal on an
-    // UNANSWERABLE probe is right, but it must not be reported as a refusal on
-    // an ESTABLISHED conflict: `stale_remote_not_superseded` is what the log
-    // turns into the flat assertion "origin carries commits this worktree does
-    // NOT", and a human disposes the escalation against that sentence. When the
-    // fetch simply failed (the network dropped between the `ls-remote` above
-    // and this fetch), that sentence is unproven. So `unique` empty ⇒
-    // `supersede_probe_failed`, `unique > 0` ⇒ `stale_remote_not_superseded`.
-    // Both refuse identically — only the claim made about why differs.
+    // Full design note: build-level.design-notes-3.md#bring-the-remote-tip-s-objects-local-so-the-supersede-test-c
     `  unique=""`,
     `  if git fetch --quiet origin "refs/heads/$branch" >/dev/null 2>&1; then`,
     `    unique="$(git rev-list --count --cherry-pick --right-only --no-merges "HEAD...$remote_sha" 2>/dev/null || true)"`,
@@ -3800,26 +3018,8 @@ function gateSliceResumeAt(out) {
   return Number.isFinite(n) && n > 0 ? n : undefined;
 }
 
-// gateVerdict(terminalOutcome, ledger) — the ONE reconciliation point between
-// the slice loop's terminal outcome and its failure ledger. Every arm's kind,
-// counts and reason are computed HERE, from one input, so no arm can ship a
-// payload that contradicts its own verdict.
-//
-// `verdict` is the single field a consumer may trust:
-//   RED     — at least one gate FAILED. The branch is known-broken.
-//   UNKNOWN — nothing failed and the suite never finished (Bash-tool timeout or
-//             slice-cap exhaustion). It says NOTHING about the tree — the whole
-//             point of temperloop#1021, preserved exactly: this and only this
-//             verdict escalates `acceptance-gate-timeout`.
-//   GREEN   — the suite finished and every gate that ran passed.
-//
-// Precedence: an OBSERVED failure dominates an UNFINISHED remainder. A run that
-// failed in slice 1 and then timed out in slice 3 is RED — the failures are
-// real evidence, the missing verdict for the un-run gates cannot un-fail them —
-// and the reason says both halves. This is the same precedence the pre-#1587
-// code already applied to a GATE_PASS terminal after a failing slice, now
-// applied to the TIMEOUT arm too, so "timeout" never launders a known failure
-// into an unknown. A timeout with NO observed failure is untouched.
+// gateVerdict(terminalOutcome, ledger) — the ONE reconciliation point be
+// Full design note: build-level.design-notes-3.md#gateverdict-terminaloutcome-ledger-the-one-reconciliation-po
 function gateVerdict(terminalOutcome, ledger) {
   const failedGates = ledger.reduce((n, s) => n + (Number(s.failed) || 0), 0);
   const failedInSlices = ledger.filter((s) => (Number(s.failed) || 0) > 0).map((s) => s.slice);
@@ -4050,33 +3250,8 @@ function machineryDenied(out) {
   return out == null || out.outcome === 'SPINE_DENIED';
 }
 
-// -----------------------------------------------------------------------------
 // Session-quota death classification (temperloop#1819).
-// -----------------------------------------------------------------------------
-// A step or worker that dies because the SESSION hit its usage limit ("You've
-// hit your session limit · resets 5:30pm") used to collapse into the two
-// pre-existing kinds — `machinery-denied`/SPINE_DENIED (whose documented cure
-// is rewriting the command for the auto-mode classifier) and `worker-error`
-// "agent returned null" (whose cure is re-driving with sharper instructions).
-// BOTH cures are wrong for a quota death: the command was never the problem
-// and the work is usually INTACT in the worktree (the #1819 incident's item
-// held three clean commits and a finished verification surface — re-driving
-// would have discarded a finished item). So a quota death gets its OWN kind,
-// `quota-exhausted`, whose disposition is wait-for-reset then RESUME.
-//
-// The death reaches this script through TWO shapes, classified differently:
-//   • agent() THREW and the error text carries the harness's limit message —
-//     quotaDeath(text) matches it directly and extracts the reset time.
-//   • agent() returned a bare NULL (the #1819 incident's shape) — no text
-//     reaches this script at all (the truth lives only in the harness's own
-//     <failures> block, a channel the orchestrator reads, not this script).
-//     The one in-process discriminator left is BEHAVIORAL: a classifier
-//     denial is per-command (an innocuous probe still spawns), while a quota
-//     death kills EVERY spawn. harnessCanSpawnAgents() runs that probe — a
-//     cheap canary agent, re-run per bare-null with only its DEAD verdict
-//     memoized (see its own comment) — and a failed canary reclassifies the
-//     null as quota-exhausted. A canary that spawns fine leaves the pre-#1819
-//     kinds untouched, so genuine denials/skips keep their meanings.
+// Full design note: build-level.design-notes.md#session-quota-death-classification-temperloop-1819
 const QUOTA_KIND = 'quota-exhausted';
 const QUOTA_DEATH_RE =
   /\b(?:hit|reached|exceeded)\s+(?:your|the)\s+(?:session|usage|weekly|monthly|5-?hour|rate)\s+limit\b/i;
@@ -4194,72 +3369,8 @@ async function deniedOrQuota(slug, payload, worktree) {
 // the reviewer itself, so the same skip notice now fires only when the
 // reviewer genuinely fails to resolve.
 
-// reviewDiffCmd — ONE solo runMachinery call that reads the two raw inputs the
-// routing DECISION needs off the worktree: the changed-file list (relative to
-// the fresh origin/<default>, three-dot so only THIS branch's own commits
-// count) and the raw reviewer-routing.tsv text (empty string when the
-// worktree ships none — a consuming repo that has not vendored it). Mirrors
-// pr.sh's own `default_branch()` fallback chain (origin/HEAD, else
-// main/master) so this never depends on pr.sh being invoked first.
-//
-// temperloop#1976: alongside `tsv` this also emits `tsv_rows` (count of
-// non-blank, non-`#` lines — the SAME first-stage filter parseTsvRows()
-// applies before its column check), computed HERE off the worktree's own
-// file, independently of whatever the machinery-executor relay hands back
-// for `tsv` itself. That independence is the whole point: the relay is a
-// separate agent copying this step's JSON line, and it has been observed
-// dropping the (large) `tsv` field entirely while leaving `files` intact
-// (evidence: wf_cbc556f5-7be). `tsv_rows` gives runReviewers() a cheap
-// row-count check that the `tsv` it received is the SAME one this command
-// actually read, without re-reading the file itself — a ROW-COUNT check
-// only: it catches a dropped or truncated table (a row-count mismatch), not
-// a same-length garble (content corrupted without changing the row count).
-//
-// temperloop#1982: this also emits `tsv_checksum` — a content checksum, not
-// a row count. A prior attempt at a content check (`tsv_sha256`, temperloop
-// #1976 round 1) was reverted as dead code: it hashed the SOURCE file but
-// nothing could ever recompute a comparable hash from the RECEIVED `tsv`
-// string, because SHA-256 needs a matching implementation on the JS side and
-// none existed — "no hashing primitive" meant no SHA-256, not that no check
-// is possible. `tsvChecksum()` below closes that gap with a checksum needing
-// no primitive at all: a POSITION-WEIGHTED sum of character codes over the
-// SAME row-count-filtered lines (temperloop#1982 round 2 — see tsvChecksum's
-// own comment for why position-sensitivity, not just a sum, is the point),
-// expressible in pure arithmetic on both sides — this bash pipeline (byte
-// values via `od`, weighted and summed in awk) and tsvChecksum() (JS char
-// codes, weighted and summed in a loop) are independent implementations of
-// the identical algorithm, verified (by an automated test that executes
-// THIS bash pipeline for real — test_workflow.sh, "bash/JS parity") to agree
-// against this repo's own reviewer-routing.tsv (including its non-ASCII
-// comment-header punctuation, which is excluded from the sum by the same
-// comment/blank filter tsv_rows already applies). The two sides agree only
-// while every DATA row stays pure ASCII (byte value == UTF-16 code unit) —
-// see reviewer-routing.tsv's own header for that constraint, which governs
-// data rows only; the comment header's non-ASCII punctuation is filtered out
-// before either side sums, so it never touches this. A worktree that
-// genuinely ships no tsv
-// emits `tsv:""`, `tsv_rows:0`, `tsv_checksum:0` — never an omitted `tsv`
-// key — so "missing" stays a signal of the relay dropping the field, not of
-// a legitimate no-tsv worktree.
-//
-// temperloop#1970: it ALSO reads — and, on a bumping call, increments — the
-// per-worktree §3e ROUND COUNTER the REVIEW_BLOCKING convergence bound reads.
-// `review_rounds` is the PRE-increment value: how many review rounds this
-// worktree had already run before this one. Three properties are load-bearing:
-//   - it lives in the worktree's GIT DIR (`git rev-parse --git-dir`, which for a
-//     linked worktree is that worktree's own `…/.git/worktrees/<name>`), NEVER
-//     in the working tree — a stray untracked file there would surface in
-//     `git status`, in the 3e.5 gate's `--scoped` untracked-path resolution, and
-//     in the tracked-path coverage manifests. It is removed with the worktree.
-//   - it rides THIS call, which §3e already makes — zero extra agent spawns, and
-//     the counter survives the escalate → orchestrator → re-invoke loop it
-//     bounds (a continuation skips 3b, so the worktree and its git dir persist).
-//   - `bump` is false on the #1976 tsv-gap RE-FETCH, so one driver round bumps
-//     the counter exactly once no matter how many times the command runs.
-// Every step fails SOFT (a missing/unwritable marker reads 0, and a
-// corrupted-but-present one degrades to 0 rather than aborting the step), so a
-// worktree whose git dir cannot be resolved simply behaves as it did before
-// this item.
+// reviewDiffCmd — ONE solo runMachinery call that reads the two raw inpu
+// Full design note: build-level.design-notes.md#reviewdiffcmd-one-solo-runmachinery-call-that-reads-the-two-
 function reviewDiffCmd(wt, bump = true) {
   const tsvPath = `${wt}/workflows/scripts/config/reviewer-routing.tsv`;
   // The row-filter awk program (blank/`#` lines stripped) is reused for BOTH
@@ -4310,53 +3421,8 @@ function reviewDiffCmd(wt, bump = true) {
     `files_json="$(git diff --name-only "origin/$default...HEAD" 2>/dev/null | jq -R -s -c 'split("\\n") | map(select(length>0))')"`,
     `[ -n "$files_json" ] || files_json='[]'`,
     `if [ -f ${sq(tsvPath)} ]; then`,
-    // RELAY ONLY THE DATA ROWS (temperloop#1982 round 3). The field crosses a
-    // machinery-executor agent, which is specified to return the command's JSON
-    // line verbatim and has instead been observed omitting this one field
-    // outright, and once replacing it with an English sentence describing the
-    // table ("The reviewer-routing.tsv file contains 11 data rows routing files
-    // to review subagents…"). Rounds 1 and 2 added receiving-end checks — a row
-    // count, then a position-weighted checksum — which detect the substitution
-    // but cannot prevent it: no check on this side stops a model on the other
-    // side from paraphrasing. What CAN be reduced is the bait. The raw file is
-    // 3,834 bytes of which 699 are data (11 rows); the other 82% is comment
-    // prose, i.e. the executor was being handed ~4KB of mostly-English text and
-    // asked to echo it. Sending `rowFilterAwk`'s output instead ships only the
-    // rows the routing decision actually reads.
-    //
-    // Invariant-neutral by construction, which is why this needs no JS or test
-    // change: BOTH receiving-end readers already apply this same filter before
-    // they compute anything — parseTsvRows() drops blank/`#` lines, and
-    // tsvChecksum() canonicalises with the identical trimmed-emptiness rule —
-    // so filtering here is idempotent and every gap check yields the same value
-    // it did on the unfiltered text. The filter itself is `rowFilterAwk`, the
-    // SAME expression the checksum below already uses, so this adds no second
-    // implementation of the row rule to drift against.
-    //
-    // MITIGATION, NOT A PROOF: a model can still paraphrase 699 bytes. The
-    // structural fix — keeping the table out of the relay entirely, or emitting
-    // parsed rows the executor has no prose reading of — stayed open on #1982
-    // and is closed HERE (temperloop#2020, second half): the field is no longer
-    // a `tsv` SCALAR holding a multi-line table, it is `tsv_lines`, a JSON
-    // ARRAY OF ROW STRINGS built by the SAME
-    // `jq -R -s -c 'split("\n") | map(select(length>0))'` idiom `files_json`
-    // above already uses. The shape is chosen on evidence, not taste: across
-    // every observed mangling (#1976 wf_cbc556f5-7be; #1982's three shapes;
-    // #2020's own foundation#1869 reproduction, where BOTH retry agents
-    // dropped it identically) `files` — a jq array of strings produced by this
-    // exact idiom — arrived INTACT in the same JSON line whose `tsv` blob was
-    // dropped, paraphrased, or double-encoded. An array of short opaque row
-    // strings offers no English reading to paraphrase into and no "quote the
-    // table" framing to re-encode; a ~700-byte tab-delimited blob offers both.
-    //
-    // Invariant-neutral for the SECOND time by construction: the array's rows
-    // joined on `\n` are byte-identical to the string this used to emit (see
-    // reviewDiffTsvText), so `tsv_rows`, `tsv_checksum`, parseTsvRows() and
-    // tsvChecksum() all yield exactly the values they did before — the
-    // #1976/#1982 gap checks are untouched DETECTORS, not weakened ones.
-    // `tsv` itself is no longer emitted; the reader still ACCEPTS it
-    // (reviewDiffTsvText) so a relay or caller that yields the legacy scalar
-    // keeps routing rather than degrading.
+    // RELAY ONLY THE DATA ROWS (temperloop#1982 round 3). The field crosses 
+    // Full design note: build-level.design-notes-2.md#relay-only-the-data-rows-temperloop-1982-round-3-the-field-c
     `  tsv_json="$(awk ${sq(rowFilterAwk)} ${sq(tsvPath)} | jq -R -s -c 'split("\\n") | map(select(length>0))')"`,
     `  tsv_rows="$(awk 'BEGIN{c=0} { l=$0; sub(/\\r$/,"",l); t=l; gsub(/^[ \\t]+|[ \\t]+$/,"",t); if (t != "" && substr(t,1,1) != "#") c++ } END{print c+0}' ${sq(tsvPath)})"`,
     // POSITION-WEIGHTED (temperloop#1982 round 2): `n` is a running counter
@@ -4396,41 +3462,7 @@ function parseTsvRows(tsvText) {
 }
 
 // tsvChecksum — temperloop#1982, made POSITION-SENSITIVE in round 2: a
-// pure-arithmetic content checksum over the SAME row-count-filtered lines
-// parseTsvRows()'s first stage keeps (blank and `#`-comment lines stripped),
-// so a corrupted comment header (which carries this repo's own non-ASCII
-// punctuation, e.g. em dashes) never enters the sum and cannot desync the
-// two independent implementations of this algorithm — this one, and
-// reviewDiffCmd's bash pipeline (`od`-computed byte values, weighted and
-// summed in awk).
-//
-// WHY POSITION-WEIGHTED, NOT A BARE SUM (round 1's shape): a bare sum of
-// character codes is COMMUTATIVE — invariant under any rearrangement of the
-// same characters. The round-2 reviewer reproduced this against this repo's
-// OWN tracked reviewer-routing.tsv: swapping the reviewer+path columns
-// between the `.sh` row and the `docs/**` row (same row count, same overall
-// character multiset — a plausible hand-copy slip, and the exact shape of
-// the temperloop#1978 round-4 incident: a .sh diff silently routed to
-// docs-reviewer) left the bare-sum checksum byte-IDENTICAL. Multiplying each
-// character's code by its 1-based position in the canonicalized stream
-// before summing breaks that: the SAME characters at DIFFERENT offsets sum
-// to a different total (verified against this repo's live tsv — see
-// test_workflow.sh's "K1982 position-sensitive: transposed columns" case).
-// This is still an INTEGRITY check against relay noise, not a cryptographic
-// one — collisions are not the concern, only whether the `tsv` string
-// runReviewers() received is the same content, in the same arrangement,
-// reviewDiffCmd actually read off the worktree.
-//
-// Needs no hashing primitive: canonicalize (kept lines, each with its own
-// trailing newline — matching awk's `print`, ORS appended after every line,
-// none added at the very end beyond that, so a run over zero lines sums to
-// 0), then `sum += code * (i + 1)` over that string. Verified — by an
-// automated test that executes reviewDiffCmd's REAL bash pipeline, not a
-// restated comment — to agree with the bash side against this repo's own
-// reviewer-routing.tsv (test_workflow.sh's "bash/JS parity" case). That
-// agreement holds only while every DATA row (not the comment header, which
-// is filtered out before either side sums) is pure ASCII — reviewer-routing
-// .tsv's own header names that constraint for whoever next edits a data row.
+// Full design note: build-level.design-notes-2.md#tsvchecksum-temperloop-1982-made-position-sensitive-in-round
 function tsvChecksum(tsvText) {
   // Trimmed-emptiness filter (`l.trim()`, not bare `l`) — matches
   // reviewDiffCmd's bash `t != ""` check (`t` is the TRIMMED line) exactly,
@@ -4565,76 +3597,11 @@ function reviewHasBlockingFinding(text) {
   return /^\s*###\s*\[\s*HIGH\b/im.test(String(text ?? ''));
 }
 
-// reviewDiffTsvGap — temperloop#1976 (row-count), extended by temperloop#1982
-// (content). The routing-table field (`tsv_lines` since temperloop#2020, the
-// legacy `tsv` scalar before it — reviewDiffTsvText normalizes both) is
-// hand-copied by the machinery-executor agent from the diff-fetch command's
-// own JSON line, a SEPARATE step from the one that computed
-// `tsv_rows`/`tsv_checksum` off the same worktree file — so any of the three
-// can disagree only if the relay dropped, truncated, or otherwise garbled the
-// (potentially large) table field on the way through.
-//
-// Both detectors below are UNCHANGED by #2020 — that item moved only the
-// DISPOSITION after detection (runReviewers now degrades legibly rather than
-// escalating `review-diff-error` on a persistent gap), never how much is
-// detected.
-//
-// PATH A (missing/truncated — temperloop#1976, evidence: wf_cbc556f5-7be):
-// neither table shape is present, or the received table's own non-comment row
-// count disagrees with the relayed `tsv_rows` — a row-count mismatch.
-//
-// PATH B (content-preserving garble — temperloop#1982, evidence:
-// temperloop#1978 round 4): `tsv` IS a string, and its row count DOES match
-// `tsv_rows` (the guard above sees nothing wrong), yet its content differs
-// from what reviewDiffCmd actually read off the worktree — the relay
-// reproduced a plausible-LOOKING table (right length) that was not the real
-// one, and determineReviewers() silently routed off it (that run's diff
-// touched four `.sh` files with a `reviewer-routing.tsv` `.sh` row, yet only
-// docs-reviewer ran). A row-count check structurally cannot see this: the
-// row count survives the garble unchanged. Caught here by comparing
-// `tsv_checksum` (relayed off the source file, a short scalar exactly like
-// `tsv_rows`, and observed — same as `tsv_rows` — to survive the relay even
-// when `tsv` itself does not) against `tsvChecksum(diffOut.tsv)` (recomputed
-// HERE from the received string, no hashing primitive needed — see
-// tsvChecksum()'s own comment for why the prior sha256 attempt, temperloop
-// #1976 round 1, couldn't close this gap and this can).
-//
-// Returns null when the table is trustworthy, else the payload naming what's
-// wrong, always carrying `files` (the changed-file list) so the degradation
-// notice names what would have been routed: `{ missing: 'tsv', files }` when
-// neither shape is present (the key stays `'tsv'` — it names the ROUTING
-// TABLE, not one wire field, and is a stable payload key across both
-// shapes); `{ mismatch: { expected, got }, files }` on a row-count
-// disagreement (`got` is `?? null` since `tsv_rows` can itself be absent, and
-// JSON.stringify silently drops an `undefined` key); `{ content_mismatch: {
-// expected, got }, files }` when the row count agrees but the checksum
-// doesn't (`got` is likewise `?? null` for an absent `tsv_checksum`). Only
-// checked when `files` is non-empty: an empty diff never needs a routing
-// table, so this never fires on the legitimate no-tsv-worktree case
-// (`tsv_lines: []`, `tsv_rows:0`, `tsv_checksum:0`) either, regardless of
-// `files` — a genuinely empty tsv is complete by construction (0 === 0 and
-// tsvChecksum('') === 0).
+// reviewDiffTsvGap — temperloop#1976 (row-count), extended by temperloop
+// Full design note: build-level.design-notes-2.md#reviewdifftsvgap-temperloop-1976-row-count-extended-by-tempe
 
-// reviewDiffTsvText(diffOut) — temperloop#2020. The ONE place that turns a
-// REVIEW_DIFF result's routing-table field into the text parseTsvRows() and
-// tsvChecksum() consume, so the gap check and the routing decision can never
-// read two different renderings of the same payload.
-//
-// Accepts BOTH wire shapes, in this precedence:
-//   `tsv_lines` — the current shape (an array of data-row strings, #2020).
-//                 Joined on `\n`, which is byte-identical to the string the
-//                 previous `tsv` scalar carried: reviewDiffCmd's awk `print`
-//                 emitted one kept line per row, and both consumers re-append
-//                 their own trailing newline per kept line, so a joined array
-//                 and the old blob canonicalize to the same bytes and hence
-//                 the same row count and the same checksum.
-//   `tsv`       — the legacy scalar, still ACCEPTED (never emitted). An
-//                 un-migrated caller, a replayed older payload, or a relay
-//                 that reconstructed the old field keeps routing normally
-//                 instead of degrading.
-// Returns null when NEITHER shape is present in a usable form — the caller
-// distinguishes "dropped" from "legitimately empty" (`tsv_lines: []` is an
-// empty ARRAY, a real zero-row table, not a missing field).
+// reviewDiffTsvText(diffOut) — temperloop#2020. The ONE place that turns
+// Full design note: build-level.design-notes-3.md#reviewdifftsvtext-diffout-temperloop-2020-the-one-place-that
 function reviewDiffTsvText(diffOut) {
   if (Array.isArray(diffOut?.tsv_lines)) {
     return diffOut.tsv_lines.map((l) => String(l)).join('\n');
@@ -4658,41 +3625,8 @@ function reviewDiffTsvGap(diffOut, files) {
   return null;
 }
 
-// runReviewers — the §3e driver. Fetches the routing inputs (one machinery
-// call), resolves the matching reviewer set, and spawns EACH directly via
-// `agent({agentType})` — never delegated to the 3c worker. Every routed reviewer
-// is spawned CONCURRENTLY and the whole fanout waits under one wall-clock
-// ceiling (temperloop#2003, awaitReviewFanout), so one agent that never returns
-// can neither block a later one from launching nor stall the level. Returns:
-//   { escalation }                                   — the diff fetch itself failed
-//   { summary, notes, blocking: [], ran, skipped }   — normal return (blocking may be non-empty)
-// A THIRD shape (temperloop#2020) is a normal return, not a third branch: when
-// the routing table does not survive the relay even after the one-shot retry,
-// this returns the normal shape with one extra `skipped` degradation notice
-// and `routing_degraded` carrying the gap payload — the drive continues to
-// 3e.5/3f with the skip notice on the PR body. A post-commit advisory pass
-// that cannot route is a DEGRADATION, never a halt. The degradation is
-// PARTIAL: only the table-dependent axes are withdrawn, so the mandatory
-// command-doc route (foundation#1007), the `review:` override and the
-// `kind: architectural` axis — all computed from `item`/`files`, never from
-// the table — still route and still run, and `ran` is therefore NOT
-// necessarily empty in this shape.
-//   { …the normal return, plus `escalation` }        — a MANDATORY reviewer hit
-//     the ceiling (temperloop#2003): the tally is still computed and returned,
-//     AND the item escalates `review-agent-timeout` rather than reading as if the
-//     mandatory gate had passed. Callers check `.escalation` first either way.
-// `summary` is a short tally line for the PR body (criterion: the PR must
-// carry real evidence of a real pass, never a guaranteed-skip default).
-// `notes` (temperloop#1450) is the FULL findings text for every reviewer that
-// ran, one `### <reviewer>` block each — a non-blocking (MEDIUM/LOW-only)
-// review is still advisory OUTPUT, not silently discarded after the HIGH
-// check. Empty string when nothing ran. Callers splice `notes` into a durable
-// surface (the PR body, at the 3f call site) rather than letting it evaporate
-// once the blocking check has read it.
-//
-// `round` (temperloop#1970) is this pass's 1-based round number for THIS item's
-// worktree, durable across the escalate→re-invoke loop (see reviewDiffCmd). The
-// two blocking call sites compare it against REVIEW_BLOCKING_MAX_ROUNDS.
+// runReviewers — the §3e driver. Fetches the routing inputs (one machine
+// Full design note: build-level.design-notes-2.md#runreviewers-the-3e-driver-fetches-the-routing-inputs-one-ma
 async function runReviewers(item, wt) {
   const fetchReviewDiff = (phaseTitle, bump) =>
     runMachinery(reviewDiffCmd(wt, bump), { label: `review-diff:${item.slug}`, slug: item.slug, phase: phaseTitle });
@@ -4752,45 +3686,7 @@ async function runReviewers(item, wt) {
     const gap = reviewDiffTsvGap(diffOut, files);
     if (gap) {
       // temperloop#2020 — DEGRADE, never halt. Before this item a persistent
-      // gap escalated `review-diff-error`, and that disposition was the
-      // reported harm, not the drop: by the time §3e runs the worker has
-      // ALREADY COMMITTED (3c) and passed acceptance (3d), so escalating here
-      // stops a drive whose work is complete, for the sake of an ADVISORY pass
-      // that is explicitly never a `checks` gate (build.md §3e). On
-      // Towheads/foundation at kernel v0.39.0 (run wf_967c2878-0a7, driving
-      // foundation#1869) that cost 515 verified lines: the item escalated
-      // committed-but-un-PR'd, and /fix's escalation-park path removed the
-      // worktree and its local `build/` branch.
-      //
-      // The DETECTORS are untouched — the row/checksum gap check and the
-      // one-shot retry above both still run, and this arm is reached only
-      // after both have fired. What changed is what happens next: the
-      // TABLE-DEPENDENT part of the routing decision cannot be made (routing
-      // off a missing/partial table is the #1976/#1982 silent-misroute this
-      // whole mechanism exists to prevent), so the extension axis and the
-      // prose-`*.md` fallback are withdrawn and that is said out loud — never
-      // implied by silence. The notice is a mode-2 `skipped — …` line per
-      // `claude/message-schema.md` § Degradation notice, carried into the PR
-      // body by reviewBodySuffix() exactly like every other skip notice, so a
-      // cold reader of the PR sees which part of §3e did not route rather than
-      // reading a thin review section as a clean pass.
-      //
-      // NOT a return (temperloop#2020 round 2). Returning here conflated "the
-      // extension-axis table is broken" with "no route can be determined" and
-      // silently dropped the one route that never needed the table: the
-      // MANDATORY command-doc rule (foundation#1007) is computed purely from
-      // `files`, the field that relays reliably, and fires regardless of any
-      // tsv row. A `claude/commands/*.md` diff whose relay dropped would then
-      // have reported `mandatory_ok: true` with workflow-reviewer never run —
-      // byte-identical to a clean pass, i.e. the K.49/foundation#164 silent-skip
-      // class reintroduced through this very fallback. So the arm now falls
-      // THROUGH with `tableAvailable: false`: every table-independent route
-      // still runs, and `mandatory_ok` is computed from real routes again.
-      //
-      // Deliberately NOT the remedy-bearing variant: that one clause is
-      // sanctioned only for a subagent that ships as source under
-      // claude/agents/ and is merely uninstalled. This is a relay fault with
-      // no in-the-moment operator fix, so it takes the bare default shape.
+      // Full design note: build-level.design-notes-2.md#temperloop-2020-degrade-never-halt-before-this-item-a-persis
       const note =
         'skipped — §3e extension-axis reviewer routing unavailable (reviewer-routing.tsv did not ' +
         'survive the machinery relay; only table-independent routes were resolved for this diff)';
@@ -4873,25 +3769,7 @@ async function runReviewers(item, wt) {
   });
   const waitedSecs = await awaitReviewFanout(item, slots);
   // temperloop#2032 — THE LAST-CHANCE READ, and the reason the disposition
-  // below is three passes rather than one loop. `slot.done` is set by the
-  // settlement recorder attached at the spawn above, which runs as a MICROTASK
-  // on the reviewer's own promise — so the ceiling's race can return with a
-  // reviewer whose result has ALREADY arrived but whose recorder has not run
-  // yet. The pre-#2032 loop read `!slot.done` exactly once, immediately after
-  // that await, and never again: such a reviewer was reported
-  // `skipped — exceeded the §3e review ceiling` while its full review sat in
-  // hand, unread. That is not a hang — the result ARRIVES and is thrown away
-  // (run wf_c71d1576-e9d discarded two complete reviews that way, one of which
-  // had already found the defect a hand-routed reviewer re-found later and
-  // PR #2039 then fixed).
-  //
-  // The ceiling is NOT at fault and is untouched: it still bounds how long the
-  // pass WAITS, and this changes only what happens to a result that arrives
-  // anyway. Every read below is therefore as late as it can HONESTLY be —
-  // bounded settlement drains only (no wall clock, no timer spawn, and never a
-  // re-spawn of a reviewer whose result is already in hand), never a second
-  // wait: re-introducing one would be exactly the unbounded stall
-  // temperloop#2003 removed.
+  // Full design note: build-level.design-notes-3.md#temperloop-2032-the-last-chance-read-and-the-reason-the-disp
   await drainReviewSettlements(slots);
 
   // Pass 1 — consume every reviewer that has settled. disposeReviewSlot() is
@@ -4920,30 +3798,8 @@ async function runReviewers(item, wt) {
     const route = slot.route;
     const disposition = dispositions[i] ?? (slot.done ? disposeReviewSlot(slot) : null);
     if (disposition === null) {
-      // temperloop#2003 — the CEILING BREACH. This reviewer is abandoned, never
-      // killed: the runtime offers no cancellation, so the promise is simply
-      // never awaited again and the pass proceeds. The note names the cause, so
-      // an operator reading the PR body sees a bounded outcome rather than the
-      // silence the incident actually produced. Disposition splits
-      // mandatory-vs-advisory below: this is the ADVISORY half (a degraded
-      // notice + a `mandatory_ok`-preserving tally entry); a MANDATORY route
-      // additionally ESCALATES after the loop.
-      //
-      // TEMPERLOOP#2064 — WHY THIS LINE NO LONGER SAYS "unavailable". It used to,
-      // to match the documented `skipped — <agent> unavailable` shape
-      // (CLAUDE.kernel.md § Subagent usage, legible agent-gate degradation) —
-      // but in that rule `unavailable` is the CAPABILITY-PROBE verdict: the
-      // agent is not declared in `CLAUDE.md § Subagents` or `.claude/agents/`,
-      // so it could not be spawned at all. A ceiling breach is the OPPOSITE
-      // fact: the agent IS installed and WAS spawned, and did not return in
-      // time. Conflating them sent the #2064 investigator at the agent roster
-      // while the defect sat one layer below, in the timer — and cost a live
-      // session ~1200s of apparent hang. disposeReviewSlot() still emits the
-      // true capability-probe form for the real thing (an agent-resolution
-      // failure), so the two senses now carry two distinct wordings, which is
-      // what makes either of them diagnostic. The duration reported is the tick
-      // this pass actually HONOURED, never the nominal ceiling: when those two
-      // numbers disagree, that gap IS the bug (#2064 measured 41s against 1200s).
+      // temperloop#2003 — the CEILING BREACH. This reviewer is abandoned, neve
+      // Full design note: build-level.design-notes-3.md#temperloop-2003-the-ceiling-breach-this-reviewer-is-abandone
       const note =
         `skipped — ${route.reviewer} timed out after ${waitedSecs}s ` +
         `(the §3e review ceiling of ${REVIEW_AGENT_CEILING_SECS}s — temperloop#2003; the agent is ` +
@@ -5094,32 +3950,8 @@ async function drainReviewSettlements(slots) {
   }
 }
 
-// awaitReviewFanout — temperloop#2003's ceiling, applied to the whole §3e
-// fanout. Returns once every reviewer has settled OR the ceiling elapses,
-// whichever comes first; it never rejects and never throws, and the caller reads
-// each slot's own `done` flag to decide the per-reviewer disposition.
-//
-// RETURNS the seconds of wall clock this pass ACTUALLY waited — the sum of the
-// slices whose ticks were honoured, never the nominal ceiling (temperloop#2064).
-// That number is the `<actual>` the ceiling-breach notice reports, so a reader
-// of the notice is told what was measured rather than what was budgeted: the
-// #2064 incident is precisely a run whose two numbers differed by ~30x while
-// only the budgeted one was ever printed.
-//
-// HOW IT MEASURES TIME WITHOUT A CLOCK. `Date.now()` throws in this runtime and
-// there is no timer primitive, so the wait is raced against something that
-// resolves ON a clock: reviewWaitAgent(), a machinery executor whose entire job
-// is one `sleep`. Each slice is a separate spawn, so the elapsed total is the
-// sum of the slices that have RETURNED — an accounting this file can do with
-// integers alone.
-//
-// FAIL-OPEN, DELIBERATELY. If the timer itself cannot run (the auto-mode safety
-// classifier denies it, the executor returns something else), the bound is
-// simply unavailable and we fall back to the pre-#2003 behaviour — await the
-// fanout — with a legible notice. A timer that resolved without actually
-// sleeping would otherwise manufacture an INSTANT false ceiling breach on
-// perfectly healthy reviews, which is far worse than the stall it bounds
-// (kernel principle 7: advisory over enforced discipline).
+// awaitReviewFanout — temperloop#2003's ceiling, applied to the whole §3
+// Full design note: build-level.design-notes-3.md#awaitreviewfanout-temperloop-2003-s-ceiling-applied-to-the-w
 async function awaitReviewFanout(item, slots) {
   const allSettled = Promise.all(slots.map((s) => s.promise));
   const pending = () => slots.filter((s) => !s.done);
@@ -5180,61 +4012,8 @@ async function awaitReviewFanout(item, slots) {
   return waited;
 }
 
-// reviewWaitAgent — the wall-clock TICK this runtime does not otherwise have.
-// One machinery executor, one `review-wait.sh <secs>` call, one closed outcome.
-// Resolves to 'REVIEW_WAIT_ELAPSED' ONLY when the interval genuinely elapsed,
-// and to a `timer-*` string otherwise — which the caller reads as "no usable
-// timer" and fails open on.
-//
-// TEMPERLOOP#2049 — WHY THE COMMAND IS A SCRIPT AND WHY THE RETURN IS CHECKED.
-// This was an inline `sleep <secs>; printf '<json>'` Bash command, and the
-// prompt told the executor to report the interval elapsed if the command never
-// printed. In the machinery executor's seat that command shape is REFUSED by a
-// harness permission control ("Blocked: sleep 300 followed by: printf …") in a
-// millisecond — so the executor took that sanctioned escape and reported an
-// elapse that had not happened. Measured in run wf_ebd4b5e0-3a8's own agent
-// transcripts: three slices asking 300s/540s/360s returned in 8s/9s/9s, so the
-// nominal 1200s ceiling realized in ~30s of wall clock, while the two reviewers
-// it was bounding completed normally at 177s and 257s. Nothing was slow — the
-// CEILING was ~40x fast, which is why three consecutive items reported
-// `ran: []` with every routed reviewer "timed out".
-//
-// Two changes, and BOTH are load-bearing:
-//   1. THE WAIT IS REAL. The command is now the named project helper
-//      workflows/scripts/build/review-wait.sh, whose deadline loop runs inside
-//      a script — the same shape ci-poll.sh already uses and which the same
-//      machinery seat observably honours (that run's ci-batch executor held one
-//      Bash call open for 280 real seconds).
-//   2. THE RETURN IS NOT TAKEN ON TRUST. An elapse is honoured only when it
-//      carries `realized_secs` — the script's OWN measurement, printed only
-//      after the wait — and that value reaches the interval asked for. The
-//      prompt no longer sanctions reporting an elapse the command did not
-//      produce; a refused or errored command is REVIEW_WAIT_UNAVAILABLE, a
-//      pure observation, and the caller fails open on it loudly. Without (2),
-//      any future permission-control change silently re-breaks the ceiling in
-//      exactly this way and nothing reports it (kernel principle 5 — counter a
-//      known AI failure mode STRUCTURALLY, not with "be careful").
-// A tool timeout stays honoured as elapsed: its budget is secs+60s, so it can
-// only fire AFTER the interval. That is an observation too, and gets its own
-// outcome rather than being folded into a guess.
-//
-// TEMPERLOOP#2064 — THE THIRD CHANGE: A BLOCK IS NOT A TIMEOUT. (2) above still
-// left one coin flip standing. A permission BLOCK and a Bash-tool TIMEOUT kill
-// are the same observation to the executor — no JSON line — and the tool-timeout
-// arm is PERMISSIVE. Asked to label a state it cannot see, the executor picked
-// the permissive one: measured in run wf_1b4c373b-8c1, slices asking
-// 300s/540s/360s returned in 11s/11s/17s, a 1200s ceiling realized in ~41s, and
-// a docs-reviewer that returned a full clean review at 98s was discarded — the
-// item then reported `skipped — docs-reviewer unavailable`, sending the next
-// investigator at the AGENT ROSTER rather than at the timer. So: REVIEW_WAIT_
-// BLOCKED is its own outcome, the refusal is classified from the harness's OWN
-// text before any label is read (REVIEW_WAIT_REFUSAL_RE), and the ceiling-breach
-// notice says `timed out after <actual>s` — reserving `unavailable` for the
-// kernel's capability-probe sense (CLAUDE.kernel.md § Subagent usage).
-//
-// Deliberately NOT runMachinery(): that path batches its steps and wraps them
-// in the #1071 watchdog, whose own ceiling would then race this one. A timer
-// needs neither.
+// reviewWaitAgent — the wall-clock TICK this runtime does not otherwise 
+// Full design note: build-level.design-notes-2.md#reviewwaitagent-the-wall-clock-tick-this-runtime-does-not-ot
 async function reviewWaitAgent(item, secs, mark) {
   const waitBin = machineryBin(input.repoRoot, 'review-wait.sh');
   const cmd = `${waitBin} ${sq(secs)}`;
@@ -5319,29 +4098,8 @@ function reviewBoundReached(review) {
   return review.blocking.length > 0 && (review.round ?? 1) >= REVIEW_BLOCKING_MAX_ROUNDS;
 }
 
-// REVIEW_BLOCK_MARK — the EXPLICIT, machine-readable boundary of one reviewer's
-// block inside `## Review notes` (temperloop#2009 review round 2).
-//
-// The `### <reviewer>` heading below is for a HUMAN. It is not a parseable
-// boundary and never was: reviewBodySuffix splices `sec.text` VERBATIM, and a
-// reviewer's own findings text carries `### ` headings of its own (ADR 0007's
-// `### [HIGH] <name> in <file>`) plus free prose headings — a single-word
-// `### Notes` is indistinguishable from `### docs-reviewer` by shape alone, and
-// a fenced code block can contain literally anything. pr.sh's PR-body cap has to
-// know where one round's prose ends to drop the OLDEST rounds first, and two
-// successive passes at inferring that from Markdown were both spoofable by
-// ordinary reviewer prose (the second dropped the NEWEST round's residual HIGH
-// findings — precisely what temperloop#1970 routes into this section for the
-// human at the merge gate).
-//
-// So the PRODUCER marks its own blocks. An HTML comment renders as nothing on
-// GitHub, is anchored at line start, and carries the two facts the consumer
-// needs (which reviewer, which round) as attributes rather than as prose to be
-// re-derived. `sec.text` is neutralized before splicing, so a reviewer QUOTING
-// this very design — entirely likely, since one already did — cannot inject a
-// boundary. Consumer: review_notes() in workflows/scripts/build/pr.sh, which
-// matches this token exactly, at line start, and never guesses from a heading.
-// The two literals are kept in lockstep by a static guard in test_pr.sh.
+// REVIEW_BLOCK_MARK — the EXPLICIT, machine-readable boundary of one rev
+// Full design note: build-level.design-notes-3.md#review-block-mark-the-explicit-machine-readable-boundary-of-
 const REVIEW_BLOCK_MARK = '3e-review-block';
 // Matches an opening comment whose first token is the mark and that has not
 // already been neutralized, so re-neutralizing is idempotent rather than
@@ -5366,26 +4124,7 @@ function neutralizeReviewBlockMark(text) {
 }
 
 // reviewBodySuffix — the ONE renderer of §3e evidence into the PR body
-// (temperloop#1846), across EVERY round handed to it: rounds[0] is the
-// original 3f pass, rounds[1..] are ciPollLoop's CI-fix re-reviews. Before
-// this, the body suffix was built from rounds[0] alone while park()'s tally
-// merged every round — so a reviewer that ran only in a CI-fix round (its
-// diff includes the fix commit, which can touch file classes the original
-// diff never did) had its findings affirmatively OMITTED from the body's
-// "ran:" line and ## Review notes, the exact #1846 failure (body said
-// "ran: docs-reviewer" while review.ran carried shell-reviewer and its three
-// findings). Rendering rules:
-//   - the "ran:" line names every DISTINCT reviewer across all rounds — a
-//     name-set union, so it can never be a subset of the tally's review.ran;
-//   - every round's findings section is spliced, none de-duped away: a
-//     CI-fix round's block is relabeled `### <reviewer> (ci-fix round N)` so
-//     a reviewer that ran in two rounds keeps BOTH blocks, distinguishable;
-//   - skip notices are de-duped by their full note text only (byte-identical
-//     notices from re-running the same degraded route add no information);
-//   - each block opens with a REVIEW_BLOCK_MARK delimiter line (above) that
-//     names its reviewer and round, so the PR-body cap can find block edges
-//     without parsing Markdown out of reviewer prose.
-// For a single round this renders the pre-#1846 shape plus those delimiters.
+// Full design note: build-level.design-notes-3.md#reviewbodysuffix-the-one-renderer-of-3e-evidence-into-the-pr
 function reviewBodySuffix(rounds) {
   const ranNames = [];
   const skippedNotes = [];
@@ -5414,38 +4153,8 @@ function reviewBodySuffix(rounds) {
   );
 }
 
-// reviewTally — merge one or more runReviewers() rounds (the original 3e pass
-// plus any CI-fix re-review, temperloop#1450) into the ONE summary object
-// park() threads through to the orchestrator's Step 6 tally. `mandatory_ok`
-// is false iff any SKIPPED entry across every round carried `mandatory: true`
-// — i.e. the foundation#1007 command-doc rule was genuinely degraded at least
-// once, never merely "some optional reviewer wasn't available".
-//
-// temperloop#1984 — `routed_not_run`, the WEAKER companion field.
-// `mandatory: true` is set by determineReviewers() for `workflow-reviewer` on a
-// command-doc diff and for nothing else, so EVERY extension-axis route
-// (shell-reviewer for `.sh`, typescript-reviewer for `.mjs`, …) could be
-// skipped with `mandatory_ok` still reading `true` — a tally that reads fully
-// clean while the shell diff went unreviewed (observed live: six unrun §3e
-// shell reviews across three items, every one caught by a human reading the
-// roster, never by this tally). `routed_not_run` is the distinct set of
-// reviewer names the routing RESOLVED but that did not run in the round they
-// were routed for — deliberately a VISIBILITY field, not a second gate (ADR
-// 0037; kernel principle 7: a hard block here deadlocks legitimate work in a
-// consuming checkout where a reviewer agent is genuinely absent, which is the
-// ordinary case, not the pathological one). Invariant that closes the hole:
-// `routed_not_run` is non-empty exactly when `skipped` is, so the tally can
-// never read fully clean while any routed reviewer was skipped. A reviewer
-// skipped in one round and run in another stays listed — the skip was real,
-// and which round covered which diff is exactly what a reader needs to see.
-//
-// temperloop#1970 adds `residual_blocking` — the convergence bound's PER-RUN
-// EXECUTION SIGNAL (§ Mandatory-step birth rule): one entry per round that hit
-// the bound, carrying the round number and the findings that were CARRIED into
-// the PR body rather than re-escalated. So an operator reading the Step 6
-// summary can see the bound firing, on which items, with what still outstanding
-// — never a prose-only declaration that it exists. OMITTED ENTIRELY when no
-// round hit the bound, so an ordinary item's parked record stays byte-identical.
+// reviewTally — merge one or more runReviewers() rounds (the original 3e
+// Full design note: build-level.design-notes-2.md#reviewtally-merge-one-or-more-runreviewers-rounds-the-origin
 function reviewTally(...rounds) {
   const ran = [];
   const skipped = [];
@@ -5533,31 +4242,8 @@ function isAbsenceProof(proof) {
 const ACTIVATION_DETAIL_FILTER =
   `__d="$(printf '%s' "$__out" | tr '\\n\\r\\t' '   ' | tr -d '\\\\"' | tr -cd '[:print:]' | tail -c 300)"`;
 
-// activationProofCmd — run the class-A `proof:` predicate from <dir>'s root and
-// report Pass/Fail as the predicate's OWN exit code.
-//
-// THE VERDICT IS READ UN-PIPED, WHICH IS §3e.5'S *PREFERRED* SHAPE, NOT A
-// WEAKER ONE (temperloop#68/#801). The predicate runs inside a command
-// substitution — not a pipe — so `$?` is already the predicate's own status
-// under both bash and zsh, with no PIPESTATUS/pipestatus read to get
-// dialect-wrong and no `tee` to swallow it. build.md §3e.5 names exactly this:
-// "prefer running the gate un-piped and branching on its exit directly".
-//
-// DO NOT ADD `set -o pipefail` HERE. It looks like belt-and-suspenders and is
-// the opposite: it silently rewrites the meaning of the AUTHOR'S OWN predicate,
-// in the one direction that makes this gate theater. `pipefail` reports the
-// rightmost NON-ZERO status, and a predicate whose tail exits early on a match
-// (`grep -q`, `head`) SIGPIPEs its upstream writer, which dies 141. For the
-// wrap-immune ABSENCE idiom plan-schema.md documents
-// (`! tr '\n' ' ' < f | tr -s ' ' | grep -q '<phrase>'`) that inverts the
-// verdict on the case that matters:
-//   phrase PRESENT (must FAIL):  pipefail -> 141 -> `!` -> 0  == false PASS
-//                                no pipefail -> 0 -> `!` -> 1 == correct FAIL
-// Reproduced deterministically, and asserted by the "pipefail" case in
-// test_workflow.sh. `scripts/lint-pipe-grep-q.sh` (temperloop#1050) is the
-// tree-wide guard for the same footgun. A false PASS on an absence proof is
-// precisely what the temperloop#944 control pass exists to stop, so
-// reintroducing it here would defeat the control one layer up.
+// activationProofCmd — run the class-A `proof:` predicate from <dir>'s r
+// Full design note: build-level.design-notes-3.md#activationproofcmd-run-the-class-a-proof-predicate-from-dir-
 function activationProofCmd(dir, proof, passOutcome, failOutcome) {
   return [
     `cd ${sq(dir)} || { printf '{"outcome":"%s","detail":"cannot cd to the checkout root"}\\n' ${sq(failOutcome)}; exit 0; }`,
@@ -5612,108 +4298,8 @@ function activationControlCmd(wt, proof) {
   ].join('\n');
 }
 
-// -----------------------------------------------------------------------------
-// gateFreshnessCmd — the §3e.5 pre-gate freshness step (temperloop#1937).
-// -----------------------------------------------------------------------------
-// build.md §3e.5 runs `scripts/quality-gates.sh` against the worktree, and a
-// handful of its gates (validate-check-surface-degenerate-coverage.sh,
-// validate-exec-bit-registry.sh, validate-mandatory-step-signal.sh) RATCHET
-// against the CURRENT `origin/main` — they diff the worktree's registry rows
-// against main's own, and flag any row main gained that the worktree never
-// touched as REGRESSED. A worktree branched from main hours or days earlier
-// (a long worker run, or a slow level) can be behind by the time the gate
-// runs, so those rows are false positives: real work that landed on main
-// AFTER this branch was cut, misread as this item's own regression. The live
-// incident: the temperloop#1934 fix (a sibling item on this same level) merged
-// while this worktree was mid-build and cost it a full gate round.
-//
-// Fetch origin and bring the worktree up to `origin/main` HERE, strictly
-// before the gate runs, so the gate always measures against a tree that is
-// least as current as main — never behind it. ONE combined shell script
-// (fetch, ancestor-check, conditional rebase): this is always exactly ONE
-// runMachinery call, never a separate check-then-rebase pair, so handling the
-// stale case costs no additional machinery step beyond the check itself.
-//
-// `origin/main` is hardcoded rather than resolved through the
-// default_branch()-style fallback chain reviewDiffCmd/activationControlCmd
-// use (origin/HEAD, else main/master): this step exists specifically to match
-// the exact ratchet target the named §3e.5 validators use — `origin/main`,
-// by their own construction — not a generic default branch. A repo whose
-// protected branch is genuinely not `main` needs a different fix than this
-// one, not a guessed fallback here.
-//
-// Eight outcomes:
-//   FRESHNESS_NO_GATE  — round 3 (temperloop#1937 HIGH, workflow): the
-//     worktree carries no `scripts/quality-gates.sh` at all — the SAME
-//     `[ -x … ]` presence test gateCmd's own GATE_ABSENT arm makes, checked
-//     HERE first, before the fetch. There is nothing for this step to
-//     protect on a gate-absent project, so it takes the byte-identical
-//     pre-change path: no fetch, no rebase, no follow-on machinery.
-//   FRESHNESS_CURRENT  — `git merge-base --is-ancestor origin/main HEAD`
-//     already true (the worktree is at or ahead of main). No rebase is
-//     attempted — the JSON line still names both SHAs for the record.
-//   FRESHNESS_REBASED  — origin/main was ahead; `git rebase origin/main`
-//     replayed the worker's commits onto it cleanly. The JSON line names both
-//     SHAs (`worktree_base` = the worktree's HEAD after the rebase,
-//     `main` = the origin/main tip it was rebased onto).
-//   FRESHNESS_DIRTY    — round 2 (temperloop#1937 HIGH): origin/main was
-//     ahead, but the worktree carries uncommitted TRACKED-file edits, so git
-//     would refuse to even START the rebase ("cannot rebase: You have
-//     unstaged changes") — a non-zero exit exactly like a real content
-//     clash. Probed via `git status --porcelain --untracked-files=no`
-//     immediately BEFORE the rebase is attempted (never after), mirroring
-//     `pr.sh cmd_rebase`'s DIRTY_WORKTREE vs REBASE_CONFLICT split
-//     (temperloop#735) — untracked files are deliberately not dirt here
-//     (the worktree always carries at least the untracked `.build-guard`).
-//     The rebase is NEVER attempted on this path, so it can never be
-//     misread as FRESHNESS_CONFLICT (which would report an empty
-//     `conflict_files` and a false "rebase aborted" disposition).
-//   FRESHNESS_CONFLICT — the rebase hit a real content clash: `git diff
-//     --name-only --diff-filter=U` (read BEFORE the abort — the merge
-//     markers vanish once it runs) names at least one conflicted path. Then
-//     `git rebase --abort` runs so the worktree is left intact on its
-//     PRE-rebase commit — never a half-applied rebase, never a silent
-//     revert, and NEVER pushed as a known-stale branch. The JSON line's
-//     `detail` (round 3, MEDIUM) carries the tail of the rebase's own
-//     stdout+stderr, and `disposition` names exactly what was done, so a
-//     human resolving `stale-worktree` by hand knows the worktree was not
-//     touched.
-//   FRESHNESS_REBASE_ERROR — round 3 (temperloop#1937 MEDIUM): the rebase
-//     failed (non-zero exit) but `--diff-filter=U` found NO conflicted
-//     files — a pre-rebase hook, a missing commit identity, or a leftover
-//     in-progress rebase, none of which are a content clash. Reported as its
-//     OWN outcome (never collapsed into FRESHNESS_CONFLICT's shape, which
-//     would report an empty `conflict_files` and falsely claim a clash was
-//     aborted) with the same abort + `detail` tail treatment.
-//   FRESHNESS_ERROR    — the fetch/resolve step itself could not run (no
-//     network, no `origin/main`, or `git fetch` itself failed after one
-//     retry). This step's job is to PREVENT a false gate failure, never to
-//     manufacture one of its own — runGateFreshness() below treats this as
-//     fail-OPEN (log and proceed to the gate on the tree as it stands),
-//     exactly the pre-#1937 behavior. `detail` carries the fetch's own
-//     stderr (round 3, MEDIUM) so a genuine outage is diagnosable rather than
-//     a bare constant string.
-//   FRESHNESS_TIMEOUT  — round 2 (temperloop#1937 MEDIUM): the OUTER Bash-tool
-//     timeout killed this whole script before it printed any JSON line —
-//     possibly mid-`git rebase`, leaving a rebase in progress on disk. Unlike
-//     FRESHNESS_ERROR (nothing ran), the tree may now be mid-rebase, so
-//     fail-open would run the gate against a half-rebased tree — worse than
-//     the pre-#1937 behavior. runGateFreshness() below gives this its OWN
-//     arm: a follow-up probe checks for an in-progress rebase and aborts it,
-//     then ALWAYS escalates `stale-worktree` — never the fail-open
-//     FRESHNESS_ERROR path.
-//
-// `git fetch origin main`'s stderr is captured rather than discarded (round 3,
-// MEDIUM): under `parallel()` sibling worktrees fetch concurrently, and a
-// transient `cannot lock ref` race is retried ONCE (short sleep) before it is
-// reported as FRESHNESS_ERROR — a race is not evidence the network or
-// `origin/main` itself is unreachable, and silently swallowing it would fail
-// open back to the pre-#1937 behavior for no real reason.
-//
-// Every JSON line below is built with `jq -cn --arg …`, never a raw `printf`
-// substitution (round 3, LOW) — the same discipline `pr.sh cmd_rebase` uses —
-// so no interpolated value (a path, a git-output tail) can break the line's
-// JSON shape. All payload field names are snake_case throughout (round 3, LOW).
+// gateFreshnessCmd — the §3e.5 pre-gate freshness step (temperloop#1937)
+// Full design note: build-level.design-notes-2.md#gatefreshnesscmd-the-3e-5-pre-gate-freshness-step-temperloop
 function gateFreshnessCmd(wt, qgBin) {
   return [
     `cd ${sq(wt)} || { jq -cn '{outcome:"FRESHNESS_ERROR",detail:"cannot cd to the worktree"}'; exit 0; }`,
@@ -5771,25 +4357,8 @@ function gateFreshnessCmd(wt, qgBin) {
   ].join('\n');
 }
 
-// gateFreshnessTimeoutProbeCmd — round 2 (temperloop#1937 MEDIUM): what to run
-// when the OUTER Bash-tool timeout (FRESHNESS_TIMEOUT) kills gateFreshnessCmd()
-// mid-flight, possibly mid-`git rebase`. A second, cheap machinery call —
-// mirroring the shape of disposeStepTimeout()'s own follow-up probe for the
-// inner STEP_TIMEOUT path, not that function itself (its probeSideEffects()
-// ladder is push/PR-open specific and has nothing to say about a rebase). If a
-// rebase is left in progress it is aborted, restoring the worktree to its
-// pre-rebase commit exactly like gateFreshnessCmd's own FRESHNESS_CONFLICT
-// arm; either way the caller escalates rather than proceeding blind.
-//
-// round 3 (HIGH, shell, temperloop#1937): every /build worktree is a LINKED
-// worktree (`git worktree add`), whose `.git` is a pointer FILE, not a
-// directory — `[ -d .git/rebase-merge ]` is therefore ALWAYS false here; the
-// real state lives under `git rev-parse --git-dir` (…/.git/worktrees/<slug>/
-// rebase-merge). Rather than resolve and test that path by hand, run
-// `git rebase --abort` UNCONDITIONALLY and read ITS OWN exit status as the
-// in-progress verdict: exit 0 means a rebase WAS in progress and is now
-// aborted; a non-zero "no rebase in progress" exit means there was none to
-// abort, which is not itself an error worth surfacing.
+// gateFreshnessTimeoutProbeCmd — round 2 (temperloop#1937 MEDIUM): what 
+// Full design note: build-level.design-notes-3.md#gatefreshnesstimeoutprobecmd-round-2-temperloop-1937-medium-
 function gateFreshnessTimeoutProbeCmd(wt) {
   return [
     `cd ${sq(wt)} || { jq -cn '{outcome:"FRESHNESS_ERROR",detail:"cannot cd to the worktree for the timeout probe"}'; exit 0; }`,
@@ -6165,34 +4734,8 @@ function dualBuildSplitModel(spec) {
     : { provider: '', model: String(spec) };
 }
 
-// -----------------------------------------------------------------------------
 // candidateArmGate — the candidate arm's host-supply + containment seam.
-// -----------------------------------------------------------------------------
-// Every candidate arm passes through `candidate-session.sh` BEFORE it builds:
-// `resolve` proves the containment overlay is present, readable and well-formed
-// (the same fail-closed check judge.sh's own pairwise mode runs), and
-// `preflight` proves the candidate provider's credential is actually SET rather
-// than merely named. A refusal is an INFRA loss for that arm, recorded as such —
-// never a silent single-arm level.
-//
-// WHY THE WORKER ITSELF IS NOT SPAWNED BY `candidate-session.sh spawn`, AND WHY
-// A NON-DEFAULT PROVIDER IS THEREFORE REFUSED HERE. `spawn` runs a `claude` CLI
-// child inside whatever shell invokes it. In this driver the only shell is an
-// executor agent's Bash tool, hard-capped at AGENT_BASH_CAP_MS (~10 minutes) —
-// DESIGN NOTE 1/2. A build worker is an hour-scale process, so routing it
-// through `spawn` would not produce a contained candidate session; it would
-// produce a worker killed mid-build on every non-trivial item. The reachable
-// spawn seam with no such cap is the runtime's own `agent({ model })`, which
-// addresses the host session's provider only.
-//
-// So the seam is honest about its edge rather than silently exceeding it: a
-// candidate naming the DEFAULT provider builds through `agent({ model })` (the
-// A/A instrument check and every same-provider tier comparison — the epic's own
-// first live run), and a candidate naming a NON-DEFAULT provider is REFUSED by
-// name with an `infra` row. It is never spawned uncontained, which is the one
-// outcome that would defeat candidate-session.sh's whole purpose. Lifting that
-// edge needs an uncapped spawn seam, which is its own piece of work, not a
-// silent widening here.
+// Full design note: build-level.design-notes-2.md#candidatearmgate-the-candidate-arm-s-host-supply-containment
 async function candidateArmGate(ai, dual) {
   const { provider } = dualBuildSplitModel(dual.candidate);
   const csBin = sq(`${input.repoRoot}/workflows/scripts/model-comparison/candidate-session.sh`);
@@ -6875,40 +5418,8 @@ async function driveLevelDualBuild(activeItems, dual) {
   };
 }
 
-// =============================================================================
-// THE TWO PHASES OF driveItem (temperloop#2080, epic #2065 "dual-build")
-// =============================================================================
-// driveItem used to be ONE function that interleaved build → local gate → PR →
-// CI per item. The dual-build harness cannot: ADR 0038 fixes the PICK at the
-// LEVEL, so every in-scope item's build, local gate and pairwise judge must be
-// known BEFORE any PR opens for the level (the "level barrier"). That is a
-// phase split, not a flag — so the split is made STRUCTURAL here rather than
-// left as an `if (dualBuild)` branch threaded through 700 lines:
-//
-//   driveItemBuildPhase()  3a claim → 3b worktree → 3c worker → 3d verdict →
-//                          3e review → 3e.5 gate → 3e.6 activation gate.
-//                          Returns a TERMINAL record (parked/escalation), or
-//                          null having filled `box.ctx` with everything the
-//                          second phase needs. NOTHING here pushes, opens a
-//                          PR, or merges — that property is what makes the
-//                          barrier expressible at all.
-//   driveItemPr()          3f push+PR → 3g CI → 3g.5 re-render → 3h park.
-//
-// THE SINGLE-ARM PATH IS UNCHANGED BY CONSTRUCTION: driveItem() below calls
-// both phases back to back, in the same order, with nothing between them — so
-// the stage transcript, the agent-spawn sequence and the machinery step
-// ordering a flag-less run produces are byte-for-byte what they were before
-// the split (workflows/scripts/build/tests/test_workflow.sh pins the ORDERING
-// explicitly, not merely the return object).
-//
-// WHY A `box` RATHER THAN A RETURNED CONTEXT. The build phase has ~25 early
-// `return escalate(...)` / `return park(...)` sites. Rewriting every one of
-// them into `{ result: … }` would be 25 chances to typo a control-flow edge
-// that only one specific failure fixture exercises. Instead the phase function
-// keeps EVERY existing return statement byte-identical (a terminal record, or
-// null on the fall-through) and hands its context out through the one
-// out-parameter — so the diff touches the fall-through alone.
-// =============================================================================
+// ======================================================================
+// Full design note: build-level.design-notes-2.md#note
 async function driveItem(item) {
   const built = await driveItemBuild(item, null);
   if (built.result) return built.result;
@@ -6999,26 +5510,8 @@ async function driveItemBuildPhase(item, arm, box) {
     );
   }
 
-  // 3b-0 / 3b are prelude steps only for a NON-spike item: a spike is read-only
-  // and skips 3b–3h entirely, so it must never create a worktree. Its prelude is
-  // the claim alone (or nothing at all when the board is OFF).
-  //
-  // 3b-0. Dep-merge precondition gate (#108).
-  // A `depends-on` edge REQUIRES its target be [x] MERGED before this item's
-  // worker starts — the worker must build and self-verify against the merged
-  // dependency code, NOT a pre-merge base. The orchestrator's level ordering
-  // (it runs level k's merge gate before invoking build-level for level k+1) is
-  // the primary guarantee; this is the mechanical backstop that refuses to
-  // create the worktree until every depended-on PR has actually landed in
-  // origin/<default> (guarding a resume race, a partial merge, an ordering bug).
-  // Without it, worktree.sh create bases the branch on an origin/<default> that
-  // LACKS the dep, the worker self-verifies against stale code, and the 3f
-  // unconditional rebase (#525) only repairs the branch TEXTUALLY at push —
-  // too late for the worker's own build/verify. item.dependsOn is [{slug,sha}]
-  // (each dep's merged head SHA, from the plan note's pushed_sha:); an
-  // absent/empty list (level-0 or after:-only deps) is a no-op. Skipped on a
-  // continuation — the worktree already exists and its base was gated at first
-  // create; re-gating would need SHAs the continuation input does not carry.
+  // 3b-0 / 3b are prelude steps only for a NON-spike item: a spike is read
+  // Full design note: build-level.design-notes-3.md#3b-0-3b-are-prelude-steps-only-for-a-non-spike-item-a-spike-
   const depShas = isContinuation
     ? []
     : (item.dependsOn ?? []).map((d) => d && d.sha).filter(Boolean);
@@ -7032,41 +5525,7 @@ async function driveItemBuildPhase(item, arm, box) {
   }
 
   // 3b. Pre-create the deterministic worktree (worktree.sh create).
-  // On a continuation we REUSE the existing worktree (MINOR fix): the escalated
-  // item's worktree + its committed build + the .build-guard marker are all
-  // intact, and worktree.sh create force-removes-and-re-adds (worktree.sh:113),
-  // which would DISCARD the escalated build. So skip create entirely and resume
-  // against the deterministic path. The injected verdict (3c) makes resuming on
-  // the existing worktree correct — the worker builds on its own prior work
-  // plus the human's decision, exactly the escalation-resume contract.
-  //
-  // temperloop#2080 adds TWO things to this one step, both of which leave a
-  // flag-less, residue-free run's OUTPUT byte-identical:
-  //
-  //  (a) THE ARM FLAG. A dual-build arm creates `<repoRoot>.wt/<slug>@<arm>` on
-  //      `build/<slug>@<arm>` via `create --arm <name>[:<sibling>]`
-  //      (temperloop#2076). `item.slug` is already the ARM KEY here, so the
-  //      command is built from `arm.slug` — the real plan slug — and the
-  //      deterministic path worktree.sh returns equals `worktreePath` above by
-  //      construction, exactly as it does on the arm-less path.
-  //
-  //  (b) THE FLAG-LESS-RESUME REFUSAL (ADR 0038's "Consequences"). A `/build`
-  //      re-run over a level a dual build left half-finished must refuse
-  //      LEGIBLY — never silently complete it single-arm, and never pick a side
-  //      by accident. The signal is the arm worktrees themselves:
-  //      `<repoRoot>.wt/<slug>@*` exists only while an arm of THIS slug is
-  //      mid-flight (the pick deletes the losing arm's tree and `worktree.sh
-  //      prune` reaps the rest), so it is precisely "partially dual-built" and
-  //      nothing else. The ledger is deliberately NOT consulted: its rows
-  //      outlive the run by `DUAL_BUILD_ARCHIVE_RETENTION_DAYS`, so a slug
-  //      dual-built last week would refuse every ordinary build since.
-  //
-  //      The check is emitted INSIDE this step's own command rather than as a
-  //      new probe step, and that is the load-bearing choice: a level-wide
-  //      probe agent would add a spawn to every flag-less run, changing the
-  //      very transcript this item's acceptance pins as unchanged. Here the
-  //      clean path runs `worktree.sh create` and prints its CREATED line with
-  //      nothing added — same step count, same agent count, same JSON.
+  // Full design note: build-level.design-notes-2.md#3b-pre-create-the-deterministic-worktree-worktree-sh-create
   if (item.kind !== 'spike' && !isContinuation) {
     const wtBin = machineryBin(repoRoot, 'worktree.sh');
     const realSlug = arm ? arm.slug : item.slug;
@@ -7401,26 +5860,8 @@ async function driveItemBuildPhase(item, arm, box) {
   // byte-identically.
   const reviewSummarySuffix = reviewBodySuffix([review]);
 
-  // Resolve the gate script from the WORKTREE, not repoRoot (temperloop#626).
-  // The point of 3e.5 is to validate the worker's CHANGES, and the `cd ${wt}`
-  // below intends exactly that — but quality-gates.sh's first act is
-  // `cd "$REPO_ROOT"` where REPO_ROOT is derived from the SCRIPT's own path
-  // (BASH_SOURCE/..). If we ran repoRoot's copy, that cd would jump straight
-  // back to the main checkout and the gate would validate main's tree, not the
-  // worktree — silently defeating the cd. Running the worktree's own copy makes
-  // REPO_ROOT resolve to the worktree, so every gate (make targets, the
-  // diff-scoped leak guard that diffs the branch's additions, the freshness
-  // check) runs against the worker's tree — matching what CI sees on the PR's
-  // merge. The worktree is a full checkout of the branch, so this copy always
-  // exists whenever repoRoot's would (GATE_ABSENT still fires for a repo with
-  // no vendored gate). Only build-SPINE scripts (worktree.sh / pr.sh / …) route
-  // through machineryBin's foundation fallback; the repo-local gate resolves
-  // directly against the worktree.
-  //
-  // Resolved BEFORE the freshness step below (round 3, HIGH, temperloop#1937)
-  // so runGateFreshness() can gate itself behind the identical presence check
-  // gateCmd's own GATE_ABSENT arm makes — a project with no vendored gate
-  // script has nothing for the freshness step to protect.
+  // Resolve the gate script from the WORKTREE, not repoRoot (temperloop#62
+  // Full design note: build-level.design-notes-3.md#resolve-the-gate-script-from-the-worktree-not-reporoot-tempe
   const qgBin = `${wt}/scripts/quality-gates.sh`;
 
   // --- 3e.5-pre. Gate-freshness rebase (temperloop#1937) --------------------
@@ -7449,104 +5890,13 @@ async function driveItemBuildPhase(item, arm, box) {
   // missing/older helper prints nothing → `unset` no-op → prior behavior.
   const settingsBin = `${wt}/workflows/scripts/build/build-config-settings.sh`;
   // gateCmd(startAt) — one SLICE of the suite (temperloop#1021).
-  //
-  // The budget is handed to quality-gates.sh as ENV VARS, deliberately not
-  // flags: a consuming repo vendoring an OLDER quality-gates.sh ignores an
-  // unknown env var and runs the whole suite in one go (today's exact behavior,
-  // and still correct), whereas an unknown FLAG would exit 2 "usage" and read
-  // back here as a gate failure. So this is compatible with every vendored copy
-  // in the fleet with no probing.
-  //
-  // Exit-code protocol: 0 = finished green, 75 = budget spent with gates
-  // remaining (the script printed QUALITY_GATES_RESUME_AT= / QUALITY_GATES_FAILED=),
-  // anything else = red. Note the 75 arm is only ever taken by a slice-aware
-  // script, so an older copy can only ever produce GATE_PASS / GATE_FAIL.
-  //
-  // `set -o pipefail` is LOAD-BEARING (temperloop#68 — see build.md §3e.5).
-  // The gate verdict is derived from the subshell's own exit status, and since
-  // temperloop#2094 that subshell IS piped — through `tee`, so one slice's
-  // output can be isolated for trailer parsing while still STREAMING into the
-  // cumulative operator log (see gateSliceLog below for why both are required).
-  // A bare pipe's status reflects the LAST stage (tee's 0), which would swallow
-  // a RED gate and degrade 3e.5 to a silent no-op; with pipefail set, the gate's
-  // own non-zero exit propagates to `$?` and GATE_FAIL is still emitted. This is
-  // the exact case build.md §3e.5 permits ("if the gate must be piped, `set -o
-  // pipefail` first"), and the exit is read as a bare `$?` — NOT through
-  // PIPESTATUS[0], a bash array that expands empty under the zsh this harness's
-  // Bash tool actually runs, which is temperloop#801's misread.
-  //
-  // The log is truncated on the first slice and APPENDED to thereafter, so
-  // /tmp/qg-<slug>.log stays the single artifact an operator reads, carrying the
-  // union of every slice exactly as an unsliced run's log did.
+  // Full design note: build-level.design-notes-2.md#gatecmd-startat-one-slice-of-the-suite-temperloop-1021
   const gateLog = `/tmp/qg-${item.slug}.log`;
   // ONE SLICE'S OWN OUTPUT, kept separate from the cumulative log above
-  // (temperloop#2094). The trailers below (`QUALITY_GATES_FAILED=`,
-  // `QUALITY_GATES_RESUME_AT=`, `QUALITY_GATES_SELECTION=`) are read with
-  // `tail -1`, so reading them out of the APPENDED log silently answers a
-  // question about THIS slice with the previous slice's numbers whenever this
-  // slice printed none of its own — a slice killed before it could report, or
-  // one whose `cd`/`unset` prelude failed, inherits a resume point and a
-  // failure count it never established. The trailers are therefore parsed from
-  // HERE, never from the cumulative log: a trailer present in this file was
-  // printed by the slice just run, which is what makes the classifier below
-  // able to trust it.
-  //
-  // IT IS A TEE, NOT A REDIRECT-THEN-COPY (review round 1). Writing the slice
-  // to this file and `cat`-ing it into ${gateLog} afterwards bought the
-  // isolation above at the cost of the guarantee that matters most on the one
-  // path that has no other diagnostic: the executor KILLS this whole command at
-  // GATE_BASH_TIMEOUT_MS, and a copy step scheduled after the gate never runs.
-  // The killed slice's partial output — the only evidence a timeout produces —
-  // would never reach /tmp/qg-<slug>.log, the single artifact the escalation
-  // payload hands the operator; and with the first-slice truncation moved into
-  // that same copy, a timed-out first slice would leave the PREVIOUS run's log
-  // in place and the escalation would point at stale content presented as
-  // current. So ${gateLog} is truncated UP FRONT on slice 0 and the gate streams
-  // into both files through `tee` — per-slice isolation and live, kill-proof
-  // streaming at once. `set -o pipefail` is at the head of the command, so the
-  // pipeline's `$?` is still the gate's own status (`tee` exits 0); the bare
-  // `$?` read is deliberate and dialect-safe — PIPESTATUS[0] is a bash
-  // array that expands EMPTY under the zsh this harness's Bash tool runs
-  // (temperloop#801), which is the misread that swallows a red gate.
+  // Full design note: build-level.design-notes-2.md#one-slice-s-own-output-kept-separate-from-the-cumulative-log
   const gateSliceLog = `${gateLog}.slice`;
-  // temperloop#1663: run the acceptance gate DIFF-SCOPED — only the gates this
-  // item's own changed paths can reach, resolved through gate-paths.tsv.
-  //
-  // WHY. The full per-item suite could not survive within-level parallelism, and
-  // the ceiling it hit is not tunable. Measured on a 3-item level: 55 minutes,
-  // 21 agents, 1.24M subagent tokens, ZERO items landed — all three escalated
-  // `acceptance-gate-timeout` with every worker finished and committed and only
-  // the verdict missing. Three concurrent full suites is 3x QUALITY_GATES_JOBS
-  // workers on one machine; contention inflated the gate tail 200-300% (gates
-  // that take seconds took 121s), while GATE_SLICE_SECS_MAX sits only 20% above
-  // the budget that failed and CANNOT be raised past AGENT_BASH_CAP_MS. So the
-  // suite has to get SHORTER, not the budget longer — and the map that knows
-  // which gates a diff can reach already exists and was already trusted.
-  //
-  // WHY IT IS SAFE. This puts §3e.5 on exactly the same footing as the
-  // `pull_request` run of CI's `checks` job, which has been scoped through this
-  // same map since #1024 — so scoping here adds no failure mode that the PR
-  // check does not already carry. What actually gates `main` is the UNSCOPED
-  // merge_group run, and that is untouched. Every resolution failure in the
-  // selector widens to the full set (gate-selection.sh's four silent-green
-  // defenses), and a scoped run names every gate it skipped, twice.
-  //
-  // THE SEAM IS AN ENV VAR, NOT THE `--scoped` FLAG, for the same reason the
-  // slice budget below is: a consuming repo vendoring an OLDER quality-gates.sh
-  // ignores an unknown env var and runs the whole suite (the pre-#1663 behavior,
-  // still correct), whereas an unknown FLAG exits 2 "usage" and reads back here
-  // as a GATE FAILURE.
-  //
-  // BUILD_GATE_SCOPED is read HERE, in the emitted shell, rather than plumbed in
-  // as an orchestrator `input.*` key like gateSliceSecs. That is deliberate and
-  // is the narrower seam, not a shortcut: gateSliceSecs must reach the .mjs's
-  // OWN control flow (it derives GATE_BASH_TIMEOUT_MS and bounds the slice
-  // loop), and the Workflow runtime has no shell to source build.config.sh with
-  // — DESIGN NOTE 1. This value is needed ONLY inside the command string, which
-  // is bash, and it is read from the WORKTREE'S config, i.e. the version of the
-  // setting the change under test actually ships. The read is a subshell so the
-  // #1241 scrub below still governs the gate's own environment; an absent or
-  // older config file leaves `${BUILD_GATE_SCOPED:-1}` at the default.
+  // temperloop#1663: run the acceptance gate DIFF-SCOPED — only the gates 
+  // Full design note: build-level.design-notes-2.md#temperloop-1663-run-the-acceptance-gate-diff-scoped-only-the
   const configBin = `${wt}/workflows/scripts/build/build.config.sh`;
   const gateScopeEnv =
     `QUALITY_GATES_SCOPED=$(. ${sq(configBin)} >/dev/null 2>&1; echo "\${BUILD_GATE_SCOPED:-1}")`;
@@ -7614,23 +5964,7 @@ async function driveItemBuildPhase(item, arm, box) {
     `case "$(cat ${sq(workerGateSentinel(item.slug))} 2>/dev/null)" in ` +
     `*'"state":"finished"'*) __wg=finished ;; *'"state":"running"'*) __wg=running ;; *) __wg=unknown ;; esac; fi; ` +
     // A RESUME POINT THIS SLICE PRINTED IS THE VERDICT (temperloop#2094).
-    // quality-gates.sh emits `QUALITY_GATES_RESUME_AT=` on exactly one path:
-    // it spent its budget, stopped CLEANLY BETWEEN GATES, and is telling the
-    // caller where the remaining gates start. That is a PARTIAL slice by
-    // construction, and its own `QUALITY_GATES_FAILED=` line is the count it
-    // established. Keying the branch on the exit code INSTEAD made that fact
-    // conditional on a number the script prints the trailer before producing:
-    // one unexpected code — a SIGTERM after the trailer, a wrapper that
-    // remapped the status — and a clean partial was relabelled GATE_FAIL,
-    // where gateSliceFailed()'s "RED by construction" floor manufactured the
-    // one failure the slice had just reported as zero. Observed live: three
-    // slices, `QUALITY_GATES_FAILED=0` in every one, stopped at gate 152 of
-    // 200, reported `verdict: RED, failedGates: 1, suiteFinished: true`.
-    // So the resume point is checked FIRST and on its own; `$__rc` rides along
-    // as `rc` for the record (75 is the protocol code, anything else is an
-    // anomaly worth seeing in the ledger, neither changes the classification).
-    // Safe against a stale trailer because ${gateSliceLog} holds THIS slice's
-    // output alone — see its declaration above.
+    // Full design note: build-level.design-notes-3.md#a-resume-point-this-slice-printed-is-the-verdict-temperloop-
     `if [ -n "$__r" ]; then ` +
     `printf '{"outcome":"GATE_SLICE","resumeAt":%s,"failed":%s,"elapsedSecs":%s,"selection":"%s","rc":%s,"workerGate":"%s","budgetSecs":${GATE_SLICE_SECS}}\\n' "$__r" "\${__f:-0}" "$__elj" "$__s" "$__rc" "$__wg"; ` +
     `elif [ "$__rc" = 0 ]; then ` +
@@ -7926,35 +6260,7 @@ async function driveItemPr(ctx) {
   addPrStep('scan', `${prBin} scan ${sq(wt)}`, ['SCAN_CLEAN']);
 
   // 3f-1. Push-by-SHA on the plan's branch.
-  //
-  // `--allow-rewrite` (temperloop#2103): 3f-0a above has just REWRITTEN this
-  // branch's history onto a fresh origin/<default>, and on a continuation round
-  // an earlier round has already pushed the pre-rebase history to origin. A
-  // plain push of a rewritten, already-pushed branch can NEVER fast-forward, so
-  // it came back PUSH_REJECTED every time — observed three times in one session,
-  // each recovered by hand with a lease-force push. The `recovery && pushed`
-  // skip above only covers the temperloop#939 lost-return path; an ordinary
-  // continuation round is not a `recovery` and never took it.
-  //
-  // This is a REQUEST, not a force: pr.sh downgrades to a plain push on any
-  // provable fast-forward (#335), issues nothing at all when the ref is absent
-  // or unreadable, and when it does rewrite it uses
-  // `--force-with-lease=<ref>:<sha>` over a value it read first — so a
-  // concurrent writer is rejected rather than overwritten. The flag is spelled
-  // `--allow-rewrite` rather than `--force` so the command line the orchestrator
-  // executes carries no classifier-visible force token (#437).
-  //
-  // AND NOT ON THE LEASE ALONE (temperloop#2103 round 3). Because this call site
-  // requests a rewrite on EVERY item — not only on a rescue — it is the busiest
-  // force path in the pipeline, and a lease protects only against a writer who
-  // moves the ref BETWEEN pr.sh's read and its push, never against content that
-  // was already there. So pr.sh gates the force on the SAME supersede check
-  // preserveCommittedWorkCmd (below) applies on the rescue path: a branch name
-  // colliding with unrelated work — a leftover manual branch, a reused slug, a
-  // planning bug — comes back PUSH_REJECTED with `refused_reason` rather than
-  // being overwritten and reported as an ordinary PUSHED straight into pr-open.
-  // The two force paths this file drives are symmetric; the asymmetry between
-  // them was the round-2 finding.
+  // Full design note: build-level.design-notes-2.md#3f-1-push-by-sha-on-the-plan-s-branch
   addPrStep('push', `${prBin} push ${sq(wt)} ${sq(item.branch)} --allow-rewrite`, ['PUSHED']);
 
   // 3f-2. Open the PR. The verification surface is read from the deterministic
@@ -8021,35 +6327,8 @@ async function driveItemPr(ctx) {
     `rc=$?; rm -f "$vf"; exit $rc`;
   addPrStep('pr-open', openCmd); // terminal step — nothing gates after it
 
-  // --- 3f-2 FALLBACK: a PR-ready tree must not be stranded by a bad verdict --
-  // temperloop#1805, disposition (a). `pr.sh open` REQUIRES a parseable
-  // `--verdict` and dies `verdict is not valid JSON` when it does not get one.
-  // That is a REPORTING-layer failure, and it was terminal for the item:
-  //
-  //   {"slug":"disclosure-watermark-tracked-1316","kind":"pr-open-failed",
-  //    "payload":{"openOut":{"step":"pr-open","outcome":"ERROR",
-  //                          "error":"verdict is not valid JSON"}}}
-  //
-  // …against ONE clean commit, a zero-dirty tree, a full `.build-verification.md`
-  // and that item's own suite green 39/39. The orchestrator recovered it BY HAND
-  // — push, `gh pr create`, verification file as the body — and it became PR
-  // #1803. Every piece of information the PR needed was already on disk; only
-  // the hand-off failed. The preservation machinery means the commit survives,
-  // so this is not data loss — it is PROGRESS loss: the item parks, re-enters
-  // the next run, and a fresh worker redoes finished, correct work.
-  //
-  // So the fallback re-issues `open` with a MINIMAL, structurally-safe verdict:
-  // the title is the item's own (what `--title` already carried) and the body
-  // comes from `.build-verification.md` via the surface flag — exactly the shape
-  // the manual recovery used. Everything variable about the rich verdict —
-  // `acceptance_results`, the worker's own prose — is dropped, because that is
-  // precisely the content that failed to survive the hand-off; the §3e review
-  // evidence line is kept, since it is assembled by this file and must stay
-  // visible on the PR (temperloop#1430).
-  //
-  // A body-less fallback would be worse than the escalation, so it is attempted
-  // ONLY when there is a real surface to fall back ON — either the worktree file
-  // or the synthesized inline surface.
+  // 3f-2 FALLBACK: a PR-ready tree must not be stranded by a bad verdict
+  // Full design note: build-level.design-notes-2.md#3f-2-fallback-a-pr-ready-tree-must-not-be-stranded-by-a-bad-
   const fallbackVerdictJson = JSON.stringify({
     status: 'done',
     summary:
@@ -8401,32 +6680,8 @@ async function driveItemPr(ctx) {
   return park(item.slug, pr, ciResult.finalSha ?? pushedSha, verdict.acceptance_results, ciResult.noCi === true, recovery, discGaps, reviewSummary, cost);
 }
 
-// -----------------------------------------------------------------------------
 // ciPollLoop — bounded short-slice CI poll (DESIGN NOTE 2).
-// -----------------------------------------------------------------------------
-// Drives CI_POLL_SLICE_SECS-timeout ci-poll.sh calls until the outcome resolves.
-// TIMEOUT on a slice = "still pending, poll again" (NOT a failure) — we keep
-// looping while the total budget remains. On CI_FAILED, within
-// CI_FAIL_RETRY_BUDGET, we re-spawn the worker + force-push + re-poll PINNED to
-// the new SHA (#254 false-green guard).
-//
-// temperloop#942: the slices no longer cost an agent spawn EACH. One
-// `ci-batch:<slug>#n` executor runs CI_POLL_SLICES_PER_BATCH
-// (merge-state probe → poll slice) PAIRS in a single Bash invocation and returns
-// all their JSON lines; this loop then consumes them one slice at a time from a
-// buffer and branches on each exactly as it did when each came from its own
-// agent. Interleaving is preserved: the merge-state probe still runs immediately
-// before EVERY poll slice (#543), not once per batch. The buffer is FLUSHED
-// whenever the head SHA changes (a CI-fix re-push), because buffered results are
-// pinned to the OLD sha — keeping the #254 false-green guard intact. And the
-// batch never runs one long poll: see DESIGN NOTE 2 for the derived slice count.
-// Returns:
-//   { ok:true, finalSha }                         — CI green
-//   { ok:true, finalSha, noCi:true }              — NO_CI (temperloop#605/#618):
-//        no CI configured on this repo/SHA — a legible skip mirroring build.md
-//        3g, NOT a failure; 3h parks [m] with the no_ci sentinel stamped
-//   { escalation:'ci-failed', payload:{...} }      — budget exhausted / hard fail
-//   { escalation:'merge-conflict', payload:{...} } — PR is CONFLICTING/DIRTY
+// Full design note: build-level.design-notes-3.md#cipollloop-bounded-short-slice-ci-poll-design-note-2
 
 // MERGE_CONFLICT_GLOBS — the substrings that make the batched merge-state probe
 // stop the sequence early. This is the STOP-EARLY MIRROR of the .mjs branch
@@ -8449,28 +6704,8 @@ function mergeStateCmd(ownerRepo, pr) {
   return `gh pr view ${sq(pr)} --repo ${sq(ownerRepo)} --json mergeable,mergeStateStatus | tr -d ' \\n'`;
 }
 
-// -----------------------------------------------------------------------------
 // The pushed-SHA hand-off guard (temperloop#2014).
-// -----------------------------------------------------------------------------
-// ciPollCmd pins `--sha` to the SHA the push reported — the #254 false-green
-// guard, and the one argument of the poll that this file, not the machinery,
-// is responsible for. sq() stringifies whatever it is handed, so an ABSENT
-// value does not crash: it renders as the literal `undefined` (or `null`),
-// ci-poll.sh's own argument validation refuses to run on it, and the driver
-// read that refusal back through the catch-all ERROR arm as `ci-failed` — i.e.
-// reported a PR whose CI was still running (temperloop#2014: PR #2013 was OPEN
-// with checks IN_PROGRESS) as a red one. Two halves close it:
-//   • hexSha() is the PRE-FLIGHT. Every value that can become the poll's
-//     `--sha` passes through it before a poll is spawned, so the driver never
-//     spends a slice on an argument ci-poll.sh is certain to reject.
-//   • a bad argument that reaches ci-poll.sh anyway (a vendored older copy, a
-//     validation this file does not model) comes back as its OWN escalation
-//     kind, `ci-poll-bad-argument`, never `ci-failed` — see isBadArgumentError
-//     and the ERROR arm at the bottom of ciPollLoop.
-// The predicate is hex-only, matching ci-poll.sh's own `*[!0-9a-fA-F]*`
-// rejection exactly. It must never be LOOSER than the check it protects, or
-// the pre-flight passes something the poll then refuses — which is the whole
-// failure being fixed, one layer down.
+// Full design note: build-level.design-notes-3.md#the-pushed-sha-hand-off-guard-temperloop-2014
 function hexSha(value) {
   return typeof value === 'string' && value !== '' && /^[0-9a-fA-F]+$/.test(value)
     ? value
@@ -8877,60 +7112,8 @@ async function ciPollLoop(item, ownerRepo, pr, initialSha, wt) {
   return { escalation: 'ci-failed', payload: { reason: 'ci-poll budget exhausted', sha } };
 }
 
-// =============================================================================
-// levelPhaseTitle — the run-identifying progress-row heading (temperloop#903),
-// now emitted ONCE PER STAGE rather than once per level (temperloop#1294).
-// =============================================================================
-// The Workflow progress UI renders one row per workflow (labelled from the PURE
-// LITERAL `meta.description`, which by runtime constraint is byte-identical on
-// every run) plus a group heading per phase(). phase() is therefore the ONLY
-// surface that can carry run context — and it used to read `build level — N
-// item(s)`, which identifies nothing: not the repo, not the items, not the
-// issues. Two concurrent spine runs (routine: one /fix session drives several
-// back to back) rendered indistinguishable rows.
-//
-// The heading names, from context already in scope at the call site:
-//   build level · <stage> — <ownerRepo> · <N> item(s) · <slug> (#<ghIssue>), …
-// e.g.  build level · gate — Towheads/foundation · 1 item · row-per-stage (#1294)
-//
-// temperloop#1294 added the `· <stage>` segment and made the level emit ONE
-// phase() PER STAGE (claim → build → gate → PR → CI) instead of a single static
-// heading for the whole level. Two independent effects, both wanted:
-//   • the ACTIVE phase now ADVANCES as the level progresses, so a collapsed view
-//     that renders it moves instead of sitting on one heading all run;
-//   • the expanded progress tree groups agents by stage instead of dumping every
-//     executor into one 'machinery' box.
-// The #903 run context rides EVERY stage heading — dropping it from the later
-// stages would re-open exactly the complaint #903 closed.
-//
-// TWO SURFACES, ONE STRING. `phase(t)` moves the GLOBAL cursor (what a collapsed
-// view shows); `agent(…, {phase: t})` assigns one agent to the group named `t`.
-// The Workflow docs are explicit that the global cursor RACES inside
-// parallel()/pipeline() stages — this level fans its items out with parallel(),
-// so item A can be at CI while item B is still at build. Every agent spawn below
-// therefore passes opts.phase EXPLICITLY (same string → same group box) and never
-// relies on whatever the global cursor happens to be. enterStage() returns that
-// string and, as a side effect, advances the global cursor MONOTONICALLY (a stage
-// already passed never re-fires), so the collapsed row tracks the level's
-// furthest-reached stage and can never appear to run backwards when a straggler
-// item is still on an earlier one.
-//
-// meta.phases: DELIBERATELY ABSENT. `meta` is a pure literal by runtime
-// constraint, and meta.phases entries are matched against phase() titles
-// EXACTLY. Every title here is dynamic by construction (#903 requires the repo,
-// the item count and the item/issue list in it), so no static entry could ever
-// match one — declaring the five stages statically would render five permanently
-// EMPTY groups alongside the five real ones. Per the runtime's own contract a
-// phase() call with no matching meta entry simply gets its own progress group,
-// which is the correct outcome here; this is a noted, accepted consequence of
-// #903's dynamic-title requirement, not an oversight to work around.
-//
-// BOUNDED BY CONSTRUCTION: a level can hold many items, so at most
-// PHASE_TITLE_MAX_ITEMS slugs are named and the rest collapse to `+K more` — a
-// 20-item level can never emit a 20-slug heading that swamps the progress row.
-// Every field is optional-safe (a missing ownerRepo / ghIssue simply drops its
-// segment) because this is a cosmetic display string: it must never be the thing
-// that throws and takes a level down.
+// ======================================================================
+// Full design note: build-level.design-notes-2.md#note-2
 const PHASE_TITLE_MAX_ITEMS = 3;
 
 // The level's stages, in the order an item passes through them. STAGE_RECOVER is
@@ -9002,38 +7185,8 @@ function enterStage(stage) {
   return title;
 }
 
-// =============================================================================
-// The ZERO-DISPOSITION guard (temperloop#2004).
-//
-// /build Step 3, /fix Step 4a and /sweep Phase 2 all branch on the returned
-// {parked, escalations}: each handles `parked` non-empty and `escalations`
-// non-empty, and NONE had an arm for both being empty. A {parked:[],
-// escalations:[]} return therefore matched no branch and fell through as "the
-// level completed with nothing to report" — so an item that was asked for and
-// disposed of nowhere vanished with no PR, no park, no escalation and no
-// signal. (Observed 2026-09-13, run wf_f3b9c160-6ca: a stopped-and-resumed run
-// returned an empty object in ~13 ms having re-run nothing, while the tracked
-// issue was still in-progress with a live claim stamp.)
-//
-// The guard lives HERE, below the three drivers, so all three inherit it once
-// rather than each restating it — the same hoist shape temperloop#2006 used
-// for the sideline notice. It returns a NAMED, branchable value (never a bare
-// throw): the drivers re-probe real state on it instead of concluding
-// anything.
-//
-// The two CONTROLS are what make it discriminating rather than noisy — a guard
-// that flags every legitimately empty level is worse than none:
-//   1. nothing was asked to drive (empty `items`, or an onlySlugs filter that
-//      matched no item) → disposing of nothing is a tautology, not a
-//      contradiction. Silent, and the returned object is byte-identical to
-//      before this item.
-//   2. something WAS disposed → any parked record or any escalation means the
-//      drive reported on the set. This is also what clears the kind:spike
-//      path: a spike opens no PR and pushes no SHA, but it still `park()`s a
-//      verdict marker (`park(slug, null, null, …)`), so a spike-only level
-//      lands in control 2 and is never flagged.
-// Returns null when either control holds; otherwise the named outcome.
-// =============================================================================
+// ======================================================================
+// Full design note: build-level.design-notes-3.md#note-3
 function zeroDispositionContradiction(activeItems, parked, escalations) {
   if (activeItems.length === 0) return null;                    // control 1
   if (parked.length > 0 || escalations.length > 0) return null; // control 2
@@ -9081,31 +7234,8 @@ function zeroDispositionContradiction(activeItems, parked, escalations) {
   };
 }
 
-// =============================================================================
-// ITEM-KEY NORMALIZATION AT THE ORCHESTRATOR→WORKFLOW SEAM (temperloop#1700).
-// =============================================================================
-// This file reads the item's issue number as `item.ghIssue`. `claude/plan-schema.md`
-// DOCUMENTS the field as `gh_issue:`, and `also_closes:` / `depends-on:` likewise.
-// A caller that constructs items from the documented schema — a legitimate
-// calling pattern, since the schema is what documents it — therefore gets:
-//
-//   no `--gh-issue` flag on `pr.sh open` → no `Closes #N` in the body →
-//   a PR that merges green and leaves its issue OPEN → and no warning anywhere.
-//
-// Observed on PR #1697 (`closingIssuesReferences` empty); three PRs from one
-// level merged closing nothing. The SILENCE is the defect: "this item has no
-// tracked issue" is a legal state (`gh_issue:` is optional), so an unread key is
-// indistinguishable from an absent one, and the merged-with-no-linkage PR leaves
-// a stranded `fnd:status:in-progress` item wearing a live claim stamp.
-//
-// Same family as #1698 above — one meaning wearing two names across a seam, with
-// the consumer's absent-key path producing a plausible-looking result instead of
-// an error. Both halves the issue asks for are implemented, because each catches
-// what the other cannot:
-//   (1) ACCEPT the documented spelling, normalizing once here. Fixes the three
-//       aliases we know about.
-//   (2) WARN on a key nothing reads. Catches the NEXT one — the class, not the
-//       instance.
+// ======================================================================
+// Full design note: build-level.design-notes-3.md#note-4
 const ITEM_KEY_ALIASES = {
   gh_issue: 'ghIssue',
   also_closes: 'alsoCloses',
@@ -9215,32 +7345,7 @@ async function buildLevel() {
   enterStage(STAGE_CLAIM);
 
   // Drive every active item through 3a–3h. The items in one level are
-  // independent by construction (no merge edge between them), so we fan them
-  // out with parallel() — the substrate caps concurrency (~cores-2). This
-  // matches build.md's "express each item's pipeline as a parallel() over
-  // the level's items" (within-level execution). parallel() returns the array
-  // of per-item results in item order; a blocked/failed item escalates rather
-  // than halting its siblings (the orchestrator batches escalations at the
-  // boundary). On a continuation run only the named slugs enter parallel(); the
-  // rest are already parked and are left untouched.
-  // A thrown exception in driveItem must NOT vanish: parallel() drops a rejected
-  // thunk to null, which would leave the item in NEITHER parked NOR escalations —
-  // silently lost, violating the no-silent-stall invariant. Convert any throw into
-  // a generic `worker-error` escalation so it always surfaces. (#437: a real run
-  // hit item.acceptance.map on a string and the item was silently dropped.)
-  // temperloop#2020: `.then(preserveOnEscalation)` is applied to the SETTLED
-  // result — after the #437/#1819 catch above, so a THROWN item's synthesized
-  // escalation gets the same work-preservation push a returned one does. This
-  // is the single choke point for "an escalation is about to leave this
-  // driver"; see preserveOnEscalation's own comment for why it lives here and
-  // not at the ~30 individual escalate() call sites.
-  //
-  // temperloop#2080 — the DUAL-BUILD fan-out is an alternative to this one, not
-  // a flag inside it. A `dualBuild` input restructures the level into build →
-  // barrier → judge → record (driveLevelDualBuild), which is a different
-  // control flow, not a different parameter; keeping the two apart is what
-  // makes "no dualBuild input → this exact fan-out, unchanged" true by reading
-  // the code rather than by tracing a branch through it.
+  // Full design note: build-level.design-notes-3.md#drive-every-active-item-through-3a-3h-the-items-in-one-level
   let dualSummary = null;
   let results;
   const dual = dualBuildInput();
@@ -9292,23 +7397,7 @@ async function buildLevel() {
   }
 
   // temperloop#2006 — the LEVEL-SUMMARY half of the sideline notice. Each
-  // per-item record already carries its own `sidelined` object (stampSideline
-  // at the fan-out above); this rolls the level's set up onto the returned
-  // object so the orchestrator's Step 6 summary and the merge gate see it
-  // without re-walking two arrays. Omitted entirely when nothing sidelined, so
-  // an ordinary level's return is byte-identical to before this item.
-  //
-  // temperloop#2080 — the map is keyed by the RECORD key, which for a
-  // dual-build arm is `<slug>@<arm>` (that is what phase 1 sees as item.slug).
-  // Walking `activeItems` alone would therefore find NEITHER arm's notice and
-  // the level would report zero sideline notices while two builds sat shelved.
-  // So the rollup walks the map's own keys and splits the arm back out: a
-  // two-arm item that sidelined both arms produces TWO entries, one per arm,
-  // and a single-arm level produces exactly the pre-#2080 list (same entries,
-  // same order, no `arm` key) because the arm lookups simply miss. The walk
-  // stays over `activeItems` rather than over the map's own insertion order so
-  // the list is deterministic — insertion order is parallel-completion order,
-  // which would reshuffle the rollup run to run.
+  // Full design note: build-level.design-notes-3.md#temperloop-2006-the-level-summary-half-of-the-sideline-notic
   const sidelined = [];
   for (const it of activeItems) {
     const plain = SIDELINE_NOTICES.get(it.slug);

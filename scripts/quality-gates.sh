@@ -960,6 +960,8 @@ KERNEL_GATES=(
   # reintroduction of the old inline extension list. Same direct-`bash`
   # form, same check-setting-prose.sh shape, as the two gates above.
   "bash workflows/scripts/config/check-reviewer-routing.sh"
+  "bash workflows/scripts/check-workflow-script-size.sh"
+  "bash workflows/scripts/tests/test_workflow_script_size.sh"
   "bash workflows/scripts/config/tests/test_check_reviewer_routing.sh"
   # Ontology-registry checker (ADR 0032, epic temperloop#1910 L0-b):
   # workflows/scripts/config/ontology-registry.tsv is the single source of
