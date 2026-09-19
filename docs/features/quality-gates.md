@@ -400,7 +400,7 @@ workers, verification was 79% of all shell wall-clock and gate runs were 85% of
 that — a distribution with a median of three seconds but a ninetieth percentile
 of two minutes and a maximum of ten, because a worker checking a three-file
 change had no way to ask for less than everything. `--scoped` gives it one: the
-same selector, the same map, the same four defenses, fed the *local* changed
+same selector, the same map, the same five defenses, fed the *local* changed
 set instead of a pull request's diff. That set is the union of what has been
 committed on the branch, what is staged, what is edited but unstaged, and what
 is newly created and never added — because this mode runs *mid*-work, and a

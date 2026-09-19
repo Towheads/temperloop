@@ -65,6 +65,13 @@
 #      k) a SKIPPED_KERNEL_GATES disclosure line is not a registration;
 #      l/m) a bare element of the KERNEL_GATES array literal IS one — but only
 #         when the literal names a gate the caller list already carries.
+#
+# temperloop#1695 pinned `--no-renames` on every changed-set diff, because git
+# reports a rename as the DESTINATION path alone and a file leaving a gated tree
+# therefore never selected that tree's gates:
+#  23. a) a COMMITTED rename out of a gated tree still selects the source tree's
+#         gate; b) an UNCOMMITTED (staged) one lists both paths in the local
+#         changed set. Real git both times — it is a property of what git EMITS.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -82,7 +89,7 @@ MAP="$TMP/gate-paths.tsv"
 cat >"$MAP" <<'EOF'
 # fixture map
 ALL	Makefile scripts/quality-gates.sh
-none	LICENSE
+none	LICENSE attic/**
 make test-always	ALWAYS
 make test-docs	docs/**
 make test-lib	src/lib/** src/shared.sh
@@ -356,7 +363,7 @@ echo "PASS: 18 the local changed set unions committed, staged, unstaged and untr
 # The one degradation that matters here: with no default-branch base, the
 # committed half of the worker's change is invisible. Returning the
 # working-tree half alone would be a SILENT NARROWING — the exact class this
-# lib's four defenses exist for — so it must fail instead.
+# lib's five defenses exist for — so it must fail instead.
 ORPHAN="$TMP/orphan"
 mkdir -p "$ORPHAN"
 git -C "$ORPHAN" init -q
@@ -848,6 +855,72 @@ DIFF
 gate_selection_resolve
 [ "$GATE_SELECTION_MODE" = "full" ] || fail "22r: a removed line whose content reads like a diff header must still veto (got $GATE_SELECTION_MODE / $GATE_SELECTION_REASON)"
 echo "PASS: 22r a removed line disguised as a --- header is not swallowed by the header skip"
+
+
+# --- 23. a RENAME pulls the SOURCE tree's gates back in (temperloop#1695) ----
+# git's rename detection is ON by default and reports a rename as ONE entry
+# carrying the DESTINATION path. So moving a file OUT of a gated tree used to
+# leave the SOURCE tree out of the changed set entirely: the tree lost a file
+# and nothing re-ran its gates. `--no-renames` renders the same change as a
+# delete plus an add, so both paths land in the changed set — defense 5 in
+# gate-selection.sh's header, and the same widen-on-doubt bet as defenses 1/2/4.
+#
+# Both halves are real git, because this is a property of what `git diff`
+# EMITS: a hand-seeded GATE_SELECTION_CHANGED would prove nothing at all here.
+# The destination is `attic/` — a path the fixture map recognises via its `none`
+# row — so a miss shows up as a NARROWED run rather than being masked by the
+# unmapped-path escalation.
+
+# 23a — the COMMITTED half: the `<base>...HEAD` three-dot form the CI path uses.
+RENREPO="$TMP/renrepo"
+mkdir -p "$RENREPO/src/lib" "$RENREPO/attic"
+git -C "$RENREPO" init -q
+git -C "$RENREPO" config user.email t@example.com
+git -C "$RENREPO" config user.name t
+git -C "$RENREPO" branch -M main
+printf 'lib body\nline two\nline three\n' >"$RENREPO/src/lib/mod.sh"
+git -C "$RENREPO" add -A && git -C "$RENREPO" commit -qm base
+REN_BASE="$(git -C "$RENREPO" rev-parse HEAD)"
+git -C "$RENREPO" mv src/lib/mod.sh attic/mod.sh
+git -C "$RENREPO" commit -qm 'move mod.sh out of the gated tree'
+# Sanity: git really DOES detect this as a rename, so the case is live rather
+# than accidentally passing because the diff never looked like one.
+case "$(git -C "$RENREPO" diff -M --name-status "${REN_BASE}...HEAD")" in
+  R*) : ;;
+  *) fail "23a: fixture is not a detected rename — the case would prove nothing:
+$(git -C "$RENREPO" diff -M --name-status "${REN_BASE}...HEAD")" ;;
+esac
+reset_env
+QUALITY_GATES_SCOPE=diff
+GATE_SELECTION_ROOT="$RENREPO"
+GATE_SELECTION_BASE="$REN_BASE"
+gate_selection_resolve
+[ "$GATE_SELECTION_MODE" = "diff" ] || fail "23a: expected a diff-scoped run (got $GATE_SELECTION_MODE / $GATE_SELECTION_REASON)"
+case "$GATE_SELECTION_MATCHED" in *"src/lib/mod.sh"*) : ;; *) fail "23a: the RENAMED-AWAY source path must enter the changed set, got:
+$GATE_SELECTION_MATCHED" ;; esac
+case "$GATE_SELECTION_SELECTED" in *"make test-lib"*) : ;; *) fail "23a: a file leaving src/lib/ must still select that tree's gate, got:
+$GATE_SELECTION_SELECTED" ;; esac
+echo "PASS: 23a a committed rename out of a gated tree still selects the SOURCE tree's gate"
+
+# 23b — the WORKING-TREE half: `git diff --name-only HEAD`, the mid-work
+# `--scoped` path a /build worker runs. A worker who `git mv`s a file and has
+# not committed yet must see the same widening; rename detection applies to
+# this diff too.
+RENLOCAL="$TMP/renlocal"
+mkdir -p "$RENLOCAL/src/lib" "$RENLOCAL/attic"
+git -C "$RENLOCAL" init -q
+git -C "$RENLOCAL" config user.email t@example.com
+git -C "$RENLOCAL" config user.name t
+git -C "$RENLOCAL" branch -M main
+printf 'lib body\nline two\nline three\n' >"$RENLOCAL/src/lib/mod.sh"
+git -C "$RENLOCAL" add -A && git -C "$RENLOCAL" commit -qm base
+git -C "$RENLOCAL" mv src/lib/mod.sh attic/mod.sh
+got23="$(gate_selection_local_changed "$RENLOCAL")" || fail "23b: local changed-set resolution failed"
+for want in src/lib/mod.sh attic/mod.sh; do
+  case "$got23" in *"$want"*) : ;; *) fail "23b: an UNCOMMITTED rename must list BOTH paths, missing $want:
+$got23" ;; esac
+done
+echo "PASS: 23b an uncommitted (staged) rename lists both the source and the destination path"
 
 
 echo "OK — gate-selection.sh: all cases passed"

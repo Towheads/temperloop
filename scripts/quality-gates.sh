@@ -2380,7 +2380,7 @@ cd "$REPO_ROOT" || exit 1
 # Every degradation path (no base, an unresolvable base, an empty diff, a
 # missing/malformed map, an unmapped changed path, an unmapped gate) resolves
 # TOWARD MORE coverage, never less — see gate-selection.sh's header for the
-# four structural defenses against the silent-green class.
+# five structural defenses against the silent-green class.
 # shellcheck source=workflows/scripts/lib/gate-selection.sh
 source "$REPO_ROOT/workflows/scripts/lib/gate-selection.sh"
 GATE_SELECTION_ROOT="$REPO_ROOT"
