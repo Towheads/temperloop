@@ -38,6 +38,26 @@
 
 set -uo pipefail
 
+# ── HERMETIC CONFIG LADDER (temperloop#2146) ─────────────────────────────
+# tagging.sh sources build.config.sh, which sources precedence layers 3 and 4
+# — the MACHINE conf (${XDG_CONFIG_HOME:-$HOME/.config}/temperloop/build.config.sh)
+# and the untracked repo-local conf. Both are legitimate, both correctly use
+# the `:=` idiom, and neither exists on CI — so a host that has configured one
+# fails assertions this suite makes about the UNSET state while CI stays green.
+# Observed: a machine conf setting `SWEEP_WORKER_MODEL:=opus` turned test 1
+# ("resolve-model prints empty when unset") red on a dev box only.
+#
+# This is the file-based half of the hermeticity problem that build.md §3e.5's
+# env scrub explicitly CANNOT reach ("a file-based machine-local leak is a
+# distinct mechanism (foundation#1055) an env scrub can't fix"). The cure is
+# the seam the ladder itself documents as "a test seam / explicit host
+# override": point both resolvers at paths that cannot exist, so the suite
+# measures the CODE rather than the host it runs on. Exported, because every
+# assertion here re-enters through a child `bash "$SUT"`.
+# Same idiom as workflows/scripts/build/tests/test_worker_model_settings.sh.
+export BUILD_CONFIG_MACHINE=/nonexistent-machine-conf
+export BUILD_CONFIG_LOCAL=/nonexistent-local-conf
+
 HERE="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MC_DIR="$(cd -P "$HERE/.." && pwd)"
 REPO_ROOT="$(cd -P "$MC_DIR/../../.." && pwd)"
