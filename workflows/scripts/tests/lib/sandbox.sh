@@ -61,7 +61,10 @@
 #     that make the root un-leakable on a failed, timed-out or cancelled run
 #     (temperloop#1723 — see the ROOT-LEAK GUARD block further down for the
 #     chaining, idempotence and SIGKILL-not-covered notes), and drops a
-#     `.sandbox-root` marker file in the root for sandbox-sweep.sh.
+#     `.sandbox-root` marker file in the root for sandbox-sweep.sh. It ALSO
+#     reaps, once per shell, the orphaned roots a HARD-KILLED predecessor left
+#     in $TMPDIR — the path no trap can cover (temperloop#1667; see the ORPHAN
+#     REAP block, and sandbox_reap_orphans below).
 #
 #     A caller that wants its OWN EXIT trap chained rather than clobbered
 #     should install it BEFORE sandbox_up — though a later sandbox_up call
@@ -73,6 +76,14 @@
 #     sandbox_up was never called (no-op), and safe to call alongside the
 #     traps above — the two are idempotent together, never a double-remove.
 #     Under SANDBOX_KEEP=1 it RETAINS the root and says so on stderr.
+#
+#   sandbox_reap_orphans
+#     Reclaims the roots a hard-killed (SIGKILL'd) earlier run stranded in
+#     $TMPDIR, delegating recognition and the age/live-pid safety valves to
+#     sandbox-sweep.sh. Called by sandbox_up automatically — exposed only so a
+#     caller can run it deliberately. Best-effort and never fatal; see the
+#     ORPHAN REAP block for the SANDBOX_REAP / SANDBOX_REAP_AGE_MIN knobs and
+#     the explicit scope list.
 #
 #   sandbox_env
 #     Populates the SANDBOX_ENV_ARGS array with the `NAME=VALUE` assignments
@@ -271,7 +282,10 @@ _SANDBOX_SH_LOADED=1
 # of a candidate timeout) is untrappable by construction — no trap can fire.
 # A root leaked that way is reclaimed by the sweeper,
 # workflows/scripts/tests/lib/sandbox-sweep.sh, which is the ONLY remedy for
-# that path (and for roots already stranded before this guard existed).
+# that path (and for roots already stranded before this guard existed). Since
+# temperloop#1667 that sweep no longer waits on an operator: sandbox_up calls
+# it itself, once per shell, before minting its own root — see the ORPHAN REAP
+# block below.
 #
 # DEBUGGABILITY ESCAPE: export SANDBOX_KEEP=1 to RETAIN every root — for
 # diagnosing a red suite. It is loud on stderr, and it applies to the
@@ -402,8 +416,106 @@ _sandbox_arm_traps() {
 }
 
 # ---------------------------------------------------------------------------
+# ORPHAN REAP (temperloop#1667) — the AUTOMATIC half of the sweeper.
+#
+# WHY A RECLAIM PATH AND NOT A BETTER TRAP. The traps above already cover
+# every death a handler can observe, and they work: no run that EXITS leaves a
+# root behind. SIGKILL cannot be trapped at all, so a HARD-KILLED suite —
+# today's live producer is the §3e acceptance gate hitting its Bash-tool
+# ceiling (temperloop#1663/#1650), which kills a run mid-flight — strands a
+# full file:// clone plus a complete install tree. `trap ... EXIT` is
+# structurally incapable of covering that, so the answer has to be reclamation
+# after the fact, never a stronger handler.
+#
+# WHY IT IS AUTOMATIC. sandbox-sweep.sh could always reclaim those roots, but
+# only when a human remembered to run it — which is exactly why 97 orphans and
+# 84GB accumulated in $TMPDIR over one week before anyone looked, on a volume
+# that fell 79Gi -> 56Gi in three hours. So each run now ADOPTS AND REAPS its
+# predecessors' orphans before it creates its own root: the reclaim path sits
+# on the hot path, not in an operator's memory.
+#
+# WHY HERE AND NOT IN test_install_lifecycle.sh. That suite is the biggest
+# leaker, not the only one — every sandbox_up caller leaks the same way under
+# the same kill. Putting the reap in sandbox_up makes every existing caller
+# safe with no edit and leaves no new caller able to forget, the same
+# reasoning the trap guard above is placed here.
+#
+# SCOPE — the ONE directory sandbox_up itself writes to: $TMPDIR (else /tmp),
+# one level deep. `~/.claude/jobs/*/tmp/` is a DIFFERENT location with a
+# DIFFERENT producer and is deliberately NOT swept here (temperloop#1111 owns
+# it). sandbox-sweep.sh's own § SCOPES header block is the full, explicit
+# covered/not-covered list; a future producer in a third location is a gap
+# named there rather than a silent one.
+#
+# SAFE AGAINST A CONCURRENT PEER — the primary correctness requirement, not a
+# nicety: a peer session's in-flight sandbox must survive this. Nothing is
+# ever removed by wildcard. A root is reclaimed only when it (a) carries
+# sandbox_up's marker or its exact directory signature, (b) is older than
+# $SANDBOX_REAP_AGE_MIN minutes, and (c) records no LIVE pid. A live peer's
+# root fails (b) and (c) both, and a recycled pid can only cause an
+# over-cautious skip. The delegation is deliberate: one recognition-and-safety
+# implementation, in sandbox-sweep.sh, exercised by both entry points.
+#
+# KNOBS:
+#   SANDBOX_REAP=0            disable the automatic reap entirely (the
+#                             falsey spellings sandbox_keep_requested accepts).
+#   SANDBOX_REAP_AGE_MIN=<n>  minimum orphan age, minutes (default 120 — the
+#                             two-hour threshold the incident's own live-run
+#                             constraint established).
+#   SANDBOX_KEEP=<any>        already means "retain roots for debugging", so
+#                             it suppresses the reap too: a root deliberately
+#                             kept from an earlier run must not be reaped by
+#                             the next one.
+#
+# BEST-EFFORT, ONCE PER SHELL, NEVER FATAL. A missing sweeper, an unreadable
+# $TMPDIR or a non-zero sweep must never turn a green suite red — this is
+# hygiene, not an assertion. It is disk reclamation, so failing closed would
+# trade a disk-space defect for a test-suite defect.
+# ---------------------------------------------------------------------------
+
+# Directory this library lives in — how sandbox_reap_orphans finds its sibling
+# sweeper without assuming a $PWD or a repo root.
+_SANDBOX_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+: "${SANDBOX_REAP_AGE_MIN:=120}"
+_SANDBOX_REAPED=0
+
+# sandbox_reap_requested — 0 (true) iff the automatic reap is enabled.
+# Defaults to ON; the falsey spellings mirror sandbox_keep_requested exactly.
+sandbox_reap_requested() {
+  case "${SANDBOX_REAP:-1}" in
+    "" | 0 | no | No | NO | false | False | FALSE) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+# sandbox_reap_orphans — reclaim hard-killed predecessors' roots. Idempotent:
+# runs at most once per shell, however many times sandbox_up is called.
+sandbox_reap_orphans() {
+  local sweeper scan_dir
+  [[ "$_SANDBOX_REAPED" == "1" ]] && return 0
+  _SANDBOX_REAPED=1
+  sandbox_reap_requested || return 0
+  sandbox_keep_requested && return 0
+  sweeper="$_SANDBOX_LIB_DIR/sandbox-sweep.sh"
+  [[ -f "$sweeper" ]] || return 0
+  scan_dir="${TMPDIR:-/tmp}"
+  [[ -d "$scan_dir" ]] || return 0
+  bash "$sweeper" \
+    --dir "$scan_dir" \
+    --older-than "$SANDBOX_REAP_AGE_MIN" \
+    --apply --quiet || true
+  return 0
+}
+
+# ---------------------------------------------------------------------------
 sandbox_up() {
   local prefix="${1:-sandbox}"
+  # Adopt and reap hard-killed predecessors BEFORE minting our own root — see
+  # the ORPHAN REAP block above. Never fatal, and never a candidate for its
+  # own sweep (this root does not exist yet, and once it does it is both fresh
+  # and live-pid'd).
+  sandbox_reap_orphans
   SANDBOX_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/${prefix}-XXXXXX")"
   SANDBOX_HOME="$SANDBOX_ROOT/home"
   SANDBOX_XDG_CONFIG_HOME="$SANDBOX_ROOT/xdg/config"

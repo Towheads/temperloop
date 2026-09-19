@@ -37,12 +37,48 @@
 #
 # DRY RUN BY DEFAULT: it lists and totals, and removes nothing until --apply.
 #
+# SCOPES — WHAT THIS REAPER COVERS, AND WHAT IT DOES NOT (temperloop#1667).
+# Named explicitly, so a producer that starts leaking roots in a THIRD
+# location is a KNOWN gap rather than a silent one:
+#
+#   COVERED      $TMPDIR (else /tmp), or whatever single directory --dir
+#                names. That is the ONLY place sandbox_up writes a root —
+#                `mktemp -d "${TMPDIR:-/tmp}/<prefix>-XXXXXX"` — so it is the
+#                scope holding the leaked test_install_lifecycle.sh /
+#                test_install_cli.sh sandboxes, each a full file:// clone plus
+#                a complete install tree.
+#   COVERED      that directory ONE level deep: the scan is `$SCAN_DIR/*`,
+#                never a recursive descent. A sandbox root nested deeper is
+#                not found, by design — a recursive `rm -rf` hunt over an
+#                arbitrary tmp tree is the blast radius this tool exists to
+#                avoid.
+#   NOT COVERED  `~/.claude/jobs/*/tmp/`. A DIFFERENT location with a
+#                DIFFERENT producer (Claude Code's own Bash-tool scratch),
+#                tracked separately by temperloop#1111. Nothing here looks
+#                there, and this sweeper must not be described as fixing it.
+#   NOT COVERED  any future producer of sandbox-shaped roots elsewhere. Wiring
+#                one in means adding its directory to the AUTO-REAP scope in
+#                workflows/scripts/tests/lib/sandbox.sh (sandbox_reap_orphans)
+#                and naming it in this list in the same change.
+#
+# WHO RUNS IT. An operator by hand, and — since temperloop#1667 — `sandbox_up`
+# itself, once per shell, before it creates its own root. A reclaim path that
+# fires only when somebody remembers to run it is how 97 orphans and 84GB
+# accumulated in $TMPDIR over a single week. See sandbox.sh's ORPHAN REAP
+# block for the automatic half.
+#
 # Usage:
 #   bash workflows/scripts/tests/lib/sandbox-sweep.sh [options]
 #
 #   --apply                 actually remove the stale roots (default: list only)
 #   --older-than <minutes>  minimum age to consider a root stale (default: 60)
 #   --dir <path>            directory to scan (default: $TMPDIR, else /tmp)
+#   --quiet                 suppress the banner, the per-root lines and the
+#                           `du` size accounting; print ONE summary line, on
+#                           stderr, and only when something was removed. For
+#                           the automatic sandbox_up reap, where a clean sweep
+#                           must add no noise to a suite's output and sizing a
+#                           multi-GB orphan tree is wasted work.
 #   -h, --help              this message
 #
 # Exit status: 0 on a successful scan (whether or not anything was found or
@@ -56,6 +92,7 @@ usage() {
 }
 
 APPLY=0
+QUIET=0
 OLDER_THAN_MIN=60
 SCAN_DIR="${TMPDIR:-/tmp}"
 
@@ -63,6 +100,10 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --apply)
       APPLY=1
+      shift
+      ;;
+    --quiet)
+      QUIET=1
       shift
       ;;
     --older-than)
@@ -158,8 +199,10 @@ if [ "$APPLY" -eq 1 ]; then
 else
   mode="DRY RUN (nothing will be removed)"
 fi
-printf 'sandbox-sweep: scanning %s for sandbox roots older than %s minute(s) — %s\n' \
-  "$SCAN_DIR" "$OLDER_THAN_MIN" "$mode"
+if [ "$QUIET" -eq 0 ]; then
+  printf 'sandbox-sweep: scanning %s for sandbox roots older than %s minute(s) — %s\n' \
+    "$SCAN_DIR" "$OLDER_THAN_MIN" "$mode"
+fi
 
 stale_count=0
 skipped_count=0
@@ -173,12 +216,14 @@ for entry in "$SCAN_DIR"/*; do
 
   if root_is_live "$entry"; then
     skipped_count=$((skipped_count + 1))
-    printf '  SKIP  %s  (marker pid is still running)\n' "$entry"
+    [ "$QUIET" -eq 1 ] \
+      || printf '  SKIP  %s  (marker pid is still running)\n' "$entry"
     continue
   fi
   if ! older_than "$entry"; then
     skipped_count=$((skipped_count + 1))
-    printf '  SKIP  %s  (newer than %s minute(s))\n' "$entry" "$OLDER_THAN_MIN"
+    [ "$QUIET" -eq 1 ] \
+      || printf '  SKIP  %s  (newer than %s minute(s))\n' "$entry" "$OLDER_THAN_MIN"
     continue
   fi
 
@@ -187,13 +232,20 @@ for entry in "$SCAN_DIR"/*; do
   else
     kind="legacy-layout"
   fi
-  kb="$(kb_of "$entry")"
+  # `du` on a multi-GB orphan tree is the expensive part of a sweep and its
+  # only product is a human-facing size. --quiet skips it entirely.
+  if [ "$QUIET" -eq 1 ]; then
+    kb=0
+  else
+    kb="$(kb_of "$entry")"
+  fi
   case "$kb" in
     '' | *[!0-9]*) kb=0 ;;
   esac
   stale_count=$((stale_count + 1))
   total_kb=$((total_kb + kb))
-  printf '  STALE %s  (%s, %s)\n' "$entry" "$kind" "$(human_kb "$kb")"
+  [ "$QUIET" -eq 1 ] \
+    || printf '  STALE %s  (%s, %s)\n' "$entry" "$kind" "$(human_kb "$kb")"
 
   if [ "$APPLY" -eq 1 ]; then
     if rm -rf "$entry"; then
@@ -204,7 +256,17 @@ for entry in "$SCAN_DIR"/*; do
   fi
 done
 
-if [ "$APPLY" -eq 1 ]; then
+if [ "$QUIET" -eq 1 ]; then
+  # One line, on stderr, and only when a root was actually reclaimed — an
+  # automatic reap that found nothing must be indistinguishable from not
+  # having run, or every suite's output grows a line of noise. A reap that DID
+  # delete something is never silent: it is a `rm -rf` the operator is entitled
+  # to see attributed.
+  if [ "$removed_count" -gt 0 ]; then
+    printf 'sandbox-sweep: reclaimed %d orphaned sandbox root(s) from %s (older than %s minute(s), no live pid).\n' \
+      "$removed_count" "$SCAN_DIR" "$OLDER_THAN_MIN" >&2
+  fi
+elif [ "$APPLY" -eq 1 ]; then
   printf 'sandbox-sweep: removed %d of %d stale root(s), %s reclaimed (%d skipped as live/recent).\n' \
     "$removed_count" "$stale_count" "$(human_kb "$total_kb")" "$skipped_count"
 else
