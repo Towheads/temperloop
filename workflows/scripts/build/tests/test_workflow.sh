@@ -14000,5 +14000,89 @@ grep -q 'function gateSentinelCure' "$MJS" \
   || fail "#865: the null-verdict re-spawn must hand over the sentinel PATH, not repeat the instruction that failed 2/2"
 echo "PASS: #865 static guard — handed invocation, spliced prompt section, loud residual, sentinel-aware re-spawn cure"
 
+# ============================================================================
+# DEBT ROW (K2145): the worker's scoped-gate BUDGET is a KNOWINGLY HALF-SHIPPED
+#   invariant, and this is the CI-read row that stops it aging silently.
+#
+#   WHAT SHIPPED: build.md §3c now tells the worker to run its scoped gate as
+#   `QUALITY_GATES_BUDGET_SECS=<budget> scripts/quality-gates.sh --scoped`.
+#   That reaches the conversational (`--no-workflow`) path and hand-authored
+#   first worker prompts ONLY. workerPrompt()'s embedded copy still instructs
+#   an UNBUDGETED --scoped run, and the Workflow path is build.md's DEFAULT —
+#   so the dominant path stays exposed. Closing it here would collide head-on
+#   with the in-flight build-level.mjs rewrite (temperloop#2141), so it is
+#   deliberately deferred to temperloop#2147.
+#
+#   WHY THIS SHAPE AND NOT A REGISTRY ROW. The obvious home looked like
+#   mandatory-step-registry.tsv's shrink-only `pending` ledger, but it cannot
+#   hold this, on two independent grounds:
+#     (1) SCHEMA. That gate keys a row on a DECLARATION line carrying a
+#         mandatory marker (`mandatory`|`non-negotiable`|`not optional`|
+#         `never skip`) that makes the EXECUTION OF A STEP obligatory. This is
+#         not that: §3c's worker-spawn step runs on every item either way. What
+#         drifted is one of TWO COPIES of an instruction that step carries —
+#         a constraint on how the step BEHAVES, which
+#         validate-mandatory-step-signal.sh's own § THE SCOPE DECISION (a)
+#         lists as `excluded` by construction. The bullet carries no marker
+#         word either, so discovery never enumerates it.
+#     (2) MECHANICS. Its `pending` set is a shrink-only ratchet against
+#         origin/HEAD: a row present now and absent at the base ref is
+#         PENDING-GREW and FAILS. A brand-new pending row cannot be parked
+#         there by design — see mandatory-step-discovery.tsv's own header.
+#   So this uses the nearest REAL mechanism instead: the static lockstep-guard
+#   idiom every sibling §3c clause already uses (K1530 changelog fragment,
+#   K1319 self-verification, K1934 activation proof, K1219 foreground-only),
+#   in its SELF-DISCHARGING variant. Same suite, same `make test-build` gate.
+#
+#   IT DISCHARGES ITSELF, IN BOTH DIRECTIONS:
+#     gap OPEN   -> build.md §3c MUST carry the disclosure, and that disclosure
+#                   MUST name temperloop#2147. Delete either and this goes red.
+#     gap CLOSED -> workerPrompt() carries the budget, so the disclosure is now
+#                   FALSE and MUST be retired. Land the workerPrompt half
+#                   without retiring it and this goes red.
+#   Neither "forgot to fix it" nor "fixed it and left a lying disclosure
+#   behind" can pass. ----------------------------------------------------------
+K2145_BUILD_MD="$REPO_ROOT/claude/commands/build.md"
+[ -f "$K2145_BUILD_MD" ] \
+  || fail "#2145: claude/commands/build.md is missing — the prose half of the worker gate budget cannot be verified"
+
+# The half that DID ship: the literal, executable budgeted invocation, and the
+# belt-and-suspenders setting reference. The fallback form is load-bearing —
+# quality-gates.sh normalises an EMPTY QUALITY_GATES_BUDGET_SECS to 0, and 0
+# means NO BUDGET, so a bare $BUILD_GATE_SLICE_SECS on a checkout that does not
+# vendor build.config.sh silently reinstates the unbounded run.
+grep -qF 'QUALITY_GATES_BUDGET_SECS=<budget> scripts/quality-gates.sh --scoped' "$K2145_BUILD_MD" \
+  || fail "#2145: build.md §3c must carry the literal budgeted gate invocation the worker is told to run"
+grep -qF '${BUILD_GATE_SLICE_SECS:-300}' "$K2145_BUILD_MD" \
+  || fail "#2145: build.md §3c must name the budget in the belt-and-suspenders \${BUILD_GATE_SLICE_SECS:-300} form — a BARE \$BUILD_GATE_SLICE_SECS expands EMPTY where build.config.sh is not vendored, and quality-gates.sh reads an empty QUALITY_GATES_BUDGET_SECS as 0 = NO BUDGET APPLIED"
+
+# The discriminator. QUALITY_GATES_BUDGET_SECS appears in build-level.mjs
+# exactly ONCE today, at the PARENT-side §3e.5 slice loop, which has always
+# been budgeted. So "more than one occurrence" means the worker-facing half has
+# landed — robust to however temperloop#2147 eventually writes it (one line, or
+# several concatenated prompt fragments). The >=1 assertion keeps the
+# discriminator from going stale unnoticed if that parent-side site is ever
+# renamed or removed.
+K2145_MJS_BUDGET_HITS="$(grep -c 'QUALITY_GATES_BUDGET_SECS' "$MJS" || true)"
+[ "${K2145_MJS_BUDGET_HITS:-0}" -ge 1 ] \
+  || fail "#2145: build-level.mjs no longer mentions QUALITY_GATES_BUDGET_SECS at all — the parent-side §3e.5 slice budget this debt row's discriminator is calibrated against is gone. Recalibrate this row rather than letting it read 'gap open' by accident"
+
+K2145_DISCLOSURE='The BUDGET half of this bullet is not yet in lockstep'
+if [ "$K2145_MJS_BUDGET_HITS" -gt 1 ]; then
+  # NB: written as an `if`, never `grep ... && fail ...` — this file runs under
+  # `set -e`, where an AND-list whose grep finds nothing returns non-zero and
+  # would abort the suite on the SUCCESS path.
+  if grep -qF "$K2145_DISCLOSURE" "$K2145_BUILD_MD"; then
+    fail "#2145: build-level.mjs now carries a worker-facing QUALITY_GATES_BUDGET_SECS, so build.md §3c's 'not yet in lockstep' disclosure is FALSE. Retire the disclosure AND this debt row in the same change that closed the gap (temperloop#2147), and replace them with an ordinary static lockstep guard in the K1530/K1934 shape"
+  fi
+  echo "PASS: #2145 worker gate budget — workerPrompt() carries the budget and build.md §3c's known-gap disclosure has been retired; this debt row is discharged and should now be replaced by a plain lockstep guard"
+else
+  grep -qF "$K2145_DISCLOSURE" "$K2145_BUILD_MD" \
+    || fail "#2145: build-level.mjs does NOT carry a worker-facing QUALITY_GATES_BUDGET_SECS, so the Workflow path — build.md's DEFAULT execution path — still spawns workers with an unbudgeted scoped gate. build.md §3c MUST keep the known-gap disclosure that says so; an undisclosed half-shipped invariant on the dominant path is exactly what this row exists to prevent"
+  grep -qF 'temperloop#2147' "$K2145_BUILD_MD" \
+    || fail "#2145: build.md §3c's known-gap disclosure must name temperloop#2147 as the discharging issue — a gap with no tracked owner is the debt that ages silently"
+  echo "PASS: #2145 worker gate budget debt row — conversational-path budget shipped and pinned; Workflow-path gap is OPEN, disclosed in build.md §3c, and tracked to temperloop#2147 (this row flips red the moment workerPrompt() closes it without retiring the disclosure)"
+fi
+
 echo ""
 echo "All test_workflow.sh cases passed."
