@@ -2437,13 +2437,48 @@ function workerGateState(out) {
 // green, which is the single worst thing this artifact could do. The exit status
 // is read as a bare `$?`, never PIPESTATUS[0], which expands empty under the zsh
 // this harness's Bash tool actually runs (temperloop#801).
+//
+// EVERY PROLOGUE STEP HARD-REFUSES; NONE OF THEM IS `&&`-CHAINED INTO THE RUN
+// (review round 2, the HIGH). `A && B && C; D` is NOT a guard: it skips `B..C`
+// on `A`'s failure and then runs `D` anyway. That shape — which this function
+// shipped in its first cut — meant a failed `cd` (worktree pruned, moved, or an
+// unresolvable path) skipped both the `running` sentinel AND `set -o pipefail`
+// and then ran `./scripts/quality-gates.sh` in whatever directory the worker's
+// shell happened to start in, recording a RED suite in the WRONG repo as
+// `{"state":"finished","rc":0}` with a nonsense `elapsedSecs` (`__t0` unset, so
+// the arithmetic read it as 0). That is precisely the silent green the comment
+// above calls the worst thing this artifact could do, reintroduced by the fix
+// for it. So each prologue step is now its own statement ending in an explicit
+// `|| exit`, and `set -o pipefail` comes FIRST — before anything it protects —
+// rather than being `&&`-chained after work that has already happened:
+//
+//   - `set -o pipefail || exit 1` — a shell without pipefail refuses here. A
+//     POSIX special builtin's failure exits a non-interactive shell outright
+//     (dash), and the `|| exit 1` catches the lenient shells that merely return
+//     non-zero. Either way nothing downstream runs unprotected.
+//   - `[ -x ./scripts/quality-gates.sh ] || exit 127` — "this repo has no gate"
+//     refuses BEFORE any sentinel is written, so `absent` (never `finished`)
+//     is what both the worker and §3e.5 see. Before this, a missing script ran
+//     as an ENOENT through the pipe and the NEXT statement wrote
+//     `{"state":"finished","rc":127}` unconditionally — which the handed prompt
+//     then told the worker to report as "a real FAIL", turning a repo with no
+//     gate into a gate failure (review round 2, the MEDIUM).
+//   - `cd … || exit 1` and the `running` write's own `|| exit 1` — the suite
+//     can never run outside the worktree, and can never run with no artifact to
+//     poll.
+//
+// The invariant to preserve on any future edit: a `finished` sentinel is
+// reachable ONLY after the suite actually ran, in the worktree, under pipefail.
 function workerGateCmd(slug, worktreePath) {
   const sent = sq(workerGateSentinel(slug));
   const glog = sq(workerGateLog(slug));
   return (
-    `cd ${sq(worktreePath)} && __t0=$(date +%s) && ` +
-    `printf '{"state":"running","startedAt":%s}\\n' "$__t0" > ${sent} && ` +
-    `set -o pipefail; ./scripts/quality-gates.sh --scoped 2>&1 | tee ${glog}; __rc=$?; ` +
+    `set -o pipefail || exit 1; ` +
+    `cd ${sq(worktreePath)} || exit 1; ` +
+    `[ -x ./scripts/quality-gates.sh ] || { echo 'no executable ./scripts/quality-gates.sh in this repo — no gate to run' >&2; exit 127; }; ` +
+    `__t0=$(date +%s) || exit 1; ` +
+    `printf '{"state":"running","startedAt":%s}\\n' "$__t0" > ${sent} || exit 1; ` +
+    `./scripts/quality-gates.sh --scoped 2>&1 | tee ${glog}; __rc=$?; ` +
     `printf '{"state":"finished","rc":%s,"elapsedSecs":%s}\\n' "$__rc" "$(( $(date +%s) - __t0 ))" > ${sent}; ` +
     `cat ${sent}; exit $__rc`
   );
@@ -2466,9 +2501,11 @@ function workerGateSection(slug, worktreePath) {
     workerGateCmd(slug, worktreePath),
     '```',
     '',
-    `It ALWAYS writes a RESULT SENTINEL to \`${sent}\` — \`{"state":"running",…}\``,
-    'before the suite starts, then `{"state":"finished","rc":<exit>,"elapsedSecs":<n>}`',
-    'when it ends — and prints that sentinel as its last line.',
+    `Once the suite actually STARTS it always writes a RESULT SENTINEL to \`${sent}\` —`,
+    '`{"state":"running",…}` first, then `{"state":"finished","rc":<exit>,"elapsedSecs":<n>}`',
+    'when it ends — and prints that sentinel as its last line. It refuses outright rather than',
+    'starting the suite in the wrong place or without `pipefail` (the exit-code table below), and',
+    'a refusal writes NO sentinel at all, so the sentinel never describes a run that did not happen.',
     '- **Poll the RESULT FILE, never a PID.** Waiting on a process id, a `kill -0`, or a',
     '  background-task notification is the stall this replaces: the exit status dies with',
     '  the process, and a subagent receives no background-task notification at all, so that',
@@ -2481,13 +2518,20 @@ function workerGateSection(slug, worktreePath) {
     '  return `blocked` and quote the sentinel (or its absence). The orchestrator reads this',
     '  SAME file at §3e.5 and reports what it finds either way, so an unfinished gate is',
     '  visible whether you mention it or not.',
-    '- If this repo has no `scripts/quality-gates.sh`, the command exits non-zero without a',
-    '  `finished` sentinel — say so and move on; that is not a gate failure.',
-    '- It needs **bash** (it opens with `set -o pipefail`, which POSIX `sh` does not have).',
-    '  The Bash tool gives you one; if some wrapper hands it to a plain `sh` instead, the',
-    '  command aborts at that line and writes NO `finished` sentinel — which is a refusal to',
-    '  guess, not a pass. Report it as blocked per the rule above; never infer a green gate',
-    '  from a missing sentinel.',
+    '- **A missing sentinel is a REFUSAL, never a pass.** The command hard-refuses instead of',
+    '  guessing, and every refusal happens BEFORE any sentinel is written, so `no file at all`',
+    '  + a non-zero exit always means the suite never ran. The three refusals, by exit code:',
+    `    - **127** — this repo has no executable \`scripts/quality-gates.sh\`. It prints`,
+    '      `no executable ./scripts/quality-gates.sh` on stderr and leaves NO sentinel. Say so',
+    '      and move on: that is not a gate failure, and it is the one case where a missing',
+    '      sentinel is expected rather than a stall.',
+    `    - **1, with a \`cd\` error on stderr** — the worktree moved or was pruned. The suite is`,
+    '      NOT run somewhere else and passed off as this item\'s gate. Report it as blocked.',
+    `    - **1–2, with a \`pipefail\` error on stderr** — it needs **bash** (it opens with`,
+    '      `set -o pipefail`, which POSIX `sh` does not have). The Bash tool gives you one; if',
+    '      some wrapper hands it to a plain `sh`, it aborts on that first line. Report it as',
+    '      blocked.',
+    '  In all three, never infer a green gate from the missing sentinel.',
   ];
 }
 

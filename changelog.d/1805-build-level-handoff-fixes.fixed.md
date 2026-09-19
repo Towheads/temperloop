@@ -20,7 +20,15 @@
     file rather than a process id, which a sub-task cannot wait on. The driver
     reads that same file after the worker hands back, so a run still marked as
     in progress produces a named notice instead of looking like a gate that is
-    merely taking a long time.
+    merely taking a long time. That command now refuses outright rather than
+    starting the gate somewhere it should not: if the worker's own directory has
+    gone, if the shell running it has no `pipefail`, or if the repository has no
+    gate script at all, it stops before writing any result file and exits with a
+    named reason. Previously a directory that had gone missing was stepped over
+    and the gate ran wherever the shell happened to be — a failing suite in the
+    wrong repository, recorded as a pass; and a repository with no gate script
+    wrote a finished result with a non-zero code, which the worker was told to
+    report as a gate failure.
   - **An item whose text contains a single quote no longer breaks the command
     built from it** (#1806, the nested-quote idiom was refused at parse time).
     Such a value is now wrapped in double quotes instead of the nested `'\''`

@@ -130,7 +130,15 @@ wf_test_cleanup() {
   [ "${#WF_TEST_SWEEP[@]}" -gt 0 ] && rm -f "${WF_TEST_SWEEP[@]}"
   return 0
 }
-trap wf_test_cleanup EXIT
+# INT/TERM as well as EXIT (review round 2, the LOW). An untrapped SIGINT or
+# SIGTERM kills bash WITHOUT running an EXIT-only trap, and unlike
+# $WF_TEST_TMPDIR (a mktemp -d under $TMPDIR the OS eventually reclaims) the
+# swept paths are per-run-unique names in shared /tmp that nothing else will
+# ever reclaim — so a CI job timeout or a Ctrl-C during a long gate run would
+# accumulate them permanently. The function ends `return 0`, so it composes
+# fine on all three; the shell's own exit status after the signal handler is
+# not load-bearing for any caller of this suite (it reports via `fail`/exit 1).
+trap wf_test_cleanup EXIT INT TERM
 
 # ---------------------------------------------------------------------------
 # run_node_case <description> <node-es-module-body>
@@ -13260,9 +13268,13 @@ K865_GATELOG="/tmp/qg-${K865_SLUG}.worker-gate.log"
 # `exit 1`, so a cleanup line at the end of the block is exactly the one that
 # never runs on a failing run.
 wf_test_sweep_add "$K865_SENTINEL" "$K865_GATELOG"
+# k865_emit_cmd <worktree-path> — emit the REAL handed invocation for that path.
+# Parameterized (review round 2) because the failed-`cd` arm below has to emit
+# the command for a worktree that does NOT exist; hard-coding $K865_ROOT would
+# have made that arm unwritable, which is why the defect survived round 1.
 k865_emit_cmd() {
-  node -e "
-    globalThis.args = JSON.stringify({ repoRoot: '$K865_ROOT', planLink: 'p', board: null, ownerRepo: 'o/r', items: [] });
+  K865_WT="$1" node -e "
+    globalThis.args = JSON.stringify({ repoRoot: process.env.K865_WT, planLink: 'p', board: null, ownerRepo: 'o/r', items: [] });
     globalThis.agent = async () => null; globalThis.log = () => {}; globalThis.phase = () => {};
     globalThis.parallel = async (fns) => Promise.all(fns.map(f => f()));
     const { readFileSync } = require('fs');
@@ -13270,15 +13282,23 @@ k865_emit_cmd() {
     const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
     // Re-declare the emitted body, then reach the helper by re-evaluating the
     // file with a trailing expression instead of its own top-level return.
-    const probe = src.replace(/return await buildLevel\(\);\s*$/, 'return workerGateCmd(' + JSON.stringify('$K865_SLUG') + ', ' + JSON.stringify('$K865_ROOT') + ');');
+    const probe = src.replace(/return await buildLevel\(\);\s*$/, 'return workerGateCmd(' + JSON.stringify('$K865_SLUG') + ', process.env.K865_WT);');
     new AsyncFunction(probe)().then(c => process.stdout.write(c));
   "
 }
-K865_CMD="$(k865_emit_cmd)" || fail "#865: could not emit the handed worker gate command"
+K865_CMD="$(k865_emit_cmd "$K865_ROOT")" || fail "#865: could not emit the handed worker gate command"
 [ -n "$K865_CMD" ] || fail "#865: the handed worker gate command is empty"
 case "$K865_CMD" in
   *"$K865_SENTINEL"*) : ;;
   *) fail "#865: the handed command does not write the sentinel path the prompt names ($K865_SENTINEL): $K865_CMD" ;;
+esac
+# The prologue must be a chain of HARD REFUSALS, not an `&&` chain feeding a
+# `;`-separated run. Arm (c) below is what actually catches the regression; this
+# names the invariant at the point of emission so a future edit reads the rule
+# without having to run the suite to discover it.
+case "$K865_CMD" in
+  "set -o pipefail || exit 1; cd "*" || exit 1; "*) : ;;
+  *) fail "#865: the handed command must OPEN with 'set -o pipefail || exit 1' and hard-refuse a failed cd — an '&&'-chained prologue still runs the suite when cd fails: $K865_CMD" ;;
 esac
 
 # (a) GREEN suite → a finished sentinel with rc 0.
@@ -13304,9 +13324,70 @@ bash -c "$K865_CMD" >/dev/null 2>&1 || k865_rc=$?
   || fail "#865: the handed command must exit with the gate's own status (wanted 4, got $k865_rc)"
 grep -F '"rc":4' "$K865_SENTINEL" >/dev/null \
   || fail "#865: a RED gate was recorded as rc $(sed -n 's/.*\"rc\":\([0-9]*\).*/\1/p' "$K865_SENTINEL") — the piped status swallowed the failure: $(cat "$K865_SENTINEL")"
+
+# (c) A WORKTREE THAT DOES NOT EXIST → the command must refuse outright: non-zero
+#     exit, NO sentinel, and — the part that actually bites — the suite must not
+#     run at all. The round-1 shape `cd X && … && set -o pipefail; ./gates.sh …`
+#     is not a guard: `A && B; C` skips B on A's failure but still runs C, so a
+#     failed `cd` skipped the `running` write AND `set -o pipefail` and then ran
+#     `./scripts/quality-gates.sh` in whatever directory the worker's shell
+#     started in. A RED suite in the WRONG repo was then recorded as
+#     {"state":"finished","rc":0} — the exact silent green this whole item
+#     exists to remove. The decoy below is that wrong repo: a red gate script
+#     sitting in the cwd the command is launched from, printing a marker that
+#     must never appear.
+K865_DECOY="$(mktemp -d "$WF_TEST_TMPDIR/k865-decoy-XXXXXX")"
+mkdir -p "$K865_DECOY/scripts"
+K865_DECOY_MARK="K865-RAN-IN-THE-WRONG-REPO"
+printf '#!/bin/sh\necho "%s"\nexit 4\n' "$K865_DECOY_MARK" > "$K865_DECOY/scripts/quality-gates.sh"
+chmod +x "$K865_DECOY/scripts/quality-gates.sh"
+K865_GONE="$WF_TEST_TMPDIR/k865-worktree-that-does-not-exist"
+[ ! -e "$K865_GONE" ] || fail "#865: the failed-cd arm needs a path that does not exist"
+K865_CMD_GONE="$(k865_emit_cmd "$K865_GONE")" || fail "#865: could not emit the handed command for a missing worktree"
+rm -f "$K865_SENTINEL"
+k865_rc=0
+k865_out="$(cd "$K865_DECOY" && bash -c "$K865_CMD_GONE" 2>&1)" || k865_rc=$?
+[ "$k865_rc" -ne 0 ] \
+  || fail "#865: a worktree that does not exist must make the handed command exit non-zero, got 0: $k865_out"
+case "$k865_out" in
+  *"$K865_DECOY_MARK"*) fail "#865: the handed command ran the gate suite OUTSIDE the worktree after a failed cd — a red suite in the wrong repo: $k865_out" ;;
+esac
+[ ! -f "$K865_SENTINEL" ] \
+  || fail "#865: a failed cd must leave NO sentinel — a refusal that writes one is indistinguishable from a run: $(cat "$K865_SENTINEL")"
+case "$k865_out" in
+  *'"state":"finished"'*) fail "#865: a failed cd printed a finished sentinel — workerGateState() would read 'finished' and the 3e.5 'WORKER GATE NEVER FINISHED' notice would never fire: $k865_out" ;;
+esac
+
+# (d) NO GATE SCRIPT → exit 127 and NO sentinel, so the handed prompt's "that is
+#     not a gate failure" bullet is TRUE of the shell. Before the round-2 fix,
+#     pipefail turned the missing script into rc 127 and the next statement wrote
+#     {"state":"finished","rc":127} unconditionally — which the SAME prompt's
+#     stronger rule ("finished + non-zero rc is a real FAIL you can report")
+#     told the worker to report as a gate failure. Two rules in one prompt
+#     disagreed and the shell backed the wrong one.
+rm -f "$K865_ROOT/scripts/quality-gates.sh"
+rm -f "$K865_SENTINEL"
+k865_rc=0
+k865_out="$(bash -c "$K865_CMD" 2>&1)" || k865_rc=$?
+[ "$k865_rc" -eq 127 ] \
+  || fail "#865: a repo with no scripts/quality-gates.sh must exit 127, got $k865_rc: $k865_out"
+[ ! -f "$K865_SENTINEL" ] \
+  || fail "#865: a repo with no gate script must leave NO sentinel — the prompt tells the worker a missing gate writes none: $(cat "$K865_SENTINEL")"
+# The 127 and the message are a PAIR: the handed prompt tells the worker that
+# exit 127 + this stderr line is "no gate", not a gate failure, so a refusal
+# that exits 127 silently would leave the worker guessing which of the three
+# refusals it hit.
+case "$k865_out" in
+  *'no executable ./scripts/quality-gates.sh'*) : ;;
+  *) fail "#865: the 127 refusal must NAME itself on stderr — the prompt keys 'not a gate failure' on that line: $k865_out" ;;
+esac
+case "$k865_out" in
+  *'"state":"finished"'*) fail "#865: a missing gate script produced a finished sentinel — the worker would report a repo with no gate as a gate FAILURE: $k865_out" ;;
+esac
+
 rm -f "$K865_SENTINEL" "$K865_GATELOG"
-rm -rf "$K865_ROOT"
-echo "PASS: #865 executed shell — the handed gate invocation writes a real result sentinel and records the gate's OWN exit status in both the green and the red arm"
+rm -rf "$K865_ROOT" "$K865_DECOY"
+echo "PASS: #865 executed shell — the handed gate invocation records the gate's OWN exit status (green + red arms) and REFUSES without a sentinel when the worktree is gone or the repo has no gate script"
 
 # --- K865 static lockstep guards -------------------------------------------
 grep -q 'function workerGateCmd' "$MJS" \
